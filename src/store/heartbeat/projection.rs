@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 fn key(human: i64, session: i64) -> String {
     format!("private_projection:{human}:{session}")
 }
+fn input_key(human: i64, session: i64) -> String {
+    format!("private_projection_input:{human}:{session}")
+}
 
 fn load(conn: &Connection, key: &str) -> Result<Value> {
     let raw: Option<String> = conn
@@ -39,7 +42,43 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (session, actual) = super::super::presentation::entry_on(&conn, human, entry)?;
         anyhow::ensure!(actual == native, "Private projection owner changed");
-        load(&conn, &key(human, session))
+        let mut record = load(&conn, &key(human, session))?;
+        record["input_retained"] = json!(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM bot_state WHERE key=?1)",
+            [input_key(human, session)],
+            |row| row.get::<_, bool>(0)
+        )?);
+        Ok(record)
+    }
+
+    /// Host-only recovery bytes: never included in the model-facing status.
+    pub(crate) fn private_projection_input(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        invocation: &str,
+    ) -> Result<(Value, String)> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, actual) = super::super::presentation::entry_on(&conn, human, entry)?;
+        anyhow::ensure!(actual == native, "Projection recovery owner changed");
+        let record = load(&conn, &key(human, session))?;
+        anyhow::ensure!(
+            record["current"]["invocation"] == invocation
+                && record["current"]["phase"] != "observed",
+            "Exact unresolved projection required"
+        );
+        let raw: String = conn.query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [input_key(human, session)],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            raw.len() <= 2 * 1024 * 1024
+                && record["current"]["snapshot"] == format!("{:x}", Sha256::digest(raw.as_bytes())),
+            "Retained projection input does not match invocation"
+        );
+        Ok((record["current"].clone(), raw))
     }
 
     /// Returns retained evidence unless a new action was atomically claimed.
@@ -58,7 +97,14 @@ impl Store {
         descriptor: &str,
         snapshot: &str,
         reconciliation: &str,
+        snapshot_json: &str,
     ) -> Result<Value> {
+        anyhow::ensure!(
+            snapshot_json.len() <= 2 * 1024 * 1024
+                && format!("{:x}", Sha256::digest(snapshot_json.as_bytes())) == snapshot,
+            "Bounded exact recovery input required"
+        );
+        serde_json::from_str::<Value>(snapshot_json)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let (p, index) =
@@ -149,6 +195,10 @@ impl Store {
             &storage,
             &json!({"current":current,"previous":previous.get("current").cloned().unwrap_or(Value::Null)}),
         )?;
+        // One input is committed atomically with its intent and remains only
+        // while that invocation is unresolved. Normal snapshot edits cannot
+        // erase the bytes needed after a lost command/response confirmation.
+        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![input_key(human,p.session),snapshot_json])?;
         tx.commit()?;
         Ok(json!({"claimed":true,"current":current}))
     }
@@ -162,7 +212,8 @@ impl Store {
         outcome: Value,
     ) -> Result<()> {
         anyhow::ensure!(
-            serde_json::to_vec(&outcome)?.len() <= 8192,
+            serde_json::to_vec(&outcome)?.len() <= 4096
+                && matches!(outcome["phase"].as_str(), Some("observed" | "unconfirmed")),
             "Bounded projection outcome required"
         );
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -178,6 +229,17 @@ impl Store {
             record["current"]["invocation"] == invocation,
             "Projection invocation changed"
         );
+        if record["current"]["phase"] == "observed" {
+            // A late failed inspection cannot downgrade an already verified fact.
+            return Ok(());
+        }
+        if outcome["phase"] == "observed" {
+            record["current"]["original_execution_outcome"] = record["current"]["outcome"].clone();
+            tx.execute(
+                "DELETE FROM bot_state WHERE key=?1",
+                [input_key(human, session)],
+            )?;
+        }
         record["current"]["phase"] = outcome["phase"].clone();
         record["current"]["outcome"] = outcome;
         save(&tx, &storage, &record)?;

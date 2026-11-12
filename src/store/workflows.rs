@@ -6114,12 +6114,28 @@ mod tests {
             .unwrap();
             values
         };
-        let hash = "a".repeat(64);
-        let changed = "b".repeat(64);
+        let original_input = r#"{"observed_at":"private-test-snapshot"}"#;
+        let changed_input = r#"{"observed_at":"later-snapshot"}"#;
+        let hash = format!("{:x}", Sha256::digest(original_input.as_bytes()));
+        let changed = format!("{:x}", Sha256::digest(changed_input.as_bytes()));
         let claim = |store: &Store, human, physical: &str, revision: &str, snapshot: &str| {
             store.private_projection_claim(
-                human, e.key, "native-1", physical, &id, &batch, "intake", revision, &hash,
-                snapshot, &hash,
+                human,
+                e.key,
+                "native-1",
+                physical,
+                &id,
+                &batch,
+                "intake",
+                revision,
+                &hash,
+                snapshot,
+                &hash,
+                if snapshot == hash {
+                    original_input
+                } else {
+                    changed_input
+                },
             )
         };
         assert!(claim(&s, 101, "physical", &task_revision, &hash).is_err());
@@ -6184,6 +6200,31 @@ mod tests {
             false
         );
         let invocation = first["current"]["invocation"].as_str().unwrap();
+        let status = reopened
+            .private_projection_status(100, e.key, "native-1")
+            .unwrap();
+        assert_eq!(status["input_retained"], true);
+        assert!(!status.to_string().contains("private-test-snapshot"));
+        let (retained, raw) = reopened
+            .private_projection_input(100, e.key, "native-1", invocation)
+            .unwrap();
+        assert_eq!(raw, original_input);
+        assert_eq!(retained["snapshot"], hash);
+        reopened
+            .private_projection_finish(
+                100,
+                e.key,
+                "native-1",
+                invocation,
+                json!({"phase":"unconfirmed"}),
+            )
+            .unwrap();
+        assert!(
+            reopened
+                .private_projection_input(100, e.key, "native-1", invocation)
+                .is_ok()
+        );
+
         reopened
             .private_projection_finish(
                 100,
@@ -6213,6 +6254,27 @@ mod tests {
             .private_projection_status(100, e.key, "native-1")
             .unwrap();
         assert_eq!(status["current"]["phase"], "observed");
+        assert_eq!(status["input_retained"], false);
+        assert_eq!(
+            status["current"]["original_execution_outcome"]["phase"],
+            "unconfirmed"
+        );
+        reopened
+            .private_projection_finish(
+                100,
+                e.key,
+                "native-1",
+                invocation,
+                json!({"phase":"unconfirmed"}),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .private_projection_status(100, e.key, "native-1")
+                .unwrap()["current"]["phase"],
+            "observed"
+        );
+
         assert!(serde_json::to_vec(&status).unwrap().len() < 32768);
         reopened.heartbeat_control(100, e.key, H::Pause).unwrap();
         assert!(claim(&reopened, 100, "physical", &task_revision, &hash).is_err());

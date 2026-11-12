@@ -7,7 +7,7 @@ Use this when an isolated actor can reconcile selected inputs but must not recei
 the publisher's credentials, store access or general loopback networking.
 
 The existing `interaction_controller` operation `private_projection` accepts
-`action: status`, or `action: run` with the exact current `return_id`,
+`action: status`, `action: inspect` with the exact unresolved `invocation`, or `action: run` with the exact current `return_id`,
 `batch_revision`, `task_revision`, `snapshot_sha256` and
 `reconciliation_sha256`. It accepts no executable, path, environment, destination
 or audience. The configured task must be offered to that exact active Reports
@@ -15,7 +15,7 @@ execution, with its unchanged human purpose and current global/lane generation.
 The selected reconciliation file must identify that return through the configured
 JSON pointer and report `partial: false` through its configured partial pointer.
 Only a running local/native execution with remaining allowance can
-claim the action. Status reads the existing retained outcome; it executes nothing.
+claim the action. Status reads the existing retained outcome; it executes nothing. Inspect invokes only the fixed adapter's `--inspect-stdin` mode with its retained input; it cannot publish.
 
 Example operator configuration (receiving paths are local, not shared bindings):
 
@@ -32,14 +32,14 @@ timeout_seconds = 20
 ```
 
 Qualify the fixed command and its actual private audience before selection. Keep
-its executable, code, imports, binding and custody outside actor-writable paths.
+its executable, code, imports, publisher staging, binding and custody outside actor-writable paths.
 Use absolute canonical input paths: held-directory reads refuse symlinks in every
 component. Give the actor only its selected intake/cursor writes, not publisher
 custody or the whole Home store. This new configured action remains part of the
 receiving identity; qualify its changed selection through the existing composed
 receiver/access route, without dropping other fingerprint fields.
 
-The command receives the pinned snapshot bytes on stdin, at most2MiB. Its stdout
+The command receives valid UTF-8 JSON snapshot bytes on stdin, at most2MiB. Its stdout
 must be one JSON object<=8KiB, with `source_sha256` identifying those exact bytes,
 `state` equal to `unchanged` or `published_verified`, and the actual selected
 `artifact_ref`/`version_ref` where applicable. Arbitrary stdout fields and stderr
@@ -55,20 +55,29 @@ The configured trusted helper must itself bound its children and publication
 storage; resource actions do not become unmetered actor tools.
 
 One bounded32KiB journal value retains the current and previous invocation against
-the existing owner entry. An intent is committed before execution. The same return
+the existing owner entry. One separate existing-journal row retains at most2MiB of
+exact unresolved input, atomically with its intent. Status never returns that input.
+Successful observation/CAS settlement removes the copy in the same transaction.
+No per-attempt queue or new table is created. An intent is committed before execution. The same return
 cannot run twice, even if input changes. An unresolved intent/outcome holds later
 actions instead of replaying an uncertain publication. The same confirmed input
 under the same descriptor returns its existing result without a new invocation.
 This journal does not change heartbeat reservations, budgets or goals. Native
 returns and the Home publisher keep their original independent history.
 
-On timeout, cancellation or a lost confirmation, inspect this exact invocation
-and the existing Home/checkpoint state through the owning operator. Do not reset
-this journal, infer non-publication or submit another action to hide uncertainty.
-Automated reconciliation of such held outcomes is not implemented by this initial
-operation; do not select it as an unattended production path until its required
-owning readback/reconciliation has been qualified. Ordinary bounded Messaging and
-Reports remain available independently of this optional operation.
+On timeout, cancellation or a lost confirmation, use status and inspect for that
+same named invocation. Inspect reads the retained bytes, not the mutable intake.
+It compares the fixed adapter descriptor, renders the input in protected staging,
+checks the selected private Home object/checkpoint and verifies authenticated
+served bytes. A matching view may settle the intended effect while preserving
+that execution of the original invocation was not established. Missing/mismatching
+checkpoint information remains explicit; it cannot substitute for served proof.
+Conflicting/unavailable evidence stays held, with its input, and is never a new
+publication attempt. A stale inspection cannot settle a later invocation or
+downgrade an already verified result. One nonqueued action/readback at a time
+bounds host concurrency. Ordinary Messaging/Reports continue independently.
+Actual receiving qualification is still required before selecting this optional
+controller action for unattended production.
 
 ## Existing Bitacora adapter
 
@@ -77,9 +86,12 @@ Install it only through the owning desk's normal selection, preserving its curre
 project assets, Home identity and audience. `--project-dir` can select the existing
 project code directory; its default is the installed script's directory.
 Ordinary invocation still captures `source-snapshot.json`. `--snapshot-stdin`
-consumes the controller's pinned input. Neither mode starts Drive acquisition.
+consumes the controller's pinned input. `--inspect-stdin` only renders/compares and
+verifies serving; it never calls the publisher or writes the projection checkpoint.
+These modes do not start Drive acquisition.
 
-The whole command uses one existing-project lock outside actor-writable inputs.
+The whole command uses one existing-project lock and bounded `.projection-render`
+staging outside actor-writable inputs.
 An anonymous host-owned temporary file reaches only the builder through its held
 FD and disappears even on SIGKILL. The receipt's source hash/observation are from
 that pinned input, never a later reread. Existing same-version checks, private

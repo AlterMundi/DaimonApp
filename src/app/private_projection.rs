@@ -5,10 +5,17 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+// One configured projection per receiver. Do not create waiting host processes
+// when a caller submits concurrent actions or readbacks.
+static ACTION: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Status {},
+    Inspect {
+        invocation: String,
+    },
     Run {
         return_id: String,
         batch_revision: String,
@@ -85,11 +92,12 @@ fn bounded_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-async fn execute(
+async fn execute_mode(
     config: &crate::interaction::PrivateProjectionConfig,
     snapshot: &[u8],
     seconds: u64,
     closed: &CancellationToken,
+    inspect: bool,
 ) -> Result<Value> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::process::CommandExt;
@@ -99,6 +107,9 @@ async fn execute(
     command
         .args(&config.command[1..])
         .current_dir(&config.working_directory);
+    if inspect {
+        command.arg("--inspect-stdin");
+    }
     command
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -185,16 +196,31 @@ async fn execute(
         }
         let value: Value = serde_json::from_slice(&bytes)?;
         anyhow::ensure!(
-            value["source_sha256"] == digest(snapshot)
-                && matches!(
+            value["source_sha256"] == digest(snapshot),
+            "Projection receipt does not identify pinned input"
+        );
+        if inspect {
+            anyhow::ensure!(
+                value["state"] == "existing_projection_verified"
+                    && value["immutable_files_match"] == true
+                    && value["owner_broker_all_files_match"] == true
+                    && value["artifact_ref"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())
+                    && value["version_ref"].as_str().is_some_and(|s| !s.is_empty()),
+                "Existing projection not verified; preserve unresolved invocation"
+            );
+        } else {
+            anyhow::ensure!(
+                matches!(
                     value["state"].as_str(),
                     Some("unchanged" | "published_verified")
                 ),
-            "Projection receipt does not identify pinned input"
-        );
-        // Copy selected receipt fields only, never arbitrary command output.
+                "Projection outcome not verified"
+            );
+        }
         Ok(
-            json!({"phase":"observed","state":value["state"],"source_sha256":value["source_sha256"],"artifact_ref":value["artifact_ref"],"version_ref":value["version_ref"]}),
+            json!({"phase":"observed","state":value["state"],"source_sha256":value["source_sha256"],"artifact_ref":value["artifact_ref"],"version_ref":value["version_ref"],"verification_only":inspect,"original_invocation_execution":if inspect {"not_established"} else {"observed"},"checkpoint_matches":value["checkpoint_matches"]}),
         )
     };
     let result = tokio::select! {
@@ -205,6 +231,16 @@ async fn execute(
     let status = child.wait().await?;
     anyhow::ensure!(status.success(), "Projection outcome unconfirmed");
     result
+}
+
+#[cfg(target_os = "linux")]
+async fn execute(
+    config: &crate::interaction::PrivateProjectionConfig,
+    snapshot: &[u8],
+    seconds: u64,
+    closed: &CancellationToken,
+) -> Result<Value> {
+    execute_mode(config, snapshot, seconds, closed, false).await
 }
 
 pub(super) async fn tool(
@@ -227,10 +263,58 @@ pub(super) async fn tool(
             .store
             .private_projection_status(human, key, &request.thread_id);
     }
+    let Ok(_permit) = ACTION.try_acquire() else {
+        return Ok(json!({"busy":true,"queued":false}));
+    };
     let config = cfg
         .private_projection
         .context("Private projection action is not configured")?;
     config.validate()?;
+    if let Request::Inspect { ref invocation } = args {
+        let record = app
+            .shared
+            .store
+            .private_projection_status(human, key, &request.thread_id)?;
+        anyhow::ensure!(
+            record["current"]["invocation"] == invocation.as_str(),
+            "Projection invocation changed"
+        );
+        if record["current"]["phase"] == "observed" {
+            return Ok(record);
+        }
+        let (current, raw) = app.shared.store.private_projection_input(
+            human,
+            key,
+            &request.thread_id,
+            invocation,
+        )?;
+        anyhow::ensure!(
+            current["descriptor"] == digest(&serde_json::to_vec(&config)?),
+            "Projection adapter selection changed; inspect through original owning selection"
+        );
+        let outcome = execute_mode(
+            &config,
+            raw.as_bytes(),
+            config.timeout_seconds,
+            closed,
+            true,
+        )
+        .await
+        .unwrap_or_else(
+            |_| json!({"phase":"unconfirmed","inspection_required":true,"automatic_retry":false}),
+        );
+        app.shared.store.private_projection_finish(
+            human,
+            key,
+            &request.thread_id,
+            invocation,
+            outcome,
+        )?;
+        return app
+            .shared
+            .store
+            .private_projection_status(human, key, &request.thread_id);
+    }
     #[cfg(not(target_os = "linux"))]
     bail!("Private projection action requires the configured Linux owner");
     #[cfg(target_os = "linux")]
@@ -262,6 +346,7 @@ pub(super) async fn tool(
             &descriptor,
             &snapshot_sha256,
             &reconciliation_sha256,
+            std::str::from_utf8(&snapshot)?,
         )?;
         if claim["claimed"] != true {
             return Ok(claim);
@@ -384,6 +469,30 @@ mod tests {
         );
         assert!(
             execute(&wrong, b"{}", 2, &CancellationToken::new())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn private_projection_inspection_accepts_only_pinned_served_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let good = config(
+            directory.path(),
+            "import sys,json,hashlib; assert sys.argv[-1]=='--inspect-stdin'; data=sys.stdin.buffer.read(); print(json.dumps({'state':'existing_projection_verified','source_sha256':hashlib.sha256(data).hexdigest(),'artifact_ref':'own','version_ref':'version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))",
+        );
+        let result = execute_mode(&good, b"{}", 2, &CancellationToken::new(), true)
+            .await
+            .unwrap();
+        assert_eq!(result["verification_only"], true);
+        assert_eq!(result["original_invocation_execution"], "not_established");
+        assert_eq!(result["checkpoint_matches"], false);
+        let false_proof = config(
+            directory.path(),
+            "import sys,json,hashlib; data=sys.stdin.buffer.read(); print(json.dumps({'state':'existing_projection_verified','source_sha256':hashlib.sha256(data).hexdigest(),'artifact_ref':'own','version_ref':'version','immutable_files_match':True,'owner_broker_all_files_match':False}))",
+        );
+        assert!(
+            execute_mode(&false_proof, b"{}", 2, &CancellationToken::new(), true)
                 .await
                 .is_err()
         );
