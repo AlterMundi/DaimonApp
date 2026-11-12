@@ -25,13 +25,27 @@ async fn actual_core_owner_journey(process_owner: bool) {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("core-home");
     std::fs::create_dir(&home).unwrap();
+    let workspace = root.path().join("owned-work");
+    std::fs::create_dir(&workspace).unwrap();
+    let outside = root.path().join("unselected-private");
+    std::fs::write(&outside, "synthetic-outside-private").unwrap();
+    let artifact = workspace.join("useful-result.txt");
+    if process_owner {
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            "Owned startup fixture instructions.",
+        )
+        .unwrap();
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let provider_port = listener.local_addr().unwrap().port();
     let credential = home.join("fake-provider-credential");
     std::fs::write(&credential, "synthetic-private-provider").unwrap();
     let script = format!(
-        "import os\nassert 'codex-owned-exec-' in os.environ['HOME']\nassert os.environ['HOME']==os.environ['CODEX_HOME']\ntry:\n open({}).read()\nexcept OSError:\n pass\nelse:\n raise AssertionError('native login readable')\nprint('owned-tool-accepted')\n",
-        json!(credential.to_string_lossy())
+        "import os\nassert 'codex-owned-exec-' in os.environ['HOME']\nassert os.environ['HOME']!=os.environ['CODEX_HOME']\ntry:\n os.listdir(os.environ['CODEX_HOME'])\nexcept OSError:\n pass\nelse:\n raise AssertionError('executor control readable')\nassert 'BOUNDED_FIXTURE_AMBIENT' not in os.environ\nfor denied in [{}, {}, '/usr/bin/true', '/bin/true']:\n try:\n  open(denied).read()\n except OSError:\n  pass\n else:\n  raise AssertionError('unselected private root readable')\nwith open({}, 'x') as result:\n result.write('one owned useful action')\nprint('owned-tool-accepted')\n",
+        json!(credential.to_string_lossy()),
+        json!(outside.to_string_lossy()),
+        json!(artifact.to_string_lossy())
     );
     use base64::Engine as _;
     let encoded = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
@@ -63,14 +77,23 @@ async fn actual_core_owner_journey(process_owner: bool) {
                         assert_eq!(body["max_output_tokens"], 200);
                         if process_owner {
                             assert!(
+                                body.to_string()
+                                    .contains("Owned startup fixture instructions.")
+                            );
+                            assert!(!body.to_string().contains("synthetic-private-provider"));
+                            assert!(!body.to_string().contains("synthetic-outside-private"));
+                            assert!(
                                 body["tools"].to_string().contains("exec_command"),
                                 "selected tool missing from actual native request"
                             );
                             if index == 1 {
                                 assert!(
                                     body["input"].to_string().contains("owned-tool-accepted"),
-                                    "actual registry/handler did not return the owned tool result: {}",
-                                    body["input"]
+                                    "actual registry/handler did not return the owned tool result: {:?}",
+                                    body["input"].as_array().map(|items| items
+                                        .iter()
+                                        .filter(|item| item["type"] == "function_call_output")
+                                        .collect::<Vec<_>>())
                                 );
                             }
                         } else {
@@ -107,6 +130,24 @@ async fn actual_core_owner_journey(process_owner: bool) {
             stream.write_all(response.as_bytes()).await.unwrap();
         }
     });
+    let sandbox = if process_owner {
+        "workspace-write"
+    } else {
+        "read-only"
+    };
+    let permission_profile = if process_owner {
+        format!(
+            "[permissions.funded.filesystem]\n\"/usr\" = \"read\"\n\"/bin\" = \"read\"\n\"/lib\" = \"read\"\n\"/lib64\" = \"read\"\n\"/etc\" = \"read\"\n\"/usr/bin/true\" = \"deny\"\n{} = \"read\"\n{} = \"write\"\n",
+            json!(
+                std::path::Path::new(&core)
+                    .with_file_name("codex-exec-server")
+                    .to_string_lossy()
+            ),
+            json!(workspace.to_string_lossy())
+        )
+    } else {
+        String::new()
+    };
     std::fs::write(
         home.join("config.toml"),
         format!(
@@ -114,7 +155,8 @@ async fn actual_core_owner_journey(process_owner: bool) {
 model = "bounded-fake"
 model_provider = "test"
 approval_policy = "never"
-sandbox_mode = "read-only"
+sandbox_mode = "{sandbox}"
+{permission_profile}
 [model_providers.test]
 name = "Synthetic local receiving fixture"
 base_url = "http://127.0.0.1:{provider_port}"
@@ -136,6 +178,7 @@ stream_max_retries = 0
             "--disable-plugin-startup-tasks-for-tests",
         ])
         .env("CODEX_HOME", &home)
+        .env("BOUNDED_FIXTURE_AMBIENT", "synthetic-ambient-only")
         .env("CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG", "1")
         .env_remove("OPENAI_API_KEY")
         .env_remove("CODEX_API_KEY")
@@ -203,7 +246,7 @@ while True:
         native_host_restrictions: Some(
             serde_json::from_value(json!({
                 "processLimits":if process_owner {json!({"memoryBytes":536870912,"cpuPercent":50,"tasks":128})}else{Value::Null},
-                "permissions":":read-only","tools":if process_owner {json!([{"name":"exec_command","namespace":"functions"}])}else{json!([])},"environment":{"PATH":"/usr/bin:/bin"},
+                "permissions":if process_owner {"funded"}else{":read-only"},"tools":if process_owner {json!([{"name":"exec_command","namespace":"functions"}])}else{json!([])},"environment":{"PATH":"/usr/bin:/bin"},
                 "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
             }))
             .unwrap(),
@@ -220,13 +263,17 @@ while True:
         codex_thread_id: None,
         force_fresh_thread: false,
         updated_at: "2026-11-11T00:00:00Z".into(),
-        cwd: root.path().to_path_buf(),
+        cwd: if process_owner {
+            workspace.clone()
+        } else {
+            root.path().to_path_buf()
+        },
         model: Some("bounded-fake".into()),
         reasoning_effort: None,
         service_tier: None,
         collaboration_mode: None,
         session_prompt: None,
-        sandbox_mode: "read-only".into(),
+        sandbox_mode: sandbox.into(),
         approval_policy: "never".into(),
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
@@ -271,8 +318,14 @@ while True:
                 _=>Ok(CodexEventOutcome::None),
             }
         }
-    })).await.unwrap().unwrap_or_else(|error|panic!("actual composed receiving failed: {error:#}; owner report: {:?}; Core: {:?}",std::fs::read_to_string(&report),std::fs::read_to_string(root.path().join("core.stderr"))));
+    })).await.unwrap().unwrap_or_else(|error|panic!("actual composed receiving failed: {error:#}; phase: {:?}; owner report: {:?}; Core: {:?}",state.try_lock().ok().map(|s| (s.0.is_some(), s.1.is_some(), s.1.as_ref().is_some_and(|owner| owner.bound.is_some()))),std::fs::read_to_string(&report),std::fs::read_to_string(root.path().join("core.stderr"))));
     assert_eq!(result.assistant_text, "Signed original handled");
+    if process_owner {
+        assert_eq!(
+            std::fs::read_to_string(&artifact).unwrap(),
+            "one owned useful action"
+        );
+    }
     let mut state = state.lock().await;
     let owner = state.1.as_mut().unwrap();
     let reply = owner

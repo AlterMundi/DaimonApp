@@ -458,9 +458,15 @@ its `codex-exec-server` sibling. For local qualification, build both from
 `codex-rs` with `cargo build -p codex-app-server -p codex-exec-server-cli --bins`
 to reuse one dependency-feature build. Select the test with the same environment and
 `cargo test --locked --bin telecodex actual_core_process_owner_dispatches -- --ignored --nocapture`.
-It requests an actual `exec_command` through Core's registry and handler, verifies
-the private HOME and denied synthetic native credential, then requires the tool
-result in the next provider request. Its two synthetic provider completions must
+It selects the existing named explicit-root permission profile and requests an
+actual `exec_command` through Core's registry and handler. The check requires
+workspace AGENTS context, a writable private actor HOME, a separate denied executor
+CODEX_HOME, no ambient environment marker, denied synthetic private/native files,
+and denial of the same executable through both `/usr/bin` and `/bin`. It writes
+one exclusive result artifact and requires useful output in the next provider
+request. The receiving launcher must support bubblewrap `--argv0`; qualify that
+prerequisite with the exact package before selection, rather than putting trusted
+helpers in actor-writable directories. Its two synthetic provider completions must
 produce two signed usage observations, sixteen synthetic settled units and zero
 remaining exposure in the same Matrix cycle. This is an opt-in qualification
 case, not installed receiving evidence or real monetary accounting.
