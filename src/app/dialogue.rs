@@ -257,7 +257,9 @@ pub(super) fn tool_call(
                 | "workflow_status" | "workflow_advance" | "workflow_attention"
                 | "workflow_reported" | "workflow_finish" | "workflow_result"
                 | "attention_source" | "attention_reported" | "matrix_reported"
-                | "heartbeat_reported" | "heartbeat_source" => "interaction_workflow",
+                | "heartbeat_reported" | "heartbeat_source" | "private_projection" => {
+                    "interaction_workflow"
+                }
                 "live_context" => "interaction_live_context",
                 "capabilities" => "controller_capabilities",
                 "inputs" => "interaction_inputs",

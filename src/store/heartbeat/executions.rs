@@ -258,14 +258,45 @@ impl Store {
     }
     /// Read the already-reserved allocation at the last submission boundary.
     /// Reading never charges/refills it or establishes new execution ownership.
+    #[cfg(test)]
     pub(crate) fn heartbeat_inference_allowance(
         &self,
         local: i64,
         human: i64,
         entry: SessionKey,
     ) -> Result<Option<crate::codex::NativeInferenceAllowance>> {
+        Ok(self
+            .heartbeat_submission_policy(local, human, entry)?
+            .map(|(allowance, _)| allowance))
+    }
+
+    /// Resolve the root lane from the same freshly validated retained execution.
+    /// Delegated work inherits accounting, never its parent's purpose profile.
+    pub(crate) fn heartbeat_submission_policy(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<
+        Option<(
+            crate::codex::NativeInferenceAllowance,
+            Option<HeartbeatLane>,
+        )>,
+    > {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        Ok(allowance_on(&conn, local, human, entry, true)?.map(|(_, allowance)| allowance))
+        allowance_on(&conn, local, human, entry, true)?
+            .map(|(record, allowance)| {
+                let root_lane = if record.get("owner").is_none() {
+                    Some(
+                        serde_json::from_value::<lanes::Activation>(record["activation"].clone())?
+                            .lane,
+                    )
+                } else {
+                    None
+                };
+                Ok((allowance, root_lane))
+            })
+            .transpose()
     }
 
     pub(crate) fn heartbeat_financial_source(
@@ -970,6 +1001,13 @@ mod tests {
                 .is_none()
         );
         own(&s, &entry, local).unwrap();
+        assert_eq!(
+            s.heartbeat_submission_policy(local, 100, entry.key)
+                .unwrap()
+                .unwrap()
+                .1,
+            Some(HeartbeatLane::Messaging)
+        );
         let before = s
             .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
             .unwrap()["resources"]

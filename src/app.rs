@@ -43,6 +43,22 @@ mod native_recovery;
 mod nexus;
 mod observer;
 mod presentation;
+#[cfg(target_os = "linux")]
+mod private_projection;
+#[cfg(not(target_os = "linux"))]
+mod private_projection {
+    use super::*;
+    pub(super) async fn tool(
+        _app: &App,
+        _key: SessionKey,
+        _human: i64,
+        _request: &crate::codex::DynamicToolRequest,
+        _args: serde_json::Value,
+        _closed: &CancellationToken,
+    ) -> Result<serde_json::Value> {
+        bail!("Private projection action requires the configured Linux owner")
+    }
+}
 mod questions;
 mod rename;
 mod routing;

@@ -34,11 +34,17 @@ def receiving_authority(receiver):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
     interaction = receiver.get('interaction')
+    if isinstance(interaction, dict):
+        # A native-only fixed helper does not select this web reader's actor,
+        # audience, data or control endpoint. Its full descriptor is fenced by
+        # the native action journal; web sessions retain their actual scope.
+        interaction = {key: value for key, value in interaction.items()
+                       if key != 'private_projection'}
     if isinstance(interaction, dict) and isinstance(interaction.get('matrix_transport'), dict):
         # Resource/tool ceilings constrain native work, not dashboard identity.
         # Keep all actor, route, credential and funding selectors in the binding.
         transport = {key: value for key, value in interaction['matrix_transport'].items()
-                     if key != 'native_host_restrictions'}
+                     if key not in ('native_host_restrictions', 'native_attention_host_restrictions')}
         interaction = {**interaction, 'matrix_transport': transport}
     return json.dumps({
         'db_path': receiver.get('db_path'),

@@ -9,6 +9,8 @@ pub(in crate::store) use delegation::{
 };
 pub(in crate::store) mod producer;
 pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose};
+#[cfg(target_os = "linux")]
+mod projection;
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;

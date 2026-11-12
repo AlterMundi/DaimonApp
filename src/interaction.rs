@@ -29,6 +29,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub native_routed_returns: bool,
     pub artifact_store: Option<ArtifactConfig>,
+    /// One explicitly configured private projection; no model-selected command.
+    pub private_projection: Option<PrivateProjectionConfig>,
     #[serde(default)]
     pub targets: Vec<Target>,
     /// Include existing bound conversations owned by this human in this chat.
@@ -48,6 +50,49 @@ pub struct InteractionConfig {
     pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
     pub max_active_workers: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateProjectionConfig {
+    pub task_id: String,
+    pub command: Vec<String>,
+    pub working_directory: std::path::PathBuf,
+    pub snapshot: std::path::PathBuf,
+    pub reconciliation: std::path::PathBuf,
+    pub reconciliation_return_pointer: String,
+    pub reconciliation_partial_pointer: String,
+    pub timeout_seconds: u64,
+}
+
+impl PrivateProjectionConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.task_id.is_empty()
+                && self.task_id.len() <= 128
+                && self
+                    .task_id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                && !self.command.is_empty()
+                && self.command.len() <= 32
+                && std::path::Path::new(&self.command[0]).is_absolute()
+                && self
+                    .command
+                    .iter()
+                    .all(|s| !s.is_empty() && s.len() <= 4096 && !s.contains('\0'))
+                && self.working_directory.is_absolute()
+                && self.snapshot.is_absolute()
+                && self.reconciliation.is_absolute()
+                && self.reconciliation_return_pointer.starts_with('/')
+                && self.reconciliation_return_pointer.len() <= 256
+                && self.reconciliation_partial_pointer.starts_with('/')
+                && self.reconciliation_partial_pointer.len() <= 256
+                && (1..=20).contains(&self.timeout_seconds),
+            "Invalid fixed private projection action"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -89,6 +134,22 @@ pub struct MatrixTransportConfig {
     pub native_funding_binding: Option<std::path::PathBuf>,
     /// Additional native ceilings, selected only by this private host config.
     pub native_host_restrictions: Option<NativeHostRestrictions>,
+    /// Root attention only; delegated work keeps the global/default selection.
+    #[serde(default)]
+    pub native_attention_host_restrictions:
+        std::collections::BTreeMap<crate::store::HeartbeatLane, NativeHostRestrictions>,
+}
+
+impl MatrixTransportConfig {
+    pub(crate) fn host_restrictions_for_attention(
+        &self,
+        root_lane: Option<crate::store::HeartbeatLane>,
+    ) -> Option<NativeHostRestrictions> {
+        root_lane
+            .and_then(|lane| self.native_attention_host_restrictions.get(&lane))
+            .or(self.native_host_restrictions.as_ref())
+            .cloned()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -240,6 +301,9 @@ impl InteractionConfig {
         if let Some(pack) = &self.expression_pack {
             pack.validate()?;
         }
+        if let Some(projection) = &self.private_projection {
+            projection.validate()?;
+        }
         if self.human_id <= 0
             || self.chat_id == 0
             || self.topic_id <= 0
@@ -286,6 +350,9 @@ impl InteractionConfig {
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
+                restrictions.validate()?;
+            }
+            for restrictions in transport.native_attention_host_restrictions.values() {
                 restrictions.validate()?;
             }
             transport.source.validate()?;
@@ -696,6 +763,7 @@ mod tests {
             native_workflow_returns: false,
             native_routed_returns: false,
             artifact_store: None,
+            private_projection: None,
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
@@ -740,6 +808,7 @@ mod tests {
             },
             timeout_seconds: 1,
             native_funding_binding: None,
+            native_attention_host_restrictions: Default::default(),
             native_host_restrictions: None,
         });
         incoming.validate().unwrap();
@@ -852,6 +921,60 @@ matrix_transport = { command = ["/bin/true"], source = { kind = "body", being_re
         assert!(
             config.validate().is_err(),
             "Physical validation remains required without funding"
+        );
+    }
+
+    #[test]
+    fn root_attention_profile_is_lane_scoped_and_legacy_fallback_is_preserved() {
+        use crate::store::HeartbeatLane;
+        let mut config: MatrixTransportConfig = serde_json::from_value(json!({
+            "command":["/bin/true"], "source":{"kind":"body",
+            "being_ref":format!("dm:being:v1:{}", "A".repeat(43)),
+            "embodiment_id":"embodiment:synthetic"}, "timeout_seconds":1,
+            "native_attention_host_restrictions":{"reports":{
+                "permissions":"reports", "tools":[], "environment":{},
+                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}}}
+        }))
+        .unwrap();
+        assert_eq!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Reports))
+                .unwrap()
+                .permissions,
+            "reports"
+        );
+        assert!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Messaging))
+                .is_none()
+        );
+        assert!(config.host_restrictions_for_attention(None).is_none());
+        let mut legacy = config.native_attention_host_restrictions[&HeartbeatLane::Reports].clone();
+        legacy.permissions = "legacy".into();
+        config.native_host_restrictions = Some(legacy);
+        assert_eq!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Reports))
+                .unwrap()
+                .permissions,
+            "reports"
+        );
+        for lane in [None, Some(HeartbeatLane::Messaging)] {
+            assert_eq!(
+                config
+                    .host_restrictions_for_attention(lane)
+                    .unwrap()
+                    .permissions,
+                "legacy"
+            );
+        }
+        let mut invalid = serde_json::to_value(&config.native_attention_host_restrictions).unwrap();
+        invalid["invented_lane"] = invalid["reports"].clone();
+        assert!(
+            serde_json::from_value::<
+                std::collections::BTreeMap<HeartbeatLane, NativeHostRestrictions>,
+            >(invalid)
+            .is_err()
         );
     }
 
