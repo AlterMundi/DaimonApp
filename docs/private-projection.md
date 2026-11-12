@@ -129,10 +129,17 @@ directory, separate from read-only publisher code, receipts and credentials.
 Atomic replacement needs directory write permission; granting only a file is not
 a substitute. A configured profile is not evidence of constrained native use.
 
-For isolated Code Mode, the named profile also needs the selected native package's
-exact `codex-code-mode-host` file readable. This is a public executable dependency,
-not publisher custody or a package-directory grant. Reuse the native package
-owner's resolved path and the existing named-profile writer when changing packages.
-The complete Core/Reports fixture has `--code-mode` coverage, including process
-limits, nested controller calls, fixed action recovery/review and subsequent
-ordinary contact. Its provider is local; receiving/model acceptance stays separate.
+For isolated Code Mode, use the native runtime's sealed package-sibling executable
+bootstrap. An actor read grant to `codex-code-mode-host` cannot override the
+immutable native-home denial; never grant the package directory or native custody
+to work around it. Core42 fixes isolated-session routing; private package placement
+also requires the subsequent sealed Code Mode bootstrap correction.
+
+Qualify the installed layout as well as the model's tool mode. The complete
+Core/Reports fixture supports `--code-mode --private-native`, placing a hardlinked
+bounded package inside its denied `CODEX_HOME` on the existing data filesystem
+selected by `CODEX_TEST_NATIVE_SCRATCH`. It uses no actor engine-file grant and
+cleans up its task-owned links after closing native work. External-package fixture
+acceptance is narrower. Process limits, nested controller calls, fixed-action
+recovery/review and subsequent ordinary contact remain the same journey. The
+provider is local; production constrained model uptake remains separate.

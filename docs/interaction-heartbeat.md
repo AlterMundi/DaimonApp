@@ -815,12 +815,11 @@ Human turns remain unchanged. Every configured profile is validated at startup.
 No lane, account, resource reservation or pause is created by this map.
 
 
-Qualify the selected model's actual tool mode, including Code Mode, with the
-complete native package. Direct-tool success does not prove Code Mode isolation.
-The default local isolated-session adapter requires Core42 or a qualified
-successor. In the named filesystem profile, allow read access to the exact
-packaged `codex-code-mode-host` executable resolved from the selected native
-package; do not expose its directory, native home or credentials. Re-resolve this
-single executable binding through the existing owner configuration writer after
-package adoption. Preserve its package/hash receipt and existing user settings.
+Qualify the selected model's actual tool mode and installed package location with
+the complete native package. Direct-tool or external-package success does not
+prove Code Mode isolation inside the denied native home. Core42 supplies isolated
+local session routing; the subsequent sealed bootstrap pins only the exact native
+package-sibling engine and stdio invocation. It needs no actor file/directory read
+grant and does not expose native custody. Use the private-layout qualification in
+`docs/private-projection.md`; preserve existing configuration and package receipts.
 The private runtime still owns environment, process group, heap and deadline.

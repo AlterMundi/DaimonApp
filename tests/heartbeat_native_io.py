@@ -13,6 +13,8 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import tempfile
+import shutil
 import sys
 import threading
 import time
@@ -62,10 +64,11 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False, code_mode=False):
+def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False, code_mode=False, private_native=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
+    private_home = None
     errors, requests = [], []
     original = batch = None
     pause_entered, pause_release = threading.Event(), threading.Event()
@@ -266,7 +269,20 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
             j.admit('Seed fixture metadata', topic=topic)
             j.wait(lambda: j.has('Initial goal turn delivered.', topic)); j.idle()
         j.stop()
-        native_home = j.root/'actual-core'; native_home.mkdir()
+        if private_native:
+            assert code_mode and native_cli
+            parent=Path(os.environ['CODEX_TEST_NATIVE_SCRATCH']).resolve(strict=True)
+            private_home=tempfile.TemporaryDirectory(prefix='code-mode-private-',dir=parent)
+            native_home=Path(private_home.name)
+            source=Path(native_binary).resolve().parent.parent
+            package=native_home/'package'
+            paths=list(source.rglob('*'))
+            assert len(paths)<=128 and sum(path.stat().st_size for path in paths if path.is_file())<=1024**3
+            assert source.stat().st_dev==native_home.stat().st_dev, 'Select same-data-filesystem fixture scratch'
+            shutil.copytree(source,package,copy_function=os.link,symlinks=True)
+            native_binary=str(package/'bin/codex')
+        else:
+            native_home = j.root/'actual-core'; native_home.mkdir()
         (native_home/'config.toml').write_text(f'''model="mock-model"
 model_provider="mock_provider"
 approval_policy="never"
@@ -292,8 +308,6 @@ supports_websockets=false
         if code_mode:
             config_path=native_home/'config.toml'
             config_path.write_text(config_path.read_text().replace('[features]', '[features]\ncode_mode_only=true'))
-            with config_path.open('a') as stream:
-                stream.write(json.dumps(str(Path(native_binary).resolve().with_name('codex-code-mode-host')))+'="read"\n')
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0)); port = address.getsockname()[1]
         native_log = (j.root/'actual-native.log').open('w+')
@@ -488,9 +502,10 @@ else:
                         'requests':requests,'live_provider_calls':0},indent=2)+'\n')
         if native_log: native_log.close()
         j.close(); provider.shutdown(); provider.server_close()
+        if private_home:private_home.cleanup()
 
 
 if __name__ == '__main__':
     qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:],
         native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:] or '--projection' in sys.argv[3:],
-        projection='--projection' in sys.argv[3:], code_mode='--code-mode' in sys.argv[3:])
+        projection='--projection' in sys.argv[3:], code_mode='--code-mode' in sys.argv[3:], private_native='--private-native' in sys.argv[3:])
