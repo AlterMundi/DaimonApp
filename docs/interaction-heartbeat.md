@@ -452,6 +452,17 @@ routing; it does not qualify real prices/credentials, installed receiver adoptio
 or useful peer work. The test stays ignored by default because the exact Core
 binary and Matrix environment must be selected, not inferred from a live body.
 
+The companion `actual_core_process_owner_dispatches_tool_and_retains_signed_usage`
+case uses the same fixture and a Core package supporting `processLimits`, with
+its `codex-exec-server` sibling. Select it with the same environment and
+`cargo test --locked --bin telecodex actual_core_process_owner_dispatches -- --ignored --nocapture`.
+It requests an actual `exec_command` through Core's registry and handler, verifies
+the private HOME and denied synthetic native credential, then requires the tool
+result in the next provider request. Its two synthetic provider completions must
+produce two signed usage observations, sixteen synthetic settled units and zero
+remaining exposure in the same Matrix cycle. This is an opt-in qualification
+case, not installed receiving evidence or real monetary accounting.
+
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.
 The provisioned consumer must use the existing Matrix `CycleContext`/schema5

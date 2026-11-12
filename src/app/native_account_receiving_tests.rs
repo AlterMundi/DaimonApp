@@ -10,6 +10,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[tokio::test]
 #[ignore = "requires an explicitly selected built Core binary and Matrix test checkout"]
 async fn actual_core_usage_reaches_existing_app_owner_and_signed_journal() {
+    actual_core_owner_journey(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires the owner-enabled Core/standalone executor and Matrix test checkout"]
+async fn actual_core_process_owner_dispatches_tool_and_retains_signed_usage() {
+    actual_core_owner_journey(true).await;
+}
+
+async fn actual_core_owner_journey(process_owner: bool) {
     let core = std::env::var("TELECODEX_TEST_CORE_BIN").expect("select built Core binary");
     let python = std::env::var("TELECODEX_TEST_PYTHON").expect("select Matrix test Python");
     let root = tempfile::tempdir().unwrap();
@@ -17,53 +27,85 @@ async fn actual_core_usage_reaches_existing_app_owner_and_signed_journal() {
     std::fs::create_dir(&home).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let provider_port = listener.local_addr().unwrap().port();
+    let credential = home.join("fake-provider-credential");
+    std::fs::write(&credential, "synthetic-private-provider").unwrap();
+    let script = format!(
+        "import os\nassert 'codex-owned-exec-' in os.environ['HOME']\nassert os.environ['HOME']==os.environ['CODEX_HOME']\ntry:\n open({}).read()\nexcept OSError:\n pass\nelse:\n raise AssertionError('native login readable')\nprint('owned-tool-accepted')\n",
+        json!(credential.to_string_lossy())
+    );
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
+    let tool_arguments = json!({"cmd":format!("/usr/bin/python3 -c 'import base64; exec(base64.b64decode(\"{encoded}\"))'"),"yield_time_ms":1000,"max_output_tokens":500}).to_string();
+    let attempts = if process_owner { 2 } else { 1 };
     let provider = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let mut block = [0; 8192];
-        loop {
-            let n = stream.read(&mut block).await.unwrap();
-            assert!(n > 0);
-            request.extend_from_slice(&block[..n]);
-            assert!(request.len() <= 1024 * 1024);
-            if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
-                assert!(headers.starts_with("post /responses "));
-                let length: usize = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .unwrap();
-                if request.len() >= end + 4 + length {
-                    let body: Value =
-                        serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
-                    assert_eq!(body["max_output_tokens"], 200);
-                    assert!(
-                        body["tools"]
-                            .as_array()
-                            .is_none_or(|tools| tools.is_empty()),
-                        "host tool ceiling must reach actual Core before provider submission"
-                    );
-                    break;
+        for index in 0..attempts {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut block = [0; 8192];
+            loop {
+                let n = stream.read(&mut block).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&block[..n]);
+                assert!(request.len() <= 1024 * 1024);
+                if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                    assert!(headers.starts_with("post /responses "));
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        let body: Value =
+                            serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
+                        assert_eq!(body["max_output_tokens"], 200);
+                        if process_owner {
+                            assert!(
+                                body["tools"].to_string().contains("exec_command"),
+                                "selected tool missing from actual native request"
+                            );
+                            if index == 1 {
+                                assert!(
+                                    body["input"].to_string().contains("owned-tool-accepted"),
+                                    "actual registry/handler did not return the owned tool result: {}",
+                                    body["input"]
+                                );
+                            }
+                        } else {
+                            assert!(
+                                body["tools"]
+                                    .as_array()
+                                    .is_none_or(|tools| tools.is_empty()),
+                                "host ceiling must reach actual Core before provider submission"
+                            );
+                        }
+                        break;
+                    }
                 }
             }
+            let response_id = format!("exact-response-{index}");
+            let item = if process_owner && index == 0 {
+                json!({"type":"function_call","id":"exact-tool-item","call_id":"exact-owned-tool","name":"exec_command","arguments":tool_arguments})
+            } else {
+                json!({"type":"message","role":"assistant","id":"exact-answer","content":[{"type":"output_text","text":"Signed original handled"}]})
+            };
+            let events = [
+                json!({"type":"response.created","response":{"id":response_id}}),
+                json!({"type":"response.output_item.done","item":item}),
+                json!({"type":"response.completed","response":{"id":response_id,"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}),
+            ];
+            let body: String = events
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
         }
-        let events = [
-            json!({"type":"response.created","response":{"id":"exact-response"}}),
-            json!({"type":"response.output_item.done","item":{"type":"message","role":"assistant","id":"exact-answer","content":[{"type":"output_text","text":"Signed original handled"}]}}),
-            json!({"type":"response.completed","response":{"id":"exact-response","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}),
-        ];
-        let body: String = events
-            .iter()
-            .map(|event| format!("data: {event}\n\n"))
-            .collect();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
     });
     std::fs::write(
         home.join("config.toml"),
@@ -97,6 +139,7 @@ stream_max_retries = 0
         .env("CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG", "1")
         .env_remove("OPENAI_API_KEY")
         .env_remove("CODEX_API_KEY")
+        .env_remove("CODEX_ACCESS_TOKEN")
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(root.path().join("core.stderr")).unwrap())
         .kill_on_drop(true)
@@ -159,7 +202,8 @@ while True:
         native_funding_binding: Some("synthetic-test-selection".into()),
         native_host_restrictions: Some(
             serde_json::from_value(json!({
-                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                "processLimits":if process_owner {json!({"memoryBytes":536870912,"cpuPercent":50,"tasks":128})}else{Value::Null},
+                "permissions":":read-only","tools":if process_owner {json!([{"name":"exec_command","namespace":"functions"}])}else{json!([])},"environment":{"PATH":"/usr/bin:/bin"},
                 "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
             }))
             .unwrap(),
@@ -245,11 +289,11 @@ while True:
     owner.child.wait().await.unwrap();
     let receipt: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
     assert_eq!(receipt["cycle"]["state"], "completed");
-    assert_eq!(receipt["observations"].as_array().unwrap().len(), 1);
+    assert_eq!(receipt["observations"].as_array().unwrap().len(), attempts);
     assert_eq!(receipt["observations"][0]["tokenUsage"]["totalTokens"], 3);
-    assert_eq!(receipt["funding"]["spent"], 8);
+    assert_eq!(receipt["funding"]["spent"], 8 * attempts);
     assert_eq!(receipt["funding"]["reserved"], 0);
-    assert_eq!(receipt["funding"]["calls"], 1);
+    assert_eq!(receipt["funding"]["calls"], attempts);
     provider.await.unwrap();
     server.kill().await.unwrap();
     server.wait().await.unwrap();
