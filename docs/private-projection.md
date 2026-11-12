@@ -46,8 +46,10 @@ must be one JSON object<=8KiB, with `source_sha256` identifying those exact byte
 are not returned. The command must not detach work or delegate to another service.
 It has the smaller of its configured1–20seconds and the existing turn's remaining
 allocation. The owned group is cleaned up before reaping its leader; pidfd exit
-observation prevents PID reuse. Cancellation and outer controller timeout also
-close that same group. Inherited per-process caps are at most1GiB address space,
+observation prevents PID reuse. Native/execution cancellation observed by the action
+closes that same group. The fallback controller's outer response timeout can occur
+while its independently bounded action finishes: a missing reply never establishes
+failure or permits replay. Inherited per-process caps are at most1GiB address space,
 20CPU-seconds and256descriptors; these are not aggregate actor cgroup limits.
 The configured trusted helper must itself bound its children and publication
 storage; resource actions do not become unmetered actor tools.

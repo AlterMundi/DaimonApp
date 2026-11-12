@@ -108,6 +108,11 @@ impl Store {
             .context("Missing execution deadline")?;
         anyhow::ensure!(
             execution["phase"] == "owned"
+                && execution["local"] == local
+                && execution["native"] == native
+                && execution["generation"] == r.attention_generation.unwrap()
+                && execution["activation"] == serde_json::to_value(activation)?
+                && execution["owner"].is_null()
                 && execution["physical"] == physical
                 && execution["source"] == return_id
                 && deadline > Utc::now().timestamp_millis(),
