@@ -128,3 +128,11 @@ profiles. Keep mutable intake and cursor files in a selected writable task
 directory, separate from read-only publisher code, receipts and credentials.
 Atomic replacement needs directory write permission; granting only a file is not
 a substitute. A configured profile is not evidence of constrained native use.
+
+For isolated Code Mode, the named profile also needs the selected native package's
+exact `codex-code-mode-host` file readable. This is a public executable dependency,
+not publisher custody or a package-directory grant. Reuse the native package
+owner's resolved path and the existing named-profile writer when changing packages.
+The complete Core/Reports fixture has `--code-mode` coverage, including process
+limits, nested controller calls, fixed action recovery/review and subsequent
+ordinary contact. Its provider is local; receiving/model acceptance stays separate.

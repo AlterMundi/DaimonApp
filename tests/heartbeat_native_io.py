@@ -62,7 +62,7 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False):
+def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False, code_mode=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
@@ -71,6 +71,9 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
     pause_entered, pause_release = threading.Event(), threading.Event()
     busy_entered, busy_release = threading.Event(), threading.Event()
     def call(ident, operation, arguments):
+        if code_mode:
+            return {'type':'response.output_item.done','item':{'type':'custom_tool_call',
+                'call_id':ident,'name':'exec','input':'text(await tools.interaction_controller('+json.dumps({'operation':operation,'arguments':arguments})+'));'}}
         return {'type': 'response.output_item.done', 'item': {'type': 'function_call',
                 'call_id': ident, 'name': 'interaction_controller',
                 'arguments': json.dumps({'operation': operation, 'arguments': arguments})}}
@@ -94,13 +97,22 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                 value = json.loads(self.rfile.read(size))
                 texts = list(strings(value.get('input', [])))
                 outputs = {item.get('call_id'): item.get('output') for item in value.get('input', [])
-                           if item.get('type') == 'function_call_output'}
+                           if item.get('type') in ('function_call_output','custom_tool_call_output')}
                 # Canonical internal tool results may carry a JSON text block.
                 def output(ident):
                     raw = outputs[ident]
                     if isinstance(raw, list):
                         raw = ''.join(v.get('text', '') for v in raw)
-                    return json.loads(raw)
+                    if isinstance(raw,str) and raw.startswith('Script '):
+                        assert raw.startswith('Script completed'), raw[:2000]
+                        raw=raw.split('Output:\n',1)[1].strip()
+                    try:
+                        parsed=json.loads(raw)
+                    except json.JSONDecodeError:
+                        raise AssertionError('Non-JSON selected tool output: '+repr(raw[:2000])) from None
+                    if isinstance(parsed,dict) and 'content' in parsed:
+                        parsed=json.loads(''.join(x.get('text','') for x in parsed['content']))
+                    return parsed
                 controller = next((t for t in reversed(texts) if t.startswith('[Interaction controller]')), None)
                 packet = None
                 for text in reversed(texts):
@@ -142,7 +154,9 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                 elif packet and projection:
                     batch = packet
                     assert 'selects interaction_controller/private_projection' in json.dumps(value), 'Native Reports lost its configured host-route hint'
-                    assert [tool.get('name') for tool in value.get('tools',[])] == ['interaction_controller'], 'Reports lane profile did not constrain the actual native tool list'
+                    def tool_names(tools):
+                        return [name for tool in tools for name in (tool_names(tool['tools']) if tool.get('type')=='namespace' else [tool.get('name')])]
+                    assert set(tool_names(value.get('tools',[]))) == ({'exec','wait'} if code_mode else {'interaction_controller'}), 'Reports lane profile did not constrain the actual native tool list'
                     task = next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
                     if 'projection-task' not in outputs:
                         reader=task['evidence']['reader']
@@ -273,7 +287,13 @@ supports_websockets=false
             config_path=native_home/'config.toml'
             config_path.write_text(config_path.read_text().replace('sandbox_mode="read-only"',
                 'default_permissions="fixture-reports"')+
-                '\n[permissions.fixture-reports.filesystem]\n'+json.dumps(str(j.root))+'="write"\n"/usr"="read"\n')
+                '\n[permissions.fixture-reports.filesystem]\n'+json.dumps(str(j.root))+'="write"\n'+
+                ''.join(json.dumps(path)+'="read"\n' for path in ['/usr','/bin','/lib','/lib64','/etc']))
+        if code_mode:
+            config_path=native_home/'config.toml'
+            config_path.write_text(config_path.read_text().replace('[features]', '[features]\ncode_mode_only=true'))
+            with config_path.open('a') as stream:
+                stream.write(json.dumps(str(Path(native_binary).resolve().with_name('codex-code-mode-host')))+'="read"\n')
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0)); port = address.getsockname()[1]
         native_log = (j.root/'actual-native.log').open('w+')
@@ -282,7 +302,7 @@ supports_websockets=false
             native_command.append('app-server')
         native = subprocess.Popen([*native_command, '--listen', f'ws://127.0.0.1:{port}'],
             cwd=j.root, env={'PATH': os.environ['PATH'], 'HOME': str(j.root),
-                'CODEX_HOME': str(native_home), 'RUST_LOG': 'warn'}, stdout=native_log, stderr=native_log)
+                'CODEX_HOME': str(native_home), 'RUST_LOG': 'warn,codex_core::code_mode_host=debug' if code_mode else 'warn'}, stdout=native_log, stderr=native_log)
         deadline = time.monotonic()+10
         while True:
             assert native.poll() is None, 'Actual native exited during startup'
@@ -334,6 +354,10 @@ supports_websockets=false
                 'native_attention_host_restrictions={reports={permissions="fixture-reports",'
                 'tools=[{name="interaction_controller"}],environment={},'
                 'codeModeLimits={maxHeapSizeBytes=33554432,maxYieldTimeMs=1000}}}}\n')
+            if code_mode:
+                options=options.replace('tools=[{name="interaction_controller"}]',
+                    'tools=[{name="exec"},{name="wait"},{name="interaction_controller"}]')
+                options=options.replace('environment={}', 'environment={PATH="/usr/bin:/bin"},processLimits={memoryBytes=1073741824,cpuPercent=100,tasks=128}')
             j.config.write_text(j.config.read_text().replace('[interaction]', '[interaction]\n'+options))
             snapshot=j.root/'projection-source.json';snapshot.write_text('{"selected":"original"}')
             reconciliation=j.root/'projection-cursor.json'
@@ -457,7 +481,11 @@ else:
             print('Heartbeat metadata:', j.row("SELECT key,json_extract(value,'$.phase'),json_extract(value,'$.terminal_status'),json_extract(value,'$.checks'),json_extract(value,'$.native_returns[0].reported_revision'),json_extract(value,'$.stopped_reason') FROM bot_state WHERE key LIKE 'heartbeat_%'"), file=sys.stderr)
             if native_log:
                 native_log.flush(); native_log.seek(0)
-                print('Actual native tail:', native_log.read()[-6000:], file=sys.stderr)
+                diagnostic=native_log.read()[-16000:]
+                print('Actual native tail:', diagnostic[-6000:], file=sys.stderr)
+                if failure_log:=os.environ.get('CODEX_TEST_FAILURE_LOG'):
+                    Path(failure_log).write_text(json.dumps({'fixture_errors':errors,'actual_native_tail':diagnostic,
+                        'requests':requests,'live_provider_calls':0},indent=2)+'\n')
         if native_log: native_log.close()
         j.close(); provider.shutdown(); provider.server_close()
 
@@ -465,4 +493,4 @@ else:
 if __name__ == '__main__':
     qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:],
         native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:] or '--projection' in sys.argv[3:],
-        projection='--projection' in sys.argv[3:])
+        projection='--projection' in sys.argv[3:], code_mode='--code-mode' in sys.argv[3:])
