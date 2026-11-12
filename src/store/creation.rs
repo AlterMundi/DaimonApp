@@ -561,7 +561,19 @@ pub(super) fn workflow_continuation_on(
             && operation["intent"]["entry_native"].as_str() == Some(native),
         "Creation continuation needs its confirmed current entry"
     );
-    eligible(conn, &operation)?;
+    // A continuation owns this original already. Reapplying the initial
+    // workflow-exclusion guard would reject every second distinct subtask.
+    // Keep competing Matrix/goal selections and original authority fenced.
+    let (original, _) =
+        super::dialogue::original_owned_on(conn, entry, human, native, reference, "", true)?;
+    super::matrix::non_workflow_unclaimed_on(
+        conn,
+        human,
+        &original.channel,
+        &original.event_id,
+        original.update_id,
+    )?;
+    eligible_original(conn, &operation, original)?;
     let accepted = operation["instructions"].as_array().is_some_and(|rows| {
         rows.iter()
             .any(|row| row["id"] == primary && row["phase"] == "accepted")
@@ -590,6 +602,11 @@ fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
         "",
         true,
     )?;
+    eligible_original(conn, operation, original)
+}
+
+fn eligible_original(conn: &Connection, operation: &Value, original: SourceInput) -> Result<()> {
+    let d = &operation["intent"];
     if let Some(prior) = d.get("prior_dispatch") {
         let raw: String = conn.query_row(
             "SELECT doc FROM interaction_sources WHERE id=?1 AND human_id=?2",
