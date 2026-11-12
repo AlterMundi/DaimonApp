@@ -6095,7 +6095,7 @@ mod tests {
                 r.envelope["revision"].as_str().unwrap().to_owned(),
                 task["revision"].as_str().unwrap().to_owned(),
             );
-            let execution = json!({"phase":"owned","physical":"physical","source":r.id,"inference_allowance":{"deadline_unix_ms":Utc::now().timestamp_millis()+600000}});
+            let execution = json!({"local":local,"native":"native-1","generation":r.attention_generation,"activation":r.attention_activation,"phase":"owned","physical":"physical","source":r.id,"inference_allowance":{"deadline_unix_ms":Utc::now().timestamp_millis()+600000}});
             conn.execute(
                 "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
                 params![
@@ -6125,6 +6125,52 @@ mod tests {
         assert!(claim(&s, 101, "physical", &task_revision, &hash).is_err());
         assert!(claim(&s, 100, "wrong-turn", &task_revision, &hash).is_err());
         assert!(claim(&s, 100, "physical", "wrong-task-revision", &hash).is_err());
+        for (field, wrong) in [
+            ("local", json!(local + 1)),
+            ("native", json!("another-native")),
+            ("generation", json!(0)),
+            ("activation", json!({"lane":"messaging","generation":0})),
+        ] {
+            for remove in [true, false] {
+                let storage = format!("heartbeat_execution:{local}");
+                let original: String = s
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT value FROM bot_state WHERE key=?1",
+                        [&storage],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let mut changed_record: Value = serde_json::from_str(&original).unwrap();
+                if remove {
+                    changed_record.as_object_mut().unwrap().remove(field);
+                } else {
+                    changed_record[field] = wrong.clone();
+                }
+                s.conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE bot_state SET value=?2 WHERE key=?1",
+                        params![storage, changed_record.to_string()],
+                    )
+                    .unwrap();
+                assert!(
+                    claim(&s, 100, "physical", &task_revision, &hash).is_err(),
+                    "Wrong/missing execution field {field} must not admit a projection"
+                );
+                s.conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE bot_state SET value=?2 WHERE key=?1",
+                        params![storage, original],
+                    )
+                    .unwrap();
+            }
+        }
         let first = claim(&s, 100, "physical", &task_revision, &hash).unwrap();
         assert_eq!(first["claimed"], true);
         drop(s);
