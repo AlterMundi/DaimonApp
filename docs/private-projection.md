@@ -98,4 +98,7 @@ that pinned input, never a later reread. Existing same-version checks, private
 Home writer, unchanged-content suppression and protected byte verification remain.
 This is not proof of human browser acceptance, a first automatic publication or
 the full Matrix objective. Tests: `python3 -B tests/bitacora_refresh.py` and the
-Rust `private_projection` cases. No real publisher or model is used by those tests.
+Rust `private_projection` cases. `python3 -B tests/heartbeat_review_io.py BINARY
+--projection` exercises the existing Reports controller path, including retained
+unknown input, read-only settlement and duplicate suppression, with a synthetic
+native peer and fixed test helper. No real publisher or model is used by those tests.

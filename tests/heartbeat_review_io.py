@@ -135,16 +135,17 @@ else:
             action=dict(action='run',return_id=packet['return_id'],batch_revision=packet['evidence']['revision'],
                 task_revision=task_offer['revision'],snapshot_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest(),
                 reconciliation_sha256=hashlib.sha256(reconciliation.read_bytes()).hexdigest())
-            result=j.call('projection-run','private_projection',action)
+            result=j.call('route-projection-run','private_projection',action)
             assert result['outcome']['phase']=='unconfirmed', result
-            status=j.call('projection-held','private_projection',dict(action='status'))
+            status=j.call('route-projection-held','private_projection',dict(action='status'))
             assert status['input_retained'] is True and 'original' not in json.dumps(status), status
             snapshot.write_text('{"selected":"later mutable input"}')
-            observed=j.call('projection-inspect','private_projection',dict(action='inspect',invocation=result['invocation']))
+            observed=j.call('route-projection-inspect','private_projection',dict(action='inspect',invocation=result['invocation']))
             assert observed['current']['phase']=='observed' and not observed['input_retained'], observed
             assert observed['current']['outcome']['verification_only'] is True, observed
             assert observed['current']['outcome']['original_invocation_execution']=='not_established', observed
-            again=j.call('projection-repeat','private_projection',action)
+            action['snapshot_sha256']=hashlib.sha256(snapshot.read_bytes()).hexdigest()
+            again=j.call('route-projection-repeat','private_projection',action)
             assert again.get('claimed') is False, again
             assert helper.with_suffix('.runs').read_text()=='one'
         j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
@@ -201,7 +202,7 @@ else:
 
 if __name__ == '__main__':
     if '--projection' in sys.argv[2:]:
-        qualify(sys.argv[1],False,True,True)
+        qualify(sys.argv[1],True,True,True)
     elif '--periodic' in sys.argv[2:]:
         qualify(sys.argv[1],True,True)
     elif '--production' in sys.argv[2:]:
