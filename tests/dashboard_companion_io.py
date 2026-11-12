@@ -199,6 +199,8 @@ class Companion(unittest.TestCase):
         receiver['interaction']['matrix_transport']['native_host_restrictions']=policy
         self.assertEqual(receiving_authority(receiver),before)
         self.assertEqual(receiver['interaction']['matrix_transport']['native_host_restrictions'],policy)
+        receiver['interaction']['matrix_transport']['native_attention_host_restrictions']={'reports':policy}
+        self.assertEqual(receiving_authority(receiver),before)
         policy['processLimits']['cpuPercent']=50
         self.assertEqual(receiving_authority(receiver),before)
         # Every existing actor/data/route/account dependency remains fenced.

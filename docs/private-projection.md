@@ -119,3 +119,12 @@ companion scopes. It does not grant the dashboard a private-projection endpoint.
 The native action still checks its exact owner, active Reports task/return,
 allocation and full descriptor. Never clear delivery state or weaken unrelated
 receiving fields to adopt it.
+
+
+A private Reports actor can select its tool/path ceiling through
+`matrix_transport.native_attention_host_restrictions.reports`. This root-only
+selection leaves Messaging and delegated work on their existing global/default
+profiles. Keep mutable intake and cursor files in a selected writable task
+directory, separate from read-only publisher code, receipts and credentials.
+Atomic replacement needs directory write permission; granting only a file is not
+a substitute. A configured profile is not evidence of constrained native use.

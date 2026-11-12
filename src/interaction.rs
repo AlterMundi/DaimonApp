@@ -134,6 +134,22 @@ pub struct MatrixTransportConfig {
     pub native_funding_binding: Option<std::path::PathBuf>,
     /// Additional native ceilings, selected only by this private host config.
     pub native_host_restrictions: Option<NativeHostRestrictions>,
+    /// Root attention only; delegated work keeps the global/default selection.
+    #[serde(default)]
+    pub native_attention_host_restrictions:
+        std::collections::BTreeMap<crate::store::HeartbeatLane, NativeHostRestrictions>,
+}
+
+impl MatrixTransportConfig {
+    pub(crate) fn host_restrictions_for_attention(
+        &self,
+        root_lane: Option<crate::store::HeartbeatLane>,
+    ) -> Option<NativeHostRestrictions> {
+        root_lane
+            .and_then(|lane| self.native_attention_host_restrictions.get(&lane))
+            .or(self.native_host_restrictions.as_ref())
+            .cloned()
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -334,6 +350,9 @@ impl InteractionConfig {
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
+                restrictions.validate()?;
+            }
+            for restrictions in transport.native_attention_host_restrictions.values() {
                 restrictions.validate()?;
             }
             transport.source.validate()?;
@@ -789,6 +808,7 @@ mod tests {
             },
             timeout_seconds: 1,
             native_funding_binding: None,
+            native_attention_host_restrictions: Default::default(),
             native_host_restrictions: None,
         });
         incoming.validate().unwrap();
@@ -901,6 +921,60 @@ matrix_transport = { command = ["/bin/true"], source = { kind = "body", being_re
         assert!(
             config.validate().is_err(),
             "Physical validation remains required without funding"
+        );
+    }
+
+    #[test]
+    fn root_attention_profile_is_lane_scoped_and_legacy_fallback_is_preserved() {
+        use crate::store::HeartbeatLane;
+        let mut config: MatrixTransportConfig = serde_json::from_value(json!({
+            "command":["/bin/true"], "source":{"kind":"body",
+            "being_ref":format!("dm:being:v1:{}", "A".repeat(43)),
+            "embodiment_id":"embodiment:synthetic"}, "timeout_seconds":1,
+            "native_attention_host_restrictions":{"reports":{
+                "permissions":"reports", "tools":[], "environment":{},
+                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}}}
+        }))
+        .unwrap();
+        assert_eq!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Reports))
+                .unwrap()
+                .permissions,
+            "reports"
+        );
+        assert!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Messaging))
+                .is_none()
+        );
+        assert!(config.host_restrictions_for_attention(None).is_none());
+        let mut legacy = config.native_attention_host_restrictions[&HeartbeatLane::Reports].clone();
+        legacy.permissions = "legacy".into();
+        config.native_host_restrictions = Some(legacy);
+        assert_eq!(
+            config
+                .host_restrictions_for_attention(Some(HeartbeatLane::Reports))
+                .unwrap()
+                .permissions,
+            "reports"
+        );
+        for lane in [None, Some(HeartbeatLane::Messaging)] {
+            assert_eq!(
+                config
+                    .host_restrictions_for_attention(lane)
+                    .unwrap()
+                    .permissions,
+                "legacy"
+            );
+        }
+        let mut invalid = serde_json::to_value(&config.native_attention_host_restrictions).unwrap();
+        invalid["invented_lane"] = invalid["reports"].clone();
+        assert!(
+            serde_json::from_value::<
+                std::collections::BTreeMap<HeartbeatLane, NativeHostRestrictions>,
+            >(invalid)
+            .is_err()
         );
     }
 

@@ -44,7 +44,7 @@ def receiving_authority(receiver):
         # Resource/tool ceilings constrain native work, not dashboard identity.
         # Keep all actor, route, credential and funding selectors in the binding.
         transport = {key: value for key, value in interaction['matrix_transport'].items()
-                     if key != 'native_host_restrictions'}
+                     if key not in ('native_host_restrictions', 'native_attention_host_restrictions')}
         interaction = {**interaction, 'matrix_transport': transport}
     return json.dumps({
         'db_path': receiver.get('db_path'),

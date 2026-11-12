@@ -754,8 +754,8 @@ Optional `matrix_transport.native_host_restrictions` uses the existing native
 explicit `environment`, and `codeModeLimits` (`maxHeapSizeBytes`,
 `maxYieldTimeMs`). All four fields are required when selected. Names, environment
 bytes and positive limits retain the native bounds; environment values are
-redacted from Debug output. This selection requires the existing configured
-financial execution owner, rather than silently doing nothing on another path.
+redacted from Debug output. The same selection applies to attempt-only and configured financial execution
+owners; it does not select or refill either account.
 
 Optional `processLimits` adds `memoryBytes`, `cpuPercent` and `tasks` to that
 same captured selection. All are positive, within the existing Linux own-work
@@ -800,3 +800,16 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+
+#### Purpose-specific root attention profiles
+
+`matrix_transport.native_attention_host_restrictions` optionally maps existing
+lane names (for example `reports`) to the same complete host-restriction shape.
+The host selects the lane from the freshly validated retained root execution at
+native submission, never from model-supplied input. A matching entry overrides
+`native_host_restrictions`; absent entries retain that existing global fallback.
+Delegated workers retain the global/default selection rather than inheriting a
+root-purpose profile that might deny their legitimate task workspace or tools.
+Human turns remain unchanged. Every configured profile is validated at startup.
+No lane, account, resource reservation or pause is created by this map.

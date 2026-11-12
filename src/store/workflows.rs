@@ -5842,6 +5842,14 @@ mod tests {
             s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
                 .unwrap()
         );
+        assert!(
+            s.heartbeat_submission_policy(local, 100, i.target)
+                .unwrap()
+                .unwrap()
+                .1
+                .is_none(),
+            "Delegates must not inherit root-purpose tool/path policy"
+        );
         let allocation = s
             .heartbeat_inference_allowance(local, 100, i.target)
             .unwrap()

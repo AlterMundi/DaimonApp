@@ -142,6 +142,7 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                 elif packet and projection:
                     batch = packet
                     assert 'selects interaction_controller/private_projection' in json.dumps(value), 'Native Reports lost its configured host-route hint'
+                    assert [tool.get('name') for tool in value.get('tools',[])] == ['interaction_controller'], 'Reports lane profile did not constrain the actual native tool list'
                     task = next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
                     if 'projection-task' not in outputs:
                         reader=task['evidence']['reader']
@@ -268,6 +269,11 @@ stream_max_retries=0
 requires_openai_auth=false
 supports_websockets=false
 ''')
+        if projection:
+            config_path=native_home/'config.toml'
+            config_path.write_text(config_path.read_text().replace('sandbox_mode="read-only"',
+                'default_permissions="fixture-reports"')+
+                '\n[permissions.fixture-reports.filesystem]\n'+json.dumps(str(j.root))+'="write"\n"/usr"="read"\n')
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0)); port = address.getsockname()[1]
         native_log = (j.root/'actual-native.log').open('w+')
@@ -320,6 +326,15 @@ supports_websockets=false
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false')
             .replace('default_model="fixture-model"', 'default_model="mock-model"') + j.target_config)
         if projection:
+            # Qualify the root-only Reports selector through actual native API.
+            # Other lanes/delegates must retain the original default profile.
+            options=('matrix_inbox_channel="tribe"\n'
+                'matrix_transport={command=["/bin/true"],source={kind="body",being_ref="dm:being:v1:'+
+                'A'*43+'",embodiment_id="embodiment:synthetic"},timeout_seconds=1,'
+                'native_attention_host_restrictions={reports={permissions="fixture-reports",'
+                'tools=[{name="interaction_controller"}],environment={},'
+                'codeModeLimits={maxHeapSizeBytes=33554432,maxYieldTimeMs=1000}}}}\n')
+            j.config.write_text(j.config.read_text().replace('[interaction]', '[interaction]\n'+options))
             snapshot=j.root/'projection-source.json';snapshot.write_text('{"selected":"original"}')
             reconciliation=j.root/'projection-cursor.json'
             helper=j.root/'projection-helper.py'
@@ -370,7 +385,12 @@ else:
             j.read('heartbeat','resume-lane','reports',str(selected['lanes']['reports']['generation']))
         j.read('heartbeat', 'resume', str(paused['generation']))
         if projection:
-            j.wait(lambda:any(r['stage']=='heartbeat-final' for r in requests),seconds=90)
+            def report_finished():
+                return any(r['stage']=='heartbeat-final' for r in requests) or any(
+                    json.loads(raw).get('terminal_status')=='failed' for (raw,) in
+                    j.row("SELECT value FROM bot_state WHERE key LIKE 'heartbeat_execution:%'"))
+            j.wait(report_finished,seconds=90)
+            assert any(r['stage']=='heartbeat-final' for r in requests), 'Reports execution failed before useful completion'
             j.idle();j.read('heartbeat','pause')
             assert not errors,errors
             assert helper.with_suffix('.runs').read_text()=='one'

@@ -1096,7 +1096,11 @@ pub(super) async fn process_turn(
                                     bail!("Native writer held during controlled maintenance; input retained without submission");
                                 }
                                 if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
-                                let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
+                                let policy=shared.store.heartbeat_submission_policy(turn_id,requester_user_id,session_key)?;
+                                let host_restrictions=shared.config.interaction.as_ref()
+                                    .and_then(|profile|profile.matrix_transport.as_ref())
+                                    .and_then(|transport|transport.host_restrictions_for_attention(policy.as_ref().and_then(|(_,lane)|*lane)));
+                                let allowance=policy.map(|(allowance,_)|allowance);
                                 #[cfg(unix)]
                                 if allowance.is_some() && let Some((config,source))=super::native_account::configured(&shared)? {
                                     let native=shared.store.controller_native_turn(turn_id,session_key,requester_user_id)?;
@@ -1108,7 +1112,9 @@ pub(super) async fn process_turn(
                                     let mut configured_start=start.clone();
                                     configured_start["model"]=serde_json::json!(profile.1);
                                     configured_start["provider"]=serde_json::json!(profile.2);
-                                    let owner=super::native_account::Session::start(config,&configured_start).await?;
+                                    let mut selected_config=config.clone();
+                                    selected_config.native_host_restrictions=host_restrictions.clone();
+                                    let owner=super::native_account::Session::start(&selected_config,&configured_start).await?;
                                     let descriptor=owner.descriptor.clone();
                                     let host_restrictions=owner.host_restrictions.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
@@ -1117,9 +1123,7 @@ pub(super) async fn process_turn(
                                     }
                                 }
                                 Ok(match allowance {
-                                    Some(allowance)=>match shared.config.interaction.as_ref()
-                                        .and_then(|profile|profile.matrix_transport.as_ref())
-                                        .and_then(|transport|transport.native_host_restrictions.clone()) {
+                                    Some(allowance)=>match host_restrictions {
                                         Some(host_restrictions)=>CodexEventOutcome::RestrictedInferenceAllowance {allowance,host_restrictions},
                                         None=>CodexEventOutcome::InferenceAllowance(allowance),
                                     },
