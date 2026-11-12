@@ -186,6 +186,13 @@ class Companion(unittest.TestCase):
                 'native_funding_binding':{'account_id':'owned-account'}}}}
         original=copy.deepcopy(receiver)
         before=receiving_authority(receiver)
+        projection={'task_id':'selected-intake','command':['/owned/helper','--snapshot-stdin'],
+            'snapshot':'/owned/intake.json','reconciliation':'/owned/cursor.json'}
+        receiver['interaction']['private_projection']=projection
+        self.assertEqual(receiving_authority(receiver),before)
+        self.assertEqual(receiver['interaction']['private_projection'],projection)
+        projection['command']=['/owned/qualified-successor']
+        self.assertEqual(receiving_authority(receiver),before)
         policy={'permissions':'bounded-work','tools':[{'name':'exec_command'}],
             'environment':{'PATH':'/usr/bin:/bin'},
             'processLimits':{'memoryBytes':1073741824,'cpuPercent':100,'tasks':128}}
@@ -199,7 +206,8 @@ class Companion(unittest.TestCase):
                 ('telegram','bot_token_file','foreign-token'),('receiver','db_path','foreign.sqlite'),
                 ('transport','command',['foreign-writer']),
                 ('transport','source',{'kind':'body','being_ref':'foreign-being'}),
-                ('transport','native_funding_binding',{'account_id':'foreign-account'})]:
+                ('transport','native_funding_binding',{'account_id':'foreign-account'}),
+                ('interaction','human_id',101),('interaction','unknown_new_authority','changed')]:
             changed=copy.deepcopy(receiver)
             target=(changed if section=='receiver' else changed['interaction']['matrix_transport']
                     if section=='transport' else changed[section])

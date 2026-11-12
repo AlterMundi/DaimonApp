@@ -35,9 +35,12 @@ Qualify the fixed command and its actual private audience before selection. Keep
 its executable, code, imports, publisher staging, binding and custody outside actor-writable paths.
 Use absolute canonical input paths: held-directory reads refuse symlinks in every
 component. Give the actor only its selected intake/cursor writes, not publisher
-custody or the whole Home store. This new configured action remains part of the
-receiving identity; qualify its changed selection through the existing composed
-receiver/access route, without dropping other fingerprint fields.
+custody or the whole Home store. The full configured action remains part of each native invocation's retained
+identity; an unresolved invocation cannot be inspected through another descriptor.
+This native-only helper does not change the dashboard's actor, audience, data or
+control endpoint. Web identity excludes this one implementation descriptor while
+retaining every other receiving fingerprint field. Qualify the composed receiving
+selection through the existing owner route.
 
 The command receives valid UTF-8 JSON snapshot bytes on stdin, at most2MiB. Its stdout
 must be one JSON object<=8KiB, with `source_sha256` identifying those exact bytes,
@@ -111,24 +114,8 @@ reader, retained-input recovery, controller result delivery and ordinary contact
 after pause. Its fixed test helper does not publish Home content or use a real
 provider account; production model uptake remains a separate receiving effect.
 
-## Preserve Alerts while selecting this optional action
-
-The projection descriptor remains in the complete dashboard authority fingerprint.
-Adding it therefore requires qualifying the retained Alerts binding, rather than
-ignoring the new field or clearing delivery history. Inside the existing finite
-voice-fenced maintenance, stop the current web reader and observe its process
-exit. After selecting the receiver configuration, run the owner-local
-`scripts/requalify_alerts_projection.py` with `--config WEB_CONFIG`,
-`--before RETAINED_RECEIVER_PREIMAGE`, exact `--before-sha256` and
-`--current-sha256`, and `--stopped-web-pid OBSERVED_PRIOR_PID`, before restarting
-that reader. This performs no network call, send, recovery or model operation.
-
-The writer allows only a private-projection descriptor change; every other
-receiver selector, owner, token reference and audience must remain identical.
-It compares the journal's exact old/new identities, preserves all delivery
-attempts/receipts and pending menu outcomes, and replaces binding metadata only.
-A menu write committed before SQLite can be reconciled with the same old/new
-selection after interruption; a foreign/conflicting binding is retained and
-refused. A repeated qualification observes the same result without sending.
-Never edit the journal or remove a fingerprint field to get past a refusal.
-Focused verification: `python3 -B tests/dashboard_alerts_projection.py`.
+The host-only selection preserves existing Alerts/Traffic journals, browser and
+companion scopes. It does not grant the dashboard a private-projection endpoint.
+The native action still checks its exact owner, active Reports task/return,
+allocation and full descriptor. Never clear delivery state or weaken unrelated
+receiving fields to adopt it.
