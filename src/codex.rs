@@ -397,6 +397,7 @@ pub enum CodexEventOutcome {
         allowance: NativeInferenceAllowance,
         cycle_id: String,
         max_output_tokens: u32,
+        host_restrictions: Option<crate::interaction::NativeHostRestrictions>,
     },
     /// Only a trusted host callback may supply this result. No UI/model route.
     ProviderAttemptReserved(bool),
@@ -1887,18 +1888,19 @@ where
             json!({"kind":"application","value":awareness});
     }
     let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
-    let (inference_allowance, provider_cycle, provider_output_limit) = match admission {
+    let (inference_allowance, provider_cycle, provider_output_limit, host_restrictions) = match admission {
         CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
             allowance.validate()?;
-            (Some(allowance), None, None)
+            (Some(allowance), None, None, None)
         }
-        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens } if idle_only => {
+        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens, host_restrictions } if idle_only => {
             allowance.validate()?;
             anyhow::ensure!(Uuid::parse_str(&cycle_id).is_ok_and(|id|id.to_string()==cycle_id), "Canonical funding cycle UUID required");
             anyhow::ensure!(max_output_tokens > 0, "Positive signed owner output ceiling required");
-            (Some(allowance), Some(cycle_id), Some(max_output_tokens))
+            if let Some(restrictions)=&host_restrictions {restrictions.validate()?;}
+            (Some(allowance), Some(cycle_id), Some(max_output_tokens), host_restrictions)
         }
-        CodexEventOutcome::None if !idle_only => (None, None, None),
+        CodexEventOutcome::None if !idle_only => (None, None, None, None),
         _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
     };
     // Capture once: no incoming RPC may renew the original reservation horizon.
@@ -1965,6 +1967,9 @@ where
             // Mandatory method: old servers must reject before inference. No fallback.
             allowance.validate()?;
             let mut bounded_params = json!({"turn":params,"allowance":allowance});
+            if let Some(restrictions)=host_restrictions.as_ref() {
+                bounded_params["hostRestrictions"]=serde_json::to_value(restrictions)?;
+            }
             if let Some(cycle) = provider_cycle.as_ref() {
                 bounded_params["providerReservationCycleId"] = json!(cycle);
                 bounded_params["providerUsageObservations"] = json!(true);
@@ -5182,6 +5187,7 @@ mod tests {
                             CodexEventOutcome::FundedInferenceAllowance {
                                 cycle_id: "caa11c1d-b05b-4f56-99ab-167878e86126".into(),
                                 max_output_tokens: 200,
+                                host_restrictions: None,
                                 allowance: NativeInferenceAllowance {
                                     max_provider_attempts: 2,
                                     max_request_bytes: 1024,
@@ -5247,6 +5253,17 @@ mod tests {
                             request["params"]["turn"]["toolOutput"]["name"],
                             "heartbeat_attention"
                         );
+                        if mode == "allow" {
+                            assert_eq!(
+                                request["params"]["hostRestrictions"],
+                                json!({
+                                    "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                    "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                })
+                            );
+                        } else {
+                            assert!(request["params"].get("hostRestrictions").is_none());
+                        }
                         let mut params = json!({"threadId":"funded-native","cycleId":CYCLE,"attemptId":ATTEMPT,
                             "ordinal":1,"maxRequestBytes":1024,"deadlineUnixMs":request["params"]["allowance"]["deadlineUnixMs"]});
                         if mode == "changed-ceiling" {
@@ -5446,6 +5463,10 @@ mod tests {
                                         allowance,
                                         cycle_id: CYCLE.into(),
                                         max_output_tokens: 200,
+                                        host_restrictions: if mode=="allow" {Some(serde_json::from_value(json!({
+                                            "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                        })).unwrap())}else{None},
                                     }
                                 })
                             }

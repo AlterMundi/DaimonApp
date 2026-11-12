@@ -87,6 +87,71 @@ pub struct MatrixTransportConfig {
     pub timeout_seconds: u64,
     /// Private operator-selected accounting binding; absent keeps ordinary fuel.
     pub native_funding_binding: Option<std::path::PathBuf>,
+    /// Additional native ceilings, selected only by this private host config.
+    pub native_host_restrictions: Option<NativeHostRestrictions>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeHostRestrictions {
+    pub permissions: String,
+    pub tools: Vec<NativeHostTool>,
+    pub environment: std::collections::HashMap<String, String>,
+    pub code_mode_limits: NativeCodeModeLimits,
+}
+
+impl std::fmt::Debug for NativeHostRestrictions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeHostRestrictions")
+            .field("tools", &self.tools.len())
+            .field("environment_values", &self.environment.len())
+            .field("code_mode_limits", &self.code_mode_limits)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeHostTool {
+    pub name: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeCodeModeLimits {
+    pub max_heap_size_bytes: u64,
+    pub max_yield_time_ms: u64,
+}
+
+impl NativeHostRestrictions {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let name = |value: &str| {
+            !value.is_empty() && value.len() <= 200 && !value.chars().any(char::is_control)
+        };
+        anyhow::ensure!(
+            name(&self.permissions)
+                && self.tools.len() <= 256
+                && self.tools.iter().all(|tool| name(&tool.name)
+                    && tool
+                        .namespace
+                        .as_ref()
+                        .is_none_or(|ns| ns.len() <= 200 && !ns.chars().any(char::is_control)))
+                && self.environment.len() <= 256
+                && self.environment.iter().all(|(key, value)| !key.is_empty()
+                    && !key.contains(['\0', '='])
+                    && !value.contains('\0'))
+                && self.environment.iter().fold(0usize, |n, (k, v)| n
+                    .saturating_add(k.len())
+                    .saturating_add(v.len()))
+                    <= 64 * 1024
+                && self.code_mode_limits.max_heap_size_bytes > 0
+                && usize::try_from(self.code_mode_limits.max_heap_size_bytes).is_ok()
+                && self.code_mode_limits.max_yield_time_ms > 0,
+            "Invalid bounded native host restrictions"
+        );
+        Ok(())
+    }
 }
 
 /// Explicit receiving configuration; labels never establish social authority.
@@ -202,6 +267,13 @@ impl InteractionConfig {
             publication.validate()?;
         }
         if let Some(transport) = &self.matrix_transport {
+            if let Some(restrictions) = &transport.native_host_restrictions {
+                anyhow::ensure!(
+                    transport.native_funding_binding.is_some(),
+                    "Native host restrictions require their configured execution owner"
+                );
+                restrictions.validate()?;
+            }
             transport.source.validate()?;
             if !matches!(transport.source, MatrixDestination::Body { .. })
                 || (self.matrix_targets.is_empty() && self.matrix_inbox_channel.is_none())
@@ -654,6 +726,7 @@ mod tests {
             },
             timeout_seconds: 1,
             native_funding_binding: None,
+            native_host_restrictions: None,
         });
         incoming.validate().unwrap();
         incoming.matrix_inbox_channel = None;
@@ -723,5 +796,41 @@ impl Delivery {
         } else {
             &self.request_ids
         }
+    }
+}
+
+#[cfg(test)]
+mod native_host_restrictions_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn private_host_selection_is_closed_bounded_and_debug_redacted() {
+        let selected = json!({"permissions":":read-only","tools":[],
+            "environment":{"PRIVATE_FIXTURE":"value-must-not-appear-in-debug"},
+            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}});
+        let profile: NativeHostRestrictions = serde_json::from_value(selected.clone()).unwrap();
+        profile.validate().unwrap();
+        assert_eq!(serde_json::to_value(&profile).unwrap(), selected);
+        assert!(!format!("{profile:?}").contains("value-must-not-appear-in-debug"));
+        for (field, value) in [("maxHeapSizeBytes", 0), ("maxYieldTimeMs", 0)] {
+            let mut invalid = selected.clone();
+            invalid["codeModeLimits"][field] = value.into();
+            assert!(
+                serde_json::from_value::<NativeHostRestrictions>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut large = profile.clone();
+        large.environment.insert("large".into(), "x".repeat(65536));
+        assert!(large.validate().is_err());
+        let mut invalid = profile.clone();
+        invalid.environment.insert("bad=key".into(), "value".into());
+        assert!(invalid.validate().is_err());
+        let mut unknown = selected;
+        unknown["inherit"] = "all".into();
+        assert!(serde_json::from_value::<NativeHostRestrictions>(unknown).is_err());
     }
 }

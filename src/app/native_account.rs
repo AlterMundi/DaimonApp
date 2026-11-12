@@ -52,6 +52,7 @@ pub(super) struct Session {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     pub descriptor: Descriptor,
+    pub host_restrictions: Option<crate::interaction::NativeHostRestrictions>,
     deadline: Instant,
     io_timeout: Duration,
     closed: bool,
@@ -97,6 +98,9 @@ impl Session {
         config: &crate::interaction::MatrixTransportConfig,
         start: &Value,
     ) -> Result<Self> {
+        if let Some(restrictions) = &config.native_host_restrictions {
+            restrictions.validate()?;
+        }
         use std::os::unix::process::CommandExt;
         use std::process::Stdio;
         let funding = config
@@ -176,6 +180,7 @@ impl Session {
             stdin,
             stdout,
             descriptor: ready,
+            host_restrictions: config.native_host_restrictions.clone(),
             deadline,
             io_timeout,
             closed: false,
@@ -400,6 +405,7 @@ for line in sys.stdin:
             },
             timeout_seconds: 1,
             native_funding_binding: Some("/private/selected-funding.json".into()),
+            native_host_restrictions: None,
         };
         let start = json!({"thread_id":"observed-native","parent_allowance":{
             "maxProviderAttempts":2,"maxRequestBytes":512,"deadlineUnixMs":Utc::now().timestamp_millis()+5000}});
@@ -523,6 +529,37 @@ for line in sys.stdin:
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "reserve\n");
         }
     }
+    #[tokio::test]
+    async fn owner_session_captures_private_host_selection_without_accepting_pipe_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("writes");
+        let (mut config, start) = fixture("allow", &path);
+        config.native_host_restrictions = Some(
+            serde_json::from_value(json!({
+                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+            }))
+            .unwrap(),
+        );
+        let owner = Session::start(&config, &start).await.unwrap();
+        config
+            .native_host_restrictions
+            .as_mut()
+            .unwrap()
+            .permissions = "later-profile".into();
+        assert_eq!(
+            owner.host_restrictions.as_ref().unwrap().permissions,
+            ":read-only"
+        );
+        let spoof = json!({"ready":{"threadId":"observed-native","providerReservationCycleId":"58963816-596f-4ec0-8122-9769b34887e7","maxOutputTokens":200,"allowance":start["parent_allowance"],"hostRestrictions":{"permissions":"spoofed"}}});
+        assert!(serde_json::from_value::<Ready>(spoof).is_err());
+        assert!(
+            !path.exists(),
+            "selection cannot execute provider or owner commands"
+        );
+        drop(owner);
+    }
+
     #[tokio::test]
     async fn owner_pipe_dropped_wait_retains_fence_and_kills_only_its_child() {
         let temp = tempfile::tempdir().unwrap();

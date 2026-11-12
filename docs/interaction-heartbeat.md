@@ -727,3 +727,38 @@ replacements never change state. Restore only operation-owned unchanged pauses.
 A private viewer projection may be part of its explicitly selected human purpose;
 read the owning snapshot schema and run its finite conditional refresh after
 meaningful source changes. An unchanged refresh must not grow publication history.
+
+### Operator-selected native host restrictions
+
+Optional `matrix_transport.native_host_restrictions` uses the existing native
+`hostRestrictions` shape: named `permissions`, explicit `tools` (name/namespace),
+explicit `environment`, and `codeModeLimits` (`maxHeapSizeBytes`,
+`maxYieldTimeMs`). All four fields are required when selected. Names, environment
+bytes and positive limits retain the native bounds; environment values are
+redacted from Debug output. This selection requires the existing configured
+financial execution owner, rather than silently doing nothing on another path.
+
+App captures an owned copy from its private configuration when opening that
+execution. The accounting child's closed ready descriptor does not accept these
+fields; model output and peer content cannot choose them. Later configuration
+changes do not rewrite an active execution. The trusted native callback forwards
+them with the same exact cycle, original allowance, usage observations and output
+ceiling on `turn/startBoundedIfIdle`. No owner-pipe, signing, account or source
+authority is added. Omission preserves ordinary attempt-only and legacy funded
+paths; ordinary human starts never select this field. A configured native error
+has no retry without restrictions, new allocation or unrestricted fallback.
+
+Use the existing named permissions catalog; this is not a parallel registry.
+The receiving Core must support the complete host restriction contract (Core31
+and successors). The exact native package qualification pin now includes that
+contract and its private-host/descriptor prerequisites; qualify that immutable
+revision once through `native-sdk-qualification.yml`.
+
+The composed Core/App/signed-journal fixture now selects an empty tool ceiling
+and proves the actual provider request exposes no tools while retaining the same
+exact attempt usage, settlement and terminal reconciliation. This uses synthetic
+accounts/keys and a loopback provider, not a production funding writer or live
+body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
+limits, startup, provider exposure, real accounting authority and full-profile
+adoption remain separate unfinished work. No profile, resource amount or lane
+is selected by this source update.

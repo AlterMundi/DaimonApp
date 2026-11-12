@@ -40,6 +40,12 @@ async fn actual_core_usage_reaches_existing_app_owner_and_signed_journal() {
                     let body: Value =
                         serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
                     assert_eq!(body["max_output_tokens"], 200);
+                    assert!(
+                        body["tools"]
+                            .as_array()
+                            .is_none_or(|tools| tools.is_empty()),
+                        "host tool ceiling must reach actual Core before provider submission"
+                    );
                     break;
                 }
             }
@@ -151,6 +157,13 @@ while True:
         },
         timeout_seconds: 5,
         native_funding_binding: Some("synthetic-test-selection".into()),
+        native_host_restrictions: Some(
+            serde_json::from_value(json!({
+                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+            }))
+            .unwrap(),
+        ),
     };
     let key = SessionKey {
         chat_id: 1,
@@ -205,8 +218,8 @@ while True:
                 CodexEvent::NativeTurnSubmitting=>{
                     let start=json!({"thread_id":state.0,"parent_allowance":{"maxProviderAttempts":2,"maxRequestBytes":1024*1024,"deadlineUnixMs":Utc::now().timestamp_millis()+7000}});
                     let owner=Session::start(&config,&start).await?;
-                    let descriptor=owner.descriptor.clone();state.1=Some(owner);
-                    Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens})
+                    let descriptor=owner.descriptor.clone();let host_restrictions=owner.host_restrictions.clone();state.1=Some(owner);
+                    Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions})
                 }
                 CodexEvent::NativeProviderAttemptReservation(attempt)=>Ok(CodexEventOutcome::ProviderAttemptReserved(state.1.as_mut().unwrap().reserve(attempt).await?)),
                 CodexEvent::NativeProviderAttemptUsage(usage)=>Ok(CodexEventOutcome::ProviderUsageRecorded(state.1.as_mut().unwrap().record_usage(usage).await?)),
