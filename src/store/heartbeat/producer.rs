@@ -594,20 +594,37 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
             r.phase = "accepted_terminal_reviewed".into();
             continue;
         }
-        if r.phase != "accepted" || (r.reported_revision.is_some() && !reviewed) {
+        let awaiting_ack = matches!(r.phase.as_str(), "submitting" | "uncertain");
+        if (r.phase != "accepted" && !awaiting_ack) || (r.reported_revision.is_some() && !reviewed)
+        {
             continue;
         }
-        let (Some(local), Some(physical)) = (r.local, r.native_turn.as_deref()) else {
-            continue;
-        };
+        let Some(local) = r.local else { continue };
         let Some(execution) = executions::load(conn, local)? else {
             continue;
         };
+        let Some(physical) = execution["physical"].as_str().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if r.native_turn.as_deref().is_some_and(|id| id != physical)
+            || (!awaiting_ack && r.native_turn.is_none())
+        {
+            continue;
+        }
+        // A lost startup acknowledgment cannot hide an already observed exact
+        // physical terminal. Unknown or conflicting attempts remain untouched.
+        if awaiting_ack
+            && (execution["local"].as_i64() != Some(local)
+                || r.attention_generation.is_none()
+                || r.attention_activation.is_none()
+                || execution["activation"] != serde_json::to_value(&r.attention_activation)?)
+        {
+            continue;
+        }
         if !matches!(
             execution["phase"].as_str(),
             Some("terminal" | "transferred")
-        ) || execution["physical"] != physical
-            || execution["native"] != p.native
+        ) || execution["native"] != p.native
             || execution["source"] != r.id
             || execution["generation"].as_u64() != r.attention_generation
         {
@@ -623,6 +640,7 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
             Some("completed") => "accepted_terminal_unreviewed",
             _ => continue,
         };
+        r.native_turn = Some(physical.to_owned());
         if reviewed {
             r.phase = phase.into();
             continue;
@@ -1704,6 +1722,115 @@ mod inbox_tests {
                 }]["review_reported"],
                 false
             );
+        }
+    }
+
+    #[test]
+    fn terminal_before_ack_settles_only_exact_proof_and_survives_late_callbacks() {
+        for waiting in ["submitting", "uncertain"] {
+            for terminal in ["failed", "interrupted", "completed"] {
+                for ownership in ["terminal", "transferred"] {
+                    let (_file, store, entry, source) = setup();
+                    let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+                    let selected = selection(&store, entry, &source);
+                    let dispatch = store
+                        .heartbeat_finish_check(
+                            &check,
+                            Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    let session = store.get_session(entry).unwrap().unwrap().id;
+                    let resources =
+                        store.heartbeat_control(100, entry, H::Status).unwrap()["resources"]
+                            .clone();
+                    {
+                        let conn = store.conn.lock().unwrap();
+                        let mut parent = load(&conn, 100, session).unwrap().unwrap();
+                        let returned = &mut parent.native_returns[0];
+                        returned.phase = waiting.into();
+                        returned.local = Some(700);
+                        returned.native_turn = None;
+                        let proof = json!({"phase":ownership,"local":700,
+                            "physical":"observed-physical","native":parent.native,
+                            "source":dispatch.id,"generation":returned.attention_generation,
+                            "activation":returned.attention_activation,"terminal_status":terminal});
+                        for field in [
+                            "local",
+                            "physical",
+                            "native",
+                            "source",
+                            "generation",
+                            "activation",
+                            "phase",
+                            "terminal_status",
+                        ] {
+                            let mut wrong = proof.clone();
+                            wrong[field] = Value::Null;
+                            executions::save(&conn, 700, &wrong).unwrap();
+                            let mut unchanged = parent.clone();
+                            settle_terminal_attention_on(&conn, &mut unchanged).unwrap();
+                            assert_eq!(unchanged.native_returns[0].phase, waiting, "{field}");
+                            assert!(unchanged.native_returns[0].native_turn.is_none());
+                            assert!(unchanged.seen.is_empty());
+                        }
+                        executions::save(&conn, 700, &proof).unwrap();
+                        let mut conflict = parent.clone();
+                        conflict.native_returns[0].native_turn = Some("different-physical".into());
+                        settle_terminal_attention_on(&conn, &mut conflict).unwrap();
+                        assert_eq!(conflict.native_returns[0].phase, waiting);
+                        settle_terminal_attention_on(&conn, &mut parent).unwrap();
+                        assert!(!pending(&parent));
+                        assert_eq!(
+                            parent.native_returns[0].native_turn.as_deref(),
+                            Some("observed-physical")
+                        );
+                        assert!(parent.native_returns[0].reported_revision.is_none());
+                        assert_eq!(parent.seen.len(), 1);
+                        save(&conn, &parent).unwrap();
+                    }
+                    for late in ["uncertain", "accepted"] {
+                        store
+                            .workflow_native_outcome_attempt(
+                                &dispatch.id,
+                                dispatch.attempts,
+                                late,
+                                (late == "accepted").then_some("observed-physical"),
+                            )
+                            .unwrap();
+                    }
+                    let conn = store.conn.lock().unwrap();
+                    let parent = load(&conn, 100, session).unwrap().unwrap();
+                    assert!(!pending(&parent));
+                    assert_eq!(
+                        parent.native_returns[0].native_turn.as_deref(),
+                        Some("observed-physical")
+                    );
+                    assert_eq!(parent.native_returns[0].attempts, dispatch.attempts);
+                    assert!(parent.native_returns[0].reported_revision.is_none());
+                    drop(conn);
+                    assert_eq!(
+                        store.heartbeat_control(100, entry, H::Status).unwrap()["resources"],
+                        resources
+                    );
+                    due(&store, entry);
+                    let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+                    let selected = selection(&store, entry, &source);
+                    let next = store
+                        .heartbeat_finish_check(
+                            &check,
+                            Some(Ok((selected.clone(), page(&selected, vec![item(2)])))),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_ne!(next.id, dispatch.id);
+                    assert!(
+                        !next
+                            .output
+                            .contains(item(1)["message_id"].as_str().unwrap())
+                    );
+                }
+            }
         }
     }
 
