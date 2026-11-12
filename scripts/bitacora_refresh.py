@@ -84,7 +84,7 @@ def _refresh(snapshot, snapshot_fd, source_sha256, source_observed_at):
         '--visibility', 'human', '--title', 'Bitácora · Nuestro registro',
         '--summary', 'Lo que creamos, sus imágenes y audios, y las historias que estamos preparando.',
         '--reuse-identical', '--expected-current', entry['version_ref'],
-            '--decision', 'Project the completed institutional intake into Nicolas existing private Bitacora view under human direction 0d393542; preserve masters, audience and stable identity.')
+            '--decision', 'Project the reconciled institutional intake into the existing private editorial view; preserve masters, audience and stable identity.')
     current = next(e for e in json.loads((store / 'state.json').read_text())['entries']
                    if e['id'] == 'bitacora-desk' and e['visibility'] == 'human')
     actual = store / 'objects' / current['object']
