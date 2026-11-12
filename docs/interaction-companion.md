@@ -437,8 +437,15 @@ existing same-original recovery contract. Captured originals never silently
 change destination. Avatar's independent foreground/delegation scope is unchanged.
 A published capability is not receiving selection or phone acceptance.
 
-A native Matrix transport profile change also requires this same-scope companion
-requalification before web recovery is complete. Compare the retained exact
+A native Matrix transport actor, route, credential or funding-owner change also
+requires this same-scope companion requalification before web recovery is complete.
+The `native_host_restrictions` execution policy is excluded from dashboard access
+identity: CPU, memory, task, private-tool and filesystem ceilings remain validated
+and enforced by the native executor. Adding or changing that one policy must not
+invalidate Alerts, Traffic, menu state or existing device/Home access. All other
+transport and receiver fields retain their original binding. Reload the native
+listener through its existing scoped route to adopt changed execution policy;
+a stable dashboard fingerprint does not prove that a running listener loaded it. Compare the retained exact
 preimage with the selected profile, qualify unchanged actor/credentials/grants,
 preserve all journal outcomes and reload only the affected web service through
 its existing voice-idle fence. A healthy `/health` alone does not establish

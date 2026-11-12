@@ -178,6 +178,36 @@ class Companion(unittest.TestCase):
         receiver['telegram']['enabled']=False
         self.assertNotEqual(receiving_authority(receiver),expected)
 
+    def test_native_physical_policy_preserves_dashboard_access_identity(self):
+        receiver={'db_path':'owned.sqlite','session_control':{'human_id':100},
+            'telegram':{'api_base':'https://example.test','bot_token_file':'owned-token'},
+            'interaction':{'matrix_transport':{'command':['owned-writer'],
+                'source':{'kind':'body','being_ref':'owned-being'},
+                'native_funding_binding':{'account_id':'owned-account'}}}}
+        original=copy.deepcopy(receiver)
+        before=receiving_authority(receiver)
+        policy={'permissions':'bounded-work','tools':[{'name':'exec_command'}],
+            'environment':{'PATH':'/usr/bin:/bin'},
+            'processLimits':{'memoryBytes':1073741824,'cpuPercent':100,'tasks':128}}
+        receiver['interaction']['matrix_transport']['native_host_restrictions']=policy
+        self.assertEqual(receiving_authority(receiver),before)
+        self.assertEqual(receiver['interaction']['matrix_transport']['native_host_restrictions'],policy)
+        policy['processLimits']['cpuPercent']=50
+        self.assertEqual(receiving_authority(receiver),before)
+        # Every existing actor/data/route/account dependency remains fenced.
+        for section,key,value in [('session_control','human_id',101),
+                ('telegram','bot_token_file','foreign-token'),('receiver','db_path','foreign.sqlite'),
+                ('transport','command',['foreign-writer']),
+                ('transport','source',{'kind':'body','being_ref':'foreign-being'}),
+                ('transport','native_funding_binding',{'account_id':'foreign-account'})]:
+            changed=copy.deepcopy(receiver)
+            target=(changed if section=='receiver' else changed['interaction']['matrix_transport']
+                    if section=='transport' else changed[section])
+            target[key]=value
+            with self.subTest(section=section,key=key):
+                self.assertNotEqual(receiving_authority(changed),before)
+        self.assertNotIn('native_host_restrictions',original['interaction']['matrix_transport'])
+
     def test_malformed_identity_response_is_unavailable_not_expired(self):
         from dashboard.home_auth import identity_response
         for body in (b'{', b'\xff'):
