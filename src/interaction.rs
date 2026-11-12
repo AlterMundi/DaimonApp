@@ -286,10 +286,6 @@ impl InteractionConfig {
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
-                anyhow::ensure!(
-                    transport.native_funding_binding.is_some(),
-                    "Native host restrictions require their configured execution owner"
-                );
                 restrictions.validate()?;
             }
             transport.source.validate()?;
@@ -821,6 +817,43 @@ impl Delivery {
 mod native_host_restrictions_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn attempt_only_inline_configuration_accepts_valid_physical_ceilings() {
+        let raw = r#"
+human_id = 100
+chat_id = 100
+topic_id = 1
+matrix_inbox_channel = "tribe"
+matrix_transport = { command = ["/bin/true"], source = { kind = "body", being_ref = "dm:being:v1:BEING_SUFFIX", embodiment_id = "embodiment:synthetic" }, timeout_seconds = 1, native_host_restrictions = { permissions = "messaging", tools = [{ name = "exec_command" }], environment = { PATH = "/usr/bin:/bin" }, processLimits = { memoryBytes = 1073741824, cpuPercent = 100, tasks = 128 }, codeModeLimits = { maxHeapSizeBytes = 268435456, maxYieldTimeMs = 1000 } } }
+"#
+        .replace("BEING_SUFFIX", &"A".repeat(43));
+        let mut config: InteractionConfig = toml::from_str(&raw).unwrap();
+        assert!(
+            config
+                .matrix_transport
+                .as_ref()
+                .unwrap()
+                .native_funding_binding
+                .is_none()
+        );
+        config.validate().unwrap();
+        config
+            .matrix_transport
+            .as_mut()
+            .unwrap()
+            .native_host_restrictions
+            .as_mut()
+            .unwrap()
+            .process_limits
+            .as_mut()
+            .unwrap()
+            .memory_bytes = 0;
+        assert!(
+            config.validate().is_err(),
+            "Physical validation remains required without funding"
+        );
+    }
 
     #[test]
     fn private_host_selection_is_closed_bounded_and_debug_redacted() {
