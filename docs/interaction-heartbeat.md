@@ -452,6 +452,25 @@ routing; it does not qualify real prices/credentials, installed receiver adoptio
 or useful peer work. The test stays ignored by default because the exact Core
 binary and Matrix environment must be selected, not inferred from a live body.
 
+The companion `actual_core_process_owner_dispatches_tool_and_retains_signed_usage`
+case uses the same fixture and a Core package supporting `processLimits`, with
+its `codex-exec-server` sibling. For local qualification, build both from
+`codex-rs` with `cargo build -p codex-app-server -p codex-exec-server-cli --bins`
+to reuse one dependency-feature build. Select the test with the same environment and
+`cargo test --locked --bin telecodex actual_core_process_owner_dispatches -- --ignored --nocapture`.
+It selects the existing named explicit-root permission profile and requests an
+actual `exec_command` through Core's registry and handler. The check requires
+workspace AGENTS context, a writable private actor HOME, a separate denied executor
+CODEX_HOME, no ambient environment marker, denied synthetic private/native files,
+and denial of the same executable through both `/usr/bin` and `/bin`. It writes
+one exclusive result artifact and requires useful output in the next provider
+request. The receiving launcher must support bubblewrap `--argv0`; qualify that
+prerequisite with the exact package before selection, rather than putting trusted
+helpers in actor-writable directories. Its two synthetic provider completions must
+produce two signed usage observations, sixteen synthetic settled units and zero
+remaining exposure in the same Matrix cycle. This is an opt-in qualification
+case, not installed receiving evidence or real monetary accounting.
+
 The default App owner explicitly refuses financial reservations. This source
 prepares the native client, not a configured account or receiving activation.
 The provisioned consumer must use the existing Matrix `CycleContext`/schema5
@@ -738,6 +757,23 @@ bytes and positive limits retain the native bounds; environment values are
 redacted from Debug output. This selection requires the existing configured
 financial execution owner, rather than silently doing nothing on another path.
 
+Optional `processLimits` adds `memoryBytes`, `cpuPercent` and `tasks` to that
+same captured selection. All are positive, within the existing Linux own-work
+maxima (1 GiB, 100% of one CPU, 128 tasks); these are execution constraints, not
+account balances or a financial grant. It requires a qualified native reader,
+local environment and matching standalone executor in the selected native package.
+A reader rejecting this field must never receive a retry with it stripped.
+
+Core binds one physical turn to one aggregate shared by its private stdio executor,
+command descendants and V8 host. Startup captures a private explicit environment
+and empty temporary HOME/CODEX_HOME; the existing named permission ceiling is
+further narrowed against the host cgroup, user manager and native Codex login.
+Tool dispatch reuses that owned environment. Completion, cancellation or the
+original allowance deadline closes it even when a step/session reference remains.
+Ordinary turns and legacy selections without `processLimits` retain their routes.
+Actual full-package and receiving qualification remain deployment outcomes;
+configuration or a source check does not prove a released profile.
+
 App captures an owned copy from its private configuration when opening that
 execution. The accounting child's closed ready descriptor does not accept these
 fields; model output and peer content cannot choose them. Later configuration
@@ -749,10 +785,12 @@ paths; ordinary human starts never select this field. A configured native error
 has no retry without restrictions, new allocation or unrestricted fallback.
 
 Use the existing named permissions catalog; this is not a parallel registry.
-The receiving Core must support the complete host restriction contract (Core31
-and successors). The exact native package qualification pin now includes that
-contract and its private-host/descriptor prerequisites; qualify that immutable
-revision once through `native-sdk-qualification.yml`.
+The base four-field contract is supported by Core31 and successors. Selecting
+`processLimits` additionally requires an owner-enabled native reader and its
+matching complete package; older closed readers reject it. The retained package
+qualification for the base contract is not evidence of that newer receiving
+capability. Qualify the coherent owner-enabled package once through
+`native-sdk-qualification.yml` before selecting it.
 
 The composed Core/App/signed-journal fixture now selects an empty tool ceiling
 and proves the actual provider request exposes no tools while retaining the same

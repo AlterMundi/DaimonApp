@@ -5258,6 +5258,7 @@ mod tests {
                                 request["params"]["hostRestrictions"],
                                 json!({
                                     "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                    "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
                                     "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
                                 })
                             );
@@ -5465,6 +5466,7 @@ mod tests {
                                         max_output_tokens: 200,
                                         host_restrictions: if mode=="allow" {Some(serde_json::from_value(json!({
                                             "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                            "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
                                             "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
                                         })).unwrap())}else{None},
                                     }
