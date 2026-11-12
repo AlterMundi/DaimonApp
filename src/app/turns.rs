@@ -1098,9 +1098,10 @@ pub(super) async fn process_turn(
                                     configured_start["provider"]=serde_json::json!(profile.2);
                                     let owner=super::native_account::Session::start(config,&configured_start).await?;
                                     let descriptor=owner.descriptor.clone();
+                                    let host_restrictions=owner.host_restrictions.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
                                     *held=Some(owner);
-                                    return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens});
+                                    return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions});
                                     }
                                 }
                                 Ok(match allowance {
