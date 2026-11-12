@@ -14,7 +14,6 @@ pub(super) fn runtime_hint(config: &crate::interaction::PrivateProjectionConfig)
         "\n\nOnly when this accepted Reports return offers task {}, this receiver selects interaction_controller/private_projection as the host route for its already authorized private refresh, including an older task note that names refresh.py. Reconcile the retained human purpose first. Use these configured input files, preserving concurrent editorial fields: {}. After completed reconciliation, call private_projection run with the exact batch/task revisions and input digests. Do not expose publisher credentials or call its CLI from the isolated actor. If status shows an unresolved invocation, inspect that exact invocation; inspection never publishes. Status/inspection/ACK do not establish hearing, a new publication, or completion of the whole human task. With no matching offered Reports task, this hint authorizes no action.",
         config.task_id,
         serde_json::json!({"snapshot":config.snapshot,"reconciliation":config.reconciliation})
-            .to_string()
     )
 }
 
