@@ -104,10 +104,8 @@ async fn execute(
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("LANG", "C.UTF-8");
     // The fixed host adapter needs its existing owner binding, never provider secrets.
-    for name in ["HOME"] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
+    if let Some(value) = std::env::var_os("HOME") {
+        command.env("HOME", value);
     }
     command.as_std_mut().process_group(0);
     // This trusted fixed helper and its ordinary children remain outside the
