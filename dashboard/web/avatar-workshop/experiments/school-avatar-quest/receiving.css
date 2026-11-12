@@ -14,3 +14,6 @@ button:hover{background:var(--rose)}
 
 /* Account actions retain readable receiving materials in dark appearances. */
 #use-avatar,#cancel-workshop{background:var(--paper);color:var(--ink)}
+
+/* The avatar stage inherits the same resolved surface as its glyph renderer. */
+.stage .art-wrap{background:var(--dm-surface,#101e2c)}
