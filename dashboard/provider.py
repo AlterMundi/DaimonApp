@@ -33,10 +33,17 @@ class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
 def receiving_authority(receiver):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
+    interaction = receiver.get('interaction')
+    if isinstance(interaction, dict) and isinstance(interaction.get('matrix_transport'), dict):
+        # Resource/tool ceilings constrain native work, not dashboard identity.
+        # Keep all actor, route, credential and funding selectors in the binding.
+        transport = {key: value for key, value in interaction['matrix_transport'].items()
+                     if key != 'native_host_restrictions'}
+        interaction = {**interaction, 'matrix_transport': transport}
     return json.dumps({
         'db_path': receiver.get('db_path'),
         'session_control': receiver.get('session_control'),
-        'interaction': receiver.get('interaction'),
+        'interaction': interaction,
         'voice': receiver.get('voice'),
         # Disabled transport is part of a web-only receiver's authority. Keep
         # legacy enabled/omitted bindings byte-identical while fencing any
