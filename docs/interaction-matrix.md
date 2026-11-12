@@ -754,6 +754,12 @@ ordinary path. Invalid restrictions refuse before native submission; a failed
 configured financial owner never falls back to ordinary execution. Human turns
 and persistent session configuration remain unchanged.
 
+Startup validation must accept that same attempt-only selection. A predecessor
+that still requires `native_funding_binding` cannot load it: code rollback must
+retain a compatible validator or conditionally remove only the operation's
+unchanged physical-profile binding first. Preserve the account, lane controls,
+native permission catalog and later configuration decisions.
+
 ### Existing signed messaging enrollment as the host owner proof
 
 A receiving host can use `telecodex.matrix-host-binding/v2` with `source`, the
