@@ -94,7 +94,15 @@ def qualify(old, candidate, scratch, lifecycle_seconds=None):
         assert len(result['commands']) == 3 and all(c['returncode'] == 0 for c in result['commands'])
         client.close()
         client = Native(str(proxy))
-        assert root in rpc(client, 'thread/loaded/list', {'limit': 16})['data']
+        # Core consumes the saved snapshot before readiness, then restores
+        # runtimes asynchronously. Observe this exact thread; never synthesize
+        # input or issue resume merely to make the assertion pass.
+        recovery_started = time.monotonic()
+        recovery_deadline = recovery_started + 15
+        while root not in rpc(client, 'thread/loaded/list', {'limit': 16})['data']:
+            assert time.monotonic() < recovery_deadline, 'saved thread recovery not observed'
+            time.sleep(.05)
+        recovery_ms = round((time.monotonic() - recovery_started) * 1000)
         assert rpc(client, 'thread/read', {'threadId': root, 'includeTurns': False})['thread']['id'] == root
         replacement = result['replacement']['pid']
         time.sleep(.4)
@@ -109,6 +117,7 @@ def qualify(old, candidate, scratch, lifecycle_seconds=None):
         print(json.dumps({'state': 'PASS', 'live_watcher_held_and_resumed': True,
                           'same_persistent_cgroup': True, 'restored_original_thread': root,
                           'replacement_survives_watcher': True, 'duplicate_refused': True,
+                          'recovery_observation_ms': recovery_ms,
                           'native_input_sent': False, 'live_provider_calls': 0}), flush=True)
         complete = True
     finally:

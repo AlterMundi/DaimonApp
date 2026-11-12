@@ -425,7 +425,8 @@ left it defers before sending maintenance. Otherwise the fixed native133second
 observation remains intact (138second command cap). After confirmed handoff AND
 actual old-process exit, it skips candidate installation if fewer than66seconds
 remain, restoring the exact selected predecessor instead. Installation is capped
-at15seconds, stopped-only restoration at45seconds, each clipped to the remaining
+at140seconds while preserving the66second restore reserve; stopped-only
+restoration is capped at45seconds, each clipped to the remaining
 window. A lost installer ACK inspects the atomic full-package selection once;
 never resend install. Expiry or unavailable recovery is explicit uncertainty,
 not a guarantee of service readiness or authority to fresh-start/force the host.
@@ -441,6 +442,12 @@ loopback inference and preserves unfinished fixtures on failure. The smaller CI
 unit suite checks generation/cgroup refusal, terminal deferral and uncertainty
 without targeting a real daemon. These are operator proofs, not receiving/model/
 audio acceptance of the heartbeat.
+
+Core restores saved thread runtimes asynchronously after its listener becomes
+ready. The fixture observes the exact original thread through bounded loaded-list
+readbacks before checking its history; an immediate empty list is not lost context.
+It never sends input or resumes a thread to manufacture restoration. A receiving
+operator likewise distinguishes process readiness from actual saved-thread recovery.
 
 ## Funded selected-original replies — Matrix #312 / Telecodex #532
 
