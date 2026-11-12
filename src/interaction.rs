@@ -29,6 +29,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub native_routed_returns: bool,
     pub artifact_store: Option<ArtifactConfig>,
+    /// One explicitly configured private projection; no model-selected command.
+    pub private_projection: Option<PrivateProjectionConfig>,
     #[serde(default)]
     pub targets: Vec<Target>,
     /// Include existing bound conversations owned by this human in this chat.
@@ -48,6 +50,49 @@ pub struct InteractionConfig {
     pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
     pub max_active_workers: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateProjectionConfig {
+    pub task_id: String,
+    pub command: Vec<String>,
+    pub working_directory: std::path::PathBuf,
+    pub snapshot: std::path::PathBuf,
+    pub reconciliation: std::path::PathBuf,
+    pub reconciliation_return_pointer: String,
+    pub reconciliation_partial_pointer: String,
+    pub timeout_seconds: u64,
+}
+
+impl PrivateProjectionConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.task_id.is_empty()
+                && self.task_id.len() <= 128
+                && self
+                    .task_id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+                && !self.command.is_empty()
+                && self.command.len() <= 32
+                && std::path::Path::new(&self.command[0]).is_absolute()
+                && self
+                    .command
+                    .iter()
+                    .all(|s| !s.is_empty() && s.len() <= 4096 && !s.contains('\0'))
+                && self.working_directory.is_absolute()
+                && self.snapshot.is_absolute()
+                && self.reconciliation.is_absolute()
+                && self.reconciliation_return_pointer.starts_with('/')
+                && self.reconciliation_return_pointer.len() <= 256
+                && self.reconciliation_partial_pointer.starts_with('/')
+                && self.reconciliation_partial_pointer.len() <= 256
+                && (1..=20).contains(&self.timeout_seconds),
+            "Invalid fixed private projection action"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,6 +284,9 @@ impl InteractionConfig {
         }
         if let Some(pack) = &self.expression_pack {
             pack.validate()?;
+        }
+        if let Some(projection) = &self.private_projection {
+            projection.validate()?;
         }
         if self.human_id <= 0
             || self.chat_id == 0
@@ -696,6 +744,7 @@ mod tests {
             native_workflow_returns: false,
             native_routed_returns: false,
             artifact_store: None,
+            private_projection: None,
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
