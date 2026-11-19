@@ -46,7 +46,7 @@ impl App {
     }
 
     pub(super) async fn handle_login_command(&self, message: &Message) -> Result<()> {
-        let status = self.shared.codex.auth_status().await?;
+        let status = self.shared.codex.account_status().await?;
         if status.authenticated {
             let detail = if status.detail.is_empty() {
                 "Codex is already logged in.".to_string()
@@ -200,7 +200,15 @@ async fn run_device_auth_login(
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            let status = shared.codex.auth_status().await?;
+            let status = shared.codex.account_status().await?;
+            if !status.authenticated {
+                send_markdown_message(
+                    &shared.telegram, chat_id, thread_id,
+                    "Codex sign-in could not be confirmed. Check the current account before trying again.",
+                    None,
+                ).await?;
+                return Ok(());
+            }
             let body = if status.detail.is_empty() {
                 "Codex login completed.".to_string()
             } else {
