@@ -317,7 +317,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                             mission_host=compose_school_mission(config,provider))
 
     from .atelier_workshop_api import install as install_atelier
-    install_atelier(app,config,provider,authorize_async,[origin,*additional_origins])
+    install_atelier(app,config,provider,authorize_async,[origin,*additional_origins],authorize_sync=authorize)
 
     public = Path(__file__).parent / 'web'
 

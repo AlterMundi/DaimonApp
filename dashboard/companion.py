@@ -41,7 +41,7 @@ def permitted(method, path, scope='interaction_only', artifact_access=False, ale
         return scope=='interaction_only' and native_decision_access is True
     if path == '/api/interaction/atelier' or path.startswith('/api/interaction/atelier/'):
         return scope == 'interaction_only' and (path == '/api/interaction/atelier' and method in ('GET','POST')
-            or method == 'GET' and re.fullmatch(r'/api/interaction/atelier/requests/[a-f0-9-]{36}', path) is not None)
+            or method == 'GET' and (path == '/api/interaction/atelier/destinations' or re.fullmatch(r'/api/interaction/atelier/requests/[a-f0-9-]{36}(?:/native)?', path) is not None))
     if path in ('/api/interaction/avatars/voice','/api/interaction/avatars/voice/previews'):
         return scope=='interaction_only' and method in ('GET','POST')
     if re.fullmatch(r'/api/interaction/avatars/missions/[a-f0-9-]{36}',path):

@@ -74,6 +74,12 @@ class AtelierWorkshop:
                     name TEXT NOT NULL, instruction TEXT NOT NULL, created_at TEXT NOT NULL,
                     reply BLOB, reply_file_sha TEXT, reply_sha TEXT, reply_id TEXT,
                     bytes INTEGER NOT NULL, PRIMARY KEY(human,id));
+                CREATE TABLE IF NOT EXISTS atelier_dispatches (
+                    human INTEGER NOT NULL, id TEXT NOT NULL,
+                    choice TEXT NOT NULL, label TEXT NOT NULL,
+                    body BLOB NOT NULL, body_sha TEXT NOT NULL,
+                    state TEXT NOT NULL, receipt TEXT, origin TEXT,
+                    PRIMARY KEY(human,id));
             ''')
             with db:
                 db.execute('INSERT OR IGNORE INTO properties VALUES (?,?)', ('local_scope',str(uuid.uuid4())))
@@ -203,11 +209,14 @@ class AtelierWorkshop:
                 db.execute('UPDATE actors SET generation=generation+1 WHERE human=?', (human,))
         return self.get(human, ident)
 
-    def save_reply(self, human, ident, raw):
+    def save_reply(self, human, ident, raw, *, native_origin=None):
         if not isinstance(raw,str) or len(raw.encode())>FILE_BYTES:raise ValueError('This account accepts sculpture exchanges up to 8MiB')
         saved=self.get(human,ident)
         if 'reply' in saved:
             if saved['reply']!=raw:raise AtelierConflict('This request already has another immutable proposal')
+            if native_origin is not None:
+                with self._db() as db, db:
+                    self._native_origin(db, human, ident, native_origin)
             return saved
         source = saved['request']
         value = validate_transfer(raw, source)
@@ -227,4 +236,64 @@ class AtelierWorkshop:
                 db.execute('''UPDATE exchanges SET reply=?, reply_file_sha=?,reply_sha=?,reply_id=?,bytes=bytes+?
                     WHERE human=? AND id=?''', (data, value['fileSha256'], value['sha256'], value['id'], len(data), human, ident))
                 db.execute('UPDATE actors SET generation=generation+1 WHERE human=?', (human,))
+            if native_origin is not None:
+                self._native_origin(db, human, ident, native_origin)
         return self.get(human, ident)
+
+    def dispatch(self, human, ident):
+        self._human(human); self._id(ident)
+        with self._db() as db:
+            row = db.execute('SELECT * FROM atelier_dispatches WHERE human=? AND id=?', (human, ident)).fetchone()
+            if row is None:
+                return None
+            if hashlib.sha256(row['body']).hexdigest() != row['body_sha']:
+                raise ValueError('Saved dispatch needs review; no reset was performed')
+            return {**dict(row), 'body': json.loads(row['body']),
+                    'receipt': json.loads(row['receipt']) if row['receipt'] else None,
+                    'origin': json.loads(row['origin']) if row['origin'] else None}
+
+    def prepare_dispatch(self, human, ident, choice, label, body):
+        self.get(human, ident)
+        data = json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode()
+        if len(data) > 12000 or not isinstance(choice, str) or len(choice) != 64:
+            raise ValueError('Choose one bounded sculpture dispatch')
+        with self._db() as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            old = db.execute('SELECT choice,body FROM atelier_dispatches WHERE human=? AND id=?', (human, ident)).fetchone()
+            if old:
+                if old['choice'] != choice or old['body'] != data:
+                    raise AtelierConflict('This request already has a frozen destination')
+            else:
+                # One bounded record per exchange, charged before any native I/O.
+                self._quota(db, human, 16384)
+                db.execute('INSERT INTO atelier_dispatches VALUES (?,?,?,?,?,?,?,NULL,NULL)',
+                    (human, ident, choice, str(label)[:200], data, hashlib.sha256(data).hexdigest(), 'prepared'))
+                db.execute('UPDATE exchanges SET bytes=bytes+16384 WHERE human=? AND id=?', (human, ident))
+                db.execute('UPDATE actors SET generation=generation+1 WHERE human=?', (human,))
+        return self.dispatch(human, ident)
+
+    def claim_dispatch(self, human, ident):
+        self.dispatch(human, ident)
+        with self._db() as db, db:
+            row = db.execute("UPDATE atelier_dispatches SET state='attempted' WHERE human=? AND id=? AND state='prepared'", (human, ident))
+            return row.rowcount == 1
+
+    def note_dispatch(self, human, ident, receipt):
+        raw = json.dumps(receipt, ensure_ascii=False)
+        if len(raw.encode()) > 1200:
+            raise ValueError('Native receipt exceeds its bound')
+        with self._db() as db, db:
+            db.execute("UPDATE atelier_dispatches SET receipt=? WHERE human=? AND id=?", (raw, human, ident))
+
+    @staticmethod
+    def _native_origin(db, human, ident, origin):
+        raw = json.dumps(origin, ensure_ascii=False)
+        if (set(origin) != {'inputId', 'artifactId', 'source', 'revision', 'sha256'}
+                or len(raw.encode()) > 2048):
+            raise ValueError('Invalid native proposal source')
+        row = db.execute('SELECT body,origin FROM atelier_dispatches WHERE human=? AND id=?', (human, ident)).fetchone()
+        if row is None or json.loads(row['body'])['id'] != origin['inputId']:
+            raise AtelierConflict('Proposal source does not belong to this dispatch')
+        if row['origin'] is not None and json.loads(row['origin']) != origin:
+            raise AtelierConflict('This proposal already has another retained native source')
+        db.execute('UPDATE atelier_dispatches SET origin=? WHERE human=? AND id=?', (raw, human, ident))

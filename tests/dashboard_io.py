@@ -801,8 +801,10 @@ def load_tests(loader, tests, pattern):
     # Keep new account-workshop coverage in the existing dashboard CI entry.
     import dashboard_atelier_workshop
     import dashboard_atelier_workshop_api
+    import dashboard_atelier_native_store
     tests.addTests(loader.loadTestsFromModule(dashboard_atelier_workshop))
     tests.addTests(loader.loadTestsFromModule(dashboard_atelier_workshop_api))
+    tests.addTests(loader.loadTestsFromModule(dashboard_atelier_native_store))
     return tests
 
 

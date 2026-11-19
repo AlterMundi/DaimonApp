@@ -11,7 +11,7 @@ def verify():
     assert manifest['schema'] == 'daimon.atelier-assets/v1'
     assert manifest['workingCopy'] is False, 'Export a committed source revision'
     assert re.fullmatch('[a-f0-9]{40}', manifest['sourceCommit'])
-    assert set(manifest['files']) == {'index.html', 'host.js', 'project.js', 'corner-contract.js', 'LICENSE'}
+    assert set(manifest['files']) == {'index.html', 'host.js', 'project.js', 'corner-contract.js', 'tool.mjs', 'guide.txt', 'LICENSE'}
     for name, expected in manifest['files'].items():
         raw = (root / name).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == expected, name

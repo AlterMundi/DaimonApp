@@ -1,15 +1,17 @@
 {
   "schema": "daimon.atelier-assets/v1",
   "source": "DaimonAtelier MIT editor",
-  "sourceCommit": "129c5ce9b516d1601fd2aa070e33d408c4d3602c",
+  "sourceCommit": "8c7702a11bc45adfa5a5b4f41ead6943d70ebf68",
   "workingCopy": false,
   "transformation": "Account-bound build; private example locator and media excluded. Exact generic protocol validators are server-only.",
-  "build": "0b09f97a58f51e6806d7812abf320c6b94ada739ba4e5ee129617fb3fb1a8ce3",
+  "build": "ea7f164ff34eaefd14986d6116e5a8c103b0e2a5c884321b4e986b33ef5c1e8b",
   "files": {
-    "index.html": "c78b61b0369993393be80970095da94348ffb3f2076166401b4ec64ee75911f5",
-    "host.js": "4189bc16a9a4beaa856b059394209cf8db3ab5f267eb3150cb8b7a7be2bf86d4",
+    "index.html": "6197a84dda7a0311a9eaf9c6b9420f49f237af7db2a583ab1c906d19aa86ee83",
+    "host.js": "7053dd9f54b103bd53abed49bb43443f5462d80bd300b5e6ed4a51e31ad6e726",
     "project.js": "4cfd4fe8446fba6ca49e099891dffca01f08c51cff2bbeb58ef0efac000020d7",
     "corner-contract.js": "eefb2105c9dd7cf9ac93555f029f77a170a80db6425cb02f0a4fbc8e613528d1",
+    "tool.mjs": "77c594bf8aeb41c284a5c4f72a744fb98af30de281130ea6a5a36ba177e39900",
+    "guide.txt": "796c2f38708c5d7e120676c3649cdeecd12718e1c2f42ea7c42d02585c88fb80",
     "LICENSE": "1a4db66ba930fc7c09ea430225111b500e23537fdb52404a2d994468192226dc"
   }
 }
