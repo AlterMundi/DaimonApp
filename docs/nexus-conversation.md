@@ -77,6 +77,34 @@ thread before Nexus's revision-checked configure call. It refuses fresh/unbound
 contexts and the dedicated Tribu topic. No `/new`, history reset or latest-cwd
 replacement is performed, including when the bound history is unavailable.
 
+### Delegated local owner association
+
+When the paired human has authorized the association, the existing owner-only
+session-control socket also supports `--control CONFIG nexus inspect JSON` and
+`--control CONFIG nexus associate JSON`. Both require this exact selection shape
+(placeholders only):
+
+```json
+{"table_id":"selected-table","author_ref":"selected-human","expected_revision":0,"target":{"listener_id":"selected-human-listener","bot_id":123,"human_user_id":100,"chat_id":100,"topic_id":7,"native_thread_id":"existing-thread"}}
+```
+
+Inspect first. Associate uses the explicit canonical revision, the configured
+route, the socket's configured human, and the exact already-owned private native
+topic. It reuses `/nexus connect`'s binding writer, context negotiation and native
+cache update. It creates no Telegram message, input journal entry, native turn,
+topic or session. The response identifies `authorship: local_owner`; it never
+claims that the human issued a Telegram command. It does not recover queued work
+or change goals. Never use this route to reconfigure an unrelated binding.
+
+After a timeout or failed cache acknowledgement, inspect canonical and local
+state rather than repeating association: backend configuration may already have
+succeeded. A stale expected revision is refused. Retain mismatches for supported
+reconciliation; never patch native SQLite or replay an uncertain contribution.
+Configuration routes remain immutable for the listener lifetime: add a new route
+through the selected receiver's scoped service-maintenance procedure, preserving
+native sessions, pauses, goals and pending inputs. Metadata registration and
+negotiated support are separate from an actual human note and native response.
+
 `/nexus open <table>` returns that route's Main Mini App link. Multiple research,
 project and recording tables can use distinct `launch_selector` values without
 changing their participant/native bindings. The global selector remains the

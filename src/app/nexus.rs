@@ -1106,6 +1106,102 @@ pub(super) async fn start(app: App) -> Result<()> {
     });
     Ok(())
 }
+/// One binding writer for genuine Telegram commands and explicit owner operations.
+async fn configure_binding(
+    shared: &AppShared,
+    r: &NexusRoute,
+    t: NexusTarget,
+    active: bool,
+    expected_revision: u64,
+) -> Result<Value> {
+    let cfg = config(shared)?;
+    check_target(shared, &t, r)?;
+    let mut input = json!({"table_id":r.table_id,"author_ref":r.author_ref,"expected_revision":expected_revision,"label":r.label,"responder_ref":cfg.responder_ref,"target":t,"active":active,"supported_requests":["contribution","iteration","peer"],"supported_response_modes":["report_reflection"]});
+    // A new receiver must still connect to an older Nexus/helper. Do not
+    // submit an unknown field or claim context support from report mode alone.
+    let capabilities = cfg
+        .call("capabilities", &json!({}))
+        .await
+        .unwrap_or(Value::Null);
+    let schemas = negotiated_review_schemas(&capabilities);
+    if !schemas.is_empty() {
+        input["supported_review_contexts"] = json!(schemas);
+        if schemas
+            .iter()
+            .any(|s| matches!(*s, "interactive_3d:v1" | "video:v1"))
+        {
+            input["supported_response_modes"] = json!(["report_reflection", "artifact_reflection"]);
+        }
+    }
+    let result = cfg.call("configure", &input).await?;
+    let mut saved = input;
+    saved["binding_id"] = result["binding_id"].clone();
+    saved["revision"] = result["revision"].clone();
+    shared
+        .store
+        .nexus_save_binding(&r.table_id, &r.author_ref, &saved)?;
+    Ok(saved)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnerAssociation {
+    table_id: String,
+    author_ref: String,
+    target: NexusTarget,
+    expected_revision: u64,
+}
+
+/// Owner socket only: operator authorship, no fabricated Telegram ingress.
+/// Registering metadata never submits input or invokes the native model.
+pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    let (operation, raw) = args
+        .split_once(' ')
+        .context("Use nexus inspect|associate JSON")?;
+    let selection: OwnerAssociation = serde_json::from_str(raw)?;
+    let cfg = config(&app.shared)?;
+    let r = cfg
+        .routes
+        .iter()
+        .find(|r| {
+            r.table_id == selection.table_id
+                && r.author_ref == selection.author_ref
+                && r.human_user_id == human
+        })
+        .context("Nexus selection is outside configured owner human routes")?;
+    check_target(&app.shared, &selection.target, r)?;
+    if !matches!(operation, "inspect" | "associate") {
+        bail!("Use nexus inspect|associate JSON");
+    }
+    let canonical = cfg
+        .call(
+            "binding",
+            &json!({"table_id":r.table_id,"author_ref":r.author_ref}),
+        )
+        .await?;
+    let local = app.shared.store.nexus_binding(&r.table_id, &r.author_ref)?;
+    if operation == "inspect" {
+        return Ok(
+            json!({"schema":"telecodex.nexus-owner/v1", "canonical":canonical,"local":local}),
+        );
+    }
+    if canonical["revision"].as_u64().unwrap_or(0) != selection.expected_revision {
+        bail!("Nexus revision changed; inspect retained state before another association");
+    }
+    let binding = configure_binding(
+        &app.shared,
+        r,
+        selection.target,
+        true,
+        selection.expected_revision,
+    )
+    .await?;
+    Ok(
+        json!({"schema":"telecodex.nexus-owner/v1", "authorship":"local_owner", "binding":binding,
+        "native_input_submitted":false}),
+    )
+}
+
 pub(super) async fn command(app: &App, message: &Message, human: i64, args: &str) -> Result<()> {
     let cfg = config(&app.shared)?;
     let key = SessionKey::new(message.chat.id, message.message_thread_id);
@@ -1141,38 +1237,20 @@ pub(super) async fn command(app: &App, message: &Message, human: i64, args: &str
                 .codex_thread_id
                 .context("Existing session has no native thread; no thread was created")?,
         };
-        check_target(&app.shared, &t, r)?;
         let old = cfg
             .call(
                 "binding",
                 &json!({"table_id":r.table_id,"author_ref":r.author_ref}),
             )
             .await?;
-        let mut input = json!({"table_id":r.table_id,"author_ref":r.author_ref,"expected_revision":old["revision"].as_u64().unwrap_or(0),"label":r.label,"responder_ref":cfg.responder_ref,"target":t,"active":operation=="connect","supported_requests":["contribution","iteration","peer"],"supported_response_modes":["report_reflection"]});
-        // A new receiver must still connect to an older Nexus/helper. Do not
-        // submit an unknown field or claim context support from report mode alone.
-        let capabilities = cfg
-            .call("capabilities", &json!({}))
-            .await
-            .unwrap_or(Value::Null);
-        let schemas = negotiated_review_schemas(&capabilities);
-        if !schemas.is_empty() {
-            input["supported_review_contexts"] = json!(schemas);
-            if schemas
-                .iter()
-                .any(|s| matches!(*s, "interactive_3d:v1" | "video:v1"))
-            {
-                input["supported_response_modes"] =
-                    json!(["report_reflection", "artifact_reflection"]);
-            }
-        }
-        let result = cfg.call("configure", &input).await?;
-        let mut saved = input;
-        saved["binding_id"] = result["binding_id"].clone();
-        saved["revision"] = result["revision"].clone();
-        app.shared
-            .store
-            .nexus_save_binding(&r.table_id, &r.author_ref, &saved)?;
+        configure_binding(
+            &app.shared,
+            r,
+            t,
+            operation == "connect",
+            old["revision"].as_u64().unwrap_or(0),
+        )
+        .await?;
     } else if operation == "recover" {
         for (id, phase) in app.shared.store.nexus_status(key, human)? {
             if phase != "retained_queue" {
