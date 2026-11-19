@@ -157,6 +157,7 @@ window.Conversation = (() => {
       compose.before(dock); dock.append(bar, playback, compose);
       bar.append($("#conversation-compose-notices"));
     }
+    const atelierWorkshop=standalone&&!readOnly?window.AtelierWorkshopUI?.mount({api,headers}):undefined;
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
     const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
@@ -1757,7 +1758,7 @@ window.Conversation = (() => {
       const keepNative=nativeEnabled&&nativeVoiceSession?.active&&error.status!==401&&error.status!==403;
       presentState({connected:false},!keepNative);
       if (error.status === 401 || error.status === 403) {
-        avatarWorkshop?.reset();
+        avatarWorkshop?.reset();atelierWorkshop?.reset();
         onUnauthorized?.(error);
         workspace?.reset();clearFiles();
         pause("access");stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
@@ -1887,7 +1888,7 @@ window.Conversation = (() => {
         }
       }
       companion?.configure?.(value.expression_pack,value.expression_pack_sha256);
-      avatarWorkshop?.bind(value.binding);
+      avatarWorkshop?.bind(value.binding);atelierWorkshop?.bind(value.binding);
       companion?.observe(value.activity);
       binding = value.binding;timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
       canBudgets=!readOnly && value.can_view_coordination===true;

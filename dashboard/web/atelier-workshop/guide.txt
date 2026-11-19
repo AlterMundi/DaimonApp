@@ -1,0 +1,25 @@
+DaimonAtelier editing guide (application context, not additional human speech)
+
+The attached .clayrequest contains the human's instruction, selected piece IDs
+and exact source revision in millimeters. Preserve that original file. The
+human selected this request and its destination explicitly in the workshop.
+
+Use numerical code/tools to edit the geometry; browser clicks are unnecessary.
+The attached MIT daimonatelier-tools.mjs runs with Node20 or newer:
+  node daimonatelier-tools.mjs inspect REQUEST.clayrequest
+  node daimonatelier-tools.mjs stretch REQUEST.clayrequest REPLY.clayreply y 1.15
+  node daimonatelier-tools.mjs wrap REQUEST.clayrequest CHILD.sculpt REPLY.clayreply "Describe the actual change"
+
+Stretch is an explicit bounded example, not an automatic interpretation of the
+instruction. For another edit, preserve the project/piece IDs and millimeter
+units, create a fresh child revision whose parentId is the exact source revision,
+and wrap it with the tool. Ask in the conversation when the intended edit is
+unclear. The account accepts at most8MiB per returned file, six objects and
+250,000triangles. Mesh operations are not a full parametric CAD history system.
+
+Save the final .clayreply in the actual current turn's output directory supplied
+by the native runtime, alongside an honest explanation of the change. A local
+Markdown path is not a returned attachment. Do not invent a turn/output path,
+source receipt, human approval, model identity or printer job. The workshop will
+check source/parent/request hashes and retain the proposal without replacing the
+human's open work. Printing or public publication is outside this request.

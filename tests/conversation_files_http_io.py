@@ -69,4 +69,8 @@ def qualify(binary):
     finally:
         if b:b.client.close()
         j.close()
-if __name__=='__main__':qualify(sys.argv[1] if len(sys.argv)>1 else 'target/debug/telecodex')
+if __name__=='__main__':
+    binary = sys.argv[1] if len(sys.argv)>1 else 'target/debug/telecodex'
+    qualify(binary)
+    from dashboard_atelier_native_io import qualify as atelier_native
+    atelier_native(binary)

@@ -195,6 +195,15 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 except HTTPException as exc:
                     return JSONResponse({'detail':exc.detail}, status_code=exc.status_code)
                 bound = 2*1024*1024 if request.url.path.endswith('/visual') else 20*1024*1024
+            elif request.url.path == '/api/interaction/atelier':
+                from .atelier_workshop_api import BODY_BYTES
+                try:
+                    selected = await authorize_async(request)
+                    if dict(selected).get('scope','interaction_only') != 'interaction_only' or not secrets.compare_digest(request.headers.get('x-dashboard-csrf',''), selected['csrf']):
+                        raise HTTPException(403, 'Refresh your conversation before saving')
+                except HTTPException as exc:
+                    return JSONResponse({'detail':exc.detail}, status_code=exc.status_code)
+                bound = BODY_BYTES
             else:
                 bound = (1048576 if request.url.path=='/api/interaction/avatars' else
                     262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
@@ -220,6 +229,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             "; font-src 'self'" + (' '+appearance if appearance else '') +
             "; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
             "frame-ancestors 'self' https://web.telegram.org")
+        if request.url.path == '/assets/atelier-workshop/index.html':
+            from .atelier_workshop_api import editor_csp
+            response.headers['Content-Security-Policy'] = editor_csp()
         return response
 
     def authorize(request):
@@ -304,6 +316,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins],
                             mission_host=compose_school_mission(config,provider))
 
+    from .atelier_workshop_api import install as install_atelier
+    install_atelier(app,config,provider,authorize_async,[origin,*additional_origins],authorize_sync=authorize)
+
     public = Path(__file__).parent / 'web'
 
     @app.get('/')
@@ -331,7 +346,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         from .client_build import fingerprint, stamp, workshop_assets
         assets = []
-        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'atelier-workshop/host.js', 'atelier-workshop/index.html', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             assets.append((name, asset))
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -433,7 +448,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'atelier-workshop/host.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
