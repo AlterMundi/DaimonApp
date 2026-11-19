@@ -797,4 +797,13 @@ class DashboardAppearance(unittest.TestCase):
 # entrypoint; the real installed package is additionally qualified when selected.
 from dashboard_computer_health_io import HealthTests
 
+def load_tests(loader, tests, pattern):
+    # Keep new account-workshop coverage in the existing dashboard CI entry.
+    import dashboard_atelier_workshop
+    import dashboard_atelier_workshop_api
+    tests.addTests(loader.loadTestsFromModule(dashboard_atelier_workshop))
+    tests.addTests(loader.loadTestsFromModule(dashboard_atelier_workshop_api))
+    return tests
+
+
 if __name__ == '__main__': unittest.main()

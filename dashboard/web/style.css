@@ -1520,3 +1520,5 @@ html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26
 @media(prefers-reduced-motion:reduce){.standalone-conversation header > .voice-signal {display:none;}}
 
 .avatar-workshop-toolbar .client-build { margin:0 0 0 auto; align-self:center; }
+
+.atelier-workshop-dialog{position:fixed;inset:0;margin:0;width:100%;height:100dvh;max-width:none;max-height:none;padding:0;border:0;background:var(--dm-background,#fff6e9)}.atelier-workshop-dialog[open]{display:flex;flex-direction:column}.atelier-workshop-dialog>button{font-size:16px;min-height:44px;align-self:flex-end;margin:6px}.atelier-workshop-dialog>iframe{width:100%;min-width:0;flex:1;min-height:0;border:0}

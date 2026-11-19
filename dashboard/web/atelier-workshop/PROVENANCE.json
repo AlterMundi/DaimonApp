@@ -1,0 +1,15 @@
+{
+  "schema": "daimon.atelier-assets/v1",
+  "source": "DaimonAtelier MIT editor",
+  "sourceCommit": "e831537e275b048caf8f4f3be2ff61d2e292a10d",
+  "workingCopy": false,
+  "transformation": "Account-bound build; private example locator and media excluded. Exact generic protocol validators are server-only.",
+  "build": "80570627c4bbdb3e3969c23dee486ba549774310038d308fde71d5c485e1cc24",
+  "files": {
+    "index.html": "e0696c764b8d5ead228d32a0e9dd71f85068f17dae1c07c1ba23896669e157b9",
+    "host.js": "4189bc16a9a4beaa856b059394209cf8db3ab5f267eb3150cb8b7a7be2bf86d4",
+    "project.js": "4cfd4fe8446fba6ca49e099891dffca01f08c51cff2bbeb58ef0efac000020d7",
+    "corner-contract.js": "eefb2105c9dd7cf9ac93555f029f77a170a80db6425cb02f0a4fbc8e613528d1",
+    "LICENSE": "1a4db66ba930fc7c09ea430225111b500e23537fdb52404a2d994468192226dc"
+  }
+}
