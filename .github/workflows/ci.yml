@@ -487,6 +487,7 @@ jobs:
       - run: node tests/dashboard_heartbeat_ui.js
       - run: node tests/conversation_ui.js
       - run: node tests/conversation_requests_ui.js
+      - run: node tests/conversation_surface_ui.js
       - run: node tests/microphone_ui.js
       - run: node tests/voice_stream_ui.js
       - run: node tests/voice_session_ui.js

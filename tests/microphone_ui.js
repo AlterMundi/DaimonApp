@@ -12,7 +12,7 @@ function memoryRecovery(){
  }};
  return {values,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
 }
-function boot(live=false,recovery,status404=false,cues=false){
+function boot(live=false,recovery,status404=false,cues=false,beforeOriginal){
  let now=1000;
  const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[],statusReads=[];
  const document={hidden:false,addEventListener(name,fn){events[name]=fn;},querySelector(name){if(!nodes.has(name))nodes.set(name,{hidden:false,disabled:false,textContent:'',handlers:{},setAttribute(k,v){this[k]=v;},addEventListener(n,f){this.handlers[n]=f;}});return nodes.get(name);}};
@@ -63,7 +63,7 @@ function boot(live=false,recovery,status404=false,cues=false){
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
  vm.runInContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),context);
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({beforeOriginal,headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
  return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
   wakeLock:value=>{window.navigator.wakeLock=value;},confirmation:value=>{confirmDiscard=value;},confirmations,
@@ -73,6 +73,18 @@ function boot(live=false,recovery,status404=false,cues=false){
  };
 }
 (async()=>{
+ const contextRef={file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64};
+ for(const live of [false,true]){
+  const contextHold=deferred();let frozen;
+  const surface=boot(live,memoryRecovery(),false,false,async value=>{frozen=value;return contextHold.promise;});
+  await until(()=>surface.ui.canStartNative());const starting=surface.click();await until(()=>!!frozen);
+  assert.equal(surface.mediaRequests(),0,'Context is frozen before microphone permission');
+  assert.equal(frozen.modality,'audio');assert.equal(frozen.binding,'original-binding');
+  contextHold.resolve([contextRef]);await starting;assert.equal(surface.devices.at(-1).captureId,frozen.id);
+  surface.ui.hold();await until(()=>surface.nodes.get('#conversation-recording-review').hidden===false);
+  await surface.click();await until(()=>surface.received.length===1);
+  assert.equal(surface.uploads.at(-1).headers['X-Input-Id'],frozen.id);assert.equal(surface.originals.get(frozen.id).files[0].sha256,contextRef.sha256);
+ }
  const editedStore=memoryRecovery(),edited=boot(true,editedStore);await until(()=>edited.ui.canStartNative());await edited.click();const recorder=edited.devices.at(-1);
  edited.preparation().onPartial('A wrong opening');
  assert.equal(edited.ui.pauseEditing(),true);await Promise.resolve();
