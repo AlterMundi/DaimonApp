@@ -5228,6 +5228,22 @@ mod tests {
 
     #[cfg(unix)]
     async fn provider_owner_fixture(mode: &'static str) {
+        provider_owner_fixture_with_storage(mode, false).await;
+    }
+
+    #[cfg(unix)]
+    async fn provider_owner_fixture_with_storage(mode: &'static str, storage: bool) {
+        let mut restrictions = json!({
+            "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+            "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
+            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+        });
+        if storage {
+            restrictions["processLimits"]["writableStorage"] = json!({
+                "root":"/run/operator-workspace", "maxBytes":33554432
+            });
+        }
+        let expected_restrictions = restrictions.clone();
         const CYCLE: &str = "caa11c1d-b05b-4f56-99ab-167878e86126";
         const ATTEMPT: &str = "050c786c-cf2b-40da-b3e4-dd1e5e560d7c";
         let root = tempfile::tempdir().unwrap();
@@ -5271,11 +5287,7 @@ mod tests {
                         if matches!(mode, "allow" | "unfunded-restricted") {
                             assert_eq!(
                                 request["params"]["hostRestrictions"],
-                                json!({
-                                    "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
-                                    "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
-                                    "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
-                                })
+                                expected_restrictions
                             );
                         } else {
                             assert!(request["params"].get("hostRestrictions").is_none());
@@ -5455,6 +5467,7 @@ mod tests {
                 cancel,
                 receiver,
                 move |event| {
+                    let restrictions = restrictions.clone();
                     let cancel = owner_cancel.clone();
                     let observed = observed.clone();
                     let late_work = late_work.clone();
@@ -5476,11 +5489,10 @@ mod tests {
                                     if mode == "unfunded-restricted" {
                                         CodexEventOutcome::RestrictedInferenceAllowance {
                                             allowance,
-                                            host_restrictions: serde_json::from_value(json!({
-                                                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
-                                                "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
-                                                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
-                                            })).unwrap(),
+                                            host_restrictions: serde_json::from_value(
+                                                restrictions.clone(),
+                                            )
+                                            .unwrap(),
                                         }
                                     } else {
                                         CodexEventOutcome::InferenceAllowance(allowance)
@@ -5490,11 +5502,14 @@ mod tests {
                                         allowance,
                                         cycle_id: CYCLE.into(),
                                         max_output_tokens: 200,
-                                        host_restrictions: if mode=="allow" {Some(serde_json::from_value(json!({
-                                            "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
-                                            "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
-                                            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
-                                        })).unwrap())}else{None},
+                                        host_restrictions: if mode == "allow" {
+                                            Some(
+                                                serde_json::from_value(restrictions.clone())
+                                                    .unwrap(),
+                                            )
+                                        } else {
+                                            None
+                                        },
                                     }
                                 })
                             }
@@ -5586,6 +5601,14 @@ mod tests {
             );
         }
         server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_writable_storage_is_forwarded_with_funded_and_attempt_only_owners() {
+        for mode in ["allow", "unfunded-restricted"] {
+            provider_owner_fixture_with_storage(mode, true).await;
+        }
     }
 
     #[cfg(unix)]
