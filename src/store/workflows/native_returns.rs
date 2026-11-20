@@ -279,14 +279,16 @@ fn save_on(conn: &Connection, context: &ReturnContext) -> Result<()> {
         }
     }
 }
+// A committed downstream Matrix selection consumes the original, not its human
+// presentation lifetime. This does not establish native acceptance or a reply.
 fn original_here_on(conn: &Connection, local: i64) -> Result<bool> {
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.local_turn=?1 AND c.phase='accepted') OR EXISTS(SELECT 1 FROM incoming_updates i WHERE i.turn_id=?1 AND i.status IN ('started','settled','steering'))",[local],|r|r.get(0))?)
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.local_turn=?1 AND c.phase IN ('accepted','matrix_requested')) OR EXISTS(SELECT 1 FROM incoming_updates i WHERE i.turn_id=?1 AND i.status IN ('started','settled','steering'))",[local],|r|r.get(0))?)
 }
 fn human_before_on(conn: &Connection, local: i64, physical: &str) -> Result<bool> {
     // A replacement keeps the publication lifetime of this exact physical turn.
     // Its own bookkeeping prompt is not a native human input. Existing real
     // human/goal execution lifetimes and later accepted originals remain usable.
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 LEFT JOIN bot_state b ON b.key='collector_attachment:'||old.id WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id AND ((old.prompt!='' AND b.key IS NULL) OR json_extract(b.value,'$.native_return_human')=1 OR EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.local_turn=old.id AND c.phase='accepted') OR EXISTS(SELECT 1 FROM incoming_updates i WHERE i.turn_id=old.id AND i.status IN ('started','settled','steering'))))",params![local,physical],|r|r.get(0))?)
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 LEFT JOIN bot_state b ON b.key='collector_attachment:'||old.id WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id AND ((old.prompt!='' AND b.key IS NULL) OR json_extract(b.value,'$.native_return_human')=1 OR EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.local_turn=old.id AND c.phase IN ('accepted','matrix_requested')) OR EXISTS(SELECT 1 FROM incoming_updates i WHERE i.turn_id=old.id AND i.status IN ('started','settled','steering'))))",params![local,physical],|r|r.get(0))?)
 }
 fn later_human_on(conn: &Connection, local: i64) -> Result<bool> {
     if original_here_on(conn, local)? {
