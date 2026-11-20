@@ -181,3 +181,22 @@ adapter. It exercises retained unknown effects, original-input inspection,
 separate projection status and duplicate suppression with zero providers. It does
 not establish production owner repair or a real Matrix outage. The normal
 `--projection` journey continues to qualify the existing publication path.
+
+
+## Model-free operator inspection
+
+The authenticated owner console can recover a retained observation without an
+active model turn:
+
+```text
+telecodex --control RECEIVING_CONFIG owner-action projection status
+telecodex --control RECEIVING_CONFIG owner-action projection inspect INVOCATION
+```
+
+Use `alerts-repair` in place of `projection` for the separately configured repair
+receipt. The console resolves the existing paired human, entry/native binding
+and fixed adapter, then uses the same original-input inspection and exact CAS
+settlement as the Reports controller. It accepts no command, path, resource,
+audience or `run` operation. Inspection does not publish, repair a service, reserve
+provider work or start a model. A changed adapter or unverified serving result
+keeps the original invocation unresolved. Preserve it; do not replay publication.

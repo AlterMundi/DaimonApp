@@ -154,7 +154,15 @@ else:
             status=j.call('route-projection-held',operation,dict(action='status'))
             assert status['input_retained'] is True and 'original' not in json.dumps(status), status
             snapshot.write_text('{"selected":"later mutable input"}')
-            observed=j.call('route-projection-inspect',operation,dict(action='inspect',invocation=result['invocation']))
+            before_owner_calls=len(j.rpc)
+            purpose_name='alerts-repair' if repair else 'projection'
+            assert j.read('owner-action',purpose_name,'status')['result']['input_retained'] is True
+            rejected=j.read('owner-action',purpose_name,'inspect','different-invocation',ok=False)
+            assert rejected.get('ok') is False
+            observed=j.read('owner-action',purpose_name,'inspect',result['invocation'])['result']
+            assert len(j.rpc)==before_owner_calls, 'Owner inspection must not use native RPC or start a model'
+            rejected=j.read('owner-action',purpose_name,'run',result['invocation'],ok=False)
+            assert rejected.get('ok') is False, rejected
             assert observed['current']['phase']=='observed' and not observed['input_retained'], observed
             assert observed['current']['outcome']['verification_only'] is True, observed
             assert observed['current']['outcome']['original_invocation_execution']=='not_established', observed
@@ -170,6 +178,11 @@ else:
         j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
         j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
         assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==(12 if production else 3)
+        if projection:
+            before_owner_calls=len(j.rpc)
+            assert j.read('owner-action',purpose_name,'inspect',result['invocation'])['result']['current']['phase']=='observed'
+            assert len(j.rpc)==before_owner_calls
+            assert helper.with_suffix('.runs').read_text()=='one'
         if production and not periodic:
             # An ordinary goal starts after the bounded collector closes. Only
             # metadata and exact collector attachment may bridge that gap.
