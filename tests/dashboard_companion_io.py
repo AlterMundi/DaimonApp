@@ -193,6 +193,12 @@ class Companion(unittest.TestCase):
         self.assertEqual(receiver['interaction']['private_projection'],projection)
         projection['command']=['/owned/qualified-successor']
         self.assertEqual(receiving_authority(receiver),before)
+        repair={**projection,'task_id':'matrix-alerts','command':['/owned/reader-repair']}
+        receiver['interaction']['alerts_repair']=repair
+        self.assertEqual(receiving_authority(receiver),before)
+        self.assertEqual(receiver['interaction']['alerts_repair'],repair)
+        repair['command']=['/owned/qualified-reader-repair']
+        self.assertEqual(receiving_authority(receiver),before)
         policy={'permissions':'bounded-work','tools':[{'name':'exec_command'}],
             'environment':{'PATH':'/usr/bin:/bin'},
             'processLimits':{'memoryBytes':1073741824,'cpuPercent':100,'tasks':128}}

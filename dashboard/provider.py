@@ -39,7 +39,7 @@ def receiving_authority(receiver):
         # audience, data or control endpoint. Its full descriptor is fenced by
         # the native action journal; web sessions retain their actual scope.
         interaction = {key: value for key, value in interaction.items()
-                       if key != 'private_projection'}
+                       if key not in ('private_projection', 'alerts_repair')}
     if isinstance(interaction, dict) and isinstance(interaction.get('matrix_transport'), dict):
         # Resource/tool ceilings constrain native work, not dashboard identity.
         # Keep all actor, route, credential and funding selectors in the binding.

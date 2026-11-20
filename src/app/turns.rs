@@ -662,12 +662,19 @@ pub(super) async fn process_turn(
             .workflow_return
             .as_deref()
             .is_some_and(|id| id.starts_with("heartbeat:"))
-            && let Some(projection) = profile.as_ref().and_then(|c| c.private_projection.as_ref())
         {
-            runtime_request
-                .runtime_instructions
-                .get_or_insert_with(String::new)
-                .push_str(&super::private_projection::runtime_hint(projection));
+            if let Some(projection) = profile.as_ref().and_then(|c| c.private_projection.as_ref()) {
+                runtime_request
+                    .runtime_instructions
+                    .get_or_insert_with(String::new)
+                    .push_str(&super::private_projection::runtime_hint(projection));
+            }
+            if let Some(repair) = profile.as_ref().and_then(|c| c.alerts_repair.as_ref()) {
+                runtime_request
+                    .runtime_instructions
+                    .get_or_insert_with(String::new)
+                    .push_str(&super::private_projection::repair_runtime_hint(repair));
+            }
         }
         let input = queued
             .conversation_input

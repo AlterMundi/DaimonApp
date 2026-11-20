@@ -1,13 +1,14 @@
 //! One current/previous fixed-action receipt, using the existing owner journal.
 //! An unresolved invocation is never another queued job or an automatic retry.
 use super::*;
+use crate::interaction::OwnerActionPurpose;
 use sha2::{Digest, Sha256};
 
-fn key(human: i64, session: i64) -> String {
-    format!("private_projection:{human}:{session}")
+fn key(purpose: OwnerActionPurpose, human: i64, session: i64) -> String {
+    format!("{}:{human}:{session}", purpose.journal_name())
 }
-fn input_key(human: i64, session: i64) -> String {
-    format!("private_projection_input:{human}:{session}")
+fn input_key(purpose: OwnerActionPurpose, human: i64, session: i64) -> String {
+    format!("{}_input:{human}:{session}", purpose.journal_name())
 }
 
 fn load(conn: &Connection, key: &str) -> Result<Value> {
@@ -35,6 +36,7 @@ fn save(conn: &Connection, key: &str, value: &Value) -> Result<()> {
 impl Store {
     pub(crate) fn private_projection_status(
         &self,
+        purpose: OwnerActionPurpose,
         human: i64,
         entry: SessionKey,
         native: &str,
@@ -42,10 +44,10 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (session, actual) = super::super::presentation::entry_on(&conn, human, entry)?;
         anyhow::ensure!(actual == native, "Private projection owner changed");
-        let mut record = load(&conn, &key(human, session))?;
+        let mut record = load(&conn, &key(purpose, human, session))?;
         record["input_retained"] = json!(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM bot_state WHERE key=?1)",
-            [input_key(human, session)],
+            [input_key(purpose, human, session)],
             |row| row.get::<_, bool>(0)
         )?);
         Ok(record)
@@ -54,6 +56,7 @@ impl Store {
     /// Host-only recovery bytes: never included in the model-facing status.
     pub(crate) fn private_projection_input(
         &self,
+        purpose: OwnerActionPurpose,
         human: i64,
         entry: SessionKey,
         native: &str,
@@ -62,7 +65,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (session, actual) = super::super::presentation::entry_on(&conn, human, entry)?;
         anyhow::ensure!(actual == native, "Projection recovery owner changed");
-        let record = load(&conn, &key(human, session))?;
+        let record = load(&conn, &key(purpose, human, session))?;
         anyhow::ensure!(
             record["current"]["invocation"] == invocation
                 && record["current"]["phase"] != "observed",
@@ -70,7 +73,7 @@ impl Store {
         );
         let raw: String = conn.query_row(
             "SELECT value FROM bot_state WHERE key=?1",
-            [input_key(human, session)],
+            [input_key(purpose, human, session)],
             |row| row.get(0),
         )?;
         anyhow::ensure!(
@@ -86,6 +89,7 @@ impl Store {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn private_projection_claim(
         &self,
+        purpose: OwnerActionPurpose,
         human: i64,
         entry: SessionKey,
         native: &str,
@@ -164,7 +168,7 @@ impl Store {
                 && deadline > Utc::now().timestamp_millis(),
             "Projection execution no longer active"
         );
-        let storage = key(human, p.session);
+        let storage = key(purpose, human, p.session);
         let previous = load(&tx, &storage)?;
         if !previous["current"].is_null() {
             let current = &previous["current"];
@@ -198,13 +202,14 @@ impl Store {
         // One input is committed atomically with its intent and remains only
         // while that invocation is unresolved. Normal snapshot edits cannot
         // erase the bytes needed after a lost command/response confirmation.
-        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![input_key(human,p.session),snapshot_json])?;
+        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![input_key(purpose,human,p.session),snapshot_json])?;
         tx.commit()?;
         Ok(json!({"claimed":true,"current":current}))
     }
 
     pub(crate) fn private_projection_finish(
         &self,
+        purpose: OwnerActionPurpose,
         human: i64,
         entry: SessionKey,
         native: &str,
@@ -223,7 +228,7 @@ impl Store {
             actual == native,
             "Projection owner changed; preserve retained intent"
         );
-        let storage = key(human, session);
+        let storage = key(purpose, human, session);
         let mut record = load(&tx, &storage)?;
         anyhow::ensure!(
             record["current"]["invocation"] == invocation,
@@ -237,7 +242,7 @@ impl Store {
             record["current"]["original_execution_outcome"] = record["current"]["outcome"].clone();
             tx.execute(
                 "DELETE FROM bot_state WHERE key=?1",
-                [input_key(human, session)],
+                [input_key(purpose, human, session)],
             )?;
         }
         record["current"]["phase"] = outcome["phase"].clone();

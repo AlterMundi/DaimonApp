@@ -31,6 +31,8 @@ pub struct InteractionConfig {
     pub artifact_store: Option<ArtifactConfig>,
     /// One explicitly configured private projection; no model-selected command.
     pub private_projection: Option<PrivateProjectionConfig>,
+    /// Separate fixed Alerts repair purpose; absent selects no repair action.
+    pub alerts_repair: Option<PrivateProjectionConfig>,
     #[serde(default)]
     pub targets: Vec<Target>,
     /// Include existing bound conversations owned by this human in this chat.
@@ -50,6 +52,23 @@ pub struct InteractionConfig {
     pub matrix_inbox_channel: Option<String>,
     #[serde(default = "default_active_workers")]
     pub max_active_workers: usize,
+}
+
+/// Fixed host purposes retain independent bounded receipts, not actor-selected commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnerActionPurpose {
+    Projection,
+    AlertsRepair,
+}
+
+#[cfg(target_os = "linux")]
+impl OwnerActionPurpose {
+    pub(crate) fn journal_name(self) -> &'static str {
+        match self {
+            Self::Projection => "private_projection",
+            Self::AlertsRepair => "alerts_repair",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -303,6 +322,15 @@ impl InteractionConfig {
         }
         if let Some(projection) = &self.private_projection {
             projection.validate()?;
+        }
+        if let Some(repair) = &self.alerts_repair {
+            repair.validate()?;
+            anyhow::ensure!(
+                self.private_projection
+                    .as_ref()
+                    .is_none_or(|p| p.task_id != repair.task_id),
+                "Fixed owner actions require distinct Reports tasks"
+            );
         }
         if self.human_id <= 0
             || self.chat_id == 0
@@ -764,6 +792,7 @@ mod tests {
             native_routed_returns: false,
             artifact_store: None,
             private_projection: None,
+            alerts_repair: None,
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
@@ -785,6 +814,26 @@ mod tests {
             ],
         };
         cfg.validate().unwrap();
+        let action = PrivateProjectionConfig {
+            task_id: "publication".into(),
+            command: vec!["/bin/true".into()],
+            working_directory: "/code".into(),
+            snapshot: "/input.json".into(),
+            reconciliation: "/cursor.json".into(),
+            reconciliation_return_pointer: "/return".into(),
+            reconciliation_partial_pointer: "/partial".into(),
+            timeout_seconds: 20,
+        };
+        cfg.private_projection = Some(action.clone());
+        cfg.alerts_repair = Some(action);
+        assert!(
+            cfg.validate().is_err(),
+            "One task cannot authorize both host purposes"
+        );
+        cfg.alerts_repair.as_mut().unwrap().task_id = "matrix-alerts".into();
+        cfg.validate().unwrap();
+        cfg.private_projection = None;
+        cfg.alerts_repair = None;
         for limit in [0, 65, usize::MAX] {
             cfg.max_active_workers = limit;
             assert!(cfg.validate().is_err());

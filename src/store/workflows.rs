@@ -6012,6 +6012,23 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn private_projection_claim_is_scoped_once_and_survives_lost_ack_restart() {
+        fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+            crate::interaction::OwnerActionPurpose::Projection,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn alerts_repair_claim_is_scoped_once_and_survives_lost_ack_restart() {
+        fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+            crate::interaction::OwnerActionPurpose::AlertsRepair,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+        action_purpose: crate::interaction::OwnerActionPurpose,
+    ) {
         use crate::store::{
             HeartbeatCommand as H, HeartbeatPurpose, HeartbeatReviewContract, HeartbeatReviewTask,
         };
@@ -6128,6 +6145,7 @@ mod tests {
         let changed = format!("{:x}", Sha256::digest(changed_input.as_bytes()));
         let claim = |store: &Store, human, physical: &str, revision: &str, snapshot: &str| {
             store.private_projection_claim(
+                action_purpose,
                 human,
                 e.key,
                 "native-1",
@@ -6207,19 +6225,45 @@ mod tests {
             claim(&reopened, 100, "physical", &task_revision, &changed).unwrap()["claimed"],
             false
         );
+        let other = match action_purpose {
+            crate::interaction::OwnerActionPurpose::Projection => {
+                crate::interaction::OwnerActionPurpose::AlertsRepair
+            }
+            crate::interaction::OwnerActionPurpose::AlertsRepair => {
+                crate::interaction::OwnerActionPurpose::Projection
+            }
+        };
+        assert!(
+            reopened
+                .private_projection_status(other, 100, e.key, "native-1")
+                .unwrap()["current"]
+                .is_null()
+        );
+        assert!(
+            reopened
+                .private_projection_input(
+                    other,
+                    100,
+                    e.key,
+                    "native-1",
+                    first["current"]["invocation"].as_str().unwrap()
+                )
+                .is_err()
+        );
         let invocation = first["current"]["invocation"].as_str().unwrap();
         let status = reopened
-            .private_projection_status(100, e.key, "native-1")
+            .private_projection_status(action_purpose, 100, e.key, "native-1")
             .unwrap();
         assert_eq!(status["input_retained"], true);
         assert!(!status.to_string().contains("private-test-snapshot"));
         let (retained, raw) = reopened
-            .private_projection_input(100, e.key, "native-1", invocation)
+            .private_projection_input(action_purpose, 100, e.key, "native-1", invocation)
             .unwrap();
         assert_eq!(raw, original_input);
         assert_eq!(retained["snapshot"], hash);
         reopened
             .private_projection_finish(
+                action_purpose,
                 100,
                 e.key,
                 "native-1",
@@ -6229,12 +6273,13 @@ mod tests {
             .unwrap();
         assert!(
             reopened
-                .private_projection_input(100, e.key, "native-1", invocation)
+                .private_projection_input(action_purpose, 100, e.key, "native-1", invocation)
                 .is_ok()
         );
 
         reopened
             .private_projection_finish(
+                action_purpose,
                 100,
                 e.key,
                 "native-1",
@@ -6250,6 +6295,7 @@ mod tests {
         assert!(
             reopened
                 .private_projection_finish(
+                    action_purpose,
                     100,
                     e.key,
                     "native-1",
@@ -6259,7 +6305,7 @@ mod tests {
                 .is_err()
         );
         let status = reopened
-            .private_projection_status(100, e.key, "native-1")
+            .private_projection_status(action_purpose, 100, e.key, "native-1")
             .unwrap();
         assert_eq!(status["current"]["phase"], "observed");
         assert_eq!(status["input_retained"], false);
@@ -6269,6 +6315,7 @@ mod tests {
         );
         reopened
             .private_projection_finish(
+                action_purpose,
                 100,
                 e.key,
                 "native-1",
@@ -6278,7 +6325,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             reopened
-                .private_projection_status(100, e.key, "native-1")
+                .private_projection_status(action_purpose, 100, e.key, "native-1")
                 .unwrap()["current"]["phase"],
             "observed"
         );

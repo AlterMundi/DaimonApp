@@ -55,8 +55,9 @@ mod private_projection {
         _request: &crate::codex::DynamicToolRequest,
         _args: serde_json::Value,
         _closed: &CancellationToken,
+        _purpose: crate::interaction::OwnerActionPurpose,
     ) -> Result<serde_json::Value> {
-        bail!("Private projection action requires the configured Linux owner")
+        bail!("Fixed owner action requires the configured Linux owner")
     }
 }
 mod questions;
