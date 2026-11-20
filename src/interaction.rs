@@ -213,6 +213,24 @@ pub struct NativeProcessLimits {
     pub memory_bytes: u64,
     pub cpu_percent: u32,
     pub tasks: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writable_storage: Option<NativeWritableStorageLimits>,
+}
+
+/// Existing operator storage; never allocation authority or a filesystem grant.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeWritableStorageLimits {
+    pub root: std::path::PathBuf,
+    pub max_bytes: u64,
+}
+
+impl std::fmt::Debug for NativeWritableStorageLimits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeWritableStorageLimits")
+            .field("max_bytes", &self.max_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 impl NativeHostRestrictions {
@@ -227,6 +245,11 @@ impl NativeHostRestrictions {
                     |limits| (1..=1024 * 1024 * 1024).contains(&limits.memory_bytes)
                         && (1..=100).contains(&limits.cpu_percent)
                         && (1..=128).contains(&limits.tasks)
+                        && limits.writable_storage.as_ref().is_none_or(|storage| {
+                            storage.root.is_absolute()
+                                && storage.root.parent().is_some()
+                                && (1..=16 * 1024 * 1024 * 1024).contains(&storage.max_bytes)
+                        })
                 )
                 && name(&self.permissions)
                 && self.tools.len() <= 256
@@ -935,6 +958,41 @@ impl Delivery {
 mod native_host_restrictions_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn writable_storage_is_private_closed_and_never_allocates() {
+        let selected = json!({"permissions":"work","tools":[],"environment":{},
+            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000},
+            "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128,
+                "writableStorage":{"root":"/run/private-workspace","maxBytes":33554432}}});
+        let profile: NativeHostRestrictions = serde_json::from_value(selected.clone()).unwrap();
+        profile.validate().unwrap();
+        assert_eq!(serde_json::to_value(&profile).unwrap(), selected);
+        assert!(!format!("{profile:?}").contains("private-workspace"));
+        for root in ["/", "relative-workspace"] {
+            let mut invalid = selected.clone();
+            invalid["processLimits"]["writableStorage"]["root"] = root.into();
+            assert!(
+                serde_json::from_value::<NativeHostRestrictions>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        for bytes in [0u64, 16 * 1024 * 1024 * 1024 + 1] {
+            let mut invalid = selected.clone();
+            invalid["processLimits"]["writableStorage"]["maxBytes"] = bytes.into();
+            assert!(
+                serde_json::from_value::<NativeHostRestrictions>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut unknown = selected;
+        unknown["processLimits"]["writableStorage"]["allocate"] = true.into();
+        assert!(serde_json::from_value::<NativeHostRestrictions>(unknown).is_err());
+    }
 
     #[test]
     fn attempt_only_inline_configuration_accepts_valid_physical_ceilings() {
