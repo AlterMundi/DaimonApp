@@ -5724,7 +5724,7 @@ mod tests {
                 .is_empty()
         );
         producer_edit(&s, &entry, |v| {
-            assert_eq!(v["native_returns"][0]["phase"], "uncertain")
+            assert_eq!(v["native_returns"][0]["phase"], "attention_collection_lost")
         });
         let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 1);
@@ -6623,8 +6623,16 @@ mod tests {
         }
         let first = claim(&s, 100, "physical", &task_revision, &hash).unwrap();
         assert_eq!(first["claimed"], true);
+        s.record_turn_native_thread(local, "native-1").unwrap();
         drop(s);
         let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        // The departed local worker is no longer a live actor. A supported
+        // attachment to the same observed physical turn restores collection,
+        // not execution of the unresolved action or another model input.
+        assert!(claim(&reopened, 100, "physical", &task_revision, &hash).is_err());
+        reopened
+            .record_collector_attachment(local, e.key, 100, "native-1", "physical")
+            .unwrap();
         assert_eq!(
             claim(&reopened, 100, "physical", &task_revision, &hash).unwrap()["claimed"],
             false
