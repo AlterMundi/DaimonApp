@@ -15,6 +15,9 @@ def qualify(binary, production=False, periodic=False, projection=False, repair=F
     operation = "alerts_repair" if repair else "private_projection"
     assert not projection or periodic, "Projection requires the existing periodic Reports fixture"
     j = HeartbeatJourney(str(Path(binary).resolve()))
+    def native_work_count():
+        return sum(m.get('method') in ('thread/start','turn/start','turn/steer','turn/startBoundedIfIdle','thread/goal/set','thread/goal/conditionalActivate') for m in j.rpc)
+    collector_closed=False
     try:
         if production:j.expected_attempts=64
         j.start()
@@ -153,8 +156,27 @@ else:
             assert result['outcome']['phase']=='unconfirmed', result
             status=j.call('route-projection-held',operation,dict(action='status'))
             assert status['input_retained'] is True and 'original' not in json.dumps(status), status
+            assert j.row("SELECT count(*) FROM bot_state WHERE key LIKE ?",(operation+'_adapter:%',))==[(1,)]
+            assert 'configuration_json' not in json.dumps(status)
             snapshot.write_text('{"selected":"later mutable input"}')
-            observed=j.call('route-projection-inspect',operation,dict(action='inspect',invocation=result['invocation']))
+            if not repair:
+                j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
+                j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
+                j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
+                j.stop()
+                relocated=j.root/'relocated-source.json';relocated.write_text(snapshot.read_text())
+                before_config=j.config.read_text();old='snapshot='+json.dumps(str(snapshot));assert old in before_config
+                j.config.write_text(before_config.replace(old,'snapshot='+json.dumps(str(relocated))))
+                j.start();j.wait_control_socket(j.socket);collector_closed=True
+            before_owner_calls=native_work_count()
+            purpose_name='alerts-repair' if repair else 'projection'
+            assert j.read('owner-action',purpose_name,'status')['result']['input_retained'] is True
+            rejected=j.read('owner-action',purpose_name,'inspect','different-invocation',ok=False)
+            assert rejected.get('ok') is False
+            observed=(j.call('route-projection-inspect',operation,dict(action='inspect',invocation=result['invocation'])) if repair else j.read('owner-action',purpose_name,'inspect',result['invocation'])['result'])
+            if not repair:assert native_work_count()==before_owner_calls, 'Owner inspection must not use native RPC or start a model'
+            rejected=j.read('owner-action',purpose_name,'run',result['invocation'],ok=False)
+            assert rejected.get('ok') is False, rejected
             assert observed['current']['phase']=='observed' and not observed['input_retained'], observed
             assert observed['current']['outcome']['verification_only'] is True, observed
             assert observed['current']['outcome']['original_invocation_execution']=='not_established', observed
@@ -163,13 +185,21 @@ else:
                 assert observed['current']['outcome']['resolution_revision']==2
                 assert j.call('route-other-purpose-status','private_projection',dict(action='status')).get('current') is None
             action['snapshot_sha256']=hashlib.sha256(snapshot.read_bytes()).hexdigest()
-            again=j.call('route-projection-repeat',operation,action)
-            assert again.get('claimed') is False, again
+            if not collector_closed:
+                again=j.call('route-projection-repeat',operation,action)
+                assert again.get('claimed') is False, again
+            assert j.row("SELECT count(*) FROM bot_state WHERE key LIKE ?",(operation+'_adapter:%',))==[(0,)]
             assert helper.with_suffix('.runs').read_text()=='one'
-        j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
-        j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
-        j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
+        if not collector_closed:
+            j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
+            j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
+            j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
         assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==(12 if production else 3)
+        if projection:
+            before_owner_calls=native_work_count()
+            assert j.read('owner-action',purpose_name,'inspect',result['invocation'])['result']['current']['phase']=='observed'
+            assert native_work_count()==before_owner_calls
+            assert helper.with_suffix('.runs').read_text()=='one'
         if production and not periodic:
             # An ordinary goal starts after the bounded collector closes. Only
             # metadata and exact collector attachment may bridge that gap.

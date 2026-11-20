@@ -315,6 +315,66 @@ async fn execute(
     execute_mode(config, snapshot, seconds, closed, false, purpose).await
 }
 
+async fn inspect_existing(
+    app: &App,
+    human: i64,
+    native: &str,
+    config: &crate::interaction::PrivateProjectionConfig,
+    invocation: &str,
+    closed: &CancellationToken,
+    purpose: OwnerActionPurpose,
+) -> Result<Value> {
+    let key = super::routing::profile(&app.shared)?.entry();
+    let record = app
+        .shared
+        .store
+        .private_projection_status(purpose, human, key, native)?;
+    anyhow::ensure!(
+        record["current"]["invocation"] == invocation,
+        "Projection invocation changed"
+    );
+    if record["current"]["phase"] == "observed" {
+        return Ok(record);
+    }
+    let (current, raw) = app
+        .shared
+        .store
+        .private_projection_input(purpose, human, key, native, invocation)?;
+    let adapter = app.shared.store.private_projection_inspection_adapter(
+        purpose,
+        human,
+        key,
+        native,
+        invocation,
+        &serde_json::to_string(config)?,
+    )?;
+    let original: crate::interaction::PrivateProjectionConfig = serde_json::from_str(&adapter)?;
+    original.validate()?;
+    let config = &original;
+    anyhow::ensure!(
+        current["descriptor"] == digest(&serde_json::to_vec(config)?),
+        "Retained original adapter changed"
+    );
+    let outcome = execute_mode(
+        config,
+        raw.as_bytes(),
+        config.timeout_seconds,
+        closed,
+        true,
+        purpose,
+    )
+    .await
+    .unwrap_or_else(
+        |_| json!({"phase":"unconfirmed","inspection_required":true,"automatic_retry":false}),
+    );
+    app.shared
+        .store
+        .private_projection_finish(purpose, human, key, native, invocation, outcome)?;
+    app.shared
+        .store
+        .private_projection_status(purpose, human, key, native)
+}
+
 pub(super) async fn tool(
     app: &App,
     key: SessionKey,
@@ -346,52 +406,16 @@ pub(super) async fn tool(
     .context("Fixed owner action is not configured")?;
     config.validate()?;
     if let Request::Inspect { ref invocation } = args {
-        let record =
-            app.shared
-                .store
-                .private_projection_status(purpose, human, key, &request.thread_id)?;
-        anyhow::ensure!(
-            record["current"]["invocation"] == invocation.as_str(),
-            "Projection invocation changed"
-        );
-        if record["current"]["phase"] == "observed" {
-            return Ok(record);
-        }
-        let (current, raw) = app.shared.store.private_projection_input(
-            purpose,
+        return inspect_existing(
+            app,
             human,
-            key,
             &request.thread_id,
-            invocation,
-        )?;
-        anyhow::ensure!(
-            current["descriptor"] == digest(&serde_json::to_vec(&config)?),
-            "Projection adapter selection changed; inspect through original owning selection"
-        );
-        let outcome = execute_mode(
             &config,
-            raw.as_bytes(),
-            config.timeout_seconds,
+            invocation,
             closed,
-            true,
             purpose,
         )
-        .await
-        .unwrap_or_else(
-            |_| json!({"phase":"unconfirmed","inspection_required":true,"automatic_retry":false}),
-        );
-        app.shared.store.private_projection_finish(
-            purpose,
-            human,
-            key,
-            &request.thread_id,
-            invocation,
-            outcome,
-        )?;
-        return app
-            .shared
-            .store
-            .private_projection_status(purpose, human, key, &request.thread_id);
+        .await;
     }
     #[cfg(not(target_os = "linux"))]
     bail!("Private projection action requires the configured Linux owner");
@@ -411,7 +435,12 @@ pub(super) async fn tool(
             "Projection input revision changed"
         );
         validate_reconciliation(&config, &receipt, &return_id)?;
-        let descriptor = digest(&serde_json::to_vec(&config)?);
+        let adapter_json = serde_json::to_string(&config)?;
+        anyhow::ensure!(
+            adapter_json.len() <= 16000,
+            "Owner adapter configuration exceeds recovery bound"
+        );
+        let descriptor = digest(adapter_json.as_bytes());
         let claim = app.shared.store.private_projection_claim(
             purpose,
             human,
@@ -433,6 +462,14 @@ pub(super) async fn tool(
         let invocation = claim["current"]["invocation"]
             .as_str()
             .context("Missing projection invocation")?;
+        app.shared.store.private_projection_inspection_adapter(
+            purpose,
+            human,
+            key,
+            &request.thread_id,
+            invocation,
+            &adapter_json,
+        )?;
         let deadline = claim["current"]["deadline_unix_ms"]
             .as_i64()
             .context("Missing projection deadline")?;
@@ -725,4 +762,62 @@ mod tests {
             );
         }
     }
+}
+
+/// Operator-only inspection of retained work. No turn, caller-selected command,
+/// publication, grant or resource reservation is created by this route.
+pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+    let fields: Vec<_> = args.split_whitespace().collect();
+    let (purpose, action) = match fields.as_slice() {
+        ["projection", action, ..] => (OwnerActionPurpose::Projection, *action),
+        ["alerts-repair", action, ..] => (OwnerActionPurpose::AlertsRepair, *action),
+        _ => bail!("Expected owner-action projection|alerts-repair status|inspect INVOCATION"),
+    };
+    anyhow::ensure!(
+        (action == "status" && fields.len() == 2) || (action == "inspect" && fields.len() == 3),
+        "Owner actions permit status or exact retained inspection only"
+    );
+    let cfg = super::routing::profile(&app.shared)?;
+    anyhow::ensure!(
+        cfg.human_id == human,
+        "Owner action belongs to the configured paired human"
+    );
+    let key = cfg.entry();
+    let session = app
+        .shared
+        .store
+        .get_session(key)?
+        .context("Owner entry missing")?;
+    let native = session
+        .codex_thread_id
+        .as_deref()
+        .context("Owner native binding missing")?;
+    app.shared
+        .store
+        .validate_owned_binding(key, human, native)?;
+    if action == "status" {
+        return app
+            .shared
+            .store
+            .private_projection_status(purpose, human, key, native);
+    }
+    let Ok(_permit) = ACTION.try_acquire() else {
+        return Ok(json!({"busy":true,"queued":false}));
+    };
+    let config = match purpose {
+        OwnerActionPurpose::Projection => cfg.private_projection,
+        OwnerActionPurpose::AlertsRepair => cfg.alerts_repair,
+    }
+    .context("Fixed owner action is not configured")?;
+    config.validate()?;
+    inspect_existing(
+        app,
+        human,
+        native,
+        &config,
+        fields[2],
+        &CancellationToken::new(),
+        purpose,
+    )
+    .await
 }

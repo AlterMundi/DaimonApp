@@ -84,6 +84,57 @@ impl Store {
         Ok((record["current"].clone(), raw))
     }
 
+    /// One bounded host-only adapter binding for the unresolved invocation.
+    /// It is not part of model-facing status and never selects another action.
+    pub(crate) fn private_projection_inspection_adapter(
+        &self,
+        purpose: OwnerActionPurpose,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        invocation: &str,
+        fallback_json: &str,
+    ) -> Result<String> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (session, actual) = super::super::presentation::entry_on(&tx, human, entry)?;
+        anyhow::ensure!(actual == native, "Inspection adapter owner changed");
+        let record = load(&tx, &key(purpose, human, session))?;
+        let current = &record["current"];
+        anyhow::ensure!(
+            current["invocation"] == invocation && current["phase"] != "observed",
+            "Exact unresolved inspection adapter required"
+        );
+        let storage = format!("{}_adapter:{human}:{session}", purpose.journal_name());
+        let held = load(&tx, &storage)?;
+        let json = if held["invocation"] == invocation {
+            held["configuration_json"]
+                .as_str()
+                .context("Retained adapter missing")?
+        } else {
+            fallback_json
+        };
+        anyhow::ensure!(
+            json.len() <= 16000
+                && current["descriptor"] == format!("{:x}", Sha256::digest(json.as_bytes())),
+            "Original adapter binding unavailable; preserve invocation"
+        );
+        anyhow::ensure!(
+            serde_json::from_str::<Value>(json)?.is_object(),
+            "Adapter configuration must be an object"
+        );
+        let owned = json.to_owned();
+        if held["invocation"] != invocation {
+            save(
+                &tx,
+                &storage,
+                &json!({"invocation":invocation,"configuration_json":owned}),
+            )?;
+        }
+        tx.commit()?;
+        Ok(owned)
+    }
+
     /// Returns retained evidence unless a new action was atomically claimed.
     /// The remaining deadline belongs to the already reserved physical execution.
     #[allow(clippy::too_many_arguments)]
@@ -243,6 +294,13 @@ impl Store {
             tx.execute(
                 "DELETE FROM bot_state WHERE key=?1",
                 [input_key(purpose, human, session)],
+            )?;
+            tx.execute(
+                "DELETE FROM bot_state WHERE key=?1",
+                [format!(
+                    "{}_adapter:{human}:{session}",
+                    purpose.journal_name()
+                )],
             )?;
         }
         record["current"]["phase"] = outcome["phase"].clone();

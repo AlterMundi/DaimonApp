@@ -181,3 +181,32 @@ adapter. It exercises retained unknown effects, original-input inspection,
 separate projection status and duplicate suppression with zero providers. It does
 not establish production owner repair or a real Matrix outage. The normal
 `--projection` journey continues to qualify the existing publication path.
+
+
+## Model-free operator inspection
+
+The authenticated owner console can recover a retained observation without an
+active model turn:
+
+```text
+telecodex --control RECEIVING_CONFIG owner-action projection status
+telecodex --control RECEIVING_CONFIG owner-action projection inspect INVOCATION
+```
+
+Use `alerts-repair` in place of `projection` for the separately configured repair
+receipt. The console resolves the existing paired human, entry/native binding
+and fixed adapter, then uses the same original-input inspection and exact CAS
+settlement as the Reports controller. It accepts no command, path, resource,
+audience or `run` operation. Inspection does not publish, repair a service, reserve
+provider work or start a model. A changed adapter or unverified serving result
+keeps the original invocation unresolved. Preserve it; do not replay publication.
+
+One host-only adapter binding (at most16KiB per configured purpose) is retained
+with the unresolved invocation before command dispatch. A legacy invocation can
+capture its binding during inspection only while the current typed configuration
+still hashes to its original descriptor. Later file relocation uses that retained
+binding and pinned original input for inspection; it does not rewrite the old
+intent or repeat its effect. The binding is hidden from model status and deleted
+atomically with pinned input after verified observation. An unconfirmed result
+remains unconfirmed across relocation. Do not make filesystem migration depend on
+pretending that an old publication was verified.
