@@ -1,4 +1,4 @@
-# Heartbeat header observation and controls gap
+# Heartbeat observation, controls and native returns
 
 The heart beside the daimon name reads the existing configured owner console's
 `heartbeat status` through the authenticated Interaction adapter. It creates no
@@ -746,6 +746,36 @@ replacements never change state. Restore only operation-owned unchanged pauses.
 A private viewer projection may be part of its explicitly selected human purpose;
 read the owning snapshot schema and run its finite conditional refresh after
 meaningful source changes. An unchanged refresh must not grow publication history.
+
+### Review and conversation narration
+
+`heartbeat_reported` acknowledges review of the exact retained source. A task can
+successfully read its report and update a cursor while its native turn finishes
+with an empty final answer. Neither that acknowledgment, a completed turn nor a
+cursor field named `reported` proves that a person-facing message exists.
+
+Keep source review and notification distinct in the existing bounded task cursor.
+For a new meaningful result, the task emits one genuine, concisely attributed
+final answer through its ordinary native return. Unchanged observations remain
+quiet. Retain an uncertain notification's original return instead of announcing
+the same batch again. Existing historical markers remain history; correcting
+their meaning does not authorize replay or retrospective delivery claims.
+
+Automatic replies can be retained in `interaction_native_messages` and exposed
+as `native:ROW` presentation sources without a row in `interaction_results`.
+Use the existing cursor-based presentation list and exact-revision part reader
+to locate the matched return, check its current native binding and read the
+complete answer. A `workflow-public-set` source's `internal_evidence_input` marks
+its attributed input context; it does not turn the assistant's answer into human
+speech or hide a genuine public native return. Do not start another model turn
+or synthesize an answer merely to repair a verifier or missing final text.
+
+After the existing publisher retains an answer, an owning inspector can link
+that actual source/revision in the same task cursor. Canonical availability,
+transport delivery, playback and human hearing remain distinct. In particular,
+`playback: not_observed` is not listening acceptance. These are diagnostics and
+effect receipts, not another approval step, sender, journal or attention service.
+Keep ordinary conversation text free of protocol IDs and debugging details.
 
 ### Operator-selected native host restrictions
 
