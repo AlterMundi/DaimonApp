@@ -220,6 +220,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             "; font-src 'self'" + (' '+appearance if appearance else '') +
             "; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; "
             "frame-ancestors 'self' https://web.telegram.org")
+        try: surface = surface_selection(request,config,home_auth.enabled) if request.url.path=='/' else None
+        except ValueError: surface = None
+        if surface:
+            response.headers['Content-Security-Policy'] += ' '+surface['parent']
+            response.headers['Permissions-Policy'] = 'microphone=(self)'
         return response
 
     def authorize(request):
@@ -304,6 +309,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins],
                             mission_host=compose_school_mission(config,provider))
 
+    from .conversation_surface import parent_origins as surface_parents, selection as surface_selection
+    surface_parents(config)
     public = Path(__file__).parent / 'web'
 
     @app.get('/')
@@ -312,7 +319,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 or computer_health.default_view and not request.query_params.get('view')):
             computer_health.assert_binding()
             return HTMLResponse(computer_health.shell)
+        try: surface = surface_selection(request,config,home_auth.enabled)
+        except ValueError: raise HTTPException(400,'Conversation surface unavailable') from None
         body = (public / 'index.html').read_text()
+        if surface:
+            body = body.replace('<html lang="en"', '<html lang="en" data-surface-parent="'+html.escape(surface['parent'],quote=True)+'" data-surface-visit="'+surface['visit']+'"',1)
         body = body.replace('id="conversation-daimon">Daimon</span>', 'id="conversation-daimon">' + html.escape(daimon_name) + '</span>')
         shared_entry = home_auth.enabled and (request.query_params.get('view') == 'conversation'
             or request.headers.get('x-forwarded-prefix') == home_auth.entry.rstrip('/'))
@@ -325,13 +336,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if home_auth.enabled:
                 if request.headers.get('host') != home_auth.host:
                     return RedirectResponse(home_auth.origin + home_auth.entry + '?view=conversation&client=standalone', status_code=307)
-                body = body.replace('<html lang="en">', '<html lang="en" data-shared-auth="true">')
+                body = body.replace('<html lang="en"', '<html lang="en" data-shared-auth="true"',1)
                 body = body.replace('    <script src="assets/app.js" defer></script>',
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         from .client_build import fingerprint, stamp, workshop_assets
         assets = []
-        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             assets.append((name, asset))
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -361,6 +372,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="inherit"', 1)
             body = body.replace('</head>', '<link rel="stylesheet" data-home-style href="'+base+
                 '/style.css?surface=sessions"><script src="'+base+'/home-style.js" defer></script></head>')
+        if surface:
+            body = body.replace('class="conversation-mode standalone-conversation"', 'class="conversation-mode standalone-conversation conversation-surface"',1)
         return HTMLResponse(body)
 
     @app.get('/manifest.webmanifest')
@@ -425,7 +438,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         session = authorize(request)
         if dict(session).get('scope') != 'interaction_only':
             raise HTTPException(403, 'Shared conversation grant required')
-        return {'csrf': session['csrf'], 'label': session.get('label', 'Your conversation')}
+        return {'csrf': session['csrf'], 'label': session.get('label', 'Your conversation'), 'actor_ref':home_auth.human_ref}
 
     @app.get('/assets/{name}')
     def asset(name: str, request: Request):
@@ -433,7 +446,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]

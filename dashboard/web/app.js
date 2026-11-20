@@ -748,7 +748,7 @@ const conversationView = window.Conversation?.mount({
     const reconnect=()=>{
       if(reconnecting)return reconnecting;
       reconnecting=sharedAccess().then(access=>{
-        sharedConversationConnected=true;authenticated=true;
+        sharedConversationConnected=true;authenticated=true;conversationView?.identity?.(access.actor_ref);
         const humanName=el('span',access.label);humanName.className='human-name';
         $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;
         feedback.replaceChildren();conversationView?.authenticated();schedule();
@@ -777,7 +777,7 @@ const conversationView = window.Conversation?.mount({
     for(const event of ['pageshow','focus'])window.addEventListener(event,()=>{if(!document.hidden&&!authenticated)void reconnect();});
     try{
       const access=await sharedAccess();
-      csrf=access.csrf;sharedConversationConnected=true;authenticated=true;
+      csrf=access.csrf;sharedConversationConnected=true;authenticated=true;conversationView?.identity?.(access.actor_ref);
       const humanName=el('span',access.label);humanName.className='human-name';
       $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;
       feedback.replaceChildren();

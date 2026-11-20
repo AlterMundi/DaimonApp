@@ -254,6 +254,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     driver.pcm=n=>vm.runInContext(`new Uint8Array(${n}).buffer`,context);
   }
   if(options.workspace)context.window.SessionWorkspace={mount(hooks){options.workspace.hooks=hooks;return options.workspace;}};
+  if(options.surface)context.window.ConversationSurface={create:()=>options.surface};
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
   if(options.webRtcDriver){
     const driver=options.webRtcDriver,name=driver.engine==='codex'?'CodexConversation':'PublicLiveConversation';
@@ -1927,6 +1928,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(answer.value,"Keep this draft during conversation refresh");assert(!retry.hidden);
   await retry.handlers.click();
   assert.deepEqual(integrated.nativePosts[0],integrated.nativePosts[1],"Conversation refresh must preserve the frozen unresolved decision");
+  const surfaceCalls=[],surfaceStatuses=[];
+  const host={bind(){},identity(){},reservedFiles:1,reservedBytes:65536,prepare:async value=>{surfaceCalls.push(value);return [{file_id:'fixture-world',sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64}];},status:value=>surfaceStatuses.push(value.id)};
+  const hosted=boot(false,true,{surface:host});await hosted.ui.refresh();hosted.nodes.get('#conversation-message').value='Exact human words';
+  await hosted.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});
+  const canonical=[...hosted.originals.values()][0];assert.equal(canonical.id,surfaceCalls[0].id);assert.equal(canonical.binding,surfaceCalls[0].binding);assert.equal(canonical.text,'Exact human words');assert.equal(canonical.files.length,1);assert(surfaceStatuses.includes(canonical.id));
+  const refused=boot(false,true,{surface:{...host,prepare:async()=>{throw Error('World context not confirmed');}}});await refused.ui.refresh();refused.nodes.get('#conversation-message').value='Kept draft';await refused.nodes.get('#conversation-compose').handlers.submit({preventDefault(){}});assert.equal(refused.originals.size,0);assert.equal(refused.nodes.get('#conversation-message').value,'Kept draft');
   const composerState=boot();await composerState.ui.refresh();composerState.receivingPhase("queued");
   composerState.nodes.get("#conversation-message").value="Newest composer message";
   await composerState.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});

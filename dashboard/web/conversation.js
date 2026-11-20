@@ -18,6 +18,7 @@ window.Conversation = (() => {
     element.title=date.toLocaleString(locale,{dateStyle:"full",timeStyle:"long",hour12:false});
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
+    const hostSurface=window.ConversationSurface?.create();
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
     const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;
@@ -342,7 +343,7 @@ window.Conversation = (() => {
       line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
       getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[]),...internalAttentionItems()]
     });
-    const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
+    const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed,maxFiles:8-(hostSurface?.reservedFiles||0),maxBytes:40*1024*1024-(hostSurface?.reservedBytes||0)});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     let transcriptPreview,editedPreview;
     function previewTranscript(value){
@@ -366,7 +367,7 @@ window.Conversation = (() => {
       transcriptPreview.text=value.text;input.value=value.text;
       input.scrollTop=input.scrollHeight;if(value.resumed){input.focus?.();input.setSelectionRange?.(input.value.length,input.value.length);}
     }
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>timing?.mark(id,stage,detail),onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onLevel:value=>presentState({inputLevel:value}),onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,beforeOriginal:hostSurface?value=>hostSurface.prepare(value):undefined,getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);hostSurface?.status({id,phase:stage},!['confirmed','ready'].includes(stage));},onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}hostSurface?.status(value);retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,onLevel:value=>presentState({inputLevel:value}),onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
       const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
       if(!card)return;
@@ -728,6 +729,7 @@ window.Conversation = (() => {
     function clearText(){textQueue.length=0;textObserver?.disconnect();}
     function renderInputText(card){
       const text=card.value.text || card.originalText || card.value.preview;
+      hostSurface?.status(card.value);
       card.text.textContent=card.value.voice?(text?"Automatic voice transcript:\n"+text:"Original voice recording saved."):text;
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
@@ -1230,7 +1232,7 @@ window.Conversation = (() => {
       const reply=context&&JSON.parse(JSON.stringify(context)),playback=playbackContext();
       let selectedVisual,selectedFiles;
       posting=true;send.disabled=true;
-      try {if(visual)selectedVisual=await visual.capture();if(attachedFiles)selectedFiles=await attachedFiles.capture();}
+      try {if(visual)selectedVisual=await visual.capture();if(attachedFiles)selectedFiles=await attachedFiles.capture();if(hostSurface)selectedFiles=await hostSurface.prepare({id,binding:selectedBinding,modality:'text',files:selectedFiles||[]});}
       catch(e){posting=false;send.disabled=!inputBinding;microphone?.syncControls?.();composerNotice(e.message||"Select your image again.");return;}
       if(owned!==inputGeneration || selectedBinding!==binding){posting=false;send.disabled=!inputBinding;return;}
       posting = true; send.disabled = true; latestComposerId = id;
@@ -1239,7 +1241,7 @@ window.Conversation = (() => {
       try {
         const result = await api("interaction/inputs", {binding:selectedBinding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
         if (owned !== inputGeneration) return;
-        retainedCorrection(result);
+        hostSurface?.status(result);retainedCorrection(result);
         const confirmed = inputCard(result, observation);
         visual?.consumed(selectedVisual);attachedFiles?.consumed(selectedFiles);
         if(focusAtSubmit===focusVersion)clearFocus();
@@ -1757,7 +1759,7 @@ window.Conversation = (() => {
       const keepNative=nativeEnabled&&nativeVoiceSession?.active&&error.status!==401&&error.status!==403;
       presentState({connected:false},!keepNative);
       if (error.status === 401 || error.status === 403) {
-        avatarWorkshop?.reset();
+        hostSurface?.disconnect();avatarWorkshop?.reset();
         onUnauthorized?.(error);
         workspace?.reset();clearFiles();
         pause("access");stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
@@ -1889,7 +1891,7 @@ window.Conversation = (() => {
       companion?.configure?.(value.expression_pack,value.expression_pack_sha256);
       avatarWorkshop?.bind(value.binding);
       companion?.observe(value.activity);
-      binding = value.binding;timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
+      binding = value.binding;hostSurface?.bind(binding);timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
       canBudgets=!readOnly && value.can_view_coordination===true;
       if(budgetView)budgetView.hidden=!canBudgets;
       if(!canBudgets)budgetEpisodes?.replaceChildren();
@@ -2500,8 +2502,8 @@ window.Conversation = (() => {
       }
     });
     setMode(initialMode(), true, false);
-    return {refresh, pause, stop:()=>{sound?.disable();disableVoice();},
-      unauthenticated() { ready=false; failed({status:401,message:document.documentElement.dataset.sharedAuth==='true'?"Sign in again to reconnect.":"Open your conversation access file to reconnect."}); },
+    return {refresh, pause, identity:value=>hostSurface?.identity(value), stop:()=>{sound?.disable();disableVoice();},
+      unauthenticated() { hostSurface?.disconnect();ready=false; failed({status:401,message:document.documentElement.dataset.sharedAuth==='true'?"Sign in again to reconnect.":"Open your conversation access file to reconnect."}); },
       authenticated() { ready = true; $("#conversation-open").disabled = false; }};
   }
   return {mount};

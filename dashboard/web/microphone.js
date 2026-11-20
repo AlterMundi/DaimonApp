@@ -133,7 +133,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, beforeOriginal, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -447,16 +447,18 @@ window.VoiceInput = (() => {
       if(!available || !getBinding() || !supported() || restoring || ownsSend() || document.hidden)return false;
       prepareCues();
       conversationCapture=conversational;
-      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;rawTranscript='';previewText='';edited=false;editBase=undefined;editAnchor=0;
+      const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={captureId:window.crypto.randomUUID(),transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;rawTranscript='';previewText='';edited=false;editBase=undefined;editAnchor=0;
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
         let selectedVisual;
         try {const candidate=conversational?undefined:getVisual();selectedVisual=candidate?.then?await candidate:candidate;}
         catch(_){if(owned===generation)cancelRecording('Selected image unavailable. Choose another image or remove it before recording.');return;}
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
-        const fileCandidate=conversational?undefined:getFiles();const selectedFiles=fileCandidate?.then?await fileCandidate:fileCandidate;
+        const fileCandidate=conversational?undefined:getFiles();let selectedFiles=fileCandidate?.then?await fileCandidate:fileCandidate;
+        if(beforeOriginal){try{selectedFiles=await beforeOriginal({id:selection.captureId,binding,modality:'audio',files:selectedFiles||[]});}
+          catch{if(owned===generation)cancelRecording('World context was not confirmed. Your draft is kept; nothing was recorded or sent.');return;}}
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
-        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:window.crypto.randomUUID()};
+        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:selection.captureId};
         onTiming(frozenSelection.captureId,'requested');
         const media=await window.navigator.mediaDevices.getUserMedia({audio:true,video:false});
         if(owned!==generation || binding!==getBinding() || document.hidden){for(const track of media.getTracks())track.stop();return;}

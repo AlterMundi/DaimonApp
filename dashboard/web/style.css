@@ -1520,3 +1520,18 @@ html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26
 @media(prefers-reduced-motion:reduce){.standalone-conversation header > .voice-signal {display:none;}}
 
 .avatar-workshop-toolbar .client-build { margin:0 0 0 auto; align-self:center; }
+
+/* The hosted app uses the canonical shell/composer, with a quieter frame. */
+html body.conversation-surface {margin:0;height:100dvh;min-height:0;overflow:hidden;background:var(--bg,#0b1018);}
+html body.conversation-surface main {width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;}
+html body.conversation-surface main::before,html body.conversation-surface main::after {display:none;}
+html body.conversation-surface main>header,html body.conversation-surface .toolbar,
+html body.conversation-surface #conversation-companion,html body.conversation-surface #operations,
+html body.conversation-surface #conversation-diagnostics,html body.conversation-surface #conversation-voice-engine,
+html body.conversation-surface #conversation-voice-choice,html body.conversation-surface #conversation-services-choice,
+html body.conversation-surface #conversation-observation button {display:none!important;}
+html body.conversation-surface #conversation {flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+html body.conversation-surface #conversation-timeline {position:relative;inset:auto;flex:1;min-height:60px;height:auto;max-height:none;overflow:auto;}
+html body.conversation-surface #conversation-compose {position:relative;inset:auto;flex:none;width:100%;max-width:none;margin:8px 0 0;box-sizing:border-box;}
+html body.conversation-surface #conversation-observation {flex:none;margin:0;font-size:12px;}
+html body.conversation-surface #feedback:empty {display:none;}
