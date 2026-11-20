@@ -2493,6 +2493,7 @@ fn deliberate_nexus_binding_never_falls_back_to_latest_cwd_history() {
             author_ref: "human:test".into(),
             human_user_id: 100,
             label: "Nexus".into(),
+            launch_enabled: true,
             launch_selector: None,
         }],
     });
@@ -3312,6 +3313,7 @@ else: raise AssertionError(op)
             author_ref: "human:test".into(),
             human_user_id: 100,
             label: "Review".into(),
+            launch_enabled: false,
             launch_selector: None,
         }],
     });
@@ -3327,6 +3329,17 @@ else: raise AssertionError(op)
     let selection = json!({"table_id":"table","author_ref":"human:test","expected_revision":0,
         "target":{"listener_id":"listener","bot_id":123,"human_user_id":100,
             "chat_id":100,"topic_id":7,"native_thread_id":"existing-thread"}});
+    let message: Message = serde_json::from_value(
+        json!({"message_id":1,"message_thread_id":7,"chat":{"id":100,"type":"private"}}),
+    )
+    .unwrap();
+    assert!(
+        nexus::command(&app, &message, 100, "open table")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("web entrance")
+    );
     let invoke = |op: &str, value: &serde_json::Value| format!("nexus {op} {value}");
     let before = stopping::command(&app, 100, &invoke("inspect", &selection), None)
         .await
