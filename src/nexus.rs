@@ -33,6 +33,8 @@ pub struct NexusRoute {
     pub author_ref: String,
     pub human_user_id: i64,
     pub label: String,
+    #[serde(default = "default_launch_enabled")]
+    pub launch_enabled: bool,
     #[serde(default)]
     pub launch_selector: Option<String>,
 }
@@ -57,6 +59,9 @@ pub fn identifier(value: &str) -> bool {
         && value
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c))
+}
+fn default_launch_enabled() -> bool {
+    true
 }
 fn launch_selector(value: &str) -> bool {
     !value.is_empty()
@@ -163,5 +168,25 @@ impl NexusConfig {
             let _ = child.kill().await;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod route_launch_tests {
+    use super::*;
+    #[test]
+    fn absent_flag_keeps_existing_launch_and_false_selects_https_only() {
+        let mut value = serde_json::json!({"table_id":"table","author_ref":"human:test","human_user_id":100,"label":"Review"});
+        assert!(
+            serde_json::from_value::<NexusRoute>(value.clone())
+                .unwrap()
+                .launch_enabled
+        );
+        value["launch_enabled"] = serde_json::json!(false);
+        assert!(
+            !serde_json::from_value::<NexusRoute>(value)
+                .unwrap()
+                .launch_enabled
+        );
     }
 }
