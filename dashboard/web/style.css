@@ -1523,7 +1523,9 @@ html[data-style-policy="authored"] .voice-studio-presets .control-icon {width:26
 
 /* The hosted app uses the canonical shell/composer, with a quieter frame. */
 html body.conversation-surface {margin:0;height:100dvh;min-height:0;overflow:hidden;background:var(--bg,#0b1018);}
-html body.conversation-surface main {width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;}
+/* Match authored standalone specificity so its mobile margin cannot escape the host frame. */
+html body.conversation-surface main,
+html[data-style-policy] body.conversation-surface main {width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:8px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;}
 html body.conversation-surface main::before,html body.conversation-surface main::after {display:none;}
 html body.conversation-surface main>header,html body.conversation-surface .toolbar,
 html body.conversation-surface #conversation-companion,html body.conversation-surface #operations,
