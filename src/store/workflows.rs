@@ -5706,6 +5706,70 @@ mod tests {
     }
 
     #[test]
+    fn restart_recovers_only_proved_unsent_recent_attention() {
+        for (phase, marker, physical, unsubmitted) in [
+            ("reserved", false, None, true),
+            ("retained_unsent", false, None, true),
+            ("reserved", true, None, false),
+            ("submitting", false, None, false),
+            ("uncertain", false, None, false),
+            ("accepted", true, Some("native-physical"), false),
+        ] {
+            let (file, store, entry, plan) = setup();
+            producer_work(&store, &entry, plan);
+            producer_configure(&store, &entry, 8);
+            let selected = store.heartbeat_produce(100, entry.key).unwrap().unwrap();
+            let local = turn(&store, &entry, "");
+            store.set_session_busy(entry.key, true).unwrap();
+            store
+                .workflow_native_link_fresh(&selected.id, local)
+                .unwrap();
+            if marker {
+                store.native_collection_submitting(local, None).unwrap();
+            }
+            if let Some(physical) = physical {
+                store.heartbeat_native_started(local, physical).unwrap();
+            }
+            producer_edit(&store, &entry, |p| {
+                p["native_returns"][0]["phase"] = json!(phase)
+            });
+            let resources = store
+                .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]
+                .clone();
+            drop(store);
+            let recovered =
+                Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+            assert_eq!(
+                recovered.turn_status(local).unwrap().as_deref(),
+                Some("failed")
+            );
+            assert!(!recovered.get_session(entry.key).unwrap().unwrap().busy);
+            let status = recovered
+                .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap();
+            let executions = recovered
+                .heartbeat_executions(100, entry.key, false)
+                .unwrap();
+            assert_eq!(executions.len(), 1);
+            let execution = &executions[0];
+            assert_eq!(execution["source"], selected.id);
+            assert_eq!(execution["physical"], json!(physical));
+            assert_eq!(execution["terminal_status"] == "not_submitted", unsubmitted);
+            if !unsubmitted {
+                assert_eq!(execution["phase"], "owned");
+            }
+            for key in [
+                "reserved_provider_attempts",
+                "lifetime_reserved_provider_attempts",
+                "contract",
+            ] {
+                assert_eq!(status["resources"][key], resources[key]);
+            }
+        }
+    }
+
+    #[test]
     fn heartbeat_producer_restart_preserves_uncertain_submission_without_retry() {
         use crate::store::HeartbeatCommand as H;
         let (file, s, entry, plan) = setup();
@@ -5724,7 +5788,7 @@ mod tests {
                 .is_empty()
         );
         producer_edit(&s, &entry, |v| {
-            assert_eq!(v["native_returns"][0]["phase"], "attention_collection_lost")
+            assert_eq!(v["native_returns"][0]["phase"], "uncertain")
         });
         let status = s.heartbeat_control(100, entry.key, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 1);
