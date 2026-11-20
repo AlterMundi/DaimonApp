@@ -744,7 +744,7 @@ class AdapterTests(unittest.TestCase):
                 with self.assertRaises(MatrixExecutionError):
                     receiving_command(path, Path("/private/host.json"))
 
-    def funded_original(self, *, status=None, native_attempts=None, epoch=100):
+    def funded_original(self, *, status=None, native_attempts=None, epoch=100, max_input_tokens=16384):
         import tempfile
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from daimon_matrix.execution_store import ExecutionStore
@@ -780,7 +780,7 @@ class AdapterTests(unittest.TestCase):
                 interval=10,
                 max_cycles=2,
                 start=epoch, end=epoch + 100,
-                max_input_tokens=16384,
+                max_input_tokens=max_input_tokens,
                 task_sha256=hashlib.sha256(purpose.encode()).hexdigest(),
                 scope=[
                     {

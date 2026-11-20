@@ -68,3 +68,31 @@ covers an eleven-second ACK, lost completion, explicit 429, restart deduplicatio
 and a subsequent ordinary turn with zero inference. These tests are separate
 from actual Telegram receiving evidence. Owning issue: #234; outbound recovery
 also contributes to #103.
+
+## Immediate listener restart and departed local ownership
+
+After the existing instance-lock claim succeeds, every prior running local turn
+belongs to the departed listener, including one admitted milliseconds before its
+shutdown. The lock's stale-heartbeat threshold selects the owning process; it is
+not a waiting period for recovering that process's recent work. Startup recovers
+those local rows and busy flags in the same transaction. It preserves native
+threads, goals, accounting, receipts and existing response text. A native task
+may still be running independently; local failure is not native interruption.
+
+For heartbeat ownership without an observed physical identity, startup reuses the
+existing `not_submitted` route only when its exact retained source is still
+reserved/retained-unsent and no native-collection submission marker exists.
+That marker is persisted before native writing. Both proofs are required; absence
+of a physical ACK alone proves nothing. The original allocation and source remain
+retained, without refunds or new authority. The existing bounded unsent recovery
+and stale-offer retirement apply; no new queue or state is introduced.
+
+A submitting/uncertain source, a native submission marker or a known physical
+identity preserves its existing ownership and uncertainty. Startup cannot label
+those attempts unsent or replay them. Exact native observation and supported
+collector attachment remain necessary. No model, goal or native task is stopped
+by local journal recovery.
+
+Regression coverage includes immediate reopen after a fresh local admission,
+refusal of a second live owner, unknown heartbeat startup without replay, and
+preservation of an already observed physical turn and allowance.

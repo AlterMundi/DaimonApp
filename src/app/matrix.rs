@@ -650,6 +650,7 @@ mod tests {
             },
             timeout_seconds: 2,
             native_funding_binding: None,
+            native_attention_host_restrictions: Default::default(),
             native_host_restrictions: None,
         };
         let before = Utc::now().timestamp_millis();
@@ -686,6 +687,7 @@ mod tests {
             },
             timeout_seconds: 1,
             native_funding_binding: None,
+            native_attention_host_restrictions: Default::default(),
             native_host_restrictions: None,
         };
         assert!(host_send(&config, &json!({}), &source).await.is_err());

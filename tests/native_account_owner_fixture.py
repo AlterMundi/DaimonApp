@@ -26,7 +26,10 @@ case = fixture.AdapterTests()
 case.setUp()
 report = Path(sys.argv[1])
 try:
-    state = case.funded_original(native_attempts=2, epoch=int(time.time()))
+    # Sign the actual complete-request ceiling, including native context/tools;
+    # the predecessor16KiB token allocation did not cover its1MiB transport grant.
+    state = case.funded_original(native_attempts=2, epoch=int(time.time()),
+                                max_input_tokens=1024 * 1024)
     selected = case.native_funding_selection(state)
     registration = selected["registration"] | {
         "native_thread_id": start["thread_id"], "max_request_bytes": 1024 * 1024,

@@ -751,6 +751,12 @@ changed by importing this module.
 
 ### Physical ceilings without monetary funding
 
+When an isolated Reports actor needs an already authorized private projection,
+use the optional [fixed owner projection action](private-projection.md), not a
+grant of publisher custody or general Home networking to the actor. Its exact
+task/return, pinned-input and retained-outcome contract is separate from the
+actor's physical process policy; an unconfigured action changes no ordinary work.
+
 Private `matrix_transport.native_host_restrictions` also applies to ordinary
 attempt-bounded heartbeat work when `native_funding_binding` is absent. The
 existing native bounded-start request carries the selected permissions, tools,

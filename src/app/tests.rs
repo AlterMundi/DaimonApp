@@ -2493,6 +2493,7 @@ fn deliberate_nexus_binding_never_falls_back_to_latest_cwd_history() {
             author_ref: "human:test".into(),
             human_user_id: 100,
             label: "Nexus".into(),
+            launch_enabled: true,
             launch_selector: None,
         }],
     });
@@ -3275,5 +3276,121 @@ async fn cold_interaction_entry_never_adopts_another_owners_session() {
             .codex_thread_id
             .as_deref(),
         Some("other-owners-history")
+    );
+}
+
+#[tokio::test]
+async fn nexus_owner_association_uses_existing_writer_without_human_ingress() {
+    use serde_json::json;
+    let (mut app, _db) = sample_app();
+    let fixture = tempfile::tempdir().unwrap();
+    let operator = fixture.path().join("nexus_fixture.py");
+    // Inert public-API fixture: no Telegram, native socket or production store.
+    fs::write(&operator, r#"import json,sys,pathlib
+root=pathlib.Path(sys.argv[sys.argv.index('--state')+1]); op=sys.argv[-1]
+x=json.load(sys.stdin); path=root/'binding.json'
+old=json.loads(path.read_text()) if path.exists() else None
+if op=='binding': print(json.dumps(old))
+elif op=='capabilities': print(json.dumps({'schema':'nexus.native-capabilities/v1','review_context_schemas':['interactive_3d:v1']}))
+elif op=='configure':
+ assert x['expected_revision']==(old['revision'] if old else 0)
+ x.update(binding_id='test-binding',revision=x['expected_revision']+1)
+ path.write_text(json.dumps(x)); print(json.dumps(x))
+else: raise AssertionError(op)
+"#).unwrap();
+    let shared = Arc::get_mut(&mut app.shared).unwrap();
+    shared.config.nexus = Some(crate::nexus::NexusConfig {
+        python: "/usr/bin/python3".into(),
+        operator,
+        workspace: fixture.path().into(),
+        state: fixture.path().into(),
+        listener_id: "listener".into(),
+        responder_ref: "daimon:test".into(),
+        launch_selector: "registered".into(),
+        poll_seconds: 3,
+        routes: vec![crate::nexus::NexusRoute {
+            table_id: "table".into(),
+            author_ref: "human:test".into(),
+            human_user_id: 100,
+            label: "Review".into(),
+            launch_enabled: false,
+            launch_selector: None,
+        }],
+    });
+    let key = SessionKey::new(100, Some(7));
+    shared
+        .store
+        .ensure_session(key, 100, &sample_defaults())
+        .unwrap();
+    shared
+        .store
+        .set_session_codex_thread(key, "existing-thread")
+        .unwrap();
+    let selection = json!({"table_id":"table","author_ref":"human:test","expected_revision":0,
+        "target":{"listener_id":"listener","bot_id":123,"human_user_id":100,
+            "chat_id":100,"topic_id":7,"native_thread_id":"existing-thread"}});
+    let message: Message = serde_json::from_value(
+        json!({"message_id":1,"message_thread_id":7,"chat":{"id":100,"type":"private"}}),
+    )
+    .unwrap();
+    assert!(
+        nexus::command(&app, &message, 100, "open table")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("web entrance")
+    );
+    let invoke = |op: &str, value: &serde_json::Value| format!("nexus {op} {value}");
+    let before = stopping::command(&app, 100, &invoke("inspect", &selection), None)
+        .await
+        .unwrap();
+    assert!(before["canonical"].is_null() && before["local"].is_null());
+    assert!(
+        stopping::command(&app, 101, &invoke("associate", &selection), None)
+            .await
+            .is_err()
+    );
+    let mut stale = selection.clone();
+    stale["target"]["native_thread_id"] = json!("different-thread");
+    assert!(
+        stopping::command(&app, 100, &invoke("associate", &stale), None)
+            .await
+            .is_err()
+    );
+    assert!(!fixture.path().join("binding.json").exists());
+    let result = stopping::command(&app, 100, &invoke("associate", &selection), None)
+        .await
+        .unwrap();
+    assert_eq!(result["authorship"], "local_owner");
+    assert_eq!(result["native_input_submitted"], false);
+    assert_eq!(
+        result["binding"]["supported_review_contexts"],
+        json!(["interactive_3d:v1"])
+    );
+    assert_eq!(
+        result["binding"]["supported_response_modes"],
+        json!(["report_reflection", "artifact_reflection"])
+    );
+    let after = stopping::command(&app, 100, &invoke("inspect", &selection), None)
+        .await
+        .unwrap();
+    assert_eq!(after["canonical"], after["local"]);
+    assert_eq!(after["local"]["target"], selection["target"]);
+    // A retry with the original revision is refused; no second backend mutation.
+    assert!(
+        stopping::command(&app, 100, &invoke("associate", &selection), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(app.shared.store.nexus_status(key, 100).unwrap().len(), 0);
+    assert_eq!(
+        app.shared
+            .store
+            .get_session(key)
+            .unwrap()
+            .unwrap()
+            .codex_thread_id
+            .as_deref(),
+        Some("existing-thread")
     );
 }

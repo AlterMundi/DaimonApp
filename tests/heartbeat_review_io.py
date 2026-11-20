@@ -2,14 +2,22 @@
 """Owner console/store/worker journey with synthetic native; zero real providers."""
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 from pathlib import Path
 import sys
 import uuid
 from heartbeat_io import HeartbeatJourney
 
 
-def qualify(binary, production=False, periodic=False):
+def qualify(binary, production=False, periodic=False, projection=False, repair=False):
+    assert not repair or (projection and periodic), "Repair uses the existing fixed-action journey"
+    task_id = "matrix-alerts" if repair else "bitacora"
+    operation = "alerts_repair" if repair else "private_projection"
+    assert not projection or periodic, "Projection requires the existing periodic Reports fixture"
     j = HeartbeatJourney(str(Path(binary).resolve()))
+    def native_work_count():
+        return sum(m.get('method') in ('thread/start','turn/start','turn/steer','turn/startBoundedIfIdle','thread/goal/set','thread/goal/conditionalActivate') for m in j.rpc)
+    collector_closed=False
     try:
         if production:j.expected_attempts=64
         j.start()
@@ -18,6 +26,39 @@ def qualify(binary, production=False, periodic=False):
             j.wait(lambda: j.has('Initial goal turn delivered.', topic)); j.idle()
         j.stop()
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false') + j.target_config)
+        if projection:
+            snapshot = j.root/'projection-source.json'
+            snapshot.write_text(json.dumps({'schema':'daimon-alerts-repair-input/v1','incident':{'id':'reader-1','revision':1,'resource_id':'matrix'}}) if repair else '{"selected":"original"}')
+            reconciliation = j.root/'projection-cursor.json'
+            helper = j.root/'projection-helper.py'
+            helper.write_text("""import sys,json,hashlib,pathlib
+raw=sys.stdin.buffer.read()
+if '--inspect-stdin' not in sys.argv:
+ pathlib.Path(__file__).with_suffix('.runs').write_text('one')
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'unknown_effect'}))
+else:
+ assert json.loads(raw)=={'selected':'original'}
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'existing_projection_verified','artifact_ref':'fixture-artifact','version_ref':'fixture-version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))
+""")
+            if repair:
+                helper.write_text("""import sys,json,hashlib,pathlib
+raw=sys.stdin.buffer.read(); incident=json.loads(raw)['incident']; result=pathlib.Path(__file__).with_suffix('.receipt')
+if '--inspect-stdin' not in sys.argv:
+ assert incident=={'id':'reader-1','revision':1,'resource_id':'matrix'}
+ pathlib.Path(__file__).with_suffix('.runs').write_text('one')
+ result.write_text(json.dumps({'schema':'daimon-alerts-owner-repair/v1','source_sha256':hashlib.sha256(raw).hexdigest(),'state':'existing_resolution_verified','incident_id':incident['id'],'incident_revision':incident['revision'],'resource_id':incident['resource_id'],'resolution_state':'resolved','resolution_revision':2,'operation_id':'repair-1'}))
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'unknown_effect'}))
+else:
+ receipt=json.loads(result.read_text()); assert receipt['source_sha256']==hashlib.sha256(raw).hexdigest(); print(json.dumps(receipt))
+""")
+            with j.config.open('a') as stream:
+                stream.write('\n[interaction.'+operation+']\n'+
+                    'task_id='+json.dumps(task_id)+'\ncommand='+json.dumps(['/usr/bin/python3',str(helper)])+'\n'+
+                    'working_directory='+json.dumps(str(j.root))+'\n'+
+                    'snapshot='+json.dumps(str(snapshot))+'\n'+
+                    'reconciliation='+json.dumps(str(reconciliation))+'\n'+
+                    'reconciliation_return_pointer="/latest_check/heartbeat_return"\n'+
+                    'reconciliation_partial_pointer="/latest_check/partial"\ntimeout_seconds=2\n')
         j.start(); j.wait_control_socket(j.socket); j.routing = True
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         purpose_text = ('Review selected child deployment milestones in production; preserve messaging.' if production else
@@ -62,7 +103,7 @@ def qualify(binary, production=False, periodic=False):
         assert all(l['paused'] for l in selected['lanes'].values())
         if periodic:
             before_task=j.read('heartbeat','status')['result']
-            task=dict(id='bitacora',purpose=review['purpose'],purpose_revision='',instructions='Reconcile institutional intake with persistent cursors; preserve originals before cache cleanup; no publication.')
+            task=dict(id=task_id,purpose=review['purpose'],purpose_revision='',instructions='Reconcile institutional intake with persistent cursors; preserve originals before cache cleanup; no publication.')
             task_selected=j.read('heartbeat','select-review-task',generation,json.dumps(task))['result']
             expected=task_selected['producer']['finite_review']['periodic_tasks'][0]['revision']
             task['instructions'] += ' Refresh the same private viewer only after meaningful changes.'
@@ -102,14 +143,63 @@ def qualify(binary, production=False, periodic=False):
         read=j.call('route-report',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
         assert 'synthetic checkpoint A' in json.dumps(read)
         if periodic:
-            task_offer=next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
+            task_offer=next(o for o in packet['evidence']['offers'] if o['key']=='review-task:'+task_id)
             reader=task_offer['evidence']['reader']
             task_read=j.call('route-periodic',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
             assert 'Reconcile institutional intake' in task_read['text'] and purpose_text in task_read['text']
-        j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
-        j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
-        j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
+        if projection:
+            reconciliation.write_text(json.dumps({'latest_check':{'heartbeat_return':packet['return_id'],'partial':False}}))
+            action=dict(action='run',return_id=packet['return_id'],batch_revision=packet['evidence']['revision'],
+                task_revision=task_offer['revision'],snapshot_sha256=hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                reconciliation_sha256=hashlib.sha256(reconciliation.read_bytes()).hexdigest())
+            result=j.call('route-projection-run',operation,action)
+            assert result['outcome']['phase']=='unconfirmed', result
+            status=j.call('route-projection-held',operation,dict(action='status'))
+            assert status['input_retained'] is True and 'original' not in json.dumps(status), status
+            assert j.row("SELECT count(*) FROM bot_state WHERE key LIKE ?",(operation+'_adapter:%',))==[(1,)]
+            assert 'configuration_json' not in json.dumps(status)
+            snapshot.write_text('{"selected":"later mutable input"}')
+            if not repair:
+                j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
+                j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
+                j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
+                j.stop()
+                relocated=j.root/'relocated-source.json';relocated.write_text(snapshot.read_text())
+                before_config=j.config.read_text();old='snapshot='+json.dumps(str(snapshot));assert old in before_config
+                j.config.write_text(before_config.replace(old,'snapshot='+json.dumps(str(relocated))))
+                j.start();j.wait_control_socket(j.socket);collector_closed=True
+            before_owner_calls=native_work_count()
+            purpose_name='alerts-repair' if repair else 'projection'
+            assert j.read('owner-action',purpose_name,'status')['result']['input_retained'] is True
+            rejected=j.read('owner-action',purpose_name,'inspect','different-invocation',ok=False)
+            assert rejected.get('ok') is False
+            observed=(j.call('route-projection-inspect',operation,dict(action='inspect',invocation=result['invocation'])) if repair else j.read('owner-action',purpose_name,'inspect',result['invocation'])['result'])
+            if not repair:assert native_work_count()==before_owner_calls, 'Owner inspection must not use native RPC or start a model'
+            rejected=j.read('owner-action',purpose_name,'run',result['invocation'],ok=False)
+            assert rejected.get('ok') is False, rejected
+            assert observed['current']['phase']=='observed' and not observed['input_retained'], observed
+            assert observed['current']['outcome']['verification_only'] is True, observed
+            assert observed['current']['outcome']['original_invocation_execution']=='not_established', observed
+            if repair:
+                assert observed['current']['outcome']['incident_id']=='reader-1'
+                assert observed['current']['outcome']['resolution_revision']==2
+                assert j.call('route-other-purpose-status','private_projection',dict(action='status')).get('current') is None
+            action['snapshot_sha256']=hashlib.sha256(snapshot.read_bytes()).hexdigest()
+            if not collector_closed:
+                again=j.call('route-projection-repeat',operation,action)
+                assert again.get('claimed') is False, again
+            assert j.row("SELECT count(*) FROM bot_state WHERE key LIKE ?",(operation+'_adapter:%',))==[(0,)]
+            assert helper.with_suffix('.runs').read_text()=='one'
+        if not collector_closed:
+            j.call('route-reviewed','heartbeat_reported',{'return_id':packet['return_id'],'revision':packet['evidence']['revision']})
+            j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}}); j.idle()
+            j.wait(lambda:j.read('heartbeat','status')['result']['executions'][0]['phase']=='terminal')
         assert j.read('heartbeat','status')['result']['resources']['reserved_provider_attempts']==(12 if production else 3)
+        if projection:
+            before_owner_calls=native_work_count()
+            assert j.read('owner-action',purpose_name,'inspect',result['invocation'])['result']['current']['phase']=='observed'
+            assert native_work_count()==before_owner_calls
+            assert helper.with_suffix('.runs').read_text()=='one'
         if production and not periodic:
             # An ordinary goal starts after the bounded collector closes. Only
             # metadata and exact collector attachment may bridge that gap.
@@ -132,7 +222,7 @@ def qualify(binary, production=False, periodic=False):
         if periodic:
             j.wait(lambda:len(j.bounded)==2,seconds=45)
             second=json.loads(j.bounded[1]['turn']['toolOutput']['output'])
-            assert [o['key'] for o in second['evidence']['offers']]==['review-task:bitacora'], 'Unchanged ordinary report must remain quiet'
+            assert [o['key'] for o in second['evidence']['offers']]==['review-task:'+task_id], 'Unchanged ordinary report must remain quiet'
             assert second['evidence']['offers'][0]['revision']!=task_offer['revision']
             j.call('route-periodic-again','heartbeat_reported',{'return_id':second['return_id'],'revision':second['evidence']['revision']})
             j.broadcast(j.web_thread,'turn/completed',{'turn':{'id':j.web_turn,'status':'completed'}});j.idle()
@@ -151,7 +241,7 @@ def qualify(binary, production=False, periodic=False):
         assert status['producer']['finite_review']['state']==('configured' if production else 'expired')
         assert status['resources']==funding and status['producer']['mode']=='continuous'
         assert len(j.bounded)==(2 if periodic else 1)
-        if periodic:assert restarted['producer']['finite_review']['periodic_tasks'][0]['id']=='bitacora'
+        if periodic:assert restarted['producer']['finite_review']['periodic_tasks'][0]['id']==task_id
         if production:
             assert j.goals[j.web_thread]==goal, 'Heartbeat handoff changed native goal or accounting'
         print('finite review owner selection/purpose/source/one bounded execution/no-change/pause/restart/expiry: PASS; synthetic native, real providers=0')
@@ -159,7 +249,11 @@ def qualify(binary, production=False, periodic=False):
         j.close()
 
 if __name__ == '__main__':
-    if '--periodic' in sys.argv[2:]:
+    if '--repair' in sys.argv[2:]:
+        qualify(sys.argv[1],True,True,True,True)
+    elif '--projection' in sys.argv[2:]:
+        qualify(sys.argv[1],True,True,True)
+    elif '--periodic' in sys.argv[2:]:
         qualify(sys.argv[1],True,True)
     elif '--production' in sys.argv[2:]:
         qualify(sys.argv[1], True)

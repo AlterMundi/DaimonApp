@@ -28,6 +28,33 @@ thread nor establishes global idle. If preparation expires before any selector
 write, inspect that retained outcome and current preimage before continuing the
 known-unstarted operation with the same qualified artifact.
 
+A listener cgroup can also contain its configured Matrix host command running
+with `--inbox`. Compare the complete argv and parent with that actual receiving
+configuration, then let the existing bounded read finish before selection. Do
+not misclassify every non-proxy child as unrelated, or extend this exception to
+unknown children, provider work or sending. Four20November child preflights
+refused this ordinary read before writing any selector; their same-artifact
+continuations retained the original refusals and completed after read closure.
+
+A configured host command can also select its operation through stdin. Do not
+label that child read-only or interrupt it. Match its complete argv and direct
+listener parent, then wait within the existing configured timeout (at most60
+seconds) for it to finish before selecting. Unknown children still refuse.
+Root20November retained two pre-selection refusals and completed the same-artifact
+listener handoff after the finite host work ended; no native input was replayed.
+Keep a queued collector attachment separate from observed attachment: a retained
+attachment receipt and the same physical turn's terminal collection can finish
+verification without another attach or listener restart, as observed on Emma.
+
+Inspect the selected services' existing dependency relationship too. A child's
+web service with `PartOf` its native listener restarts with that listener even
+when the operator controls only the listener. Preserve the same web package and
+configuration, hold the existing voice fence, and wait for actual HTTP readiness
+and authenticated-reader acceptance. Do not require its old PID to survive a
+declared restart dependency. One20November post-selection health read arrived
+before the web finished starting; the retained new listener was verified forward
+without repeating selection, restarting again or replaying inputs.
+
 Native selectors may use a symlink. Compare the effective existing ExecStart
 argument with the process executable's resolved identity and qualified digest;
 conditionally replace that actual argument, rather than searching the unit for
@@ -49,6 +76,20 @@ later human direction and accounting; do not use maintenance holds as evidence
 of useful heartbeat availability. An expired uncertain transaction remains
 historical evidence after a later explicit goal control supersedes its authority;
 it must neither be replayed nor block a freshly observed operation forever.
+
+When distinct receiving compositions share a Cargo target directory, freeze and
+serialize the selected package artifact before another checkout builds into it.
+Read Cargo's compiler-artifact package/manifest and executable path, then verify
+behavior that distinguishes that receiver's composition. A fast successful build,
+a top-level executable or rewritten `.d` source paths alone do not prove its bytes
+belong to that checkout. A20November qualification observed rewritten source paths
+beside another composition's executable; it was rejected before selection.
+If the mismatch is verified, invalidate only that package's release outputs with
+`cargo clean --package telecodex --release`, keep dependencies/the shared target,
+and rebuild the existing feature profile with `--message-format=json`. Confirm
+the non-fresh owning artifact and composition-specific behavior before freezing
+its digest. This is artifact qualification, not a reason to multiply target
+caches, discard dependencies or rerun unchanged receiver maintenance.
 
 Keep one deployment checkpoint containing each actual receiver, prior/current
 selection, exact source/assets/reader/configuration preservation, adoption outcome,
@@ -128,8 +169,16 @@ config bytes, then transfers the lock through exec. Its existing Linux timeout
 bounds execution to180seconds by default, at most300, with5seconds to terminate
 owned children. No deployment target, service, source or provider is chosen here.
 
+Run the helper with the selected web package's actual Python import path as well
+as its interpreter. A service started with `python -m` can find `dashboard` through
+its working directory while a copied helper script cannot. Preserve any explicit
+receiving `PYTHONPATH`; otherwise use the observed web package directory. An import
+failure before the operator starts leaves selection unattempted: correct that
+launcher context and continue the same prepared artifact, rather than rebuilding
+or replaying a completed selection.
+
 ```sh
-SERVING_PYTHON scripts/interaction_web_maintenance.py \
+PYTHONPATH=SELECTED_WEB_PACKAGE SERVING_PYTHON scripts/interaction_web_maintenance.py \
   --config SELECTED_PRIVATE_CONFIG \
   --health-url SELECTED_LOCAL_HEALTH_URL \
   --owner-uid SERVICE_UID --seconds 150 \
