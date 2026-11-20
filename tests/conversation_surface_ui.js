@@ -33,6 +33,11 @@ function boot(){
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text',files:Array(8).fill({size:1})}));
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'audio',files:[{size:40*1024*1024}]}));
  const timeout=b.ui.prepare({id:id(),binding,modality:'text'});b.timers.at(-1).fn();await assert.rejects(timeout);assert.equal(b.sent.at(-1).message.type,'prepare','Timeout never sends another request');
+ const cancelledId=id(),cancelled=b.ui.prepare({id:cancelledId,binding,modality:'audio'});const cancelRequest=b.sent.at(-1).message;
+ b.ui.discard({id:cancelledId,binding,reason:'capture-cancelled'});await assert.rejects(cancelled);assert.equal(b.sent.at(-1).message.type,'discard');assert.equal(b.sent.at(-1).message.id,cancelledId);
+ const afterDiscard=b.sent.length;b.ui.discard({id:cancelledId,binding,reason:'capture-cancelled'});b.receive({...cancelRequest,type:'prepared',file:{file_id:id(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:5}});assert.equal(b.sent.length,afterDiscard);
+ const attemptedId=id(),attempted=b.ui.prepare({id:attemptedId,binding,modality:'text'}),prepared=b.sent.at(-1).message;
+ b.receive({...prepared,type:'prepared',file:{file_id:id(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:5}});await attempted;b.ui.attempt({id:attemptedId,binding});const beforeUnsafe=b.sent.length;b.ui.discard({id:attemptedId,binding,reason:'preparation-failed'});assert.equal(b.sent.length,beforeUnsafe,'No source-only discard after any original attempt, including unknown outcomes');
  const changed=b.ui.prepare({id:id(),binding,modality:'audio'});b.ui.bind('c'.repeat(64));await assert.rejects(changed);
  const gone=boot();gone.receive({type:'connect'});const pending=gone.ui.prepare({id:id(),binding,modality:'audio'});gone.events.pagehide();await assert.rejects(pending);const beforeReturn=gone.sent.length;gone.events.pageshow({persisted:true});assert.equal(gone.sent.length,beforeReturn+1);assert.equal(gone.sent.at(-1).message.type,'ready','BFCache return needs a fresh handshake and never repeats preparation');
  console.log('PASS exact parent/frame/actor/binding/visit/channel, text/audio IDs, capacity, no private payload, no timeout replay and lifecycle fencing');
