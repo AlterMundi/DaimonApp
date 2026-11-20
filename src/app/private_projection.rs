@@ -1,6 +1,7 @@
 //! A fixed owner command for one offered Reports purpose, not a general shell.
 //! Private custody remains on the host; the actor supplies only exact revisions.
 use super::*;
+use crate::interaction::OwnerActionPurpose;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,6 +15,64 @@ pub(super) fn runtime_hint(config: &crate::interaction::PrivateProjectionConfig)
         "\n\nOnly when this accepted Reports return offers task {}, this receiver selects interaction_controller/private_projection as the host route for its already authorized private refresh, including an older task note that names refresh.py. Reconcile the retained human purpose first. Use these configured input files, preserving concurrent editorial fields: {}. After completed reconciliation, call private_projection run with the exact batch/task revisions and input digests. Do not expose publisher credentials or call its CLI from the isolated actor. If status shows an unresolved invocation, inspect that exact invocation; inspection never publishes. Status/inspection/ACK do not establish hearing, a new publication, or completion of the whole human task. With no matching offered Reports task, this hint authorizes no action.",
         config.task_id,
         serde_json::json!({"snapshot":config.snapshot,"reconciliation":config.reconciliation})
+    )
+}
+
+pub(super) fn repair_runtime_hint(config: &crate::interaction::PrivateProjectionConfig) -> String {
+    format!(
+        "\n\nOnly when this accepted Reports return offers task {}, use interaction_controller/alerts_repair for the separately configured, already authorized Alerts owner repair. Reconcile the exact incident and completed report first using {}. Run with the offered return/task revisions and exact input digests. The host command selects the supported repair, never the model. Preserve current pauses and unknown effects. On an unresolved invocation inspect it once through its original adapter; do not rerun it or equate acknowledgment with resolution. No matching task means no repair authority.",
+        config.task_id,
+        serde_json::json!({"snapshot":config.snapshot,"reconciliation":config.reconciliation})
+    )
+}
+
+/// A service repair is not an artifact publication or an alert acknowledgment.
+fn validate_repair_receipt(value: &Value, snapshot: &[u8], inspect: bool) -> Result<Value> {
+    let source: Value = serde_json::from_slice(snapshot)?;
+    let incident = &source["incident"];
+    let safe_id = |v: &Value| {
+        v.as_str().is_some_and(|s| {
+            !s.is_empty()
+                && s.len() <= 256
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+        })
+    };
+    anyhow::ensure!(
+        source["schema"] == "daimon-alerts-repair-input/v1"
+            && safe_id(&incident["id"])
+            && safe_id(&incident["resource_id"])
+            && incident["revision"].as_u64().is_some(),
+        "Exact repair incident input required"
+    );
+    anyhow::ensure!(
+        value["schema"] == "daimon-alerts-owner-repair/v1"
+            && value["source_sha256"] == digest(snapshot)
+            && value["incident_id"] == incident["id"]
+            && value["incident_revision"] == incident["revision"]
+            && value["resource_id"] == incident["resource_id"],
+        "Repair receipt does not identify original incident"
+    );
+    let state = if inspect {
+        "existing_resolution_verified"
+    } else {
+        "resolved_verified"
+    };
+    anyhow::ensure!(
+        value["state"] == state
+            && value["resolution_state"] == "resolved"
+            && value["resolution_revision"]
+                .as_u64()
+                .is_some_and(|r| r > incident["revision"].as_u64().unwrap())
+            && safe_id(&value["operation_id"]),
+        "Same incident resolution at a higher revision required"
+    );
+    Ok(
+        json!({"phase":"observed","state":value["state"],"source_sha256":value["source_sha256"],
+        "incident_id":value["incident_id"],"incident_revision":value["incident_revision"],
+        "resource_id":value["resource_id"],"resolution_state":"resolved",
+        "resolution_revision":value["resolution_revision"],"operation_id":value["operation_id"],
+        "verification_only":inspect,"original_invocation_execution":if inspect {"not_established"} else {"observed"}}),
     )
 }
 
@@ -106,6 +165,7 @@ async fn execute_mode(
     seconds: u64,
     closed: &CancellationToken,
     inspect: bool,
+    purpose: OwnerActionPurpose,
 ) -> Result<Value> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::process::CommandExt;
@@ -207,6 +267,9 @@ async fn execute_mode(
             value["source_sha256"] == digest(snapshot),
             "Projection receipt does not identify pinned input"
         );
+        if purpose == OwnerActionPurpose::AlertsRepair {
+            return validate_repair_receipt(&value, snapshot, inspect);
+        }
         if inspect {
             anyhow::ensure!(
                 value["state"] == "existing_projection_verified"
@@ -247,8 +310,9 @@ async fn execute(
     snapshot: &[u8],
     seconds: u64,
     closed: &CancellationToken,
+    purpose: OwnerActionPurpose,
 ) -> Result<Value> {
-    execute_mode(config, snapshot, seconds, closed, false).await
+    execute_mode(config, snapshot, seconds, closed, false, purpose).await
 }
 
 pub(super) async fn tool(
@@ -258,6 +322,7 @@ pub(super) async fn tool(
     request: &crate::codex::DynamicToolRequest,
     args: Value,
     closed: &CancellationToken,
+    purpose: OwnerActionPurpose,
 ) -> Result<Value> {
     let args: Request = serde_json::from_value(args)?;
     let cfg = super::routing::profile(&app.shared)?;
@@ -269,20 +334,22 @@ pub(super) async fn tool(
         return app
             .shared
             .store
-            .private_projection_status(human, key, &request.thread_id);
+            .private_projection_status(purpose, human, key, &request.thread_id);
     }
     let Ok(_permit) = ACTION.try_acquire() else {
         return Ok(json!({"busy":true,"queued":false}));
     };
-    let config = cfg
-        .private_projection
-        .context("Private projection action is not configured")?;
+    let config = match purpose {
+        OwnerActionPurpose::Projection => cfg.private_projection,
+        OwnerActionPurpose::AlertsRepair => cfg.alerts_repair,
+    }
+    .context("Fixed owner action is not configured")?;
     config.validate()?;
     if let Request::Inspect { ref invocation } = args {
-        let record = app
-            .shared
-            .store
-            .private_projection_status(human, key, &request.thread_id)?;
+        let record =
+            app.shared
+                .store
+                .private_projection_status(purpose, human, key, &request.thread_id)?;
         anyhow::ensure!(
             record["current"]["invocation"] == invocation.as_str(),
             "Projection invocation changed"
@@ -291,6 +358,7 @@ pub(super) async fn tool(
             return Ok(record);
         }
         let (current, raw) = app.shared.store.private_projection_input(
+            purpose,
             human,
             key,
             &request.thread_id,
@@ -306,12 +374,14 @@ pub(super) async fn tool(
             config.timeout_seconds,
             closed,
             true,
+            purpose,
         )
         .await
         .unwrap_or_else(
             |_| json!({"phase":"unconfirmed","inspection_required":true,"automatic_retry":false}),
         );
         app.shared.store.private_projection_finish(
+            purpose,
             human,
             key,
             &request.thread_id,
@@ -321,7 +391,7 @@ pub(super) async fn tool(
         return app
             .shared
             .store
-            .private_projection_status(human, key, &request.thread_id);
+            .private_projection_status(purpose, human, key, &request.thread_id);
     }
     #[cfg(not(target_os = "linux"))]
     bail!("Private projection action requires the configured Linux owner");
@@ -343,6 +413,7 @@ pub(super) async fn tool(
         validate_reconciliation(&config, &receipt, &return_id)?;
         let descriptor = digest(&serde_json::to_vec(&config)?);
         let claim = app.shared.store.private_projection_claim(
+            purpose,
             human,
             key,
             &request.thread_id,
@@ -374,6 +445,7 @@ pub(super) async fn tool(
                 &snapshot,
                 config.timeout_seconds.min(remaining as u64),
                 closed,
+                purpose,
             )
             .await
         };
@@ -382,6 +454,7 @@ pub(super) async fn tool(
             |_| json!({"phase":"unconfirmed","inspection_required":true,"automatic_retry":false}),
         );
         app.shared.store.private_projection_finish(
+            purpose,
             human,
             key,
             &request.thread_id,
@@ -453,6 +526,80 @@ mod tests {
         }
     }
 
+    #[test]
+    fn alerts_repair_requires_same_incident_higher_resolution_and_inspection_proof() {
+        let snapshot = serde_json::to_vec(&json!({"schema":"daimon-alerts-repair-input/v1",
+            "incident":{"id":"matrix-reader-1","resource_id":"matrix","revision":6}}))
+        .unwrap();
+        let receipt = json!({"schema":"daimon-alerts-owner-repair/v1","source_sha256":digest(&snapshot),
+            "state":"resolved_verified","incident_id":"matrix-reader-1","incident_revision":6,
+            "resource_id":"matrix","resolution_state":"resolved","resolution_revision":7,
+            "operation_id":"repair-1","private_details":"must not escape"});
+        let result = validate_repair_receipt(&receipt, &snapshot, false).unwrap();
+        assert!(result.get("private_details").is_none());
+        assert!(validate_repair_receipt(&receipt, &snapshot, true).is_err());
+        for (key, wrong) in [
+            ("incident_id", json!("other")),
+            ("incident_revision", json!(5)),
+            ("resource_id", json!("another")),
+            ("resolution_state", json!("acknowledged")),
+            ("resolution_revision", json!(6)),
+            ("operation_id", json!("/private/path")),
+            ("source_sha256", json!("wrong")),
+        ] {
+            let mut changed = receipt.clone();
+            changed[key] = wrong;
+            assert!(
+                validate_repair_receipt(&changed, &snapshot, false).is_err(),
+                "{key}"
+            );
+        }
+        let mut inspected = receipt;
+        inspected["state"] = json!("existing_resolution_verified");
+        assert_eq!(
+            validate_repair_receipt(&inspected, &snapshot, true).unwrap()["original_invocation_execution"],
+            "not_established"
+        );
+        assert!(
+            validate_repair_receipt(&json!({"state":"published_verified"}), &snapshot, false)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn alerts_repair_uses_existing_fixed_process_and_sanitized_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = serde_json::to_vec(&json!({"schema":"daimon-alerts-repair-input/v1",
+            "incident":{"id":"reader-1","resource_id":"matrix","revision":1}}))
+        .unwrap();
+        let cfg = config(
+            directory.path(),
+            "import sys,json,hashlib; data=sys.stdin.buffer.read(); incident=json.loads(data)['incident']; print(json.dumps({'schema':'daimon-alerts-owner-repair/v1','state':'resolved_verified','source_sha256':hashlib.sha256(data).hexdigest(),'incident_id':incident['id'],'incident_revision':incident['revision'],'resource_id':incident['resource_id'],'resolution_state':'resolved','resolution_revision':2,'operation_id':'repair-1','extra':'private'}))",
+        );
+        let result = execute(
+            &cfg,
+            &snapshot,
+            2,
+            &CancellationToken::new(),
+            OwnerActionPurpose::AlertsRepair,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["incident_id"], "reader-1");
+        assert!(result.get("extra").is_none());
+        assert!(
+            execute(
+                &cfg,
+                &snapshot,
+                2,
+                &CancellationToken::new(),
+                OwnerActionPurpose::Projection
+            )
+            .await
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn private_projection_pins_stdin_sanitizes_environment_and_bounds_receipt() {
         let directory = tempfile::tempdir().unwrap();
@@ -465,6 +612,7 @@ mod tests {
             b"{\"pinned\":true}",
             2,
             &CancellationToken::new(),
+            OwnerActionPurpose::Projection,
         )
         .await
         .unwrap();
@@ -476,9 +624,15 @@ mod tests {
             "import json; print(json.dumps({'state':'published_verified','source_sha256':'wrong'}))",
         );
         assert!(
-            execute(&wrong, b"{}", 2, &CancellationToken::new())
-                .await
-                .is_err()
+            execute(
+                &wrong,
+                b"{}",
+                2,
+                &CancellationToken::new(),
+                OwnerActionPurpose::Projection
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -489,9 +643,16 @@ mod tests {
             directory.path(),
             "import sys,json,hashlib; assert sys.argv[-1]=='--inspect-stdin'; data=sys.stdin.buffer.read(); print(json.dumps({'state':'existing_projection_verified','source_sha256':hashlib.sha256(data).hexdigest(),'artifact_ref':'own','version_ref':'version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))",
         );
-        let result = execute_mode(&good, b"{}", 2, &CancellationToken::new(), true)
-            .await
-            .unwrap();
+        let result = execute_mode(
+            &good,
+            b"{}",
+            2,
+            &CancellationToken::new(),
+            true,
+            OwnerActionPurpose::Projection,
+        )
+        .await
+        .unwrap();
         assert_eq!(result["verification_only"], true);
         assert_eq!(result["original_invocation_execution"], "not_established");
         assert_eq!(result["checkpoint_matches"], false);
@@ -500,9 +661,16 @@ mod tests {
             "import sys,json,hashlib; data=sys.stdin.buffer.read(); print(json.dumps({'state':'existing_projection_verified','source_sha256':hashlib.sha256(data).hexdigest(),'artifact_ref':'own','version_ref':'version','immutable_files_match':True,'owner_broker_all_files_match':False}))",
         );
         assert!(
-            execute_mode(&false_proof, b"{}", 2, &CancellationToken::new(), true)
-                .await
-                .is_err()
+            execute_mode(
+                &false_proof,
+                b"{}",
+                2,
+                &CancellationToken::new(),
+                true,
+                OwnerActionPurpose::Projection
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -514,7 +682,7 @@ mod tests {
             "import subprocess,pathlib,time; p=subprocess.Popen(['sleep','30']); pathlib.Path('child.pid').write_text(str(p.pid)); time.sleep(30)",
         );
         let closed = CancellationToken::new();
-        let task = execute(&config, b"{}", 2, &closed);
+        let task = execute(&config, b"{}", 2, &closed, OwnerActionPurpose::Projection);
         let observe = async {
             let until = tokio::time::Instant::now() + Duration::from_secs(1);
             while !directory.path().join("child.pid").exists() {
@@ -545,9 +713,15 @@ mod tests {
         for program in ["print('x'*9000)", "import time; time.sleep(30)"] {
             let cfg = config(directory.path(), program);
             assert!(
-                execute(&cfg, b"{}", 1, &CancellationToken::new())
-                    .await
-                    .is_err()
+                execute(
+                    &cfg,
+                    b"{}",
+                    1,
+                    &CancellationToken::new(),
+                    OwnerActionPurpose::Projection
+                )
+                .await
+                .is_err()
             );
         }
     }

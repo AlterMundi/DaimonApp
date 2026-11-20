@@ -143,3 +143,41 @@ cleans up its task-owned links after closing native work. External-package fixtu
 acceptance is narrower. Process limits, nested controller calls, fixed-action
 recovery/review and subsequent ordinary contact remain the same journey. The
 provider is local; production constrained model uptake remains separate.
+
+## Separately configured Alerts owner repair
+
+`interaction.alerts_repair` is optional and uses the same fixed-command fields,
+Reports owner/task/revision checks, input bounds, physical allowance and process
+cleanup as `private_projection`. It must name a different task. The controller
+operation is `alerts_repair`; it accepts the same revision/digest-only arguments.
+Its current/previous receipt and unresolved input have a separate bounded journal
+namespace. Existing private-projection keys and receipts remain unchanged. The
+shared nonqueueing execution slot prevents simultaneous host commands; neither
+purpose can consume or settle the other's unknown invocation.
+
+The snapshot is `daimon-alerts-repair-input/v1` with `incident.id`,
+`incident.resource_id` and unsigned `incident.revision`. The owner-selected adapter
+must inspect that exact incident and use its existing supported recovery writer,
+preserving identity, history, explicit pauses and uncertain effects. It must not
+infer a restart from a probe failure, clear stores, acknowledge an alert as repair
+or replay messages. Selecting this bridge alone installs no recovery adapter.
+
+For a completed run, stdout is `daimon-alerts-owner-repair/v1` with the exact input
+`source_sha256`, matching `incident_id`, `incident_revision` and `resource_id`,
+`state: resolved_verified`, `resolution_state: resolved`, a strictly higher
+`resolution_revision`, and the actual retained `operation_id`. Only this bounded
+receipt projection reaches the actor; arbitrary host fields remain private.
+Inspection uses the retained original input and `--inspect-stdin`; it must verify
+the existing resolution with `state: existing_resolution_verified`. This settles
+current evidence without claiming that an unconfirmed original command executed.
+Publication receipts, acknowledgment, another incident or unchanged revisions
+cannot establish repair. Failure stays unresolved for inspection, without an
+automatic second action. Reports output still needs its ordinary attributed
+return to our general conversation; a host receipt alone does not prove that.
+
+Qualification: `tests/heartbeat_review_io.py BINARY --repair` uses the existing
+periodic Reports/controller journey with a synthetic native peer and fixed test
+adapter. It exercises retained unknown effects, original-input inspection,
+separate projection status and duplicate suppression with zero providers. It does
+not establish production owner repair or a real Matrix outage. The normal
+`--projection` journey continues to qualify the existing publication path.
