@@ -28,6 +28,23 @@ thread nor establishes global idle. If preparation expires before any selector
 write, inspect that retained outcome and current preimage before continuing the
 known-unstarted operation with the same qualified artifact.
 
+A listener cgroup can also contain its configured Matrix host command running
+with `--inbox`. Compare the complete argv and parent with that actual receiving
+configuration, then let the existing bounded read finish before selection. Do
+not misclassify every non-proxy child as unrelated, or extend this exception to
+unknown children, provider work or sending. Four20November child preflights
+refused this ordinary read before writing any selector; their same-artifact
+continuations retained the original refusals and completed after read closure.
+
+Inspect the selected services' existing dependency relationship too. A child's
+web service with `PartOf` its native listener restarts with that listener even
+when the operator controls only the listener. Preserve the same web package and
+configuration, hold the existing voice fence, and wait for actual HTTP readiness
+and authenticated-reader acceptance. Do not require its old PID to survive a
+declared restart dependency. One20November post-selection health read arrived
+before the web finished starting; the retained new listener was verified forward
+without repeating selection, restarting again or replaying inputs.
+
 Native selectors may use a symlink. Compare the effective existing ExecStart
 argument with the process executable's resolved identity and qualified digest;
 conditionally replace that actual argument, rather than searching the unit for
