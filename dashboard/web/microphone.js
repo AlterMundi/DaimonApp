@@ -153,6 +153,23 @@ window.VoiceInput = (() => {
     function caption(text){notice(text);state.setAttribute('data-live-caption','true');state.setAttribute('aria-live','off');state.scrollLeft=state.scrollWidth;}
     let available=false, liveAvailable=false, openaiLiveAvailable=false, liveMode='prepared', generation=0, recorder, stream, parts=[], bytes=0, timer, pending, latestSaved, uploading=false, controller;
     let phase='idle', commit=false, readySelection,recordingStarted,countdownTimer,conversationCapture=false;
+    let screenLock,screenLockRequest;
+    function releaseScreenLock(){
+      screenLockRequest=undefined;
+      const old=screenLock;screenLock=undefined;
+      if(old)try{void Promise.resolve(old.release()).catch(()=>{});}catch{}
+    }
+    function keepScreenAwake(){
+      if(document.hidden||!['recording','editing'].includes(phase)||screenLock||screenLockRequest||!window.navigator?.wakeLock?.request)return;
+      const request={},owned=generation;screenLockRequest=request;
+      // Best effort only: denial must not discard or restart a recording.
+      void Promise.resolve().then(()=>window.navigator.wakeLock.request('screen')).then(lock=>{
+        if(screenLockRequest!==request||owned!==generation||document.hidden||!['recording','editing'].includes(phase)){
+          try{void Promise.resolve(lock.release()).catch(()=>{});}catch{}return;
+        }
+        screenLock=lock;lock.addEventListener?.('release',()=>{if(screenLock===lock)screenLock=undefined;});
+      }).catch(()=>{}).finally(()=>{if(screenLockRequest===request)screenLockRequest=undefined;});
+    }
     let cueContext,cueSeconds=new Set();
     function closeCues(){
       const old=cueContext;cueContext=undefined;
@@ -248,7 +265,7 @@ window.VoiceInput = (() => {
       if(phase!=='recording')try{onLevel(0);}catch{}
       onActivity(uploading || ['permission','recording','editing','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
-    function stopTracks() {closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
+    function stopTracks() {releaseScreenLock();closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
     function cancelRecording(message='Recording discarded. Nothing was sent.') {
       clearStatusTimer();checking=false;generation++;commit=false;latestSaved=undefined;const old=recorder;recorder=undefined;
       if(old?.discard)old.discard();else if(old && old.state!=='inactive')old.stop();stopTracks();parts=[];bytes=0;phase='idle';notice(message,!!message && message!=='Recording discarded. Nothing was sent.');noticeDismissible=!!message&&!pending;controls();
@@ -260,9 +277,10 @@ window.VoiceInput = (() => {
       cancelRecording('');available=false;controls();
     }
     function deactivate() {
-      if(edited){commit=false;if(['recording','editing'].includes(phase))hold();controller?.abort();return;}
-      if(conversationCapture && ['permission','recording'].includes(phase)){hold();controller?.abort();return;}
-      if(['permission','recording','editing','ready','finalizing'].includes(phase))cancelRecording('Recording ended while this view was inactive. Nothing was sent.');
+      // Background teardown is not an explicit Discard. Finalize the same
+      // original for review, including an ordinary unedited voice message.
+      if(phase==='permission')cancelRecording('Voice mode closed before recording began.');
+      else if(['recording','editing'].includes(phase))hold();
       controller?.abort();
     }
     function configure(value,live=false,mode='prepared',openaiLive=false) {
@@ -469,6 +487,7 @@ window.VoiceInput = (() => {
         current.addEventListener('error',()=>{if(owned===generation)cancelRecording('Recording failed. Nothing was sent.');});
         current.addEventListener('stop',()=>finish(owned,binding,mime,frozenSelection));
         current.start(250);onTiming(frozenSelection.captureId,'started');phase='recording';if(!conversational&&hasTranscriptPreview){transcriptCapture={id:frozenSelection.captureId,binding,editable:canEditDraft()&&!!current.pause&&!!current.resume&&(frozenSelection.files?.length||0)<=6&&(frozenSelection.files||[]).reduce((n,f)=>n+f.size,0)<=20*1024*1024-65536};onTranscript({...transcriptCapture,active:true,text:'',editable:transcriptCapture.editable});}recordingStarted=clock();caption(previewUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();
+        keepScreenAwake();
         timer=setTimeout(()=>{if(owned===generation && ['recording','paused'].includes(current.state)){phase='finalizing';onTiming(frozenSelection.captureId,'ended');current.captureStop='duration_limit';current.stop();stopTracks();controls();}},RECORDING_MILLIS);
       } catch(error) {
         const reason={NotAllowedError:'Microphone permission was denied. Check this browser’s site permissions.',
@@ -577,11 +596,12 @@ window.VoiceInput = (() => {
     check.addEventListener('click',()=>checkStatus());
     document.addEventListener('visibilitychange',()=>{
       if(document.hidden){
+        releaseScreenLock();
         clearStatusTimer();
         // An explicitly started message may continue while its human reads
         // another browser tab. Only direct voice and pending permission suspend.
         if(conversationCapture||phase==='permission')deactivate();
-      }else scheduleStatus(true);
+      }else {keepScreenAwake();scheduleStatus(true);}
     });
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});

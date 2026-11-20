@@ -35,6 +35,12 @@ Ordinary voice messages already recording survive browser tab visibility changes
 as do their in-flight original uploads. Keep late microphone permission blocked
 while hidden, direct Avatar suspension, nativecapturebackground, pagehide and
 explicit teardown distinct. No hidden-tab automatic capture/restart is allowed.
+Pagehide/native background must finalize an in-progress ordinary recording for
+the existing local review/recovery path, never treat it as an explicit Discard.
+Repeated teardown during finalization or review must preserve that same original.
+A best-effort screen wake lock belongs only to the active foreground recording;
+release on Stop/hidden/teardown and release late grants after capture ends. Denial
+must not prevent recording. Wake lock is not background-capture acceptance.
 The existing120second/20MiB bounds remain; browser/OS suspension is not physical
 mobile background-capture acceptance. Qualify microphone_ui.js with both ordinary
 and live-backed recording plus hidden permission and upload races.
