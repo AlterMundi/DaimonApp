@@ -516,7 +516,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             r.reported_revision.is_none()
                 && matches!(
                     r.phase.as_str(),
-                    "attention_failed" | "attention_interrupted" | "attention_collection_lost"
+                    "attention_failed" | "attention_interrupted"
                 )
         })
         .map(|r| {
@@ -576,7 +576,6 @@ fn pending(p: &Parent) -> bool {
                 "retired_unsent"
                     | "attention_failed"
                     | "attention_interrupted"
-                    | "attention_collection_lost"
                     | "accepted_terminal_unreviewed"
             )
     })
@@ -604,23 +603,6 @@ fn settle_terminal_attention_on(conn: &Connection, p: &mut Parent) -> Result<()>
         let Some(execution) = executions::load(conn, local)? else {
             continue;
         };
-        if execution["phase"] == "terminal"
-            && execution["terminal_status"] == "collection_lost"
-            && execution["physical"].is_null()
-            && execution["local"].as_i64() == Some(local)
-            && execution["native"] == p.native
-            && execution["source"] == r.id
-            && execution["generation"].as_u64() == r.attention_generation
-        {
-            // The old collector is gone, not the original uncertainty. Never
-            // classify this as unsent, review, provider completion or a retry.
-            let offers: Vec<Offer> = serde_json::from_value(r.envelope["offers"].clone())?;
-            for offer in offers {
-                p.seen.insert(offer.key, offer.revision);
-            }
-            r.phase = "attention_collection_lost".into();
-            continue;
-        }
         let Some(physical) = execution["physical"].as_str().filter(|id| !id.is_empty()) else {
             continue;
         };
@@ -985,7 +967,6 @@ fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
                 | "accepted_terminal_unreviewed"
                 | "attention_failed"
                 | "attention_interrupted"
-                | "attention_collection_lost"
         ) {
             completed.push(i);
             continue;
@@ -1538,96 +1519,6 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
-    #[test]
-    fn restart_releases_departed_local_collection_without_replaying_unknown_native_effects() {
-        for physical in [None, Some("observed-native-turn")] {
-            let (file, store, entry, source) = setup();
-            let check = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
-            let selected = selection(&store, entry, &source);
-            let dispatch = store
-                .heartbeat_finish_check(
-                    &check,
-                    Some(Ok((selected.clone(), page(&selected, vec![item(1)])))),
-                )
-                .unwrap()
-                .unwrap();
-            let session = store.get_session(entry).unwrap().unwrap();
-            let local = store
-                .record_turn_started(
-                    session.id,
-                    &TurnRequest {
-                        session_key: entry,
-                        from_user_id: 100,
-                        prompt: String::new(),
-                        runtime_instructions: None,
-                        attachments: vec![],
-                        review_mode: None,
-                        override_search_mode: None,
-                    },
-                )
-                .unwrap();
-            store.set_session_busy(entry, true).unwrap();
-            let before;
-            {
-                let conn = store.conn.lock().unwrap();
-                let mut parent = load(&conn, 100, session.id).unwrap().unwrap();
-                let returned = &mut parent.native_returns[0];
-                returned.phase = "submitting".into();
-                returned.local = Some(local);
-                returned.attention_generation = Some(2);
-                returned.attention_activation = Some(lanes::Activation {
-                    lane: HeartbeatLane::Messaging,
-                    generation: 1,
-                });
-                before = serde_json::to_value(&parent).unwrap();
-                save(&conn, &parent).unwrap();
-                super::super::executions::save(
-                    &conn,
-                    local,
-                    &json!({
-                        "local":local,"phase":"owned","physical":physical,
-                        "native":parent.native,"source":dispatch.id,"generation":2,
-                        "activation":{"lane":"messaging","generation":1},
-                        "terminal_status":null,"inference_allowance":{"reserved":64}
-                    }),
-                )
-                .unwrap();
-            }
-            drop(store);
-            // No stale-age manipulation: this is the immediate restart race.
-            let recovered =
-                Store::open(file.path(), &[100], &crate::store::tests::defaults()).unwrap();
-            assert!(!recovered.get_session(entry).unwrap().unwrap().busy);
-            assert_eq!(
-                recovered.turn_status(local).unwrap().as_deref(),
-                Some("failed")
-            );
-            let conn = recovered.conn.lock().unwrap();
-            let parent = load(&conn, 100, session.id).unwrap().unwrap();
-            let execution = super::super::executions::load(&conn, local)
-                .unwrap()
-                .unwrap();
-            assert_eq!(execution["inference_allowance"], json!({"reserved":64}));
-            assert_eq!(parent.checks, before["checks"].as_u64().unwrap() as u32);
-            assert_eq!(parent.native_returns[0].id, dispatch.id);
-            assert!(parent.native_returns[0].reported_revision.is_none());
-            assert!(!unsubmitted_on(&conn, &parent.native_returns[0]).unwrap());
-            if physical.is_none() {
-                assert_eq!(execution["terminal_status"], "collection_lost");
-                assert_eq!(execution["native_outcome"], "unconfirmed");
-                assert_eq!(parent.native_returns[0].phase, "attention_collection_lost");
-                assert!(!pending(&parent));
-                assert!(parent.native_returns[0].native_turn.is_none());
-            } else {
-                assert_eq!(execution["phase"], "owned");
-                assert_eq!(execution["physical"], json!(physical));
-                assert!(execution["terminal_status"].is_null());
-                assert_eq!(parent.native_returns[0].phase, "submitting");
-                assert!(pending(&parent));
-            }
-        }
-    }
-
     #[test]
     fn owner_resume_recovers_only_exact_proved_unsubmitted_refusals() {
         for invalid in [

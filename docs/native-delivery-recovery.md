@@ -79,16 +79,19 @@ those local rows and busy flags in the same transaction. It preserves native
 threads, goals, accounting, receipts and existing response text. A native task
 may still be running independently; local failure is not native interruption.
 
-For heartbeat ownership with no observed physical identity, startup retains the
-original source, allocation and unknown native outcome, marks only local
-collection lost, and records the attempted offer revisions without review or
-retry. The owner status exposes `attention_collection_lost` as an actionable
-unconfirmed original. It never relabels the attempt `not_submitted`, refunds its
-reservation, fabricates a response or repeats the source. A later distinct offer
-can use ordinary bounded admission. Known physical turns retain their exact
-ownership and require the existing native observation/collection route; startup
-cannot assert their termination. The normal same-incident repair action remains
-once-only and independently reconciled.
+For heartbeat ownership without an observed physical identity, startup reuses the
+existing `not_submitted` route only when its exact retained source is still
+reserved/retained-unsent and no native-collection submission marker exists.
+That marker is persisted before native writing. Both proofs are required; absence
+of a physical ACK alone proves nothing. The original allocation and source remain
+retained, without refunds or new authority. The existing bounded unsent recovery
+and stale-offer retirement apply; no new queue or state is introduced.
+
+A submitting/uncertain source, a native submission marker or a known physical
+identity preserves its existing ownership and uncertainty. Startup cannot label
+those attempts unsent or replay them. Exact native observation and supported
+collector attachment remain necessary. No model, goal or native task is stopped
+by local journal recovery.
 
 Regression coverage includes immediate reopen after a fresh local admission,
 refusal of a second live owner, unknown heartbeat startup without replay, and

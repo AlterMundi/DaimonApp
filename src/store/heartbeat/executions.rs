@@ -19,7 +19,7 @@ pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     if matches!(value["phase"].as_str(), Some("terminal" | "transferred"))
         && matches!(
             value["terminal_status"].as_str(),
-            Some("completed" | "failed" | "interrupted" | "collection_lost")
+            Some("completed" | "failed" | "interrupted")
         )
         && let Some(source) = value["source"].as_str()
     {
@@ -27,23 +27,48 @@ pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     }
     Ok(())
 }
-/// Startup owns the database exclusively, but a missing native ACK is still
-/// unknown. Release only departed local ownership; retain the exact attempt.
+/// Startup owns local collection, not an unobserved native effect. Reuse the
+/// existing unsent route only when both the source and submission marker prove it.
 pub(in crate::store) fn recover_departed_collection_on(
     conn: &Connection,
     local: i64,
 ) -> Result<()> {
-    if let Some(mut record) = load(conn, local)?
-        && matches!(record["phase"].as_str(), Some("owned" | "stopping"))
-        && record["physical"].is_null()
+    let Some(mut record) = load(conn, local)? else {
+        return Ok(());
+    };
+    if !matches!(record["phase"].as_str(), Some("owned" | "stopping"))
+        || !record["physical"].is_null()
     {
+        return Ok(());
+    }
+    let source = record["source"]
+        .as_str()
+        .context("Missing heartbeat source")?;
+    let Some((parent, index)) = super::producer::load_return(conn, source)? else {
+        return Ok(());
+    };
+    let returned = &parent.native_returns[index];
+    let submitting: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_collections WHERE local_turn=?1)",
+        [local],
+        |r| r.get(0),
+    )?;
+    if !submitting
+        && returned.local == Some(local)
+        && returned.native_turn.is_none()
+        && returned.collection_local.is_none()
+        && matches!(returned.phase.as_str(), "reserved" | "retained_unsent")
+        && record["native"] == parent.native
+        && record["generation"].as_u64() == returned.attention_generation
+    {
+        // NativeTurnSubmitting persists its marker before the native write.
+        // A departed reserved source with no marker has not crossed it.
         record["phase"] = json!("terminal");
-        record["terminal_status"] = json!("collection_lost");
-        record["native_outcome"] = json!("unconfirmed");
+        record["terminal_status"] = json!("not_submitted");
         save(conn, local, &record)?;
     }
-    // An observed physical identity stays owned for exact native observation
-    // and collection; startup does not assert that native work terminated.
+    // Known physical work and possible/lost ACKs retain original ownership.
+    // The existing exact native observation and no-replay rules still apply.
     Ok(())
 }
 
