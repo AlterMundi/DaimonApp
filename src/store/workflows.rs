@@ -3666,6 +3666,414 @@ mod tests {
         assert_eq!(anchor, "old-physical");
     }
     #[test]
+    fn matrix_native_acknowledgment_is_durable_and_separate_from_consumption() {
+        let (file, s, entry, _plan) = setup();
+        let local = turn(&s, &entry, "");
+        let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = Uuid::now_v7().to_string();
+        s.conversation_input_capture(
+            100,
+            entry.key,
+            &binding,
+            &id,
+            "  Original human request\n  ",
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Queue).unwrap();
+        s.conversation_input_event(
+            100,
+            &id,
+            E::Begin {
+                local_turn: local,
+                steer: true,
+            },
+        )
+        .unwrap();
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let consumed = s.conversation_input_read(100, entry.key, &id).unwrap();
+        assert_eq!(consumed.phase, "matrix_requested");
+        assert!(
+            !consumed.native_accepted,
+            "A downstream commitment is not a native ACK"
+        );
+        assert!(
+            s.conversation_input_event(101, &id, E::Accepted { local_turn: local })
+                .is_err()
+        );
+        assert!(
+            s.conversation_input_event(
+                100,
+                &id,
+                E::Accepted {
+                    local_turn: local + 1
+                }
+            )
+            .is_err()
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(
+            !s.conversation_input_read(100, entry.key, &id)
+                .unwrap()
+                .native_accepted
+        );
+        let acknowledged = s
+            .conversation_input_event(100, &id, E::Accepted { local_turn: local })
+            .unwrap();
+        assert_eq!(acknowledged.phase, "matrix_requested");
+        assert!(acknowledged.native_accepted);
+        assert_eq!(acknowledged.text, "  Original human request\n  ");
+        assert!(
+            s.conversation_input_event(100, &id, E::Accepted { local_turn: local })
+                .unwrap()
+                .native_accepted
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let restored = s.conversation_input_read(100, entry.key, &id).unwrap();
+        assert!(restored.native_accepted);
+        assert_eq!(restored.phase, "matrix_requested");
+    }
+
+    #[test]
+    fn terminal_boundary_uses_original_physical_not_collector_start() {
+        let (_file, s, entry, _plan) = setup();
+        let reference = original(&s, &entry, "A human question on a later physical turn");
+        let InputReference::Conversation(id) = reference else {
+            unreachable!()
+        };
+        let local = s
+            .conversation_input_read(100, entry.key, &id)
+            .unwrap()
+            .local_turn
+            .unwrap();
+        s.native_collection_submitting(local, None).unwrap();
+        s.native_collection_started(local, "earlier-collector-start")
+            .unwrap();
+        s.record_native_message(
+            local,
+            "native-1",
+            "actual-human-physical",
+            "scoped-progress",
+            Some("commentary"),
+            "Actual original-scoped progress",
+        )
+        .unwrap();
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        s.record_turn_finished(local, "completed", None).unwrap();
+        let boundary = s
+            .conversation_input_terminal_boundary(100, entry.key, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(boundary["native_turn"], "actual-human-physical");
+        // Multiple scoped physical boundaries remain ambiguous; never choose
+        // the completed collector start or an arbitrary last public message.
+        s.record_native_message(
+            local,
+            "native-1",
+            "another-human-physical",
+            "another-scoped-progress",
+            Some("commentary"),
+            "Another physical boundary",
+        )
+        .unwrap();
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn uncommitted_human_original_does_not_claim_internal_callback_items() {
+        for phase in [
+            "retained",
+            "queued",
+            "sending",
+            "steering",
+            "uncertain",
+            "rejected",
+            "retained_unsent",
+        ] {
+            let (_file, s, entry, plan) = setup();
+            let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+            let returned = s
+                .native_routed_result_reserve(100, entry.key, &delivery.id)
+                .unwrap()
+                .unwrap();
+            let local = turn(&s, &entry, "");
+            s.workflow_native_link(&returned.id, local).unwrap();
+            s.native_collection_submitting(local, None).unwrap();
+            s.native_collection_started(local, "callback-physical")
+                .unwrap();
+            s.workflow_native_submitting(&returned.id).unwrap();
+            s.workflow_native_outcome(&returned.id, "accepted", Some("callback-physical"))
+                .unwrap();
+            let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let id = Uuid::now_v7().to_string();
+            s.conversation_input_capture(
+                100,
+                entry.key,
+                &binding,
+                &id,
+                "An actual retained fixture original",
+            )
+            .unwrap();
+            if phase != "retained" {
+                s.conversation_input_event(100, &id, E::Queue).unwrap();
+            }
+            if !matches!(phase, "retained" | "queued") {
+                s.conversation_input_event(
+                    100,
+                    &id,
+                    E::Begin {
+                        local_turn: local,
+                        steer: phase != "sending",
+                    },
+                )
+                .unwrap();
+            }
+            if matches!(phase, "uncertain" | "retained_unsent") {
+                s.conversation_input_event(100, &id, E::Uncertain { local_turn: local })
+                    .unwrap();
+            }
+            if phase == "rejected" {
+                s.conversation_input_event(100, &id, E::Rejected { local_turn: local })
+                    .unwrap();
+            }
+            if phase == "retained_unsent" {
+                s.conversation_inputs_not_submitted(100, local).unwrap();
+            }
+            assert_eq!(
+                s.conversation_input_read(100, entry.key, &id)
+                    .unwrap()
+                    .phase,
+                phase
+            );
+            s.record_native_message(
+                local,
+                "native-1",
+                "callback-physical",
+                "internal-output",
+                Some("final_answer"),
+                "Selected internal return, not the uncommitted original's answer",
+            )
+            .unwrap();
+            s.record_turn_finished(local, "completed", None).unwrap();
+            assert!(
+                s.conversation_input_terminal_boundary(100, entry.key, &id)
+                    .unwrap()
+                    .is_none()
+            );
+            let conn = s.conn.lock().unwrap();
+            let marker:String=conn.query_row("SELECT presentation_input FROM interaction_native_messages WHERE item_id='internal-output'",[],|r|r.get(0)).unwrap();
+            assert_ne!(
+                marker, id,
+                "{phase} without a committed selection must not claim an internal item"
+            );
+            assert!(marker.contains(&returned.id));
+        }
+    }
+
+    #[test]
+    fn matrix_selection_preserves_steered_human_return_and_replacement() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let returned = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        let old = turn(&s, &entry, "");
+        s.workflow_native_link(&returned.id, old).unwrap();
+        s.native_collection_submitting(old, None).unwrap();
+        s.native_collection_started(old, "shared-physical").unwrap();
+        s.workflow_native_submitting(&returned.id).unwrap();
+        s.workflow_native_outcome(&returned.id, "accepted", Some("shared-physical"))
+            .unwrap();
+        s.record_native_message(
+            old,
+            "native-1",
+            "shared-physical",
+            "before-human",
+            Some("commentary"),
+            "The selected worker returned.",
+        )
+        .unwrap();
+
+        let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = Uuid::now_v7().to_string();
+        s.conversation_input_capture(
+            100,
+            entry.key,
+            &binding,
+            &id,
+            "Discuss this shared creation with the selected companion",
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Queue).unwrap();
+        s.conversation_input_event(
+            100,
+            &id,
+            E::Begin {
+                local_turn: old,
+                steer: true,
+            },
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Accepted { local_turn: old })
+            .unwrap();
+        // The real downstream writer consumes the original. That phase change
+        // must not revoke this already admitted human's presentation lifetime.
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.conversation_input_event(100, &id, E::Accepted { local_turn: old })
+                .unwrap()
+                .phase,
+            "matrix_requested"
+        );
+        assert!(
+            s.conversation_input_read(100, entry.key, &id)
+                .unwrap()
+                .native_accepted,
+            "Consumption must retain the acknowledgment already observed before it"
+        );
+        s.record_native_message(
+            old,
+            "native-1",
+            "shared-physical",
+            "human-final",
+            Some("final_answer"),
+            "The human's actual response, with downstream work separate.",
+        )
+        .unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let (input, sources): (String, String) = conn.query_row(
+                "SELECT presentation_input,native_return_sources FROM interaction_native_messages WHERE item_id='human-final'",
+                [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(
+                input, id,
+                "A downstream action cannot replace the human reply with an internal return marker"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&sources).unwrap(),
+                json!([returned.id])
+            );
+            let before: String = conn.query_row(
+                "SELECT presentation_input FROM interaction_native_messages WHERE item_id='before-human'",
+                [], |r| r.get(0)).unwrap();
+            assert_ne!(
+                before, id,
+                "Earlier internal items must retain their original association"
+            );
+        }
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none(),
+            "A locally running collector is not a terminal-history candidate"
+        );
+        s.record_turn_finished(old, "completed", None).unwrap();
+        let boundary = s
+            .conversation_input_terminal_boundary(100, entry.key, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(boundary["native_turn"], "shared-physical");
+        assert!(
+            s.conversation_input_terminal_boundary(101, entry.key, &id)
+                .is_err()
+        );
+        assert!(
+            s.conversation_input_terminal_boundary(100, SessionKey::new(100, Some(8)), &id)
+                .is_err()
+        );
+        let replacement = replacement_collector(&s, &entry, "shared-physical");
+        s.record_native_message(
+            replacement,
+            "native-1",
+            "shared-physical",
+            "replacement-final",
+            Some("final_answer"),
+            "The same human lifetime survives a collector replacement.",
+        )
+        .unwrap();
+        let conn = s.conn.lock().unwrap();
+        let input: String = conn.query_row(
+            "SELECT presentation_input FROM interaction_native_messages WHERE item_id='replacement-final'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(input, id);
+        drop(conn);
+        {
+            // A retired original cannot acquire new execution observations.
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none()
+        );
+        s.set_session_codex_thread(entry.key, "replacement-native")
+            .unwrap();
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn human_turn_freezes_return_association_without_changing_presentation_lifetime() {
         let (_f, s, e, plan) = setup();
         let v = declare(&s, &e, plan);
