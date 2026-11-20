@@ -50,6 +50,20 @@ of useful heartbeat availability. An expired uncertain transaction remains
 historical evidence after a later explicit goal control supersedes its authority;
 it must neither be replayed nor block a freshly observed operation forever.
 
+When distinct receiving compositions share a Cargo target directory, freeze and
+serialize the selected package artifact before another checkout builds into it.
+Read Cargo's compiler-artifact package/manifest and executable path, then verify
+behavior that distinguishes that receiver's composition. A fast successful build,
+a top-level executable or rewritten `.d` source paths alone do not prove its bytes
+belong to that checkout. A20November qualification observed rewritten source paths
+beside another composition's executable; it was rejected before selection.
+If the mismatch is verified, invalidate only that package's release outputs with
+`cargo clean --package telecodex --release`, keep dependencies/the shared target,
+and rebuild the existing feature profile with `--message-format=json`. Confirm
+the non-fresh owning artifact and composition-specific behavior before freezing
+its digest. This is artifact qualification, not a reason to multiply target
+caches, discard dependencies or rerun unchanged receiver maintenance.
+
 Keep one deployment checkpoint containing each actual receiver, prior/current
 selection, exact source/assets/reader/configuration preservation, adoption outcome,
 rollback and concrete pending reason. Verify own actor/grant and private API refusal
