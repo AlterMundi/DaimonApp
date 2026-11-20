@@ -19,7 +19,7 @@ pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     if matches!(value["phase"].as_str(), Some("terminal" | "transferred"))
         && matches!(
             value["terminal_status"].as_str(),
-            Some("completed" | "failed" | "interrupted")
+            Some("completed" | "failed" | "interrupted" | "collection_lost")
         )
         && let Some(source) = value["source"].as_str()
     {
@@ -27,6 +27,26 @@ pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Startup owns the database exclusively, but a missing native ACK is still
+/// unknown. Release only departed local ownership; retain the exact attempt.
+pub(in crate::store) fn recover_departed_collection_on(
+    conn: &Connection,
+    local: i64,
+) -> Result<()> {
+    if let Some(mut record) = load(conn, local)?
+        && matches!(record["phase"].as_str(), Some("owned" | "stopping"))
+        && record["physical"].is_null()
+    {
+        record["phase"] = json!("terminal");
+        record["terminal_status"] = json!("collection_lost");
+        record["native_outcome"] = json!("unconfirmed");
+        save(conn, local, &record)?;
+    }
+    // An observed physical identity stays owned for exact native observation
+    // and collection; startup does not assert that native work terminated.
+    Ok(())
+}
+
 pub(super) fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Value>> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
     let mut q=conn.prepare("SELECT b.value FROM bot_state b JOIN turns t ON b.key='heartbeat_execution:'||t.id WHERE t.from_user_id=?2 AND ((t.session_id=?1 AND json_extract(b.value,'$.owner') IS NULL) OR (json_extract(b.value,'$.owner.entry.chat_id')=?3 AND json_extract(b.value,'$.owner.entry.thread_id')=?4)) ORDER BY t.id DESC LIMIT 18")?;
