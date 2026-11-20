@@ -142,8 +142,16 @@ config bytes, then transfers the lock through exec. Its existing Linux timeout
 bounds execution to180seconds by default, at most300, with5seconds to terminate
 owned children. No deployment target, service, source or provider is chosen here.
 
+Run the helper with the selected web package's actual Python import path as well
+as its interpreter. A service started with `python -m` can find `dashboard` through
+its working directory while a copied helper script cannot. Preserve any explicit
+receiving `PYTHONPATH`; otherwise use the observed web package directory. An import
+failure before the operator starts leaves selection unattempted: correct that
+launcher context and continue the same prepared artifact, rather than rebuilding
+or replaying a completed selection.
+
 ```sh
-SERVING_PYTHON scripts/interaction_web_maintenance.py \
+PYTHONPATH=SELECTED_WEB_PACKAGE SERVING_PYTHON scripts/interaction_web_maintenance.py \
   --config SELECTED_PRIVATE_CONFIG \
   --health-url SELECTED_LOCAL_HEALTH_URL \
   --owner-uid SERVICE_UID --seconds 150 \
