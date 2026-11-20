@@ -340,9 +340,20 @@ async fn inspect_existing(
         .shared
         .store
         .private_projection_input(purpose, human, key, native, invocation)?;
+    let adapter = app.shared.store.private_projection_inspection_adapter(
+        purpose,
+        human,
+        key,
+        native,
+        invocation,
+        &serde_json::to_string(config)?,
+    )?;
+    let original: crate::interaction::PrivateProjectionConfig = serde_json::from_str(&adapter)?;
+    original.validate()?;
+    let config = &original;
     anyhow::ensure!(
         current["descriptor"] == digest(&serde_json::to_vec(config)?),
-        "Projection adapter selection changed; inspect through original owning selection"
+        "Retained original adapter changed"
     );
     let outcome = execute_mode(
         config,
@@ -424,7 +435,12 @@ pub(super) async fn tool(
             "Projection input revision changed"
         );
         validate_reconciliation(&config, &receipt, &return_id)?;
-        let descriptor = digest(&serde_json::to_vec(&config)?);
+        let adapter_json = serde_json::to_string(&config)?;
+        anyhow::ensure!(
+            adapter_json.len() <= 16000,
+            "Owner adapter configuration exceeds recovery bound"
+        );
+        let descriptor = digest(adapter_json.as_bytes());
         let claim = app.shared.store.private_projection_claim(
             purpose,
             human,
@@ -446,6 +462,14 @@ pub(super) async fn tool(
         let invocation = claim["current"]["invocation"]
             .as_str()
             .context("Missing projection invocation")?;
+        app.shared.store.private_projection_inspection_adapter(
+            purpose,
+            human,
+            key,
+            &request.thread_id,
+            invocation,
+            &adapter_json,
+        )?;
         let deadline = claim["current"]["deadline_unix_ms"]
             .as_i64()
             .context("Missing projection deadline")?;
