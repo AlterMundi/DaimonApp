@@ -65,6 +65,9 @@ human_user_id = 100 # Synthetic example; use the actually approved account local
 label = "Nexus"
 # Optional per-table destination; omitted routes keep the legacy global selector.
 launch_selector = "registered-selector-for-this-table"
+# Set false for an HTTPS-only review without a registered Telegram entrance.
+# Owner association remains supported; /nexus open refuses and no bot link appears.
+launch_enabled = true
 ```
 
 Requires `codex.shared_app_server = true`, the actual configured bot's Main Mini
