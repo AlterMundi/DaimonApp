@@ -66,7 +66,7 @@ function boot(live=false,recovery,status404=false,cues=false){
  let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
  return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
-  confirmation:value=>{confirmDiscard=value;},confirmations,
+  wakeLock:value=>{window.navigator.wakeLock=value;},confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
   visual:value=>{visual=value;visualFailure=false;},failVisual:()=>{visualFailure=true;},mediaRequests:()=>mediaRequests,microphoneFailure:name=>{mediaFailure={name,message:"private platform details"};},select:value=>{selection=value;},captureState:(value,retired=false)=>{capturePhase=value;captureRetired=retired;},mode:value=>{mode=value;},permission:()=>{permission=deferred();return permission;},holdReceipt:()=>{receiptHold=deferred();return receiptHold;},holdUpload:()=>{uploadHold=deferred();return uploadHold;},bind:value=>{binding=value;},paused:()=>paused,unauthorized:()=>unauthorized,
@@ -366,6 +366,30 @@ function boot(live=false,recovery,status404=false,cues=false){
  const directTabs=boot(true);await directTabs.ui.startConversation();directTabs.visibility(true);
  await until(()=>directTabs.devices.at(-1).state==='inactive');assert.equal(directTabs.uploads.length,0,'Avatar/alternating voice still holds rather than capturing in background');
  const hidden=boot();await hidden.click();hidden.events.pagehide();await until(()=>hidden.devices[0].state==='inactive');assert.equal(hidden.uploads.length,0);assert.equal(hidden.devices[0].stream.stopped,1);
+ // Phone background/page teardown keeps the same original instead of Discard.
+ for(const live of [false,true])for(const event of ['pagehide','nativecapturebackground']){
+  const store=memoryRecovery(),phone=boot(live,store);await until(()=>phone.ui.canStartNative());
+  await phone.click();const id=phone.devices.at(-1).captureId;
+  phone.events[event]();phone.events[event]();
+  await until(()=>phone.nodes.get('#conversation-recording-review').hidden===false);
+  const kept=store.values.get('pending');assert.equal(kept.id,id);assert(kept.blob.size>0);
+  assert.equal(phone.uploads.length,0);assert.equal(phone.mediaRequests(),1);
+  phone.events[event]();assert.equal(store.values.get('pending').id,id,'Repeated background does not discard a finalized original');
+  const reopened=boot(live,store);await until(()=>reopened.nodes.get('#conversation-voice-check').hidden===false);
+  assert.equal(reopened.mediaRequests(),0,'Recovery never restarts the microphone');
+  await reopened.click();await until(()=>reopened.received.length===1);
+  assert.equal(reopened.uploads[0].headers['X-Input-Id'],id);
+  assert.equal(await reopened.uploads[0].body.text(),await kept.blob.text());
+ }
+ const awake=boot(),locks=[];
+ awake.wakeLock({async request(kind){assert.equal(kind,'screen');const lock={releases:0,release(){this.releases++;return Promise.resolve();},addEventListener(){}};locks.push(lock);return lock;}});
+ await awake.click();await until(()=>locks.length===1);awake.visibility(true);await until(()=>locks[0].releases===1);
+ awake.visibility(false);await until(()=>locks.length===2);awake.ui.hold();await until(()=>locks[1].releases===1);
+ const lateLock=boot(),lockReply=deferred(),orphan={releases:0,release(){this.releases++;}};
+ lateLock.wakeLock({request:()=>lockReply.promise});await lateLock.click();await Promise.resolve();lateLock.events.pagehide();lockReply.resolve(orphan);
+ await until(()=>orphan.releases===1);assert.equal(lateLock.uploads.length,0,'A late wake lock cannot restart or submit capture');
+ const deniedLock=boot();deniedLock.wakeLock({request:async()=>{throw Error('Denied');}});await deniedLock.click();
+ await Promise.resolve();await Promise.resolve();assert.equal(deniedLock.devices[0].state,'recording');deniedLock.ui.hold();
  const delayed=boot(),permission=delayed.permission();const starting=delayed.click();delayed.cancel();const lateMedia=delayed.media();permission.resolve(lateMedia);await starting;assert.equal(lateMedia.stopped,1);assert.equal(delayed.devices.length,0);
  for(const live of [false,true]){
   const cues=boot(live,undefined,false,true);await cues.click();

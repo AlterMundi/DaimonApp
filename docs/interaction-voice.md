@@ -8,6 +8,18 @@ uses the same transcriber with a one-button recording flow, while the separate
 [speech player](interaction-speech.md) renders selected retained replies. Accessible
 realtime comparison and receiving device/human acceptance remain separate work.
 
+Browser voice messages request a best-effort foreground screen wake lock during
+recording, releasing it when recording ends or the page becomes hidden. Unsupported
+or denied requests do not prevent recording. This does not guarantee mobile OS
+background capture. Pagehide/native background stops capture and finalizes the
+same original into existing local recovery for explicit review; it must not erase
+an ordinary unedited message or automatically restart capture/send it. Repeated
+background events during finalization/review preserve the original identity,
+attachments and edited draft. A later explicit Send uses that recovered original.
+The existing 120-second/20-MiB capture limits still apply. A duration-limit cut
+is distinct from an observed screen-lock interruption; qualify actual phone
+preservation separately from synthetic browser lifecycle tests.
+
 ```toml
 [voice]
 transcription_command = ["/absolute/python3", "/absolute/transcribe-file.py"]
