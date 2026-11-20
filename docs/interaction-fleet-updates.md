@@ -36,6 +36,16 @@ unknown children, provider work or sending. Four20November child preflights
 refused this ordinary read before writing any selector; their same-artifact
 continuations retained the original refusals and completed after read closure.
 
+A configured host command can also select its operation through stdin. Do not
+label that child read-only or interrupt it. Match its complete argv and direct
+listener parent, then wait within the existing configured timeout (at most60
+seconds) for it to finish before selecting. Unknown children still refuse.
+Root20November retained two pre-selection refusals and completed the same-artifact
+listener handoff after the finite host work ended; no native input was replayed.
+Keep a queued collector attachment separate from observed attachment: a retained
+attachment receipt and the same physical turn's terminal collection can finish
+verification without another attach or listener restart, as observed on Emma.
+
 Inspect the selected services' existing dependency relationship too. A child's
 web service with `PartOf` its native listener restarts with that listener even
 when the operator controls only the listener. Preserve the same web package and
