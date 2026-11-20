@@ -133,7 +133,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, beforeOriginal, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, beforeOriginal, onOriginalAttempt=()=>{}, onOriginalDiscard=()=>{}, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -141,6 +141,8 @@ window.VoiceInput = (() => {
     const RECORDING_MILLIS=120000,clock=()=>window.performance?.now?.()??Date.now();
     const levelMeter=window.ConversationVoiceMode?.meter?.(value=>onLevel(value),clock);
     const recovery=recoveryStore();let restoreBinding,restoring=false,continuousOwned=false,recoveryFree=false,lastConfirmed;
+    let captureOriginal;
+    function originalAttempt(value){if(captureOriginal?.id===value.id)captureOriginal.attempted=true;try{onOriginalAttempt({id:value.id,binding:value.binding});}catch{}}
     let checking=false,statusTimer,noticeDismissible=false;const statusAttempts=new Map();
     function clearStatusTimer(){clearTimeout(statusTimer);statusTimer=undefined;}
     function scheduleStatus(immediate=false){
@@ -266,7 +268,9 @@ window.VoiceInput = (() => {
       onActivity(uploading || ['permission','recording','editing','ready','finalizing'].includes(phase) || latestSaved?.phase==='preparing', {phase,uploading,pending:!!pending,message:state.textContent,transcribing:latestSaved?.phase==='preparing'});
     }
     function stopTracks() {releaseScreenLock();closeCues();if(stream)for(const track of stream.getTracks())track.stop();stream=undefined;clearTimeout(timer);clearTimeout(countdownTimer);}
-    function cancelRecording(message='Recording discarded. Nothing was sent.') {
+    function cancelRecording(message='Recording discarded. Nothing was sent.',reason='capture-cancelled') {
+      if(captureOriginal&&!captureOriginal.attempted){try{onOriginalDiscard({id:captureOriginal.id,binding:captureOriginal.binding,reason});}catch{}}
+      captureOriginal=undefined;
       clearStatusTimer();checking=false;generation++;commit=false;latestSaved=undefined;const old=recorder;recorder=undefined;
       if(old?.discard)old.discard();else if(old && old.state!=='inactive')old.stop();stopTracks();parts=[];bytes=0;phase='idle';notice(message,!!message && message!=='Recording discarded. Nothing was sent.');noticeDismissible=!!message&&!pending;controls();
     }
@@ -349,6 +353,7 @@ window.VoiceInput = (() => {
         const value=await response.json();if(Object.keys(ref).some(k=>value[k]!==ref[k]))throw Error('Original attachment changed');
       }
       if(pending!==frozen||frozen.binding!==getBinding()||active.signal.aborted)return;
+      originalAttempt(frozen);
       const value=await api('interaction/inputs',{binding:frozen.binding,id:frozen.id,text:d.text,files:[...(frozen.files||[]),d.audio,d.transcript],...(frozen.reply?{reply:frozen.reply}:{}),...(frozen.visual?{visual:frozen.visual}:{}),...(frozen.playback?{playback:frozen.playback}:{})});
       await confirmed(value,frozen);
     }
@@ -375,6 +380,7 @@ window.VoiceInput = (() => {
         if(frozen.transcriptionProfile!==undefined&&!['openai','previous','openai-live','previous-live'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
         const route=frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
         if(frozen.dictation){await uploadDictation(frozen,active);return;}
+        originalAttempt(frozen);
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
           method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
@@ -448,15 +454,20 @@ window.VoiceInput = (() => {
       prepareCues();
       conversationCapture=conversational;
       const owned=++generation,binding=getBinding(),captureQuestions=getCaptureQuestions(),selection={captureId:window.crypto.randomUUID(),transcriptionProfile:getTranscriptionProfile(),...(conversational?{}:getReply()),playback:conversational?undefined:getPlayback(),...(captureQuestions!==undefined?{captureQuestions:JSON.parse(JSON.stringify(captureQuestions))}:{})};latestSaved=undefined;phase='permission';commit=false;parts=[];bytes=0;rawTranscript='';previewText='';edited=false;editBase=undefined;editAnchor=0;
+      captureOriginal={id:selection.captureId,binding,attempted:false};
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
+        // Start the host snapshot synchronously, before visual/file preparation.
+        let contextPreparation;
+        if(beforeOriginal){contextPreparation=Promise.resolve(beforeOriginal({id:selection.captureId,binding,modality:'audio',files:[]}));contextPreparation.catch(()=>{});}
         let selectedVisual;
         try {const candidate=conversational?undefined:getVisual();selectedVisual=candidate?.then?await candidate:candidate;}
-        catch(_){if(owned===generation)cancelRecording('Selected image unavailable. Choose another image or remove it before recording.');return;}
+        catch(_){if(owned===generation)cancelRecording('Selected image unavailable. Choose another image or remove it before recording.','preparation-failed');return;}
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
         const fileCandidate=conversational?undefined:getFiles();let selectedFiles=fileCandidate?.then?await fileCandidate:fileCandidate;
-        if(beforeOriginal){try{selectedFiles=await beforeOriginal({id:selection.captureId,binding,modality:'audio',files:selectedFiles||[]});}
-          catch{if(owned===generation)cancelRecording('World context was not confirmed. Your draft is kept; nothing was recorded or sent.');return;}}
+        if(contextPreparation){try{selectedFiles=[...(selectedFiles||[]),...await contextPreparation];}
+          catch{if(owned===generation)cancelRecording('World context was not confirmed. Your draft is kept; nothing was recorded or sent.','preparation-failed');return;}}
+        if((selectedFiles?.length||0)>8||(selectedFiles||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024)throw Error('Attachment capacity');
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
         const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:selection.captureId};
         onTiming(frozenSelection.captureId,'requested');
@@ -497,7 +508,7 @@ window.VoiceInput = (() => {
           NotReadableError:'The microphone could not be opened. It may be busy or unavailable to this browser.',
           NotSupportedError:'Audio recording is not supported by this browser.',
           SecurityError:'Microphone access is blocked by this browser.'}[error?.name];
-        if(owned===generation)cancelRecording(reason || 'Microphone unavailable. You can keep writing.');
+        if(owned===generation)cancelRecording(reason || 'Microphone unavailable. You can keep writing.','preparation-failed');
       }
     }
     function submit(){

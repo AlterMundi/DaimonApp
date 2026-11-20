@@ -44,7 +44,7 @@ try:
     page=browser.new_page(viewport={'width':width,'height':800});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(parent_origin);frame=page.frames[1];frame.wait_for_function('!!window.Conversation')
     frame.evaluate('''()=>{
-      window.fixtureInputs=[];window.mediaRequests=0;
+      window.fixtureInputs=[];window.mediaRequests=0;const originalFetch=window.fetch;window.fetch=(route,opts)=>{if(String(route).endsWith('/files'))parent.postMessage({fixture:'file-start'},document.documentElement.dataset.surfaceParent);return originalFetch(route,opts);};
       window.AudioContext=class{resume(){return Promise.resolve()}close(){return Promise.resolve()}};
       window.MediaRecorder=class extends EventTarget{static isTypeSupported(){return true}constructor(){super();this.state='inactive';this.mimeType='audio/webm'}start(){this.state='recording'}stop(){if(this.state==='inactive')return;this.state='inactive';queueMicrotask(()=>{this.dispatchEvent(Object.assign(new Event('dataavailable'),{data:new Blob(['synthetic original audio'])}));this.dispatchEvent(new Event('stop'));})}};
       Object.defineProperty(navigator,'mediaDevices',{value:{getUserMedia:async()=>{mediaRequests++;return{getTracks:()=>[{stop(){}}]}}}});
@@ -56,10 +56,12 @@ try:
     frame.wait_for_function('fixtureInputs.length===1')
     original=frame.evaluate('fixtureInputs[0]');assert original['text']=='Exact fixture human words' and len(original['files'])==2 and original['files'][0]['name']=='fixture.txt'
     assert page.evaluate("messages.filter(m=>m.type==='prepare')[0].id")==original['id']
-    frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===1')
+    assert page.evaluate("messages.findIndex(m=>m.type==='prepare')<messages.findIndex(m=>m.fixture==='file-start')"),'Context must precede the canonical text attachment upload'
+    prior_messages=page.evaluate('messages.length');frame.locator('#conversation-files').set_input_files({'name':'voice-notes.txt','mimeType':'text/plain','buffer':b'synthetic voice attachment'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===1')
     frame.locator('#conversation-send').click();page.wait_for_function("messages.some(m=>m.type==='status'&&m.phase==='accepted'&&m.id===messages.filter(p=>p.type==='prepare').at(-1).id)",timeout=5000)
-    assert posts and posts[-1]['files'][0]['name']=='holodeck-situation.json'
+    assert posts and posts[-1]['files'][-1]['name']=='holodeck-situation.json'
     assert page.evaluate("messages.filter(m=>m.type==='prepare').at(-1).id")==posts[-1]['id']
+    assert page.evaluate("n=>{const part=messages.slice(n);return part.findIndex(m=>m.type==='prepare')<part.findIndex(m=>m.fixture==='file-start');}",prior_messages),'Context must precede the canonical audio attachment upload'
     geometry=frame.locator('#conversation-compose').bounding_box();assert geometry['width']<=width and geometry['y']+geometry['height']<=701,geometry
     assert not errors,errors
     results.append({'width':width,'text_original_id':original['id'],'synthetic_audio_original_id':posts[-1]['id'],'composer_visible':True,'private_payload_to_parent':False});page.close()

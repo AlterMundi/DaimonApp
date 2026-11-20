@@ -12,7 +12,7 @@ function memoryRecovery(){
  }};
  return {values,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
 }
-function boot(live=false,recovery,status404=false,cues=false,beforeOriginal){
+function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,originalEvents={}){
  let now=1000;
  const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[],statusReads=[];
  const document={hidden:false,addEventListener(name,fn){events[name]=fn;},querySelector(name){if(!nodes.has(name))nodes.set(name,{hidden:false,disabled:false,textContent:'',handlers:{},setAttribute(k,v){this[k]=v;},addEventListener(n,f){this.handlers[n]=f;}});return nodes.get(name);}};
@@ -63,7 +63,7 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal){
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
  vm.runInContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),context);
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({beforeOriginal,headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ let ui;ui=window.VoiceInput.mount({beforeOriginal,onOriginalAttempt:value=>originalEvents.attempt?.(value),onOriginalDiscard:value=>originalEvents.discard?.(value),headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
  ui.configure(true,live);
  return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
   wakeLock:value=>{window.navigator.wakeLock=value;},confirmation:value=>{confirmDiscard=value;},confirmations,
@@ -84,6 +84,22 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal){
   surface.ui.hold();await until(()=>surface.nodes.get('#conversation-recording-review').hidden===false);
   await surface.click();await until(()=>surface.received.length===1);
   assert.equal(surface.uploads.at(-1).headers['X-Input-Id'],frozen.id);assert.equal(surface.originals.get(frozen.id).files[0].sha256,contextRef.sha256);
+ }
+ {
+ for(const live of [false,true]){
+  const held=deferred();let snapshot;
+  const audio=boot(live,memoryRecovery(),false,false,value=>{snapshot=value;return Promise.resolve([contextRef]);});await until(()=>audio.ui.canStartNative());audio.files(held.promise);const wait=audio.click();assert(snapshot);assert.equal(audio.mediaRequests(),0);held.resolve([{file_id:crypto.randomUUID(),sha256:'b'.repeat(64),name:'notes.txt',mime:'text/plain',size:50}]);await wait;audio.click();await until(()=>audio.received.length===1);assert.equal(audio.received[0].id,snapshot.id);assert.equal(audio.received[0].files.length,2);
+ }
+ const cancelled=[],startedOriginals=[];let boundaryCapture;
+ const delayedAttachment=deferred(),audioBoundary=boot(false,memoryRecovery(),false,false,value=>{boundaryCapture=value;return Promise.resolve([contextRef]);},{discard:value=>cancelled.push(value),attempt:value=>startedOriginals.push(value)});
+ await until(()=>audioBoundary.ui.canStartNative());audioBoundary.files(delayedAttachment.promise);const opening=audioBoundary.click();assert(boundaryCapture,'Audio host snapshot is dispatched synchronously before waiting for files');assert.equal(audioBoundary.mediaRequests(),0);
+ audioBoundary.cancel();assert.equal(cancelled.length,1);assert.equal(cancelled[0].id,boundaryCapture.id);delayedAttachment.resolve([]);await opening;assert.equal(audioBoundary.mediaRequests(),0);assert.equal(startedOriginals.length,0);
+ for(let n=0;n<35;n++){
+  const one=boot(false,undefined,false,false,async()=>[contextRef],{discard:value=>cancelled.push(value)});await one.click();one.cancel();
+ }
+ assert.equal(cancelled.length,36,'Each known never-submitted cancellation can release one machine reservation');
+ const unknownDiscards=[],unknownAttempts=[],unknownAudio=boot(false,memoryRecovery(),false,false,async()=>[contextRef],{discard:value=>unknownDiscards.push(value),attempt:value=>unknownAttempts.push(value)});
+ await until(()=>unknownAudio.ui.canStartNative());unknownAudio.mode('after');await unknownAudio.click();unknownAudio.click();await until(()=>unknownAudio.state().startsWith('Recording unconfirmed'));unknownAudio.cancel();assert.equal(unknownAttempts.length,1);assert.equal(unknownDiscards.length,0,'An unknown voice POST cannot emit source discard');
  }
  const editedStore=memoryRecovery(),edited=boot(true,editedStore);await until(()=>edited.ui.canStartNative());await edited.click();const recorder=edited.devices.at(-1);
  edited.preparation().onPartial('A wrong opening');

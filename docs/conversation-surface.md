@@ -22,9 +22,12 @@ Parent must compare actor with its own server-verified paired human, not a label
 1. Child sends `ready` after shared authentication and binding discovery.
 2. Parent replies `connect` with the exact envelope. No user action is admitted
    through the surface until that handshake completes.
-3. Before each original, child sends `prepare` with a fresh `request` UUID,
-   canonical original `id`, `modality:"text"|"audio"`, and remaining attachment
-   capacity. It sends no human text, audio or private history. ID and binding are
+3. Synchronously at original-ID/binding allocation, BEFORE calling any async
+   image/file preparation or microphone permission, child sends `prepare` with a fresh `request` UUID,
+   canonical original `id`, `modality:"text"|"audio"`, and attachment capacity.
+   The initial request has `files:[]` internally; the returned context is appended
+   to the actual user references after their preparation. Final combined count
+   and bytes are checked again before any original write. It sends no human text, audio or private history. ID and binding are
    allocated/frozen BEFORE asynchronous file/context/permission work.
 4. Parent captures one immutable machine situation for that actor/ID at this
    boundary, and uses its existing UID-guarded bridge/provider file writer to
@@ -52,3 +55,26 @@ set draft, start microphone, auto-submit, select a session, replay or resume wor
 No background recorder, provider call or new login is created. Iframe reload is
 not safe while capture/upload/unknown submission is unresolved; normal existing
 recovery rules remain authoritative. Real device/hearing acceptance is separate.
+
+## Additive source-only discard notice
+
+`type:"discard", id, reason:"capture-cancelled"|"preparation-failed"` uses the
+same exact v1 origin/frame/actor/binding/visit/channel envelope. No human content
+is included. It is emitted at most once for a source preparation when the local
+canonical component knows its original writer was NEVER attempted: cancelled
+recording/permission or failed file/image/context preparation before the original
+POST. It may precede an in-flight/unknown machine-file preparation response.
+
+Immediately before an original text/voice POST, the component permanently fences
+discard for that original in this document. Unknown/failed/lost-ACK writes never
+emit discard. Recovery without local proof also never infers a safe discard.
+There is no source notice on ordinary held recording review or native work failure.
+
+The host must compare the original ID with its retained actor/binding/source, use
+the existing owner bridge lookup and retire ONLY a machine-source reservation
+when that supported lookup permits it. Keep every canonical file and any retained/
+uncertain original. A discard notice is not original absence, original cancellation,
+native completion or human approval. Missing/in-flight source responses require
+the host's bounded graceful retirement, never replay. A changed frame/binding does
+not permit sending an old source notice under the new identity. Normal non-hosted
+Conversation retains its existing capture/submission behavior.
