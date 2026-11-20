@@ -43,8 +43,9 @@ window.ConversationSurface=(()=>{
       if(selected!==binding||!connected)throw Error('World connection changed. Your draft is kept.');
       return [...files,file];
     }
-    function status(value,busy=false){if(tracked.has(value?.id))send('status',{id:value.id,phase:typeof value.phase==='string'?value.phase.slice(0,64):'unconfirmed',busy:!!busy});}
+    function status(value,busy){if(tracked.has(value?.id))send('status',{id:value.id,phase:typeof value.phase==='string'?value.phase.slice(0,64):'unconfirmed',busy:busy===undefined?!['accepted','queued','completed','routed','foreground','matrix_requested'].includes(value.phase):!!busy});}
     window.addEventListener('pagehide',()=>{cancel();closed=true;window.removeEventListener('message',receive);});
+    window.addEventListener('pageshow',event=>{if(event.persisted&&closed){closed=false;window.addEventListener('message',receive);ready();}});
     return {identity,bind,prepare,status,disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
   }
   return {create};

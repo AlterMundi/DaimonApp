@@ -34,6 +34,6 @@ function boot(){
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'audio',files:[{size:40*1024*1024}]}));
  const timeout=b.ui.prepare({id:id(),binding,modality:'text'});b.timers.at(-1).fn();await assert.rejects(timeout);assert.equal(b.sent.at(-1).message.type,'prepare','Timeout never sends another request');
  const changed=b.ui.prepare({id:id(),binding,modality:'audio'});b.ui.bind('c'.repeat(64));await assert.rejects(changed);
- const gone=boot();gone.receive({type:'connect'});const pending=gone.ui.prepare({id:id(),binding,modality:'audio'});gone.events.pagehide();await assert.rejects(pending);
+ const gone=boot();gone.receive({type:'connect'});const pending=gone.ui.prepare({id:id(),binding,modality:'audio'});gone.events.pagehide();await assert.rejects(pending);const beforeReturn=gone.sent.length;gone.events.pageshow({persisted:true});assert.equal(gone.sent.length,beforeReturn+1);assert.equal(gone.sent.at(-1).message.type,'ready','BFCache return needs a fresh handshake and never repeats preparation');
  console.log('PASS exact parent/frame/actor/binding/visit/channel, text/audio IDs, capacity, no private payload, no timeout replay and lifecycle fencing');
 })().catch(e=>{console.error(e);process.exitCode=1;});
