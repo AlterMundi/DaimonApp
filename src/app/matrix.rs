@@ -5,6 +5,21 @@ use crate::interaction::MatrixDestination;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+pub(super) fn response_rejection(error: &anyhow::Error) -> Option<Value> {
+    let code = match error.to_string().as_str() {
+        "Hourly response capacity reached; original intent was not submitted; retained receipts remain inspectable" => {
+            "hourly_response_capacity"
+        }
+        "No retained response intent" | "No response to inspect; no send was performed" => {
+            "response_not_authored"
+        }
+        "Native original revision retired" => "original_revision_retired",
+        _ => return None,
+    };
+    Some(json!({"kind":"matrix_response_rejected","code":code,
+        "effect":"This call made no new native send. Inspect the original handling and exact source revision; preserve any earlier uncertain effects. Never invent an alternate send to hide a refusal."}))
+}
+
 pub(super) fn capabilities(shared: &AppShared, value: &mut Value) -> Result<()> {
     let profile = super::routing::profile(shared)?;
     if profile.matrix_targets.is_empty() && profile.matrix_inbox_channel.is_none() {
@@ -346,6 +361,12 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         .context("Integrating entry unavailable")?;
     if human != cfg.human_id {
         bail!("Matrix origin owner differs from the authenticated controller");
+    }
+    if let Some(id) = args.strip_prefix("response-status ") {
+        return app
+            .shared
+            .store
+            .matrix_response_status(human, cfg.entry(), id.trim());
     }
     if let Some(selected) = args.strip_prefix("publication ") {
         let publication = cfg

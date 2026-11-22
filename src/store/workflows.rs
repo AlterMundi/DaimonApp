@@ -53,6 +53,9 @@ pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
         "workflow_selected" => {
             "This original already has attributed workflow work. Inspect the retained workflow. For genuinely additional authorized work, declare a separate bounded workflow with the same input_ref and its own stable request_id and scope; do not dispatch the entire original again or replay an existing subtask."
         }
+        "workflow_result_changed_or_incomplete" => {
+            "The pinned result is superseded or its correction is incomplete. Inspect this workflow's current status and continue the existing owning step. This is a source-state refusal, not a transport outage. Do not replay the original, substitute an old result or advance the workflow as completed."
+        }
         _ => return None,
     };
     Some(
@@ -1409,7 +1412,10 @@ impl Store {
                 && source["current"] == true
                 && source["correction_pending"] == false);
         if source["revision"].as_str() != Some(revision) || !readable {
-            bail!("Canonical result changed or incomplete");
+            return Err(refusal(
+                "workflow_result_changed_or_incomplete",
+                Some(w.id.clone()),
+            ));
         }
         let length = d.body.chars().count();
         if offset > length {

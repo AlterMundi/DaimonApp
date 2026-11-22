@@ -118,6 +118,19 @@ pub(in crate::store) fn presentation_on(
 }
 
 impl Store {
+    pub(crate) fn matrix_response_status(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+    ) -> Result<Value> {
+        status(
+            &self.conn.lock().expect("store mutex poisoned"),
+            human,
+            entry,
+            id,
+        )
+    }
     /// `source` comes only from owner config. The actual physical turn is supplied
     /// by the authenticated tool handler, never model JSON. Claims precede I/O.
     #[allow(clippy::too_many_arguments)]
@@ -264,10 +277,12 @@ impl Store {
                 && parent["author"] != serde_json::to_value(&source.source)?,
             "Select an available peer original, not an own-body echo"
         );
-        let count:i64=tx.query_row("SELECT count(*) FROM interaction_matrix_inbox WHERE entry_session=?1 AND handling IS NOT NULL AND json_type(handling,'$.intent')='object'",[session],|r|r.get(0))?;
+        // A rolling dispatch bound prevents a runaway; retained historical
+        // receipts must not consume today's ordinary communication capacity.
+        let count:i64=tx.query_row("SELECT count(*) FROM interaction_matrix_inbox WHERE entry_session=?1 AND handling IS NOT NULL AND json_type(handling,'$.intent')='object' AND julianday(json_extract(handling,'$.at'))>=julianday('now','-1 hour')",[session],|r|r.get(0))?;
         anyhow::ensure!(
-            count < 32,
-            "Finite response capacity reached; existing intents remain inspectable"
+            count < 64,
+            "Hourly response capacity reached; original intent was not submitted; retained receipts remain inspectable"
         );
         let now = Utc::now().timestamp_millis();
         let mut deadline = now + i64::try_from(timeout_seconds)? * 1000;
@@ -898,7 +913,7 @@ mod tests {
             .unwrap();
         let mut last = String::new();
         let mut last_revision = String::new();
-        for index in 2..=33 {
+        for index in 2..=65 {
             let selected = s
                 .matrix_inbox_selection(100, e, owner.source.clone(), "tribe")
                 .unwrap();
@@ -910,20 +925,28 @@ mod tests {
             let retained = s.matrix_inbox_retain(&selected, page).unwrap();
             last_revision = retained["items"][0]["revision"].as_str().unwrap().into();
             let attempted = call(&s, e, &owner, reply(&last, &last_revision));
-            assert_eq!(attempted.is_ok(), index <= 32);
+            assert_eq!(attempted.is_ok(), index <= 64);
         }
         drop(s);
         let s = Store::open(f.path(), &[100, 101], &crate::store::tests::defaults()).unwrap();
         assert!(call(&s, e, &owner, reply(&last, &last_revision)).is_err());
         assert_eq!(
-            call(&s, e, &owner, Command::Status { message_id: last }).unwrap()["handling"]["phase"],
+            call(
+                &s,
+                e,
+                &owner,
+                Command::Status {
+                    message_id: last.clone()
+                }
+            )
+            .unwrap()["handling"]["phase"],
             "pending"
         );
         assert_eq!(
             s.matrix_inbox_selection(100, e, owner.source.clone(), "tribe")
                 .unwrap()
                 .after,
-            33
+            65
         );
         assert_eq!(
             s.conn
@@ -934,7 +957,18 @@ mod tests {
                     0
                 ))
                 .unwrap(),
-            33
+            65
+        );
+        s.conn.lock().unwrap().execute("UPDATE interaction_matrix_inbox SET handling=json_set(handling,'$.at','2000-01-01T00:00:00Z') WHERE handling IS NOT NULL",[]).unwrap();
+        let fresh = call(&s, e, &owner, reply(&last, &last_revision)).unwrap();
+        assert_eq!(
+            fresh["submit"], true,
+            "A later window works without deleting history"
+        );
+        let again = call(&s, e, &owner, reply(&last, &last_revision)).unwrap();
+        assert_eq!(
+            again["submit"], false,
+            "The same original never authorizes a second send"
         );
     }
 }
