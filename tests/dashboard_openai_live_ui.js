@@ -91,8 +91,8 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
   (run,ms)=>{if(continuous&&ms>470000&&ms<490000)timers.push(run);return setTimeout(run,ms);});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
   onState:value=>{states.push(value);if(throwClosingState&&value.working)throw Error('Synthetic presentation failure during close');},onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
- async function start(reconnect=false){
-  const started=reconnect?engine.reconnect():engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
+ async function start(reconnect=false,options){
+  const started=reconnect?engine.reconnect():engine.start(options);await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
  return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
@@ -381,6 +381,13 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert.equal(entry.sockets.length,1);
  assert.equal(entry.sockets[0].sent[0].replacement.revision,'b'.repeat(64));
  await entry.engine.hold();
+ const clicked=fixture({nativeChoice:true,entryReview:true});
+ await clicked.start(false,{avatarEntry:true});
+ assert.equal(clicked.sockets.length,1,'An explicit Avatar click opens exactly one fresh transport');
+ assert.deepEqual(clicked.sockets[0].sent[0].replacement,{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)});
+ assert.notEqual(clicked.sockets[0].id,clicked.sockets[0].sent[0].replacement.id,'No prior creation replay');
+ assert.equal(clicked.permission(),1);
+ await clicked.engine.hold();
  const reconnect=fixture({nativeChoice:true,reviewFirst:true});
  assert.equal(await reconnect.engine.start(),false);await until(()=>!reconnect.engine.active);
  assert.equal(reconnect.permission(),0,'A review offer does not request microphone permission');

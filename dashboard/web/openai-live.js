@@ -211,7 +211,7 @@ window.PublicLiveConversation=(()=>{
         if(logical===logicalGeneration&&!closing)await hold('Voice renewal needs review. Your original audio is kept.','transport_failed');
       }finally{clearTimeout(timeout);}
     }
-    async function start({continuation=false,renewal,logical}={}){
+    async function start({continuation=false,avatarEntry=false,renewal,logical}={}){
       if(active||starting||closing||document.hidden||!supported())return false;
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
@@ -239,7 +239,7 @@ window.PublicLiveConversation=(()=>{
       state('Preparing voice');
       try{
         if(!renewal)await review();if(!current())throw Error('Voice activation ended');
-        if(backend==='native'&&!renewal&&!(replacementReview?.binding===binding&&replacementReview.backend===backend)){
+        if(backend==='native'&&!renewal&&(avatarEntry||!(replacementReview?.binding===binding&&replacementReview.backend===backend))){
           const check=new URL('api/interaction/voice/gpt-live/visits?entry_check=true',window.location.href);
           const response=await wait(fetch(check,{headers:{...headers(),'x-voice-binding':binding},
             cache:'no-store',redirect:'error',signal:AbortSignal.timeout(6000)}),6500);
@@ -251,9 +251,14 @@ window.PublicLiveConversation=(()=>{
             if(!/^[a-f0-9-]{36}$/.test(prior.id||'')||!/^[a-f0-9]{64}$/.test(prior.revision||''))
               throw Error('Voice access could not be checked.');
             replacementReview={binding,backend,value:prior};
-            starting=false;state('Tap Reconnect voice to continue. Your earlier recordings are kept.');
-            return false;
-          }
+            // An explicit Avatar click already requested a fresh connection.
+            // The server rechecks this exact known-created, ended predecessor
+            // while holding the voice lease. No previous request is retried.
+            if(!avatarEntry&&!continuation){
+              starting=false;state('Tap Reconnect voice to continue. Your earlier recordings are kept.');
+              return false;
+            }
+          }else if(avatarEntry)replacementReview=undefined;
         }else if(!continuation&&!renewal&&replacementReview?.binding===binding&&replacementReview.backend===backend){
           starting=false;state('Tap Reconnect voice to continue. Your earlier recordings are kept.');
           return false;
