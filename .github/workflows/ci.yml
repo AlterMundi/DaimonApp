@@ -178,8 +178,9 @@ jobs:
     needs: scope
     if: needs.scope.outputs.text == 'true'
     runs-on: ubuntu-latest
-    # The full native/HTTP suite exceeded 20 minutes after all completed gates passed.
-    timeout-minutes: 30
+    # The complete suite reported every lifecycle case successful just before
+    # the 30-minute job cutoff; allow bounded process cleanup and final reporting.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
