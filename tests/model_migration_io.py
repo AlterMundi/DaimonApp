@@ -171,6 +171,20 @@ class Cases(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'binding_changed'):
             self.apply(self.plan)
 
+    def test_applied_plan_cannot_reapply_after_a_later_reverse_migration(self):
+        class BothModels(Metadata):
+            def rpc(self, method, params):
+                result = super().rpc(method, params)
+                if method == 'model/list':
+                    result['data'].append({**result['data'][0], 'model': 'gpt-6.1-sol'})
+                return result
+        metadata = BothModels()
+        self.apply(self.plan, metadata)
+        reverse = migration.prepare(self.config, metadata, mapping={'gpt-6.2-sol': 'gpt-6.1-sol'})
+        self.assertEqual(self.apply(reverse, metadata)['state'], 'selected-for-next-turn')
+        with self.assertRaisesRegex(ValueError, 'settings_revision'):
+            self.apply(self.plan, metadata)
+
     def test_changed_proxy_config_cannot_qualify_with_old_attachment(self):
         with self.assertRaisesRegex(ValueError, 'configuration_changed_before_native_observation'):
             migration.prepare(self.config, Metadata(), initial_hash='0' * 64)
