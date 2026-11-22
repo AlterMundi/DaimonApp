@@ -376,3 +376,71 @@ rewriting an unrelated unit or creating another alias. Preserve the original
 configuration, audience and main Conversation/native service invocations. These
 non-voice sidecars need no voice-call restart; a known-unselected preflight failure
 can continue the same frozen candidate after correcting its operator metadata.
+
+## Finite Sysops consumption, including vendor/manual changes
+
+Cluster keeps the single fleet/operator writer; Heartbeat owns its cadence. An
+App update is a finite inspect/prepare/apply/verify operation, not another App
+scheduler or an Alerts-driven retry. Package-manager updates, vendor releases,
+API-model changes and manually qualified software use the same receiving path:
+
+1. Inspect the actual running process, effective selector and private service
+   configuration, source/asset hashes, existing authentication/account binding,
+   unfinished operations and protected native processes. Read the current
+   consumer's model and transport together. Account metadata is an observation,
+   not a successful synthesis or an adoption receipt.
+2. Prepare one bounded immutable candidate and the exact current selector/config
+   preimage using the existing publisher. Run the relevant compatibility checks
+   as the consuming UID in its existing environment. For a vendor/manual change,
+   name the owning source/transport, finite qualification command and expected
+   receiving result; a version string alone cannot make it ready to apply. If
+   that qualification or actual account availability is missing, retain that
+   technical gap without substituting an account or starting a paid trial.
+3. Apply through `interaction_web_maintenance.py --config CONFIG --health-url
+   LOCAL_HEALTH --require-speech --seconds 180 -- EXISTING_OPERATOR ...` (up to
+   300seconds where already needed). Exit75 is known-not-started busy deferral;
+   exit78 is known-not-started reader/config/fence mismatch. Other failures after
+   the operator starts require inspection of its original receipt, never an
+   automatic replay. The operator remains the sole selector/configuration
+   writer and must compare its expected preimage immediately before mutation.
+4. Verify the selected process/source, actual health/assets and own/foreign
+   access behavior, preserved native collectors/goals/accounting and intended
+   configuration. Publication, installation, server selection, an open browser's
+   adoption and model execution/hearing remain separate outcomes.
+
+The serving `/health` advertises the existing exact lock identity plus
+`X-DaimonApp-Voice-Admission-Coverage: live,preview,speech`. The additive coverage
+header proves this loaded reader participates for Conversation batch/progressive
+speech as well as Live and previews; the old lock-identity header alone does not.
+The same shared kernel lock is held through an admitted speech response and its
+renderer cleanup. Maintenance acquires exclusive access before invoking its
+finite operator. New speech is refused before any provider attempt while that
+operator holds the lock. No lease resets or parallel fence are required.
+
+An older reader without speech coverage needs the established observed-idle
+bootstrap with graceful web-request draining; do not claim that its old fence
+already excludes TTS. Inspect actual active renderer children and the selected
+unit's stop/graceful deadline, retain any admitted/unknown operation and let
+already accepted bounded requests finish. Active Live still returns busy75.
+After that one compatible installation, use `--require-speech` for ordinary
+model-free updates. This is a web-only transition, never a native listener/Core
+restart, goal resume or global Stop.
+
+Rollback conditionally restores only the operation-owned software selector and
+compatible configuration. It never rewinds original recordings, cache/outcome
+receipts, saved voices, accounts or later human choices. In particular, a human
+OpenAI-only selection must not be undone by re-enabling a retired provider.
+Retain a compatible completed-only ASR reader when its hot retirement policy is
+selected; an older reader must refuse it rather than call the former recognizer.
+
+The current maintained OpenAI consumers have distinct contracts: Conversation
+reading uses the explicit Realtime2.1/mini binding; file ASR uses its selected
+`gpt-transcribe` binding; live transcription uses `gpt-live-transcribe`. The Live
+session builder and its creation-request validator, context composition, saved
+voice catalogue and Live speech renderer coherently select `gpt-live-1`.
+`session_options.model` is not a supported override. A proposed next Live version
+requires all those consumers to be qualified together; do not relax one literal
+or silently replace it with Realtime. Keep image/other vendor consumers in the
+owning Cluster inventory rather than inventing an App image pipeline. A404 from
+the selected account/project for a candidate remains unavailable even when a
+public catalogue describes it. No candidate activation follows from this guide.

@@ -701,3 +701,28 @@ records are not migrated. Combined edited metadata is capped at256KiB alongside
 the existing shared20MiB acoustic/128-record bounds. Attachment failures, changed
 binding and unknown input results retain the same original; Check delivery is a
 read and does not assert acceptance or replay an uncertain submission.
+
+## OpenAI-only receiving retirement
+
+`voice_services_default="openai"` chooses a default; it does not by itself retire
+older routes. Set `voice_services_only="openai"` with that same default and the
+qualified `[speech_openai]` route to restrict new Conversation speech. The base
+adapter then uses that explicit OpenAI binding, legacy profile requests refuse
+before an attempt, the previous-services selector is hidden, and legacy live
+transcription/dialogue installation returns disabled before reading a key.
+Retained historical settings/files are not provider fallback authority. During
+receiving installation, also disable the legacy transcription section and point
+the base `[speech]` configuration at the canonical OpenAI route so a compatible
+software rollback cannot reactivate the retired vendor. Enable PCM streaming
+only with its qualified server/browser package.
+
+Native file-capture compatibility uses the existing ASR adapter's optional hot
+`completed_only:true` receiving binding field. It has the same restricting effect
+as `--completed-only`, preserving the original cache identity and exact completed
+text. Missing/uncertain results stay held with their original recording; the
+retired helper is never probed or called. Install that compatible reader before
+selecting the policy, preserve the legacy binding/key/recordings, and keep new
+captures on the separately qualified OpenAI profile. Completed-only live-result
+readers already have no recognizer or fallback; preserving old model names in
+those retained receipts does not activate a provider. Do not clear uncertain
+attempts or rewrite old source IDs to hide incomplete recognition.

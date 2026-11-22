@@ -92,8 +92,8 @@ window.PcmSpeech=(()=>{
       },
       captureStream(){
         if(!context||!gain)throw Error("PCM output is not playing");
-        if(captured){gain.disconnect(captured);for(const track of captured.stream.getTracks())track.stop();}
-        captured=context.createMediaStreamDestination();gain.connect(captured);return captured.stream;
+        if(!captured){captured=context.createMediaStreamDestination();gain.connect(captured);}
+        return captured.stream.clone();
       },
       attach(target){element=target;},
       get currentTime(){return currentTime();},

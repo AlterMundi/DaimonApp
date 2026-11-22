@@ -109,7 +109,7 @@ window.Conversation = (() => {
         canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:(lastVoiceCapabilities.previous_can_speak_live_response??lastVoiceCapabilities.can_speak_live_response))===true;
         microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&(lastVoiceCapabilities.previous_can_stream_transcribe??lastVoiceCapabilities.can_stream_transcribe),lastVoiceCapabilities.streaming_transcription_mode,useOpenAI&&lastVoiceCapabilities.openai_can_stream_transcribe);
       }
-      if(servicesChoice)servicesChoice.hidden=!openaiConversationAvailable&&conversationServices==='current';
+      if(servicesChoice)servicesChoice.hidden=lastVoiceCapabilities?.voice_services_only==='openai'||!openaiConversationAvailable&&conversationServices==='current';
       const previousOption=servicesEngine?.querySelector?.('option[value="current"]');if(previousOption)previousOption.textContent=lastVoiceCapabilities?.voice_services_default==='openai'?'Previous voice':'Current voice';
       if(servicesEngine){servicesEngine.value=conversationServices;servicesEngine.disabled=captureBusy||voiceBusy||!!active||!!speechWait||!!voiceSession?.active||!!microphone?.ownsSend();}
     }

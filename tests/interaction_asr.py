@@ -277,6 +277,19 @@ class Retention(unittest.TestCase):
         self.assertFalse(list((self.root/'cache').rglob('source.media')))
         self.assertEqual(self.calls(),1)
 
+    def test_owner_retirement_keeps_exact_completed_cache_without_new_provider_work(self):
+        first=self.run_asr()
+        self.assertEqual(self.calls(),1)
+        self.cfg['completed_only']=True;self.write_config()
+        with patch.object(asr,'probe_duration',side_effect=AssertionError('Retired provider preparation')):
+            self.assertEqual(self.run_asr()['text'],first['text'])
+            self.source.write_bytes(b'different original which must stay held')
+            with self.assertRaises(asr.RenderError):self.run_asr()
+        self.assertEqual(self.calls(),1)
+        self.assertEqual(self.source.read_bytes(),b'different original which must stay held')
+        self.cfg['completed_only']='false';self.write_config()
+        with self.assertRaises(asr.RenderError):self.run_asr()
+
     def test_completed_only_reader_never_probes_or_calls_provider(self):
         with self.assertRaises(asr.RenderError):
             asr.process(self.source,self.binding,completed_only=True)

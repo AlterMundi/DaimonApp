@@ -15,6 +15,8 @@ from typing import NamedTuple
 from .private_state import private_directory
 
 HEADER = 'X-DaimonApp-Voice-Admission'
+COVERAGE_HEADER = 'X-DaimonApp-Voice-Admission-Coverage'
+COVERAGE = 'live,preview,speech'
 SCOPE_KEY = 'daimon.voice_admission'
 
 
@@ -171,7 +173,7 @@ class VoiceAdmissionMiddleware:
 
     async def __call__(self, scope, receive, send):
         voice_socket=scope['type']=='websocket' and scope['path'].startswith('/api/interaction/voice/')
-        preview_request=scope['type']=='http' and scope['path']=='/api/interaction/avatars/voice/previews'
+        preview_request=scope['type']=='http' and scope['path'] in ('/api/interaction/avatars/voice/previews','/api/interaction/audio')
         if not (voice_socket or preview_request):
             return await self.app(scope,receive,send)
         ticket=_Ticket(self.admission);scope[SCOPE_KEY]=ticket
