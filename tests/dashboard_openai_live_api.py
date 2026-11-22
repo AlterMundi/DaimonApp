@@ -428,12 +428,18 @@ class Mounted(unittest.TestCase):
         history.create(old,100,owner,'v=0 offer',session_spec('Synthetic owner',client_delegation=True),Client('synthetic'))
         history.end_capture(old,100,owner['binding'])
         with self.choice_client() as client:
+            entry='/api/interaction/voice/gpt-live/visits?entry_check=true'
+            initial=client.get(entry,headers=self.headers)
+            self.assertEqual(initial.status_code,200)
+            self.assertEqual(initial.json()['replacement']['id'],old)
+            self.assertNotIn('replacement_review',history.read(old,100,owner))
+            self.assertEqual(client.get(entry,headers={**self.headers,'x-voice-binding':'b'*64}).status_code,409)
             def socket():return client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'})
             self.meta['backend']='native'
             with socket() as ws:
                 ws.send_json(self.meta);review=ws.receive_json()
                 self.assertEqual(review['type'],'unconfirmed');self.assertIn('Reconnect voice',review['message'])
-                self.assertEqual(review['replacement']['id'],old)
+                self.assertEqual(review['replacement'],initial.json()['replacement'])
             self.assertFalse((history.root/(self.ident+'.json')).exists())
             self.assertEqual(sum(c.creations for c in Client.instances),1)
             self.meta={**self.meta,'id':str(uuid.uuid4()),'replacement':review['replacement']};self.ident=self.meta['id']
@@ -447,6 +453,41 @@ class Mounted(unittest.TestCase):
             self.assertEqual(before['state'],'created');self.assertNotIn('finalization',before)
             self.assertEqual(before['replacement_review']['target'],self.ident)
             self.assertEqual(sum(c.creations for c in Client.instances),2)
+
+    def test_current_conversation_voice_replaces_old_voice_on_explicit_reconnect(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        from dashboard.voice_studio import choice
+        binding=self.root/'reading.json'
+        binding.write_text(json.dumps({'schema':'telecodex.speech-route/v1',
+            'provider':'openai-realtime','model':'gpt-realtime-2.1-mini','voice':'cedar',
+            'language':'es-AR','instruction':'Use natural voseo.',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.state/'cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding)}
+        self.config['openai_live'].update(match_conversation_voice=True,
+            session_options={'audio':{'output':{'voice':'cedar'}}})
+        self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
+        history=LiveCreations(self.state/'public-live-visits')
+        owner=self.owner.public_live_binding(self.owner.binding)
+        old=str(uuid.uuid4())
+        old_choice=choice(None,{'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'flitz'})
+        history.prepare(old,100,owner,backend_mode='native',voice_choice=old_choice)
+        history.create(old,100,owner,'v=0 offer',session_spec('Prior voice',client_delegation=True),Client('synthetic'))
+        history.end_capture(old,100,owner['binding'])
+        with self.choice_client() as client:
+            client.app.state.avatar_workshop=AvatarWorkshop(self.state)
+            review=client.get('/api/interaction/voice/gpt-live/visits?entry_check=true',
+                              headers=self.headers).json()['replacement']
+            self.meta.update(backend='native',replacement=review)
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as ws:
+                self.start(ws)
+                self.close(ws)
+        self.assertEqual(Client.instances[-1].spec['audio']['output']['voice'],'cedar')
+        self.assertIn('Use natural voseo.',Client.instances[-1].spec['instructions'])
+        self.assertEqual(history.read(old,100,owner)['voice_choice'],old_choice)
+        current=history.read(self.ident,100,owner)
+        self.assertEqual(current['native_continuation_from'],old)
+        self.assertEqual(current['voice_choice']['profile']['voice'],'cedar')
 
     def test_replacement_preparation_failure_retains_receipt_without_reusing_consumed_review(self):
         from dashboard.avatar_workshop import AvatarWorkshop

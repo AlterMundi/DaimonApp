@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
+function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -73,6 +73,7 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
  let releaseUploadHash;
  const uploadHash=deferUploadHash?new Promise(resolve=>{releaseUploadHash=resolve;}):Promise.resolve();
  async function fetch(url,options){
+  if(new URL(String(url)).searchParams.has('entry_check'))return {ok:true,json:async()=>({binding,replacement:entryReview?{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}:null})};
   if(!options.body)return readHistory(String(url),options);
   requests.push({url:String(url),sha:await uploadHash.then(async()=>crypto.subtle.digest('SHA-256',await options.body.arrayBuffer())),bytes:options.body.size});
   let aborted;
@@ -90,8 +91,8 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
   (run,ms)=>{if(continuous&&ms>470000&&ms<490000)timers.push(run);return setTimeout(run,ms);});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
   onState:value=>{states.push(value);if(throwClosingState&&value.working)throw Error('Synthetic presentation failure during close');},onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
- async function start(){
-  const started=engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
+ async function start(reconnect=false){
+  const started=reconnect?engine.reconnect():engine.start();await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
  return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
@@ -371,12 +372,21 @@ function fixture({nativeChoice=false,modeMismatch=false,reviewFirst=false,failRe
   assert.equal(draining.sockets[0].readyState,1,'Keep the source receiver for session.closed');
   await draining.engine.hold();assert.equal(draining.sockets[0].sent.filter(v=>v.type==='close').length,1,'Repeated lifecycle signals share one close intent');
  }finally{draining.sockets[0].onmessage({data:JSON.stringify({type:'closed',id:draining.sockets[0].id})});await closing;}
+ const entry=fixture({nativeChoice:true,entryReview:true});
+ assert.equal(await entry.engine.start(),false);
+ assert.equal(entry.sockets.length,0,'Known disconnected visit prompts before opening the socket');
+ assert.equal(entry.permission(),0);
+ assert.equal(entry.states.at(-1).reviewRequired,true);
+ await entry.start(true);
+ assert.equal(entry.sockets.length,1);
+ assert.equal(entry.sockets[0].sent[0].replacement.revision,'b'.repeat(64));
+ await entry.engine.hold();
  const reconnect=fixture({nativeChoice:true,reviewFirst:true});
  assert.equal(await reconnect.engine.start(),false);await until(()=>!reconnect.engine.active);
  assert.equal(reconnect.permission(),0,'A review offer does not request microphone permission');
  assert.equal(reconnect.sockets.length,1,'No automatic replacement or retry');
  assert.match(reconnect.states.at(-1).message,/Final usage unconfirmed/);
- await reconnect.start();
+ await reconnect.start(true);
  assert.deepEqual(reconnect.sockets[1].sent[0].replacement,{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)});
  await reconnect.engine.hold();
  const preparation=fixture({nativeChoice:true,reviewFirst:true,failReviewedPreparation:true});

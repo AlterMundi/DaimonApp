@@ -243,7 +243,7 @@ class LiveCreations:
                     'original_retained':any(r['ordinal']==ordinal for r in value['recordings'])}
                 self._write(value)
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
@@ -253,6 +253,8 @@ class LiveCreations:
             if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
         if type(seconds) is not int or not 300 <= seconds <= 600:
             raise ValueError('Keep the diagnostic capture deadline')
+        if select_current_voice and (backend_mode!='native' or voice_choice is None or renewal is not None):
+            raise ValueError('Select the current Conversation voice only on explicit Avatar entry')
         with history_lock(self.root / '.lock'):
             if self._path(ident).exists():
                 raise ValueError('An existing microphone admission cannot be restarted')
@@ -316,7 +318,7 @@ class LiveCreations:
                             or not self.return_origin_eligible(inherited) and (reviewed is None or reviewed['id']!=inherited['id'])
                             or reviewed is not None and reviewed['id']!=inherited['id']):
                         raise ValueError('Voice continuation needs the same closed or reviewed visit')
-                if inherited is not None and inherited.get('voice_choice') is not None:
+                if not select_current_voice and inherited is not None and inherited.get('voice_choice') is not None:
                     value['voice_choice']=validate_choice(inherited['voice_choice'])
                     value['voice_continuation_from']=inherited['id']
                 elif voice_choice is not None or renewal is None:
