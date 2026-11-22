@@ -405,7 +405,7 @@ impl Store {
             metadata_only_superseded(&value, &snapshot),
             "No proved metadata-only supersession; preserve the original outcome"
         );
-        let newer: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND id!=?4 AND phase IN ('prepared','retained_unsent','known_unsent','claimed','submitted','acknowledged','partial','uncertain') AND json_extract(doc,'$.proposal')=0 AND json_extract(doc,'$.authorization_order')>?5)",params![human,intent["target"]["chat_id"].as_i64(),intent["target"]["thread_id"].as_i64(),id,intent["authorization_order"].as_i64()],|r|r.get(0))?;
+        let newer: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND id!=?4 AND phase IN ('prepared','retained_unsent','known_unsent','claimed','submitted','acknowledged','partial','uncertain') AND (json_extract(doc,'$.proposal')=0 OR json_extract(doc,'$.confirmation.execute')=1) AND json_extract(doc,'$.authorization_order')>?5)",params![human,intent["target"]["chat_id"].as_i64(),intent["target"]["thread_id"].as_i64(),id,intent["authorization_order"].as_i64()],|r|r.get(0))?;
         anyhow::ensure!(
             newer,
             "No later selected direction; preserve the original partial outcome"
@@ -953,7 +953,7 @@ mod objective_repair_tests {
         );
         {
             let conn = store.conn.lock().unwrap();
-            conn.execute("INSERT INTO interaction_goal_controls VALUES('new',100,100,7,100,7,'prepared',?1,NULL,'fixture')",[json!({"authorization_order":2,"proposal":false}).to_string()]).unwrap();
+            conn.execute("INSERT INTO interaction_goal_controls VALUES('new',100,100,7,100,7,'prepared',?1,NULL,'fixture')",[json!({"authorization_order":2,"proposal":true,"confirmation":{"execute":true}}).to_string()]).unwrap();
         }
         let result = store
             .goal_control_reconcile_metadata_only(100, entry, "old", &snapshot)

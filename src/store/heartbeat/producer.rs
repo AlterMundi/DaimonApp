@@ -992,6 +992,8 @@ fn compact_resolved_on(conn: &Connection, p: &mut Parent) -> Result<()> {
         "DELETE FROM interaction_matrix_inbox WHERE rowid IN (
         SELECT rowid FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2
         AND json_extract(handling,'$.phase') IN ('recipient_copy_proved','no_reply')
+        AND (json_type(handling,'$.intent') IS NULL
+             OR julianday(json_extract(handling,'$.at'))<julianday('now','-1 hour'))
         ORDER BY rowid DESC LIMIT -1 OFFSET 8)",
         params![p.session, p.human],
     )?;
@@ -1836,6 +1838,48 @@ mod inbox_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn compacting_proved_replies_keeps_the_current_hour_rate_bound() {
+        let (_file, store, entry, source) = setup();
+        let generation = store.heartbeat_control(100, entry, H::Pause).unwrap()["generation"]
+            .as_u64()
+            .unwrap();
+        store
+            .heartbeat_enable_continuous(100, entry, generation, 48)
+            .unwrap();
+        for index in 1..=64 {
+            let selected = selection(&store, entry, &source);
+            store
+                .matrix_inbox_retain(&selected, page(&selected, vec![item(index)]))
+                .unwrap();
+        }
+        let session = store.get_session(entry).unwrap().unwrap().id;
+        let conn = store.conn.lock().unwrap();
+        conn.execute("UPDATE interaction_matrix_inbox SET handling=?1 WHERE entry_session=?2",params![json!({"phase":"recipient_copy_proved","intent":{"send_id":"retained"},"at":now_string()}).to_string(),session]).unwrap();
+        let mut parent = load(&conn, 100, session).unwrap().unwrap();
+        compact_resolved_on(&conn, &mut parent).unwrap();
+        let count:i64=conn.query_row("SELECT count(*) FROM interaction_matrix_inbox WHERE entry_session=?1 AND json_type(handling,'$.intent')='object' AND julianday(json_extract(handling,'$.at'))>=julianday('now','-1 hour')",[session],|r|r.get(0)).unwrap();
+        assert_eq!(
+            count, 64,
+            "Compaction cannot reopen dispatch capacity in the same hour"
+        );
+        conn.execute("UPDATE interaction_matrix_inbox SET handling=json_set(handling,'$.at','2000-01-01T00:00:00Z') WHERE entry_session=?1",[session]).unwrap();
+        let id = item(64)["message_id"].as_str().unwrap().to_owned();
+        conn.execute("UPDATE interaction_matrix_inbox SET handling=json_set(handling,'$.phase','uncertain') WHERE message_id=?1",[id]).unwrap();
+        compact_resolved_on(&conn, &mut parent).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM interaction_matrix_inbox WHERE entry_session=?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 9,
+            "Old proved detail rotates; original uncertainty stays pinned"
+        );
     }
 
     #[test]
