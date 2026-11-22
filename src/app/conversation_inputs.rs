@@ -23,7 +23,7 @@ struct Submit {
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
     let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
-        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
+        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {"not_requested"}else if input.phase=="accepted" || input.native_accepted {"observed"}else{"unconfirmed"},
         "incorporation":"Not established by input retention or native acceptance"});
     if let Some(dialogue) = &input.foreground_dialogue {
         value["foreground_dialogue"] = json!(dialogue);
@@ -815,6 +815,60 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         }
         return Ok(trace);
     }
+    if let Some(id) = args.strip_prefix("terminal ") {
+        anyhow::ensure!(
+            app.shared.config.codex.shared_app_server,
+            "Read-only native observation requires the existing shared owner"
+        );
+        let identity = response(
+            app,
+            &app.shared
+                .store
+                .conversation_input_read(human, cfg.entry(), id)?,
+            false,
+        )?;
+        let entry_binding = identity["entry_binding"].clone();
+        let selected =
+            app.shared
+                .store
+                .conversation_input_terminal_boundary(human, cfg.entry(), id)?;
+        let Some(boundary) = selected else {
+            return Ok(
+                json!({"schema":"telecodex.conversation-terminal/v1","state":"unavailable","entry_binding":entry_binding}),
+            );
+        };
+        let observed = app
+            .shared
+            .codex
+            .selected_turn_summary_reply(
+                boundary["native_thread"]
+                    .as_str()
+                    .context("Missing native boundary")?,
+                boundary["native_turn"]
+                    .as_str()
+                    .context("Missing physical boundary")?,
+            )
+            .await?;
+        anyhow::ensure!(
+            app.shared
+                .store
+                .conversation_input_terminal_boundary(human, cfg.entry(), id)?
+                .as_ref()
+                == Some(&boundary),
+            "Input execution changed during observation"
+        );
+        let Some((status, _unattributed_reply)) = observed else {
+            return Ok(
+                json!({"schema":"telecodex.conversation-terminal/v1","state":"unavailable","entry_binding":entry_binding}),
+            );
+        };
+        return Ok(
+            json!({"schema":"telecodex.conversation-terminal/v1","state":"observed","entry_binding":entry_binding,
+            "execution":boundary,"status":status,
+            "terminal":matches!(status.as_str(),"completed"|"failed"|"interrupted"),
+            "reply_association":"not_established_by_physical_completion"}),
+        );
+    }
     if let Some(id) = args.strip_prefix("status ") {
         return response(
             app,
@@ -1427,4 +1481,34 @@ async fn voice_submit(
             .conversation_input_read(human, entry, &input.id)?,
         fresh && !recover,
     )
+}
+
+#[cfg(test)]
+mod receipt_projection_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_consumed_phase_is_not_a_receipt_but_recorded_ack_survives_it() {
+        let mut input: ConversationInput = serde_json::from_value(json!({
+            "id":"fixture","human":100,"entry":{"chat_id":100,"thread_id":1},
+            "session":1,"native":"fixture-native","epoch":"fixture","text":"fixture",
+            "phase":"matrix_requested","local_turn":1,"retired":false
+        }))
+        .unwrap();
+        assert!(!input.native_accepted);
+        assert_eq!(outcome(&input, false)["native_acceptance"], "unconfirmed");
+        input.native_accepted = true;
+        assert_eq!(outcome(&input, false)["native_acceptance"], "observed");
+        input.foreground_dialogue = Some("voice-layer-only".into());
+        assert_eq!(outcome(&input, false)["native_acceptance"], "not_requested");
+    }
+
+    #[test]
+    fn clients_cannot_supply_a_native_acknowledgment() {
+        let ordinary = json!({"binding":"fixture","id":"fixture","text":"fixture"});
+        assert!(serde_json::from_value::<Submit>(ordinary.clone()).is_ok());
+        let mut forged = ordinary;
+        forged["native_accepted"] = json!(true);
+        assert!(serde_json::from_value::<Submit>(forged).is_err());
+    }
 }

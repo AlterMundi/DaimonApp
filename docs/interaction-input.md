@@ -64,6 +64,39 @@ The exact text is committed before transport. Reusing an ID inspects its origina
 outcome; changed text is rejected. A lost response is inspected with
 `telecodex --control CONFIG input status UUID`, without automatic resubmission.
 
+### Ended execution without an associated reply
+
+A committed downstream Matrix selection preserves the original human's return
+lifetime, including a human steer into an internal-return collector and a later
+replacement of that same physical collector. `matrix_requested` is consumption
+by that separate workflow; it does not revoke presentation authority or by itself
+prove native acknowledgment, a reply, delivery or the downstream task's completion.
+The existing native acknowledgment callback separately retains `native_accepted`
+in the original document, including an actual late ACK after Matrix consumption.
+Only that callback writes the receipt; clients cannot supply it. Missing legacy
+receipts stay unknown rather than being inferred from a phase or final message.
+An observed receipt survives restart and later consumption without granting new
+execution or bypassing current owner, pairing, room or revocation checks.
+Queued, sending, uncertain, rejected and known-unsent originals without that
+commitment retain their existing publication fences. Previously frozen native
+items keep their original marker and return-source provenance.
+
+The owner-local read `telecodex --control CONFIG input terminal UUID` supports a
+narrow legacy recovery case. It requires a current-owning, non-retired Matrix
+original whose local collection ended. It selects exactly one physical ID already
+frozen on that original's own visible canonical items; absent or multiple IDs stay
+unavailable. A collector's earlier `first_turn` is not a substitute for a human
+steered into a later physical turn. The read inspects that exact native turn via
+the existing bounded summary reader and revalidates its boundary afterward.
+
+`telecodex.conversation-terminal/v1` includes the existing entry binding and either
+unavailable state or observed execution/status/terminal metadata. It returns no
+unattributed text, writes no journal, starts no native turn and changes no goal,
+input phase, acceptance or publication. Physical completion does not associate a
+reply or settle the original workflow. A consumer may stop waiting on that ended
+execution while keeping the original and missing reply explicit. Revalidate each
+recovery read; do not cache a terminal proof across changed canonical boundaries.
+
 An explicit leading `#Topic` or `/self#Topic` routes text or a finalized voice
 transcript directly to an enrolled work session, without an integrator model call.
 A literal hashtag elsewhere remains ordinary conversation. Reply to this session

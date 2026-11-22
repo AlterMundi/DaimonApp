@@ -27,6 +27,9 @@ pub(super) async fn command(
     if let Some(selected) = args.strip_prefix("controller ") {
         return controller::command(app, human, selected).await;
     }
+    if let Some(selected) = args.strip_prefix("nexus ") {
+        return nexus::owner(app, human, selected).await;
+    }
     if let Some(days) = args.strip_prefix("topics list ") {
         return app.shared.store.topic_inventory(human, days.parse()?);
     }
@@ -50,6 +53,9 @@ pub(super) async fn command(
     }
     if let Some(selected) = args.strip_prefix("workflow ") {
         return workflows::owner_command(app, human, selected).await;
+    }
+    if let Some(selected) = args.strip_prefix("owner-action ") {
+        return private_projection::owner(app, human, selected).await;
     }
     if let Some(selected) = args.strip_prefix("heartbeat ") {
         return heartbeat::owner(app, human, selected).await;

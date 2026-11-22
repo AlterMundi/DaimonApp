@@ -257,7 +257,8 @@ pub(super) fn tool_call(
                 | "workflow_status" | "workflow_advance" | "workflow_attention"
                 | "workflow_reported" | "workflow_finish" | "workflow_result"
                 | "attention_source" | "attention_reported" | "matrix_reported"
-                | "heartbeat_reported" | "heartbeat_source" => "interaction_workflow",
+                | "heartbeat_reported" | "heartbeat_source" | "private_projection"
+                | "alerts_repair" => "interaction_workflow",
                 "live_context" => "interaction_live_context",
                 "capabilities" => "controller_capabilities",
                 "inputs" => "interaction_inputs",
@@ -491,7 +492,7 @@ pub(super) fn tool_call(
             }
             Ok(json!({"kind":"integrator_routing_outcomes","input_ref":args.input_ref,"original_ingress_update":args.input_ref.update(),"original_human":human,"results":results}))
         }.await;
-        let result=match outcome {Ok(value)=>crate::codex::dynamic_tool_result(true,value.to_string()),Err(error)=>crate::codex::dynamic_tool_result(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).or_else(||crate::store::live_context_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))};
+        let result=match outcome {Ok(value)=>crate::codex::dynamic_tool_result(true,value.to_string()),Err(error)=>crate::codex::dynamic_tool_result(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).or_else(||super::matrix::response_rejection(&error)).or_else(||crate::store::live_context_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))};
         let _ = send.send(result);
     });
     recv

@@ -352,8 +352,9 @@ completion or human hearing. A weaker/failed later observation cannot erase the
 retained stronger proof. Complete native evidence stays in the SDK journal;
 controller status exposes bounded metadata and at most eight member summaries.
 
-Storage reuses one handling column per retained original. At most32response
-intents per logical entry are admitted, each at most128KiB including its receipt;
+Storage reuses one handling column per retained original. At most64new response intents per logical entry are admitted in a rolling hour,
+each at most128KiB including its receipt. Retained historical responses do not
+consume the new hour's allowance; the original handling/source retention bounds remain;
 the remaining original rows hold only bounded latest deferral metadata. These
 bounds are not reset by restart, pause/resume or source generations. Capacity
 leaves originals/intents inspectable rather than deleting history or resending.
@@ -751,6 +752,12 @@ changed by importing this module.
 
 ### Physical ceilings without monetary funding
 
+When an isolated Reports actor needs an already authorized private projection,
+use the optional [fixed owner projection action](private-projection.md), not a
+grant of publisher custody or general Home networking to the actor. Its exact
+task/return, pinned-input and retained-outcome contract is separate from the
+actor's physical process policy; an unconfigured action changes no ordinary work.
+
 Private `matrix_transport.native_host_restrictions` also applies to ordinary
 attempt-bounded heartbeat work when `native_funding_binding` is absent. The
 existing native bounded-start request carries the selected permissions, tools,
@@ -850,3 +857,9 @@ attribution, revisions, reply binding, cursor and publication journals are
 unchanged. Payload-to-speech formatting and suppression of authorization-control
 payloads remain with the Matrix producer's existing compact-text projection;
 this presentation change adds no parser, router, publication or provider call.
+
+A pinned workflow result that is replaced or still under correction returns
+`workflow_result_changed_or_incomplete` with the retained workflow identifier.
+Read current workflow status and continue its original owning step. The refusal
+is source-state evidence, not a transport outage or permission to replay work,
+read an unrelated result, substitute old content or mark the step completed.

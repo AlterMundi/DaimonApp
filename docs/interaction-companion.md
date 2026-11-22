@@ -439,9 +439,10 @@ A published capability is not receiving selection or phone acceptance.
 
 A native Matrix transport actor, route, credential or funding-owner change also
 requires this same-scope companion requalification before web recovery is complete.
-The `native_host_restrictions` execution policy is excluded from dashboard access
-identity: CPU, memory, task, private-tool and filesystem ceilings remain validated
-and enforced by the native executor. Adding or changing that one policy must not
+The `native_host_restrictions` and root-only
+`native_attention_host_restrictions` execution policies are excluded from dashboard
+access identity: CPU, memory, task, private-tool and filesystem ceilings remain validated
+and enforced by the native executor. Adding or changing these native-only policies must not
 invalidate Alerts, Traffic, menu state or existing device/Home access. All other
 transport and receiver fields retain their original binding. Reload the native
 listener through its existing scoped route to adopt changed execution policy;

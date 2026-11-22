@@ -251,6 +251,25 @@ fn claim_source_on(conn: &Connection, human: i64, source: &Value, id: &str) -> R
     Ok(())
 }
 
+fn metadata_only_superseded(value: &Value, observed: &Value) -> bool {
+    let receipt = &value["result"]["native_receipt"];
+    value["phase"] == "partial"
+        && matches!(
+            value["intent"]["plan"]["action"].as_str(),
+            Some("edit" | "resume")
+        )
+        && value["result"]["replacement_clear"].is_null()
+        && receipt["activation"]["kind"] == "notStarted"
+        && receipt["activation"]["reason"] == "Native activation not submitted: NotIdle"
+        && receipt["revision"].as_str().is_some_and(|s| !s.is_empty())
+        && observed["revision"].as_str().is_some_and(|s| !s.is_empty())
+        && observed["revision"] != receipt["revision"]
+        && receipt["goal"]["threadId"].is_string()
+        && receipt["goal"]["createdAt"].is_number()
+        && receipt["goal"]["threadId"] == observed["goal"]["threadId"]
+        && receipt["goal"]["createdAt"] == observed["goal"]["createdAt"]
+}
+
 fn validate_claimed_on(
     conn: &Connection,
     instance: &str,
@@ -367,6 +386,41 @@ pub(super) fn claim_on(
 }
 
 impl Store {
+    /// Reconcile only a proved metadata commit with a proved absent activation,
+    /// after a later selected direction and a fresh native snapshot. This never
+    /// submits, resumes or retries any native work.
+    pub fn goal_control_reconcile_metadata_only(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        observed: &NativeGoalSnapshot,
+    ) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let value = read_on(&tx, human, entry, id)?;
+        let intent = &value["intent"];
+        let snapshot = serde_json::to_value(observed)?;
+        anyhow::ensure!(
+            metadata_only_superseded(&value, &snapshot),
+            "No proved metadata-only supersession; preserve the original outcome"
+        );
+        let newer: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND id!=?4 AND phase IN ('prepared','retained_unsent','known_unsent','claimed','submitted','acknowledged','partial','uncertain') AND (json_extract(doc,'$.proposal')=0 OR json_extract(doc,'$.confirmation.execute')=1) AND json_extract(doc,'$.authorization_order')>?5)",params![human,intent["target"]["chat_id"].as_i64(),intent["target"]["thread_id"].as_i64(),id,intent["authorization_order"].as_i64()],|r|r.get(0))?;
+        anyhow::ensure!(
+            newer,
+            "No later selected direction; preserve the original partial outcome"
+        );
+        record_attempt_on(
+            &tx,
+            id,
+            &json!({"attempt":intent["attempt"],"phase":value["phase"],"result":value["result"]}),
+            &json!({"source":"owner_metadata_only_reconciliation"}),
+        )?;
+        tx.execute("UPDATE interaction_goal_controls SET phase='superseded',result=json_patch(result,?2) WHERE id=?1 AND phase='partial'",params![id,json!({"reconciliation":{"kind":"metadata_only_superseded","observed_revision":observed.revision,"native_activation_submitted":false,"original_receipt_preserved":true}}).to_string()])?;
+        let result = read_on(&tx, human, entry, id)?;
+        tx.commit()?;
+        Ok(result)
+    }
     pub(super) fn init_goal_controls(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_goal_controls(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,target_chat INTEGER NOT NULL,target_topic INTEGER NOT NULL,phase TEXT NOT NULL,doc TEXT NOT NULL,result TEXT,instance_id TEXT NOT NULL);
@@ -874,6 +928,75 @@ impl Store {
 #[cfg(test)]
 mod objective_repair_tests {
     use super::*;
+
+    #[test]
+    fn owner_reconciliation_preserves_receipt_and_requires_later_authorized_control() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = crate::store::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let entry = SessionKey::new(100, Some(7));
+        store.ensure_session(entry, 100, &defaults).unwrap();
+        store.set_session_codex_thread(entry, "native").unwrap();
+        let goal = json!({"threadId":"native","createdAt":123,"updatedAt":124,"status":"paused","objective":"Retained work","tokenBudget":null,"tokensUsed":42,"timeUsedSeconds":7});
+        let snapshot: NativeGoalSnapshot =
+            serde_json::from_value(json!({"revision":"native:48","goal":goal})).unwrap();
+        let original = json!({"native_receipt":{"revision":"native:47","goal":goal,"activation":{"kind":"notStarted","reason":"Native activation not submitted: NotIdle"}},"replacement_clear":null});
+        {
+            let conn = store.conn.lock().unwrap();
+            let doc = json!({"target":entry,"authorization_order":1,"attempt":"original-attempt","plan":{"action":"edit"},"proposal":false});
+            conn.execute("INSERT INTO interaction_goal_controls VALUES('old',100,100,7,100,7,'partial',?1,?2,'fixture')",params![doc.to_string(),original.to_string()]).unwrap();
+        }
+        assert!(
+            store
+                .goal_control_reconcile_metadata_only(100, entry, "old", &snapshot)
+                .is_err()
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("INSERT INTO interaction_goal_controls VALUES('new',100,100,7,100,7,'prepared',?1,NULL,'fixture')",[json!({"authorization_order":2,"proposal":true,"confirmation":{"execute":true}}).to_string()]).unwrap();
+        }
+        let result = store
+            .goal_control_reconcile_metadata_only(100, entry, "old", &snapshot)
+            .unwrap();
+        assert_eq!(result["phase"], "superseded");
+        assert_eq!(
+            result["result"]["native_receipt"],
+            original["native_receipt"]
+        );
+        assert_eq!(
+            store.goal_control_read(100, entry, "new").unwrap()["phase"],
+            "prepared"
+        );
+        let conn = store.conn.lock().unwrap();
+        let count:i64=conn.query_row("SELECT count(*) FROM goal_control_attempt_receipts WHERE control_id='old' AND phase='partial'",[],|r|r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn metadata_only_requires_proved_no_activation_and_later_same_goal_revision() {
+        let goal = json!({"threadId":"native","createdAt":123,"status":"active"});
+        let value = json!({"phase":"partial","intent":{"plan":{"action":"edit"}},
+            "result":{"replacement_clear":null,"native_receipt":{"revision":"old:47","goal":goal,
+            "activation":{"kind":"notStarted","reason":"Native activation not submitted: NotIdle"}}}});
+        let observed = json!({"revision":"new:48","goal":{"threadId":"native","createdAt":123,"status":"paused"}});
+        assert!(metadata_only_superseded(&value, &observed));
+        for phase in ["uncertain", "submitted", "claimed", "acknowledged"] {
+            let mut wrong = value.clone();
+            wrong["phase"] = json!(phase);
+            assert!(!metadata_only_superseded(&wrong, &observed));
+        }
+        for kind in ["started", "unknown"] {
+            let mut wrong = value.clone();
+            wrong["result"]["native_receipt"]["activation"]["kind"] = json!(kind);
+            assert!(!metadata_only_superseded(&wrong, &observed));
+        }
+        let mut wrong = observed.clone();
+        wrong["revision"] = json!("old:47");
+        assert!(!metadata_only_superseded(&value, &wrong));
+        let mut wrong = observed.clone();
+        wrong["goal"]["createdAt"] = json!(456);
+        assert!(!metadata_only_superseded(&value, &wrong));
+    }
 
     #[test]
     fn unicode_limit_and_exact_effect_free_legacy_rejection() {

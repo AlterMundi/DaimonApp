@@ -1,4 +1,4 @@
-# Heartbeat header observation and controls gap
+# Heartbeat observation, controls and native returns
 
 The heart beside the daimon name reads the existing configured owner console's
 `heartbeat status` through the authenticated Interaction adapter. It creates no
@@ -747,6 +747,36 @@ A private viewer projection may be part of its explicitly selected human purpose
 read the owning snapshot schema and run its finite conditional refresh after
 meaningful source changes. An unchanged refresh must not grow publication history.
 
+### Review and conversation narration
+
+`heartbeat_reported` acknowledges review of the exact retained source. A task can
+successfully read its report and update a cursor while its native turn finishes
+with an empty final answer. Neither that acknowledgment, a completed turn nor a
+cursor field named `reported` proves that a person-facing message exists.
+
+Keep source review and notification distinct in the existing bounded task cursor.
+For a new meaningful result, the task emits one genuine, concisely attributed
+final answer through its ordinary native return. Unchanged observations remain
+quiet. Retain an uncertain notification's original return instead of announcing
+the same batch again. Existing historical markers remain history; correcting
+their meaning does not authorize replay or retrospective delivery claims.
+
+Automatic replies can be retained in `interaction_native_messages` and exposed
+as `native:ROW` presentation sources without a row in `interaction_results`.
+Use the existing cursor-based presentation list and exact-revision part reader
+to locate the matched return, check its current native binding and read the
+complete answer. A `workflow-public-set` source's `internal_evidence_input` marks
+its attributed input context; it does not turn the assistant's answer into human
+speech or hide a genuine public native return. Do not start another model turn
+or synthesize an answer merely to repair a verifier or missing final text.
+
+After the existing publisher retains an answer, an owning inspector can link
+that actual source/revision in the same task cursor. Canonical availability,
+transport delivery, playback and human hearing remain distinct. In particular,
+`playback: not_observed` is not listening acceptance. These are diagnostics and
+effect receipts, not another approval step, sender, journal or attention service.
+Keep ordinary conversation text free of protocol IDs and debugging details.
+
 ### Operator-selected native host restrictions
 
 Optional `matrix_transport.native_host_restrictions` uses the existing native
@@ -754,8 +784,8 @@ Optional `matrix_transport.native_host_restrictions` uses the existing native
 explicit `environment`, and `codeModeLimits` (`maxHeapSizeBytes`,
 `maxYieldTimeMs`). All four fields are required when selected. Names, environment
 bytes and positive limits retain the native bounds; environment values are
-redacted from Debug output. This selection requires the existing configured
-financial execution owner, rather than silently doing nothing on another path.
+redacted from Debug output. The same selection applies to attempt-only and configured financial execution
+owners; it does not select or refill either account.
 
 Optional `processLimits` adds `memoryBytes`, `cpuPercent` and `tasks` to that
 same captured selection. All are positive, within the existing Linux own-work
@@ -763,6 +793,17 @@ maxima (1 GiB, 100% of one CPU, 128 tasks); these are execution constraints, not
 account balances or a financial grant. It requires a qualified native reader,
 local environment and matching standalone executor in the selected native package.
 A reader rejecting this field must never receive a retry with it stripped.
+
+`processLimits.writableStorage` optionally selects an existing operator-owned
+filesystem with `root` (absolute, excluding `/`) and `maxBytes` (positive, at most
+16 GiB). App captures and forwards this closed selection unchanged for funded
+and attempt-only owners; paths are omitted from Debug output. App does not inspect,
+allocate, mount, resize or grant access to it. Core44 and successors validate its
+actual mount, total capacity and existing write permissions, then keep private
+HOME/TMPDIR inside that budget. Select only a qualified matching native package;
+an older reader refusal never permits stripping the field or retrying work.
+Omission preserves legacy selections. Source support does not select a production
+workspace, account, lane or resource allowance.
 
 Core binds one physical turn to one aggregate shared by its private stdio executor,
 command descendants and V8 host. Startup captures a private explicit environment
@@ -800,3 +841,46 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+
+#### Purpose-specific root attention profiles
+
+`matrix_transport.native_attention_host_restrictions` optionally maps existing
+lane names (for example `reports`) to the same complete host-restriction shape.
+The host selects the lane from the freshly validated retained root execution at
+native submission, never from model-supplied input. A matching entry overrides
+`native_host_restrictions`; absent entries retain that existing global fallback.
+Delegated workers retain the global/default selection rather than inheriting a
+root-purpose profile that might deny their legitimate task workspace or tools.
+Human turns remain unchanged. Every configured profile is validated at startup.
+No lane, account, resource reservation or pause is created by this map.
+
+
+Qualify the selected model's actual tool mode and installed package location with
+the complete native package. Direct-tool or external-package success does not
+prove Code Mode isolation inside the denied native home. Core42 supplies isolated
+local session routing; the subsequent sealed bootstrap pins only the exact native
+package-sibling engine and stdio invocation. It needs no actor file/directory read
+grant and does not expose native custody. Use the private-layout qualification in
+`docs/private-projection.md`; preserve existing configuration and package receipts.
+The private runtime still owns environment, process group, heap and deadline.
+
+### Change-driven operational tasks
+
+A review task can select an optional `change_source` using the existing bounded
+report contract (`id`, absolute owner `path`, exact JSON `pointers`). Select
+semantic incident state/revisions and acceptance; omit observation clocks. The
+ordinary producer checks that source at its existing programmatic cadence. Its
+value fingerprint, rather than the observation counter, identifies the offer.
+Unchanged observations therefore reserve no new native execution or provider
+allowance. An unavailable source is one stable observation; later recovery is a
+new revision. Current-source verification rejects a superseded unsubmitted offer.
+
+Only the Reports lane must be conditionally paused for an exact task amendment;
+global admission and other lanes need not pause. Source selection does not resume
+a lane, refill funding or replay an earlier result. Omitted `change_source`
+preserves a deliberately periodic task, including its original cadence. Faster
+event-source observation does not advance unrelated periodic task counters.
+Operational service detection and supported fixed recovery belong to the producer,
+not to an LLM review of an unchanged report. Account-holder login and unsupported
+repairs remain concrete escalations; observation is not proof of repair.

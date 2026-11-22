@@ -120,7 +120,14 @@ pub struct ConversationInput {
     pub routing: Option<ConversationRouting>,
     pub phase: String,
     pub local_turn: Option<i64>,
+    /// Actual owner-observed native acknowledgment, independent of later routing
+    /// or workflow consumption. Clients cannot supply this receipt field.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub native_accepted: bool,
     pub retired: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1225,6 +1232,7 @@ impl Store {
             tribu_source: tribu.map(|(source, _)| source),
             foreground_dialogue: foreground_dialogue.clone(),
             foreground_delegation: None,
+            native_accepted: false,
             visual,
             files,
             question_versions: Some(question_versions),
@@ -1459,6 +1467,53 @@ impl Store {
             bail!("Input belongs to another conversation");
         }
         Ok(input)
+    }
+
+    /// Select only the recorded execution boundary of a locally ended Matrix
+    /// original. Local collection completion is NOT native termination or reply
+    /// attribution; the caller must inspect this exact physical turn read-only.
+    pub fn conversation_input_terminal_boundary(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = super::presentation::entry_on(&conn, human, entry)?;
+        let input = read_on(&conn, id, human)?;
+        if input.entry != entry || input.session != session || input.native != native {
+            bail!("Input execution belongs to another current conversation");
+        }
+        if input.retired || input.phase != "matrix_requested" {
+            return Ok(None);
+        }
+        // A human can steer a later physical turn within the same collector.
+        // Its first_turn alone is insufficient. Require one unique physical ID
+        // already frozen on this original's own visible canonical item(s).
+        let mut query=conn.prepare(
+            "SELECT DISTINCT m.native_turn FROM native_collections n JOIN turns t ON t.id=n.local_turn
+             JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id
+             JOIN interaction_native_messages m ON m.local_turn=t.id AND m.native_thread=t.native_thread_id
+             WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3
+             AND t.native_thread_id=?4 AND s.codex_thread_id=?4 AND s.creator_user_id=?3
+             AND s.force_fresh_thread=0 AND u.allowed=1 AND t.completed_at IS NOT NULL
+             AND t.status IN ('completed','failed','cancelled') AND n.first_turn!=''
+             AND m.presentation_input=?5 AND m.native_turn!=''
+             AND (m.phase IN ('commentary','final_answer') OR m.phase IS NULL)
+             ORDER BY m.native_turn LIMIT 2")?;
+        let boundaries = query
+            .query_map(params![input.local_turn, session, human, native, id], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(if boundaries.len() == 1 {
+            Some(
+                serde_json::json!({"input":input.id,"local_turn":input.local_turn,
+            "native_thread":native,"native_turn":boundaries[0]}),
+            )
+        } else {
+            None
+        })
     }
 
     /// Trace an owned original through immutable controller instructions/results.
@@ -1825,7 +1880,12 @@ impl Store {
             )
             && input.local_turn == Some(local_turn)
         {
-            return Ok(input);
+            // A Matrix plan can commit before the native ACK arrives. Retain
+            // that actual receipt without undoing the downstream phase.
+            tx.execute("UPDATE conversation_inputs SET doc=json_set(doc,'$.native_accepted',json('true')) WHERE id=?1 AND human_id=?2 AND local_turn=?3",params![id,human,local_turn])?;
+            let accepted = read_on(&tx, id, human)?;
+            tx.commit()?;
+            return Ok(accepted);
         }
         let (phase, local) = match event {
             ConversationInputEvent::Queue
@@ -1874,6 +1934,9 @@ impl Store {
         let changed=tx.execute("UPDATE conversation_inputs SET phase=?1,local_turn=?2 WHERE id=?3 AND human_id=?4 AND phase=?5 AND instance_id=?6",params![phase,local,id,human,input.phase,self.instance_id])?;
         if changed != 1 {
             bail!("Conversation input belongs to a retired listener");
+        }
+        if phase == "accepted" {
+            tx.execute("UPDATE conversation_inputs SET doc=json_set(doc,'$.native_accepted',json('true')) WHERE id=?1 AND human_id=?2",params![id,human])?;
         }
         let updated = read_on(&tx, id, human)?;
         if phase == "accepted" {

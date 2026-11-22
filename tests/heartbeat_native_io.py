@@ -13,6 +13,8 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import tempfile
+import shutil
 import sys
 import threading
 import time
@@ -62,15 +64,19 @@ class ActualJourney(HeartbeatJourney):
             self.process = None
 
 
-def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False):
+def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=False, projection=False, code_mode=False, private_native=False):
     j = ActualJourney(str(Path(binary).resolve()))
     native = client = None
     native_log = None
+    private_home = None
     errors, requests = [], []
     original = batch = None
     pause_entered, pause_release = threading.Event(), threading.Event()
     busy_entered, busy_release = threading.Event(), threading.Event()
     def call(ident, operation, arguments):
+        if code_mode:
+            return {'type':'response.output_item.done','item':{'type':'custom_tool_call',
+                'call_id':ident,'name':'exec','input':'text(await tools.interaction_controller('+json.dumps({'operation':operation,'arguments':arguments})+'));'}}
         return {'type': 'response.output_item.done', 'item': {'type': 'function_call',
                 'call_id': ident, 'name': 'interaction_controller',
                 'arguments': json.dumps({'operation': operation, 'arguments': arguments})}}
@@ -94,13 +100,22 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                 value = json.loads(self.rfile.read(size))
                 texts = list(strings(value.get('input', [])))
                 outputs = {item.get('call_id'): item.get('output') for item in value.get('input', [])
-                           if item.get('type') == 'function_call_output'}
+                           if item.get('type') in ('function_call_output','custom_tool_call_output')}
                 # Canonical internal tool results may carry a JSON text block.
                 def output(ident):
                     raw = outputs[ident]
                     if isinstance(raw, list):
                         raw = ''.join(v.get('text', '') for v in raw)
-                    return json.loads(raw)
+                    if isinstance(raw,str) and raw.startswith('Script '):
+                        assert raw.startswith('Script completed'), raw[:2000]
+                        raw=raw.split('Output:\n',1)[1].strip()
+                    try:
+                        parsed=json.loads(raw)
+                    except json.JSONDecodeError:
+                        raise AssertionError('Non-JSON selected tool output: '+repr(raw[:2000])) from None
+                    if isinstance(parsed,dict) and 'content' in parsed:
+                        parsed=json.loads(''.join(x.get('text','') for x in parsed['content']))
+                    return parsed
                 controller = next((t for t in reversed(texts) if t.startswith('[Interaction controller]')), None)
                 packet = None
                 for text in reversed(texts):
@@ -139,6 +154,40 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
                     events = [message('Native worker checkpoint.\n<daimon-result>'+json.dumps({
                         'requests': addressed, 'covered': [instruction], 'completed': addressed})+'</daimon-result>')]
                     stage = 'worker'
+                elif packet and projection:
+                    batch = packet
+                    assert 'selects interaction_controller/private_projection' in json.dumps(value), 'Native Reports lost its configured host-route hint'
+                    def tool_names(tools):
+                        return [name for tool in tools for name in (tool_names(tool['tools']) if tool.get('type')=='namespace' else [tool.get('name')])]
+                    assert set(tool_names(value.get('tools',[]))) == ({'exec','wait'} if code_mode else {'interaction_controller'}), 'Reports lane profile did not constrain the actual native tool list'
+                    task = next(o for o in packet['evidence']['offers'] if o['key']=='review-task:bitacora')
+                    if 'projection-task' not in outputs:
+                        reader=task['evidence']['reader']
+                        events=[call('projection-task',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))]
+                        stage='projection-task-read'
+                    elif 'projection-run' not in outputs:
+                        assert 'Refresh the selected private view' in output('projection-task')['text']
+                        reconciliation.write_text(json.dumps({'latest_check':{'heartbeat_return':packet['return_id'],'partial':False}}))
+                        events=[call('projection-run','private_projection',dict(action='run',return_id=packet['return_id'],
+                            batch_revision=packet['evidence']['revision'],task_revision=task['revision'],
+                            snapshot_sha256=file_sha256(snapshot),reconciliation_sha256=file_sha256(reconciliation)))]
+                        stage='projection-run'
+                    elif 'projection-inspect' not in outputs:
+                        result=output('projection-run');assert result['outcome']['phase']=='unconfirmed',result
+                        snapshot.write_text('{"selected":"later mutable input"}')
+                        events=[call('projection-inspect','private_projection',dict(action='inspect',invocation=result['invocation']))]
+                        stage='projection-inspect'
+                    elif 'projection-reviewed' not in outputs:
+                        observed=output('projection-inspect')
+                        assert observed['current']['phase']=='observed' and not observed['input_retained'],observed
+                        assert observed['current']['outcome']['verification_only'] is True,observed
+                        assert observed['current']['outcome']['original_invocation_execution']=='not_established',observed
+                        events=[call('projection-reviewed','heartbeat_reported',dict(return_id=packet['return_id'],revision=packet['evidence']['revision']))]
+                        stage='projection-review'
+                    else:
+                        assert output('projection-reviewed')['reviewed'] is True
+                        events=[message('Native Reports recovered the selected private view without replay; original execution remains uncertain.')]
+                        stage='heartbeat-final'
                 elif packet:
                     batch = packet
                     prefix = 'hb-' + packet['return_id'].rsplit(':', 1)[-1]
@@ -220,7 +269,20 @@ def qualify(binary, native_binary, *, busy=False, native_cli=False, reports=Fals
             j.admit('Seed fixture metadata', topic=topic)
             j.wait(lambda: j.has('Initial goal turn delivered.', topic)); j.idle()
         j.stop()
-        native_home = j.root/'actual-core'; native_home.mkdir()
+        if private_native:
+            assert code_mode and native_cli
+            parent=Path(os.environ['CODEX_TEST_NATIVE_SCRATCH']).resolve(strict=True)
+            private_home=tempfile.TemporaryDirectory(prefix='code-mode-private-',dir=parent)
+            native_home=Path(private_home.name)
+            source=Path(native_binary).resolve().parent.parent
+            package=native_home/'package'
+            paths=list(source.rglob('*'))
+            assert len(paths)<=128 and sum(path.stat().st_size for path in paths if path.is_file())<=1024**3
+            assert source.stat().st_dev==native_home.stat().st_dev, 'Select same-data-filesystem fixture scratch'
+            shutil.copytree(source,package,copy_function=os.link,symlinks=True)
+            native_binary=str(package/'bin/codex')
+        else:
+            native_home = j.root/'actual-core'; native_home.mkdir()
         (native_home/'config.toml').write_text(f'''model="mock-model"
 model_provider="mock_provider"
 approval_policy="never"
@@ -237,6 +299,15 @@ stream_max_retries=0
 requires_openai_auth=false
 supports_websockets=false
 ''')
+        if projection:
+            config_path=native_home/'config.toml'
+            config_path.write_text(config_path.read_text().replace('sandbox_mode="read-only"',
+                'default_permissions="fixture-reports"')+
+                '\n[permissions.fixture-reports.filesystem]\n'+json.dumps(str(j.root))+'="write"\n'+
+                ''.join(json.dumps(path)+'="read"\n' for path in ['/usr','/bin','/lib','/lib64','/etc']))
+        if code_mode:
+            config_path=native_home/'config.toml'
+            config_path.write_text(config_path.read_text().replace('[features]', '[features]\ncode_mode_only=true'))
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0)); port = address.getsockname()[1]
         native_log = (j.root/'actual-native.log').open('w+')
@@ -245,7 +316,7 @@ supports_websockets=false
             native_command.append('app-server')
         native = subprocess.Popen([*native_command, '--listen', f'ws://127.0.0.1:{port}'],
             cwd=j.root, env={'PATH': os.environ['PATH'], 'HOME': str(j.root),
-                'CODEX_HOME': str(native_home), 'RUST_LOG': 'warn'}, stdout=native_log, stderr=native_log)
+                'CODEX_HOME': str(native_home), 'RUST_LOG': 'warn,codex_core::code_mode_host=debug' if code_mode else 'warn'}, stdout=native_log, stderr=native_log)
         deadline = time.monotonic()+10
         while True:
             assert native.poll() is None, 'Actual native exited during startup'
@@ -288,6 +359,36 @@ supports_websockets=false
             client.close(); client = None
         j.config.write_text(j.config.read_text().replace('[telegram]', '[telegram]\nenabled=false')
             .replace('default_model="fixture-model"', 'default_model="mock-model"') + j.target_config)
+        if projection:
+            # Qualify the root-only Reports selector through actual native API.
+            # Other lanes/delegates must retain the original default profile.
+            options=('matrix_inbox_channel="tribe"\n'
+                'matrix_transport={command=["/bin/true"],source={kind="body",being_ref="dm:being:v1:'+
+                'A'*43+'",embodiment_id="embodiment:synthetic"},timeout_seconds=1,'
+                'native_attention_host_restrictions={reports={permissions="fixture-reports",'
+                'tools=[{name="interaction_controller"}],environment={},'
+                'codeModeLimits={maxHeapSizeBytes=33554432,maxYieldTimeMs=1000}}}}\n')
+            if code_mode:
+                options=options.replace('tools=[{name="interaction_controller"}]',
+                    'tools=[{name="exec"},{name="wait"},{name="interaction_controller"}]')
+                options=options.replace('environment={}', 'environment={PATH="/usr/bin:/bin"},processLimits={memoryBytes=1073741824,cpuPercent=100,tasks=128}')
+            j.config.write_text(j.config.read_text().replace('[interaction]', '[interaction]\n'+options))
+            snapshot=j.root/'projection-source.json';snapshot.write_text('{"selected":"original"}')
+            reconciliation=j.root/'projection-cursor.json'
+            helper=j.root/'projection-helper.py'
+            helper.write_text("""import sys,json,hashlib,pathlib
+raw=sys.stdin.buffer.read()
+if '--inspect-stdin' not in sys.argv:
+ pathlib.Path(__file__).with_suffix('.runs').write_text('one')
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'unknown_effect'}))
+else:
+ assert json.loads(raw)=={'selected':'original'}
+ print(json.dumps({'source_sha256':hashlib.sha256(raw).hexdigest(),'state':'existing_projection_verified','artifact_ref':'fixture-artifact','version_ref':'fixture-version','immutable_files_match':True,'owner_broker_all_files_match':True,'checkpoint_matches':False}))
+""")
+            with j.config.open('a') as stream:
+                stream.write('\n[interaction.private_projection]\ntask_id="bitacora"\ncommand='+json.dumps(['/usr/bin/python3',str(helper)])+'\n'+
+                    'working_directory='+json.dumps(str(j.root))+'\nsnapshot='+json.dumps(str(snapshot))+'\nreconciliation='+json.dumps(str(reconciliation))+'\n'+
+                    'reconciliation_return_pointer="/latest_check/heartbeat_return"\nreconciliation_partial_pointer="/latest_check/partial"\ntimeout_seconds=2\n')
         j.start(); j.wait_control_socket(j.socket)
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         original = str(uuid.uuid4())
@@ -309,8 +410,36 @@ supports_websockets=false
             report_sources = [{'id': 'learning', 'path': str(report_path), 'pointers': ['/offers']}]
         j.read('heartbeat', 'configure-producer', str(paused['generation']), json.dumps({
             'interval_seconds': 30, 'max_checks': 3, 'expires_at_unix_ms': expiry,
-            'matrix_replies': False, 'workflows': True, **({'reports': report_sources} if reports else {})}))
+            'matrix_replies': projection, 'workflows': not projection, **({'reports': report_sources} if reports and not projection else {})}))
+        if projection:
+            generation=str(paused['generation'])
+            j.read('heartbeat','continuous',generation,'12')
+            j.read('heartbeat','production-defaults',generation,json.dumps('Synthetic explicit Reports production direction'))
+            purpose={'input_ref':original,'channel':'conversation'}
+            selected=j.read('heartbeat','select-review',generation,json.dumps(dict(purpose=purpose,reports=report_sources,
+                interval_seconds=900,production=True,max_checks=None,expires_at_unix_ms=None)))['result']
+            j.read('heartbeat','select-review-task',generation,json.dumps(dict(id='bitacora',purpose=purpose,
+                purpose_revision='',instructions='Refresh the selected private view through its fixed host route.')))
+            j.read('heartbeat','resume-lane','reports',str(selected['lanes']['reports']['generation']))
         j.read('heartbeat', 'resume', str(paused['generation']))
+        if projection:
+            def report_finished():
+                return any(r['stage']=='heartbeat-final' for r in requests) or any(
+                    json.loads(raw).get('terminal_status')=='failed' for (raw,) in
+                    j.row("SELECT value FROM bot_state WHERE key LIKE 'heartbeat_execution:%'"))
+            j.wait(report_finished,seconds=90)
+            assert any(r['stage']=='heartbeat-final' for r in requests), 'Reports execution failed before useful completion'
+            j.idle();j.read('heartbeat','pause')
+            assert not errors,errors
+            assert helper.with_suffix('.runs').read_text()=='one'
+            assert sum(r['stage']=='projection-run' for r in requests)==1
+            page=j.read('presentation','list','0','0')['result']
+            j.submit(page['binding'],'AFTER_PAUSE_CONTACT')
+            j.wait(lambda:any(r['stage']=='human-after-pause' for r in requests),seconds=30);j.idle()
+            print(json.dumps(dict(result='PASS',native_sha256=file_sha256(native_binary),native_entrypoint='complete-cli' if native_cli else 'standalone-app-server',
+                projection_recovery=True,requests=requests,live_provider_calls=0,original_run_count=1,
+                evidence='Actual Core and App/controller/store, local Responses stand-in; matching Reports hint/read/run/retained-input inspection/CAS review and ordinary contact after pause. No real model or Home publication.')))
+            return
         retained_child = None
         if busy:
             j.wait(lambda: j.row("SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND i.phase='retained_unsent'"), seconds=75)
@@ -366,11 +495,17 @@ supports_websockets=false
             print('Heartbeat metadata:', j.row("SELECT key,json_extract(value,'$.phase'),json_extract(value,'$.terminal_status'),json_extract(value,'$.checks'),json_extract(value,'$.native_returns[0].reported_revision'),json_extract(value,'$.stopped_reason') FROM bot_state WHERE key LIKE 'heartbeat_%'"), file=sys.stderr)
             if native_log:
                 native_log.flush(); native_log.seek(0)
-                print('Actual native tail:', native_log.read()[-6000:], file=sys.stderr)
+                diagnostic=native_log.read()[-16000:]
+                print('Actual native tail:', diagnostic[-6000:], file=sys.stderr)
+                if failure_log:=os.environ.get('CODEX_TEST_FAILURE_LOG'):
+                    Path(failure_log).write_text(json.dumps({'fixture_errors':errors,'actual_native_tail':diagnostic,
+                        'requests':requests,'live_provider_calls':0},indent=2)+'\n')
         if native_log: native_log.close()
         j.close(); provider.shutdown(); provider.server_close()
+        if private_home:private_home.cleanup()
 
 
 if __name__ == '__main__':
     qualify(sys.argv[1], sys.argv[2], busy='--busy' in sys.argv[3:],
-        native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:])
+        native_cli='--native-cli' in sys.argv[3:], reports='--reports' in sys.argv[3:] or '--projection' in sys.argv[3:],
+        projection='--projection' in sys.argv[3:], code_mode='--code-mode' in sys.argv[3:], private_native='--private-native' in sys.argv[3:])

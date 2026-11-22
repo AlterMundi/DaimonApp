@@ -27,6 +27,51 @@ pub(super) fn save(conn: &Connection, local: i64, value: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Startup owns local collection, not an unobserved native effect. Reuse the
+/// existing unsent route only when both the source and submission marker prove it.
+pub(in crate::store) fn recover_departed_collection_on(
+    conn: &Connection,
+    local: i64,
+) -> Result<()> {
+    let Some(mut record) = load(conn, local)? else {
+        return Ok(());
+    };
+    if !matches!(record["phase"].as_str(), Some("owned" | "stopping"))
+        || !record["physical"].is_null()
+    {
+        return Ok(());
+    }
+    let source = record["source"]
+        .as_str()
+        .context("Missing heartbeat source")?;
+    let Some((parent, index)) = super::producer::load_return(conn, source)? else {
+        return Ok(());
+    };
+    let returned = &parent.native_returns[index];
+    let submitting: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_collections WHERE local_turn=?1)",
+        [local],
+        |r| r.get(0),
+    )?;
+    if !submitting
+        && returned.local == Some(local)
+        && returned.native_turn.is_none()
+        && returned.collection_local.is_none()
+        && matches!(returned.phase.as_str(), "reserved" | "retained_unsent")
+        && record["native"] == parent.native
+        && record["generation"].as_u64() == returned.attention_generation
+    {
+        // NativeTurnSubmitting persists its marker before the native write.
+        // A departed reserved source with no marker has not crossed it.
+        record["phase"] = json!("terminal");
+        record["terminal_status"] = json!("not_submitted");
+        save(conn, local, &record)?;
+    }
+    // Known physical work and possible/lost ACKs retain original ownership.
+    // The existing exact native observation and no-replay rules still apply.
+    Ok(())
+}
+
 pub(super) fn selected(conn: &Connection, human: i64, entry: SessionKey) -> Result<Vec<Value>> {
     let (session, _) = super::super::presentation::entry_on(conn, human, entry)?;
     let mut q=conn.prepare("SELECT b.value FROM bot_state b JOIN turns t ON b.key='heartbeat_execution:'||t.id WHERE t.from_user_id=?2 AND ((t.session_id=?1 AND json_extract(b.value,'$.owner') IS NULL) OR (json_extract(b.value,'$.owner.entry.chat_id')=?3 AND json_extract(b.value,'$.owner.entry.thread_id')=?4)) ORDER BY t.id DESC LIMIT 18")?;
@@ -258,14 +303,45 @@ impl Store {
     }
     /// Read the already-reserved allocation at the last submission boundary.
     /// Reading never charges/refills it or establishes new execution ownership.
+    #[cfg(test)]
     pub(crate) fn heartbeat_inference_allowance(
         &self,
         local: i64,
         human: i64,
         entry: SessionKey,
     ) -> Result<Option<crate::codex::NativeInferenceAllowance>> {
+        Ok(self
+            .heartbeat_submission_policy(local, human, entry)?
+            .map(|(allowance, _)| allowance))
+    }
+
+    /// Resolve the root lane from the same freshly validated retained execution.
+    /// Delegated work inherits accounting, never its parent's purpose profile.
+    pub(crate) fn heartbeat_submission_policy(
+        &self,
+        local: i64,
+        human: i64,
+        entry: SessionKey,
+    ) -> Result<
+        Option<(
+            crate::codex::NativeInferenceAllowance,
+            Option<HeartbeatLane>,
+        )>,
+    > {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        Ok(allowance_on(&conn, local, human, entry, true)?.map(|(_, allowance)| allowance))
+        allowance_on(&conn, local, human, entry, true)?
+            .map(|(record, allowance)| {
+                let root_lane = if record.get("owner").is_none() {
+                    Some(
+                        serde_json::from_value::<lanes::Activation>(record["activation"].clone())?
+                            .lane,
+                    )
+                } else {
+                    None
+                };
+                Ok((allowance, root_lane))
+            })
+            .transpose()
     }
 
     pub(crate) fn heartbeat_financial_source(
@@ -970,6 +1046,13 @@ mod tests {
                 .is_none()
         );
         own(&s, &entry, local).unwrap();
+        assert_eq!(
+            s.heartbeat_submission_policy(local, 100, entry.key)
+                .unwrap()
+                .unwrap()
+                .1,
+            Some(HeartbeatLane::Messaging)
+        );
         let before = s
             .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
             .unwrap()["resources"]

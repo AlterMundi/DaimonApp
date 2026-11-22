@@ -437,3 +437,17 @@ observed native contention and an active goal. The existing attach-active path
 revalidates physical identity, local admission, Stop/maintenance and newer human
 work. It sends no input, activates no goal and reserves no inference allowance.
 No separate observer or timer is installed.
+
+### Reconcile proved metadata-only partial activation
+
+The authenticated owning CLI supports `goal status CONTROL_ID` and
+`goal reconcile-metadata-only CONTROL_ID`. The latter reads a fresh native
+snapshot and uses the existing goal-control writer. It settles only a partial
+edit/resume with a retained native metadata receipt and exact
+`notStarted / Native activation not submitted: NotIdle`, a later revision of the
+same goal identity, and a later retained direction for that target. Original
+receipt and immutable attempt history remain; the old control becomes superseded.
+No goal or native work is mutated or retried. Unknown/submitted outcomes, missing
+receipts, another goal identity and replaced/cleared goals remain held. A repeat
+only reads the settled outcome. Workers must not borrow another conversation's
+live controller; this owner route retains its normal entry/human boundary.

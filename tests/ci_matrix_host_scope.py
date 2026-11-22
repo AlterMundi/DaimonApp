@@ -29,6 +29,7 @@ def selected(paths, previous=None):
                 and target.id
                 in {
                     "native_handoff",
+                    "private_projection",
                     "avatar_model_tests",
                     "voice_templates",
                     "common",
@@ -55,6 +56,10 @@ def selected(paths, previous=None):
 
 
 class MatrixHostScope(unittest.TestCase):
+    def test_private_projection_adapter_uses_its_existing_python_gate(self):
+        self.assertEqual(selected(['scripts/bitacora_refresh.py', 'tests/bitacora_refresh.py']), set())
+        self.assertEqual(selected(['src/app/private_projection.rs']), {'text'})
+
     def test_contribution_guidance_keeps_owning_web_checks_without_native_rebuild(self):
         self.assertEqual(selected(['CONTRIBUTING.md','AGENTS.md']),set())
         self.assertEqual(selected(['CONTRIBUTING.md','dashboard/school_mission_host.py']),set())

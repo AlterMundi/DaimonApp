@@ -53,6 +53,9 @@ pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
         "workflow_selected" => {
             "This original already has attributed workflow work. Inspect the retained workflow. For genuinely additional authorized work, declare a separate bounded workflow with the same input_ref and its own stable request_id and scope; do not dispatch the entire original again or replay an existing subtask."
         }
+        "workflow_result_changed_or_incomplete" => {
+            "The pinned result is superseded or its correction is incomplete. Inspect this workflow's current status and continue the existing owning step. This is a source-state refusal, not a transport outage. Do not replay the original, substitute an old result or advance the workflow as completed."
+        }
         _ => return None,
     };
     Some(
@@ -1409,7 +1412,10 @@ impl Store {
                 && source["current"] == true
                 && source["correction_pending"] == false);
         if source["revision"].as_str() != Some(revision) || !readable {
-            bail!("Canonical result changed or incomplete");
+            return Err(refusal(
+                "workflow_result_changed_or_incomplete",
+                Some(w.id.clone()),
+            ));
         }
         let length = d.body.chars().count();
         if offset > length {
@@ -3695,6 +3701,414 @@ mod tests {
         assert_eq!(anchor, "old-physical");
     }
     #[test]
+    fn matrix_native_acknowledgment_is_durable_and_separate_from_consumption() {
+        let (file, s, entry, _plan) = setup();
+        let local = turn(&s, &entry, "");
+        let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = Uuid::now_v7().to_string();
+        s.conversation_input_capture(
+            100,
+            entry.key,
+            &binding,
+            &id,
+            "  Original human request\n  ",
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Queue).unwrap();
+        s.conversation_input_event(
+            100,
+            &id,
+            E::Begin {
+                local_turn: local,
+                steer: true,
+            },
+        )
+        .unwrap();
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let consumed = s.conversation_input_read(100, entry.key, &id).unwrap();
+        assert_eq!(consumed.phase, "matrix_requested");
+        assert!(
+            !consumed.native_accepted,
+            "A downstream commitment is not a native ACK"
+        );
+        assert!(
+            s.conversation_input_event(101, &id, E::Accepted { local_turn: local })
+                .is_err()
+        );
+        assert!(
+            s.conversation_input_event(
+                100,
+                &id,
+                E::Accepted {
+                    local_turn: local + 1
+                }
+            )
+            .is_err()
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert!(
+            !s.conversation_input_read(100, entry.key, &id)
+                .unwrap()
+                .native_accepted
+        );
+        let acknowledged = s
+            .conversation_input_event(100, &id, E::Accepted { local_turn: local })
+            .unwrap();
+        assert_eq!(acknowledged.phase, "matrix_requested");
+        assert!(acknowledged.native_accepted);
+        assert_eq!(acknowledged.text, "  Original human request\n  ");
+        assert!(
+            s.conversation_input_event(100, &id, E::Accepted { local_turn: local })
+                .unwrap()
+                .native_accepted
+        );
+        drop(s);
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let restored = s.conversation_input_read(100, entry.key, &id).unwrap();
+        assert!(restored.native_accepted);
+        assert_eq!(restored.phase, "matrix_requested");
+    }
+
+    #[test]
+    fn terminal_boundary_uses_original_physical_not_collector_start() {
+        let (_file, s, entry, _plan) = setup();
+        let reference = original(&s, &entry, "A human question on a later physical turn");
+        let InputReference::Conversation(id) = reference else {
+            unreachable!()
+        };
+        let local = s
+            .conversation_input_read(100, entry.key, &id)
+            .unwrap()
+            .local_turn
+            .unwrap();
+        s.native_collection_submitting(local, None).unwrap();
+        s.native_collection_started(local, "earlier-collector-start")
+            .unwrap();
+        s.record_native_message(
+            local,
+            "native-1",
+            "actual-human-physical",
+            "scoped-progress",
+            Some("commentary"),
+            "Actual original-scoped progress",
+        )
+        .unwrap();
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        s.record_turn_finished(local, "completed", None).unwrap();
+        let boundary = s
+            .conversation_input_terminal_boundary(100, entry.key, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(boundary["native_turn"], "actual-human-physical");
+        // Multiple scoped physical boundaries remain ambiguous; never choose
+        // the completed collector start or an arbitrary last public message.
+        s.record_native_message(
+            local,
+            "native-1",
+            "another-human-physical",
+            "another-scoped-progress",
+            Some("commentary"),
+            "Another physical boundary",
+        )
+        .unwrap();
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn uncommitted_human_original_does_not_claim_internal_callback_items() {
+        for phase in [
+            "retained",
+            "queued",
+            "sending",
+            "steering",
+            "uncertain",
+            "rejected",
+            "retained_unsent",
+        ] {
+            let (_file, s, entry, plan) = setup();
+            let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+            let returned = s
+                .native_routed_result_reserve(100, entry.key, &delivery.id)
+                .unwrap()
+                .unwrap();
+            let local = turn(&s, &entry, "");
+            s.workflow_native_link(&returned.id, local).unwrap();
+            s.native_collection_submitting(local, None).unwrap();
+            s.native_collection_started(local, "callback-physical")
+                .unwrap();
+            s.workflow_native_submitting(&returned.id).unwrap();
+            s.workflow_native_outcome(&returned.id, "accepted", Some("callback-physical"))
+                .unwrap();
+            let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let id = Uuid::now_v7().to_string();
+            s.conversation_input_capture(
+                100,
+                entry.key,
+                &binding,
+                &id,
+                "An actual retained fixture original",
+            )
+            .unwrap();
+            if phase != "retained" {
+                s.conversation_input_event(100, &id, E::Queue).unwrap();
+            }
+            if !matches!(phase, "retained" | "queued") {
+                s.conversation_input_event(
+                    100,
+                    &id,
+                    E::Begin {
+                        local_turn: local,
+                        steer: phase != "sending",
+                    },
+                )
+                .unwrap();
+            }
+            if matches!(phase, "uncertain" | "retained_unsent") {
+                s.conversation_input_event(100, &id, E::Uncertain { local_turn: local })
+                    .unwrap();
+            }
+            if phase == "rejected" {
+                s.conversation_input_event(100, &id, E::Rejected { local_turn: local })
+                    .unwrap();
+            }
+            if phase == "retained_unsent" {
+                s.conversation_inputs_not_submitted(100, local).unwrap();
+            }
+            assert_eq!(
+                s.conversation_input_read(100, entry.key, &id)
+                    .unwrap()
+                    .phase,
+                phase
+            );
+            s.record_native_message(
+                local,
+                "native-1",
+                "callback-physical",
+                "internal-output",
+                Some("final_answer"),
+                "Selected internal return, not the uncommitted original's answer",
+            )
+            .unwrap();
+            s.record_turn_finished(local, "completed", None).unwrap();
+            assert!(
+                s.conversation_input_terminal_boundary(100, entry.key, &id)
+                    .unwrap()
+                    .is_none()
+            );
+            let conn = s.conn.lock().unwrap();
+            let marker:String=conn.query_row("SELECT presentation_input FROM interaction_native_messages WHERE item_id='internal-output'",[],|r|r.get(0)).unwrap();
+            assert_ne!(
+                marker, id,
+                "{phase} without a committed selection must not claim an internal item"
+            );
+            assert!(marker.contains(&returned.id));
+        }
+    }
+
+    #[test]
+    fn matrix_selection_preserves_steered_human_return_and_replacement() {
+        let (_file, s, entry, plan) = setup();
+        let (_, delivery) = routed_result(&s, &entry, &plan.input_ref);
+        let returned = s
+            .native_routed_result_reserve(100, entry.key, &delivery.id)
+            .unwrap()
+            .unwrap();
+        let old = turn(&s, &entry, "");
+        s.workflow_native_link(&returned.id, old).unwrap();
+        s.native_collection_submitting(old, None).unwrap();
+        s.native_collection_started(old, "shared-physical").unwrap();
+        s.workflow_native_submitting(&returned.id).unwrap();
+        s.workflow_native_outcome(&returned.id, "accepted", Some("shared-physical"))
+            .unwrap();
+        s.record_native_message(
+            old,
+            "native-1",
+            "shared-physical",
+            "before-human",
+            Some("commentary"),
+            "The selected worker returned.",
+        )
+        .unwrap();
+
+        let binding = s.conversation_request_binding(100, entry.key).unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = Uuid::now_v7().to_string();
+        s.conversation_input_capture(
+            100,
+            entry.key,
+            &binding,
+            &id,
+            "Discuss this shared creation with the selected companion",
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Queue).unwrap();
+        s.conversation_input_event(
+            100,
+            &id,
+            E::Begin {
+                local_turn: old,
+                steer: true,
+            },
+        )
+        .unwrap();
+        s.conversation_input_event(100, &id, E::Accepted { local_turn: old })
+            .unwrap();
+        // The real downstream writer consumes the original. That phase change
+        // must not revoke this already admitted human's presentation lifetime.
+        s.interaction_matrix_prepare(
+            entry.key,
+            100,
+            "native-1",
+            &InputReference::Conversation(id.clone()),
+            "conversation",
+            "Selected companion",
+            &crate::interaction::MatrixDestination::Being {
+                being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            },
+            crate::interaction::RequestRelation::New,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.conversation_input_event(100, &id, E::Accepted { local_turn: old })
+                .unwrap()
+                .phase,
+            "matrix_requested"
+        );
+        assert!(
+            s.conversation_input_read(100, entry.key, &id)
+                .unwrap()
+                .native_accepted,
+            "Consumption must retain the acknowledgment already observed before it"
+        );
+        s.record_native_message(
+            old,
+            "native-1",
+            "shared-physical",
+            "human-final",
+            Some("final_answer"),
+            "The human's actual response, with downstream work separate.",
+        )
+        .unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            let (input, sources): (String, String) = conn.query_row(
+                "SELECT presentation_input,native_return_sources FROM interaction_native_messages WHERE item_id='human-final'",
+                [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(
+                input, id,
+                "A downstream action cannot replace the human reply with an internal return marker"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&sources).unwrap(),
+                json!([returned.id])
+            );
+            let before: String = conn.query_row(
+                "SELECT presentation_input FROM interaction_native_messages WHERE item_id='before-human'",
+                [], |r| r.get(0)).unwrap();
+            assert_ne!(
+                before, id,
+                "Earlier internal items must retain their original association"
+            );
+        }
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none(),
+            "A locally running collector is not a terminal-history candidate"
+        );
+        s.record_turn_finished(old, "completed", None).unwrap();
+        let boundary = s
+            .conversation_input_terminal_boundary(100, entry.key, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(boundary["native_turn"], "shared-physical");
+        assert!(
+            s.conversation_input_terminal_boundary(101, entry.key, &id)
+                .is_err()
+        );
+        assert!(
+            s.conversation_input_terminal_boundary(100, SessionKey::new(100, Some(8)), &id)
+                .is_err()
+        );
+        let replacement = replacement_collector(&s, &entry, "shared-physical");
+        s.record_native_message(
+            replacement,
+            "native-1",
+            "shared-physical",
+            "replacement-final",
+            Some("final_answer"),
+            "The same human lifetime survives a collector replacement.",
+        )
+        .unwrap();
+        let conn = s.conn.lock().unwrap();
+        let input: String = conn.query_row(
+            "SELECT presentation_input FROM interaction_native_messages WHERE item_id='replacement-final'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(input, id);
+        drop(conn);
+        {
+            // A retired original cannot acquire new execution observations.
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
+                [&id],
+            )
+            .unwrap();
+        }
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .unwrap()
+                .is_none()
+        );
+        s.set_session_codex_thread(entry.key, "replacement-native")
+            .unwrap();
+        assert!(
+            s.conversation_input_terminal_boundary(100, entry.key, &id)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn human_turn_freezes_return_association_without_changing_presentation_lifetime() {
         let (_f, s, e, plan) = setup();
         let v = declare(&s, &e, plan);
@@ -5298,6 +5712,70 @@ mod tests {
     }
 
     #[test]
+    fn restart_recovers_only_proved_unsent_recent_attention() {
+        for (phase, marker, physical, unsubmitted) in [
+            ("reserved", false, None, true),
+            ("retained_unsent", false, None, true),
+            ("reserved", true, None, false),
+            ("submitting", false, None, false),
+            ("uncertain", false, None, false),
+            ("accepted", true, Some("native-physical"), false),
+        ] {
+            let (file, store, entry, plan) = setup();
+            producer_work(&store, &entry, plan);
+            producer_configure(&store, &entry, 8);
+            let selected = store.heartbeat_produce(100, entry.key).unwrap().unwrap();
+            let local = turn(&store, &entry, "");
+            store.set_session_busy(entry.key, true).unwrap();
+            store
+                .workflow_native_link_fresh(&selected.id, local)
+                .unwrap();
+            if marker {
+                store.native_collection_submitting(local, None).unwrap();
+            }
+            if let Some(physical) = physical {
+                store.heartbeat_native_started(local, physical).unwrap();
+            }
+            producer_edit(&store, &entry, |p| {
+                p["native_returns"][0]["phase"] = json!(phase)
+            });
+            let resources = store
+                .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap()["resources"]
+                .clone();
+            drop(store);
+            let recovered =
+                Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+            assert_eq!(
+                recovered.turn_status(local).unwrap().as_deref(),
+                Some("failed")
+            );
+            assert!(!recovered.get_session(entry.key).unwrap().unwrap().busy);
+            let status = recovered
+                .heartbeat_control(100, entry.key, HeartbeatCommand::Status)
+                .unwrap();
+            let executions = recovered
+                .heartbeat_executions(100, entry.key, false)
+                .unwrap();
+            assert_eq!(executions.len(), 1);
+            let execution = &executions[0];
+            assert_eq!(execution["source"], selected.id);
+            assert_eq!(execution["physical"], json!(physical));
+            assert_eq!(execution["terminal_status"] == "not_submitted", unsubmitted);
+            if !unsubmitted {
+                assert_eq!(execution["phase"], "owned");
+            }
+            for key in [
+                "reserved_provider_attempts",
+                "lifetime_reserved_provider_attempts",
+                "contract",
+            ] {
+                assert_eq!(status["resources"][key], resources[key]);
+            }
+        }
+    }
+
+    #[test]
     fn heartbeat_producer_restart_preserves_uncertain_submission_without_retry() {
         use crate::store::HeartbeatCommand as H;
         let (file, s, entry, plan) = setup();
@@ -5842,6 +6320,14 @@ mod tests {
             s.heartbeat_claim_workflow_delegate(local, 100, i.target, &i.id)
                 .unwrap()
         );
+        assert!(
+            s.heartbeat_submission_policy(local, 100, i.target)
+                .unwrap()
+                .unwrap()
+                .1
+                .is_none(),
+            "Delegates must not inherit root-purpose tool/path policy"
+        );
         let allocation = s
             .heartbeat_inference_allowance(local, 100, i.target)
             .unwrap()
@@ -6001,6 +6487,341 @@ mod tests {
         assert_eq!(records.len(), 16);
         assert!(records.iter().all(|r| r["phase"] == "stopping"));
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn private_projection_claim_is_scoped_once_and_survives_lost_ack_restart() {
+        fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+            crate::interaction::OwnerActionPurpose::Projection,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn alerts_repair_claim_is_scoped_once_and_survives_lost_ack_restart() {
+        fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+            crate::interaction::OwnerActionPurpose::AlertsRepair,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn fixed_owner_claim_is_scoped_once_and_survives_lost_ack_restart(
+        action_purpose: crate::interaction::OwnerActionPurpose,
+    ) {
+        use crate::store::{
+            HeartbeatCommand as H, HeartbeatPurpose, HeartbeatReviewContract, HeartbeatReviewTask,
+        };
+        let (file, s, e, plan) = setup();
+        producer_configure(&s, &e, 4);
+        let paused = s.heartbeat_control(100, e.key, H::Pause).unwrap();
+        let generation = paused["generation"].as_u64().unwrap();
+        s.heartbeat_enable_continuous(100, e.key, generation, 576)
+            .unwrap();
+        s.heartbeat_production_defaults(100, e.key, generation, "existing owner direction")
+            .unwrap();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(report.path(), b"{\"state\":\"pending\"}").unwrap();
+        let purpose = HeartbeatPurpose {
+            input_ref: plan.input_ref,
+            channel: "conversation".into(),
+        };
+        s.heartbeat_select_review(
+            100,
+            e.key,
+            generation,
+            HeartbeatReviewContract {
+                purpose: purpose.clone(),
+                reports: vec![crate::store::HeartbeatReportSource {
+                    id: "work".into(),
+                    path: report.path().into(),
+                    pointers: vec!["/state".into()],
+                }],
+                interval_seconds: 900,
+                max_checks: None,
+                expires_at_unix_ms: None,
+                production: true,
+            },
+        )
+        .unwrap();
+        s.heartbeat_select_review_task(
+            100,
+            e.key,
+            generation,
+            HeartbeatReviewTask {
+                id: "intake".into(),
+                change_source: None,
+                purpose,
+                purpose_revision: String::new(),
+                instructions: "Reconcile selected intake and refresh the same private view.".into(),
+            },
+        )
+        .unwrap();
+        let state = s.heartbeat_control(100, e.key, H::Status).unwrap();
+        s.heartbeat_control(100, e.key, H::Resume { generation })
+            .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::ResumeLane {
+                lane: super::heartbeat::HeartbeatLane::Reports,
+                generation: state["lanes"]["reports"]["generation"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        s.heartbeat_control(
+            100,
+            e.key,
+            H::PauseLane {
+                lane: super::heartbeat::HeartbeatLane::WorkflowReturns,
+            },
+        )
+        .unwrap();
+        producer_edit(&s, &e, |p| p["review"]["next_check_ms"] = json!(0));
+        let check = s.heartbeat_begin_check(100, e.key).unwrap().unwrap();
+        s.heartbeat_finish_observation(&check, None, false).unwrap();
+        let local = turn(&s, &e, "");
+        let (id, batch, task_revision) = {
+            let conn = s.conn.lock().unwrap();
+            let mut parent = super::heartbeat::producer::load(&conn, 100, e.id)
+                .unwrap()
+                .unwrap();
+            let r = parent.native_returns.last_mut().unwrap();
+            r.phase = "accepted".into();
+            r.native_turn = Some("physical".into());
+            r.local = Some(local);
+            let task = r.envelope["offers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["key"] == "review-task:intake")
+                .unwrap();
+            let values = (
+                r.id.clone(),
+                r.envelope["revision"].as_str().unwrap().to_owned(),
+                task["revision"].as_str().unwrap().to_owned(),
+            );
+            let execution = json!({"local":local,"native":"native-1","generation":r.attention_generation,"activation":r.attention_activation,"phase":"owned","physical":"physical","source":r.id,"inference_allowance":{"deadline_unix_ms":Utc::now().timestamp_millis()+600000}});
+            conn.execute(
+                "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+                params![
+                    format!("heartbeat_execution:{local}"),
+                    execution.to_string()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE bot_state SET value=?2 WHERE key=?1",
+                params![
+                    format!("heartbeat_producer:100:{}", e.id),
+                    serde_json::to_string(&parent).unwrap()
+                ],
+            )
+            .unwrap();
+            values
+        };
+        let original_input = r#"{"observed_at":"private-test-snapshot"}"#;
+        let changed_input = r#"{"observed_at":"later-snapshot"}"#;
+        let hash = format!("{:x}", Sha256::digest(original_input.as_bytes()));
+        let changed = format!("{:x}", Sha256::digest(changed_input.as_bytes()));
+        let claim = |store: &Store, human, physical: &str, revision: &str, snapshot: &str| {
+            store.private_projection_claim(
+                action_purpose,
+                human,
+                e.key,
+                "native-1",
+                physical,
+                &id,
+                &batch,
+                "intake",
+                revision,
+                &hash,
+                snapshot,
+                &hash,
+                if snapshot == hash {
+                    original_input
+                } else {
+                    changed_input
+                },
+            )
+        };
+        assert!(claim(&s, 101, "physical", &task_revision, &hash).is_err());
+        assert!(claim(&s, 100, "wrong-turn", &task_revision, &hash).is_err());
+        assert!(claim(&s, 100, "physical", "wrong-task-revision", &hash).is_err());
+        for (field, wrong) in [
+            ("local", json!(local + 1)),
+            ("native", json!("another-native")),
+            ("generation", json!(0)),
+            ("activation", json!({"lane":"messaging","generation":0})),
+        ] {
+            for remove in [true, false] {
+                let storage = format!("heartbeat_execution:{local}");
+                let original: String = s
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT value FROM bot_state WHERE key=?1",
+                        [&storage],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let mut changed_record: Value = serde_json::from_str(&original).unwrap();
+                if remove {
+                    changed_record.as_object_mut().unwrap().remove(field);
+                } else {
+                    changed_record[field] = wrong.clone();
+                }
+                s.conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE bot_state SET value=?2 WHERE key=?1",
+                        params![storage, changed_record.to_string()],
+                    )
+                    .unwrap();
+                assert!(
+                    claim(&s, 100, "physical", &task_revision, &hash).is_err(),
+                    "Wrong/missing execution field {field} must not admit a projection"
+                );
+                s.conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE bot_state SET value=?2 WHERE key=?1",
+                        params![storage, original],
+                    )
+                    .unwrap();
+            }
+        }
+        let first = claim(&s, 100, "physical", &task_revision, &hash).unwrap();
+        assert_eq!(first["claimed"], true);
+        s.record_turn_native_thread(local, "native-1").unwrap();
+        drop(s);
+        let reopened = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        // The departed local worker is no longer a live actor. A supported
+        // attachment to the same observed physical turn restores collection,
+        // not execution of the unresolved action or another model input.
+        assert!(claim(&reopened, 100, "physical", &task_revision, &hash).is_err());
+        reopened
+            .record_collector_attachment(local, e.key, 100, "native-1", "physical")
+            .unwrap();
+        assert_eq!(
+            claim(&reopened, 100, "physical", &task_revision, &hash).unwrap()["claimed"],
+            false
+        );
+        assert_eq!(
+            claim(&reopened, 100, "physical", &task_revision, &changed).unwrap()["claimed"],
+            false
+        );
+        let other = match action_purpose {
+            crate::interaction::OwnerActionPurpose::Projection => {
+                crate::interaction::OwnerActionPurpose::AlertsRepair
+            }
+            crate::interaction::OwnerActionPurpose::AlertsRepair => {
+                crate::interaction::OwnerActionPurpose::Projection
+            }
+        };
+        assert!(
+            reopened
+                .private_projection_status(other, 100, e.key, "native-1")
+                .unwrap()["current"]
+                .is_null()
+        );
+        assert!(
+            reopened
+                .private_projection_input(
+                    other,
+                    100,
+                    e.key,
+                    "native-1",
+                    first["current"]["invocation"].as_str().unwrap()
+                )
+                .is_err()
+        );
+        let invocation = first["current"]["invocation"].as_str().unwrap();
+        let status = reopened
+            .private_projection_status(action_purpose, 100, e.key, "native-1")
+            .unwrap();
+        assert_eq!(status["input_retained"], true);
+        assert!(!status.to_string().contains("private-test-snapshot"));
+        let (retained, raw) = reopened
+            .private_projection_input(action_purpose, 100, e.key, "native-1", invocation)
+            .unwrap();
+        assert_eq!(raw, original_input);
+        assert_eq!(retained["snapshot"], hash);
+        reopened
+            .private_projection_finish(
+                action_purpose,
+                100,
+                e.key,
+                "native-1",
+                invocation,
+                json!({"phase":"unconfirmed"}),
+            )
+            .unwrap();
+        assert!(
+            reopened
+                .private_projection_input(action_purpose, 100, e.key, "native-1", invocation)
+                .is_ok()
+        );
+
+        reopened
+            .private_projection_finish(
+                action_purpose,
+                100,
+                e.key,
+                "native-1",
+                invocation,
+                json!({"phase":"observed","state":"unchanged"}),
+            )
+            .unwrap();
+        assert_eq!(
+            claim(&reopened, 100, "physical", &task_revision, &changed).unwrap()["claimed"],
+            false,
+            "Even a changed source cannot repeat an action in the same return"
+        );
+        assert!(
+            reopened
+                .private_projection_finish(
+                    action_purpose,
+                    100,
+                    e.key,
+                    "native-1",
+                    "different-invocation",
+                    json!({"phase":"observed"})
+                )
+                .is_err()
+        );
+        let status = reopened
+            .private_projection_status(action_purpose, 100, e.key, "native-1")
+            .unwrap();
+        assert_eq!(status["current"]["phase"], "observed");
+        assert_eq!(status["input_retained"], false);
+        assert_eq!(
+            status["current"]["original_execution_outcome"]["phase"],
+            "unconfirmed"
+        );
+        reopened
+            .private_projection_finish(
+                action_purpose,
+                100,
+                e.key,
+                "native-1",
+                invocation,
+                json!({"phase":"unconfirmed"}),
+            )
+            .unwrap();
+        assert_eq!(
+            reopened
+                .private_projection_status(action_purpose, 100, e.key, "native-1")
+                .unwrap()["current"]["phase"],
+            "observed"
+        );
+
+        assert!(serde_json::to_vec(&status).unwrap().len() < 32768);
+        reopened.heartbeat_control(100, e.key, H::Pause).unwrap();
+        assert!(claim(&reopened, 100, "physical", &task_revision, &hash).is_err());
+    }
+
     #[test]
     fn production_review_sources_evolve_without_refunding_or_retiming() {
         use crate::store::{HeartbeatCommand as H, HeartbeatPurpose, HeartbeatReviewContract};
@@ -6036,6 +6857,7 @@ mod tests {
         s.heartbeat_select_review(100, e.key, generation, contract.clone())
             .unwrap();
         let task=crate::store::HeartbeatReviewTask {
+            change_source: None,
             id:"bitacora".into(), purpose:contract.purpose.clone(), purpose_revision:String::new(),
             instructions:"Reconcile selected institutional intake; preserve selected originals before cache cleanup; no publication.".into(),
         };
@@ -6153,6 +6975,39 @@ mod tests {
                 super::heartbeat::review::task_current(&conn, &next, &first[0]).unwrap(),
                 "Pending old work remains valid across observations"
             );
+            let task = &mut next.review.as_mut().unwrap().tasks[0];
+            task.change_source = Some(contract.reports[0].clone());
+            let event = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            next.review.as_mut().unwrap().checks += 1;
+            let unchanged = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_eq!(
+                event[0].revision, unchanged[0].revision,
+                "A programmatic check never invents new incident work"
+            );
+            std::fs::write(
+                report.path(),
+                r#"{"status":"pending","blocker":"native admission","checked_at":999}"#,
+            )
+            .unwrap();
+            let clock_only = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_eq!(
+                event[0].revision, clock_only[0].revision,
+                "Unselected producer clocks cannot wake a model"
+            );
+            std::fs::write(
+                report.path(),
+                r#"{"status":"resolved","blocker":"native admission"}"#,
+            )
+            .unwrap();
+            let changed = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_ne!(event[0].revision, changed[0].revision);
+            assert!(!super::heartbeat::review::task_current(&conn, &next, &event[0]).unwrap());
+            assert!(super::heartbeat::review::task_current(&conn, &next, &changed[0]).unwrap());
+            std::fs::write(
+                report.path(),
+                r#"{"status":"pending","blocker":"native admission"}"#,
+            )
+            .unwrap();
         }
         producer_edit(&s, &e, |p| {
             p["review"]["checks"] = json!(7);

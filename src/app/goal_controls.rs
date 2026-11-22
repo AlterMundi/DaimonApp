@@ -41,6 +41,42 @@ pub(super) fn capabilities(value: &mut Value) {
 /// The existing owner socket supplies authentication and the human scope.
 /// Client JSON cannot name another human or act as a live daimon execution.
 pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    if let Some(id) = args.strip_prefix("status ") {
+        let cfg = super::routing::profile(&app.shared)?;
+        return app
+            .shared
+            .store
+            .goal_control_read(human, cfg.entry(), id.trim());
+    }
+    if let Some(id) = args.strip_prefix("reconcile-metadata-only ") {
+        let cfg = super::routing::profile(&app.shared)?;
+        let value = app
+            .shared
+            .store
+            .goal_control_read(human, cfg.entry(), id.trim())?;
+        if value["phase"] == "superseded"
+            && value["result"]["reconciliation"]["kind"] == "metadata_only_superseded"
+        {
+            return Ok(value);
+        }
+        let target: SessionKey = serde_json::from_value(value["intent"]["target"].clone())?;
+        let native = app
+            .shared
+            .store
+            .get_session(target)?
+            .and_then(|s| s.codex_thread_id)
+            .context("Selected native context unavailable")?;
+        app.shared
+            .store
+            .validate_owned_binding(target, human, &native)?;
+        let observed = app.shared.codex.get_goal_snapshot(&native).await?;
+        return app.shared.store.goal_control_reconcile_metadata_only(
+            human,
+            cfg.entry(),
+            id.trim(),
+            &observed,
+        );
+    }
     if let Some(args) = args.strip_prefix("maintenance ") {
         return super::scoped_maintenance::command(app, human, args).await;
     }
