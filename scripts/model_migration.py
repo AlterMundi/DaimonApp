@@ -358,20 +358,114 @@ def verify_default(config_path, metadata, expected, *, initial_hash=None):
             'source': 'bridge-config' if configured else 'native-config', 'loaded': 'unobserved'}
 
 
+
+FAMILY_RELEASE = re.compile(r'gpt-([0-9]{1,3})(?:\.([0-9]{1,3}))?(?:\.([0-9]{1,3}))?-(sol|astra)')
+FAMILY_TARGET = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+
+
+def family_release(model):
+    match = FAMILY_RELEASE.fullmatch(model) if isinstance(model, str) else None
+    if match is None:
+        return None
+    return match[4], [int(part or 0) for part in match.groups()[:3]]
+
+
+def family_fingerprint(value):
+    normalized = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def observe_native_family(config_path, metadata, target, *, initial_hash=None):
+    """Export authenticated availability for one receiving native default."""
+    if not FAMILY_TARGET.fullmatch(target):
+        raise ValueError('invalid_model_family_receiver')
+    raw = bounded_bytes(config_path, 1024 * 1024)
+    confirm_config_hash(hashlib.sha256(raw).hexdigest(), initial_hash)
+    cwd = bridge_config(raw)['codex']['default_cwd']
+    availability = Availability(metadata)
+    native = availability.effective_config(cwd)
+    builtin = native.get('model_providers', {}).get('openai', {})
+    if (
+        availability.account.get('type') != 'chatgpt'
+        or native.get('model_provider') not in (None, 'openai')
+        or native.get('openai_base_url') is not None
+        or native.get('model_catalog_json') is not None
+        or native.get('chatgpt_base_url') not in (
+            None, 'https://chatgpt.com', 'https://chatgpt.com/', 'https://chatgpt.com/backend-api/'
+        )
+        or builtin.get('wire_api') not in (None, 'responses')
+        or builtin.get('requires_openai_auth') not in (None, True)
+        or any(value is not None for key, value in builtin.items() if key not in {
+            'name', 'wire_api', 'requires_openai_auth', 'supports_websockets',
+            'supports_standalone_web_search', 'request_max_retries', 'stream_max_retries',
+            'stream_idle_timeout_ms', 'websocket_connect_timeout_ms',
+        })
+    ):
+        raise ValueError('canonical_native_family_catalog_required')
+    current = native.get('model')
+    current_release = family_release(current)
+    if current_release is None or current not in availability.catalog:
+        raise ValueError('recognized_current_family_model_required')
+    family, current_version = current_release
+    effort = native.get('model_reasoning_effort')
+    if effort is None:
+        effort = availability.catalog[current].get('defaultReasoningEffort')
+    if not isinstance(effort, str):
+        raise ValueError('explicit_supported_effort_required')
+    role = {'route': 'native-chatgpt', 'target': target, 'family': family}
+    frozen = {'cwd': cwd, 'account': availability.account, 'effort': effort}
+    contract = family_fingerprint({
+        **role, **frozen, 'native': {k: v for k, v in native.items() if k != 'model'},
+    })
+    revision = family_fingerprint({**role, **frozen, 'native': native})
+    accepted = []
+    for model, details in availability.catalog.items():
+        release = family_release(model)
+        if release is not None and release[0] == family and any(
+            option['reasoningEffort'] == effort for option in details['supportedReasoningEfforts']
+        ):
+            accepted.append((release[1], model))
+    if not any(model == current for _, model in accepted):
+        raise ValueError('current_family_effort_unverified')
+    availability.confirm_account()
+    if metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd})['config'] != native:
+        raise ValueError('native_config_changed')
+    if raw != bounded_bytes(config_path, 1024 * 1024):
+        raise ValueError('configuration_changed')
+    now = int(time.time())
+    candidates = [
+        {**role, 'contract': contract, 'model': model, 'version': release,
+         'available': True, 'qualification': None, 'observed_at': now}
+        for release, model in sorted(accepted, reverse=True)[:16]
+    ]
+    return {
+        'schema': 'cluster.model-family-evidence/v1',
+        'workloads': [{
+            **role, 'id': 'codex-default', 'contract': contract,
+            'follow': True, 'current': current, 'current_version': current_version,
+            'current_revision': revision, 'candidates': candidates,
+        }],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--apply', action='store_true')
     mode.add_argument('--verify-default', metavar='MODEL')
+    mode.add_argument('--observe-family', metavar='RECEIVER', help='Export read-only availability for the receiving native default')
     parser.add_argument('--plan', type=Path)
     parser.add_argument('--include-unbound', action='store_true', help='Qualify explicit saved models for rows without a bound native thread')
     parser.add_argument('--include-inherited', action='store_true', help='Qualify the actual bound native model when the bridge selection is null')
     parser.add_argument('--replace', action='append', metavar='OLD=NEW', default=[])
     parser.add_argument('--exclude-native-thread', action='append', default=[])
     args = parser.parse_args()
-    if not args.verify_default and not args.plan:
+    if not (args.verify_default or args.observe_family or args.plan):
         parser.error('--plan is required when preparing or applying')
+    if args.observe_family and (args.plan or args.include_unbound or args.include_inherited
+                                or args.replace or args.exclude_native_thread):
+        parser.error('--observe-family is separate from migration planning and selection')
     if args.replace and (args.apply or args.verify_default):
         parser.error('--replace is used only when preparing a plan')
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError('migration_deadline')))
@@ -387,6 +481,8 @@ def main():
             result = apply(args.config, plan, native, args.exclude_native_thread, initial_hash=initial_hash)
         elif args.verify_default:
             result = verify_default(args.config, native, args.verify_default, initial_hash=initial_hash)
+        elif args.observe_family:
+            result = observe_native_family(args.config, native, args.observe_family, initial_hash=initial_hash)
         else:
             pairs = [value.split('=', 1) for value in args.replace]
             mapping = dict(pairs) if pairs else None

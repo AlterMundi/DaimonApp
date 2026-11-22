@@ -362,5 +362,72 @@ class ReviewRegressions(unittest.TestCase):
                 self.assertFalse(migration.prepare(self.config,Override(),['pinned'])['changes'])
 
 
+
+class FamilyObservation(unittest.TestCase):
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.config = Path(root.name) / 'config.toml'
+        self.config.write_text('[codex]\nshared_app_server=true\ndefault_cwd="/fixture"\n')
+
+    def test_exports_available_family_with_no_qualification_or_account_data(self):
+        class Catalog(Metadata):
+            def rpc(self, method, params):
+                if method == 'model/list':
+                    rows = [('gpt-6.2-sol', 'medium'), ('gpt-6.3-sol', 'medium'),
+                            ('gpt-6.3-astra', 'medium'), ('gpt-6.4-sol', 'high'),
+                            ('gpt-6.3-sol-2026-11-24', 'medium')]
+                    return {'data': [{'model': model, 'supportedReasoningEfforts': [
+                        {'reasoningEffort': effort}]} for model, effort in rows], 'nextCursor': None}
+                return super().rpc(method, params)
+
+        report = migration.observe_native_family(self.config, Catalog(), 'fixture')
+        self.assertEqual(report['schema'], 'cluster.model-family-evidence/v1')
+        workload, = report['workloads']
+        self.assertEqual((workload['target'], workload['family'], workload['current_version']),
+                         ('fixture', 'sol', [6, 2, 0]))
+        self.assertEqual([item['model'] for item in workload['candidates']], ['gpt-6.3-sol', 'gpt-6.2-sol'])
+        self.assertTrue(all(item['qualification'] is None for item in workload['candidates']))
+        self.assertNotIn('fixture@example', json.dumps(report))
+        self.assertNotIn('/fixture', json.dumps(report))
+
+    def test_refuses_local_catalog_override(self):
+        class LocalCatalog(Metadata):
+            def rpc(self, method, params):
+                result = super().rpc(method, params)
+                if method == 'config/read':
+                    result['config']['model_catalog_json'] = '/local/catalog.json'
+                return result
+
+        with self.assertRaisesRegex(ValueError, 'canonical_native'):
+            migration.observe_native_family(self.config, LocalCatalog(), 'fixture')
+
+    def test_refuses_change_in_the_selected_native_config(self):
+        class ChangingConfig(Metadata):
+            reads = 0
+
+            def rpc(self, method, params):
+                result = super().rpc(method, params)
+                if method == 'config/read':
+                    self.reads += 1
+                    if self.reads == 2:
+                        result['config']['model_reasoning_effort'] = 'low'
+                return result
+
+        with self.assertRaisesRegex(ValueError, 'native_config_changed'):
+            migration.observe_native_family(self.config, ChangingConfig(), 'fixture')
+
+    def test_requires_current_model_effort_to_be_advertised(self):
+        class MissingEffort(Metadata):
+            def rpc(self, method, params):
+                result = super().rpc(method, params)
+                if method == 'model/list':
+                    result['data'][0]['supportedReasoningEfforts'] = [{'reasoningEffort': 'low'}]
+                return result
+
+        with self.assertRaisesRegex(ValueError, 'current_family_effort_unverified'):
+            migration.observe_native_family(self.config, MissingEffort(), 'fixture')
+
+
 if __name__ == '__main__':
     unittest.main()

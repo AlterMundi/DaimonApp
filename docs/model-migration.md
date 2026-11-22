@@ -141,3 +141,27 @@ endpoint/catalog, a local catalog file or a non-default ChatGPT origin also
 prevents alias equivalence. Inherited qualification compares the frozen model
 against the same thread observation used for provider qualification; this is
 not an atomic lock on a concurrently operated native thread.
+
+
+### Export availability for a native default
+
+Run this from the receiving owner account, using its configured native bridge:
+
+```sh
+umask 077
+python3 -B scripts/model_migration.py --config /owner/bridge.toml \
+  --observe-family receiver-id > /owner/model-family-evidence.json
+```
+
+The output is one `cluster.model-family-evidence/v1` workload for the native
+default in the configured workspace. It confirms the same hosted ChatGPT
+account and effective settings, looks up the advertised models and existing
+reasoning effort, and emits opaque contract and revision fingerprints.
+Configured catalogs, noncanonical routing and unrecognized aliases are
+refused. The producer starts no native thread or turn and writes no preferences.
+
+Use the emitted document as the private input to Cluster's existing finite
+Sysops pass. A newer model remains a candidate until the owner qualifies that
+exact release against the current revision. This command does not apply a
+selection or schedule a pass. An availability refresh cannot refresh an
+existing qualification.
