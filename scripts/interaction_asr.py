@@ -68,13 +68,16 @@ def probe_duration(source):
 def config(binding):
     value = json.loads(private_bytes(binding, 16384))
     if (not isinstance(value, dict)
-            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model', 'models'}
+            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model', 'models', 'completed_only'}
+            or type(value.get('completed_only',False)) is not bool
             or value.get('schema') != 'telecodex.interaction-asr/v1'
             or any(not isinstance(value.get(k), str) or not Path(value[k]).is_absolute()
                    for k in (('cache_root','streaming_cache_root') if value.get('provider')=='live-result' else ('key_file', 'cache_root') if value.get('provider') == 'openai' else ('helper', 'route_binding', 'cache_root')))
             or type(value.get('max_cache_bytes', DEFAULT_BUDGET)) is not int
             or not MAX_JOB <= value.get('max_cache_bytes', DEFAULT_BUDGET) <= 1024**3):
         raise RenderError('invalid-interaction-asr-binding')
+    if 'completed_only' in value and value.get('provider') is not None:
+        raise RenderError('retirement-policy-is-only-for-retained-legacy-helper')
     if value.get('provider')=='live-result':
         models=value.get('models')
         if (not isinstance(models,list) or not 1<=len(models)<=4
@@ -343,6 +346,10 @@ def process_live_result(source, binding, cfg, include_retention):
 
 def process(source, binding, include_retention=False, completed_only=False):
     cfg = config(binding)
+    # Hot owner retirement preserves the same cache identity and source bytes.
+    # It can only restrict the existing completed-only reader, never re-enable
+    # a legacy recognizer through a caller flag or manufacture a missing result.
+    completed_only = completed_only or cfg.get('completed_only',False)
     if cfg.get('provider')=='live-result':
         return process_live_result(source,binding,cfg,include_retention)
     if cfg.get('provider') == 'openai':

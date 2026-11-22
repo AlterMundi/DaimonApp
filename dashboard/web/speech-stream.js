@@ -2,11 +2,14 @@
 /* Progressive encoded speech through the existing media element; no capture. */
 window.SpeechStream=(()=>{
   const nativeAvailable=()=>window.NativeSpeechAudio?.progressive===true && typeof window.NativeSpeechAudio.openStream==="function";
-  const available=()=>nativeAvailable() || !!window.MediaSource?.isTypeSupported?.("audio/mpeg");
+  const available=encoding=>encoding==="pcm_s16le"?!!window.PcmSpeech?.available():encoding==="mp3"?nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg"):!!window.PcmSpeech?.available()||nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg");
   const digest=async bytes=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(n=>n.toString(16).padStart(2,"0")).join("");
   function open(response,signal){
-    if(!available())throw Error("Progressive audio unavailable");
-    const native=nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
+    const encoding=response.headers?.get?.("x-audio-encoding")||"mp3";
+    if(!["mp3","pcm_s16le"].includes(encoding)||!available(encoding))throw Error("Progressive audio unavailable");
+    const pcm=encoding==="pcm_s16le";
+    const native=pcm?window.PcmSpeech?.open():nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
+    if(pcm&&!native)throw Error("PCM audio playback unavailable");
     const media=native?undefined:new window.MediaSource(),url=native?.url||URL.createObjectURL(media),reader=response.body.getReader();
     let buffer,queue=[],all=[],readyWaiters=new Set(),bytes=0,sequence=0,complete=false,closed=false,failure,handler,decoderError,decoderHandler,verifiedBlob,words,alignmentOffset;
     const timer=setTimeout(()=>fail(Error("Speech stream deadline exceeded")),145000);
@@ -18,7 +21,7 @@ window.SpeechStream=(()=>{
     }
     function notifyReady(){for(const check of [...readyWaiters])check();}
     function ready(position=0){
-      if(native)return Promise.resolve(); // Native player owns its buffering.
+      if(native)return native.ready?.(position)||Promise.resolve(); // Driver owns its buffering.
       if(!Number.isFinite(position)||position<0)return Promise.reject(Error('Invalid playback position'));
       if(readyWaiters.size>=4)return Promise.reject(Error('Audio readiness already pending'));
       return new Promise((resolve,reject)=>{
@@ -87,7 +90,7 @@ window.SpeechStream=(()=>{
             }
             if(valid){words=candidate;alignmentOffset=value.alignment.offset;}
           }
-          verifiedBlob=new Blob([merged],{type:"audio/mpeg"});
+          verifiedBlob=pcm?window.PcmSpeech.wav(merged):new Blob([merged],{type:"audio/mpeg"});
           if(native)native.finish(value);
           complete=true;all=[];clearTimeout(timer);pump();notifyReady();
         }else throw Error("Speech outcome retained; no automatic retry");

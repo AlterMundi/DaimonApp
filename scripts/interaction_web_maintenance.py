@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.voice_admission import HEADER, maintenance_guard
+from dashboard.voice_admission import HEADER, COVERAGE_HEADER, COVERAGE, maintenance_guard
 
 
 def main(argv=None):
@@ -21,6 +21,7 @@ def main(argv=None):
     parser.add_argument('--health-url',required=True)
     parser.add_argument('--owner-uid',type=int,default=os.getuid())
     parser.add_argument('--seconds',type=int,default=180)
+    parser.add_argument('--require-speech',action='store_true',help='Require the serving reader to fence Conversation synthesis too')
     parser.add_argument('command',nargs=argparse.REMAINDER)
     args=parser.parse_args(argv)
     command=args.command[1:] if args.command[:1]==['--'] else args.command
@@ -44,7 +45,9 @@ def main(argv=None):
             # that the currently serving process participates in the fence.
             with urllib.request.urlopen(args.health_url,timeout=3) as response:
                 body=response.read(8193)
-                if (response.headers.get(HEADER)!=guard.header or len(body)>8192
+                if (response.headers.get(HEADER)!=guard.header
+                        or args.require_speech and response.headers.get(COVERAGE_HEADER)!=COVERAGE
+                        or len(body)>8192
                         or json.loads(body)!={'ok':True}):
                     raise ValueError('Selected server does not advertise this exact voice lock')
             if args.config.read_bytes()!=raw:

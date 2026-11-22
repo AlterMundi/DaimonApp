@@ -101,10 +101,10 @@ silently bypass it with a new identity. Provider error payloads and credentials
 are not reflected in errors. Cache state stores text hashes; audio still carries
 the spoken content and must retain the original audience's access policy.
 
-There is no playback lease, client acknowledgment, reconnect UI or speech
-streaming implementation here yet. Telegram delivery
-does not establish control over Telegram's audio player. Those remain receiving
-presentation work; synthesis success alone is not hearing or comprehension.
+Synthesis receipts do not establish a playback lease, client acknowledgment or
+human hearing. Canonical receiving presentation owns progressive playback and
+recovery below; Telegram delivery does not establish control over Telegram's
+audio player.
 
 ## Qualification
 
@@ -242,8 +242,14 @@ behavior, not physical audibility or real Telegram Android/iOS acceptance.
 
 The text result is durable; synthesized WAV files are disposable. The owner route
 accepts `audio_retention_seconds` (default3600, minimum300) and
-`audio_cache_max_bytes` (default256MiB, maximum1GiB). Rendering performs maintenance
-without calling the provider. The same cleanup can be explicitly run with:
+`audio_cache_max_bytes` (default256MiB, maximum1GiB). Before a new generation,
+rendering performs one inventory/prune/reservation pass under the existing
+budget lock, without calling the provider. Protected payloads and active writers'
+maximum sizes remain accounted. A verified cache hit checks only its own source,
+private payload, format and digest, then refreshes last use; it cannot allocate
+new audio and does not scan unrelated receipts. Age expiry is opportunistic on
+new generation or explicit cleanup, not a scheduled wall-clock deletion. The
+same cleanup can be explicitly run with:
 
 ```sh
 python3 scripts/speech_render.py --binding /private/route.json --prune
@@ -421,8 +427,33 @@ ordinary `[speech]` route. Its private `binding` must select
 existing approved `credential_file`, `language: "es-AR"`, bounded timeout and
 cache quotas; the same cache root shares accounting with the ordinary route.
 `instruction` can specify Argentine/Río de la Plata pronunciation. This profile
-returns a complete 24kHz mono PCM WAV; `streaming_output` and `word_timestamps`
-remain false. It does not claim certified alignment or physical hearing.
+retains a complete 24kHz mono PCM WAV. With `streaming_output=true`, the same
+source-bound render emits verified PCM16 little-endian deltas before provider
+completion, then a hashed terminal frame. It uses the identical render identity,
+cache, durable intent and two synthesis slots as buffered reading; switching
+transport cannot repeat an uncertain request. `word_timestamps` remains false.
+It does not claim certified alignment or physical hearing.
+
+The authenticated NDJSON route identifies this format with
+`X-Audio-Encoding: pcm_s16le`; terminal format is mono24kHz. Canonical source,
+revision and access are rechecked before every emitted frame. The existing
+original-audio retention stores those exact PCM bytes with explicit format MIME;
+it does not fabricate a WAV header for an unfinished capture.
+
+The canonical browser player schedules PCM directly through Web Audio without a
+transcode, waiting for120ms of received audio (or known completion), with at most
+half a second scheduled ahead and three prepared players. Each stream remains
+bounded to8MiB including its eventual WAV header,16MiB wire and145seconds. Pause,
+seek, mute, source teardown and cancellation use the existing Conversation player
+controls. Cancellation stops that reader/provider process and never retries.
+A completed verified PCM stream can supply a WAV from the same bytes for existing
+playback recovery. User-gesture unlocking is separate from provider completion;
+a browser refusing output offers the existing Play action rather than hanging.
+Saved GPT-Live voice readings keep their frozen nonstreaming route until their
+own progressive adapter is qualified; enabling the default stream cannot
+silently read a selected voice through the default voice. A progressive transport
+request for that trusted saved choice returns its existing WAV before any
+provider attempt; this is not a provider fallback or a retry after failure.
 
 The renderer opens one Realtime socket, verifies `session.updated`, and creates
 one out-of-band audio response with no tools, microphone input or conversation
@@ -670,3 +701,63 @@ records are not migrated. Combined edited metadata is capped at256KiB alongside
 the existing shared20MiB acoustic/128-record bounds. Attachment failures, changed
 binding and unknown input results retain the same original; Check delivery is a
 read and does not assert acceptance or replay an uncertain submission.
+
+## OpenAI-only receiving retirement
+
+`voice_services_default="openai"` chooses a default; it does not by itself retire
+older routes. Set `voice_services_only="openai"` with that same default and the
+qualified `[speech_openai]` route to restrict new Conversation speech. The base
+adapter then uses that explicit OpenAI binding, legacy profile requests refuse
+before an attempt, the previous-services selector is hidden, and legacy live
+transcription/dialogue installation returns disabled before reading a key.
+Retained historical settings/files are not provider fallback authority. During
+receiving installation, also disable the legacy transcription section and point
+the base `[speech]` configuration at the canonical OpenAI route so a compatible
+software rollback cannot reactivate the retired vendor. Enable PCM streaming
+only with its qualified server/browser package.
+
+Retired legacy file-capture compatibility uses the existing ASR adapter's optional
+hot `completed_only:true` receiving binding field (legacy helper bindings only). It has the same restricting effect
+as `--completed-only`, preserving the original cache identity and exact completed
+text. Missing/uncertain results stay held with their original recording; the
+retired helper is never probed or called. Install that compatible reader before
+selecting the policy, preserve the legacy binding/key/recordings, and keep new
+captures on the separately qualified OpenAI profile. Completed-only live-result
+readers already have no recognizer or fallback; preserving old model names in
+those retained receipts does not activate a provider. Do not clear uncertain
+attempts or rewrite old source IDs to hide incomplete recognition.
+
+`tests/conversation_pcm_browser.py` exercises the real canonical shell and player
+with controlled Spanish source parts and finite PCM transport. It checks exact
+source offsets, nonzero browser output for each part and next-part preparation
+before the current part ends. The existing180ms within-reply pacing remains;
+measured source qualification produced roughly245ms between parts including
+playback scheduling. This is a software continuity check, not provider latency
+or physical hearing acceptance. `tests/pcm_speech_browser.py` separately covers
+pause silence, resume, cancellation, prepared-player bounds and exact-byte WAV
+recovery. Neither fixture opens a microphone or calls a provider.
+
+
+For operational rollback of progressive playback, keep the new compatible
+server/ASR policy/fence and set both canonical speech sections'
+`streaming_output=false`. The same OpenAI renderer/cache then supplies its WAV;
+no account/voice switch or new original identity is implied. Retain the previous
+software selector for recovery, but do not blindly restore a package that cannot
+read the selected retirement policy or re-enable a former provider. The hot flag
+is deliberately rejected on explicit OpenAI/live-result bindings: OpenAI's
+receipt namespace includes exact binding/helper bytes, and retirement must not
+fork an original's identity. Existing completed-only CLI readers remain the
+compatible way to retire legacy static helper commands on another receiver.
+
+
+Receipt growth is bounded independently of disposable audio. Each receiving
+route may set `audio_cache_max_entries` (1..32768, default32768); a new source
+identity must reserve a directory under the same budget lock before any receipt,
+lock file or provider attempt. Each speech state is bounded to32KiB, matching its
+existing reader. Full capacity refuses new identities without creating empty
+per-source directories or replaying old ones; verified cache reads and retained
+uncertain outcomes remain usable. Completed/unknown receipts are never silently
+deleted to regain capacity. For newly enabled child readers,4096entries bounds
+receipt payloads to128MiB plus bounded directory/lock overhead, separately from
+the64MiB disposable audio budget. Existing irreplaceable receipts remain protected
+when changing a limit; measured receiving occupancy must be recorded.

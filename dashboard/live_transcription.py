@@ -244,6 +244,8 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
     if configuration not in ('streaming_transcription','streaming_transcription_openai'):
         raise ValueError('Select an existing transcription route')
     openai=configuration=='streaming_transcription_openai'
+    if config.get('voice_services_only') == 'openai' and not openai:
+        return False  # Retained legacy settings cannot open a provider or read a key.
     selected = config.get(configuration, {})
     if selected.get('enabled') is not True:
         return False

@@ -655,6 +655,82 @@ class Companion(unittest.TestCase):
             self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
         self.assertEqual(self.speech.calls,[])
 
+    def test_openai_pcm_stream_uses_canonical_source_and_existing_shared_capacity(self):
+        from dashboard.speech import Speech
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'streaming_output':True}
+        self.config['voice_services_default']='openai'
+        self.client.close();self.client=self.client_for()
+        caps=self.client.get('/api/interaction',headers=self.headers).json()
+        self.assertTrue(caps['can_stream_speech']);self.assertTrue(caps['openai_can_stream_speech'])
+        seen=[]
+        async def stream(engine,source):
+            seen.append((engine,source))
+            yield {'type':'audio','sequence':0,'data':'AQACAA==','sha256':'synthetic'}
+            yield {'type':'end','audio_bytes':4,'audio_sha256':'synthetic',
+                   'format':{'encoding':'pcm_s16le','sample_rate_hz':24000,'channels':1}}
+        with patch.object(Speech,'stream',stream):
+            response=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers=self.headers)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['x-audio-encoding'],'pcm_s16le')
+        self.assertEqual(response.headers['x-presentation-source'],self.body['source'])
+        self.assertEqual(response.headers['x-presentation-revision'],self.body['revision'])
+        self.assertEqual([json.loads(line)['type'] for line in response.text.splitlines()],['audio','end'])
+        self.assertEqual(seen[0][0].binding,binding)
+        self.assertEqual(seen[0][1]['id'],self.body['source'])
+        self.assertEqual(self.speech.calls,[])
+
+    def test_conversation_speech_respects_web_maintenance_before_any_provider_attempt(self):
+        from dashboard.voice_admission import maintenance_guard
+        with maintenance_guard(self.config['state_dir']):
+            response=self.audio()
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertIn('server update',response.json()['detail'])
+        self.assertEqual(self.speech.calls,[])
+        self.assertEqual(self.audio().status_code,200)
+        self.assertEqual(len(self.speech.calls),1)
+
+    def test_active_conversation_speech_defers_web_maintenance(self):
+        from dashboard.voice_admission import maintenance_guard
+        self.speech.hold=True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pending=pool.submit(self.audio)
+            self.assertTrue(self.speech.entered.wait(timeout=4))
+            with self.assertRaises(BlockingIOError):
+                with maintenance_guard(self.config['state_dir']):pass
+            self.speech.release.set();self.assertEqual(pending.result(timeout=8).status_code,200)
+        with maintenance_guard(self.config['state_dir']):pass
+
+    def test_openai_only_retirement_cannot_admit_legacy_voice_or_transcription(self):
+        from dashboard.speech import Speech
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config.update(voice_services_default='openai',voice_services_only='openai')
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.config['speech']={'binding':str(self.root/'retired-unreadable-route')}
+        self.config['streaming_transcription']={'enabled':True,'provider':'gemini','credential_file':str(self.root/'retired-unreadable-key')}
+        self.client.close();self.client=self.client_for()
+        caps=self.client.get('/api/interaction',headers=self.headers).json()
+        self.assertEqual(caps['voice_services_only'],'openai')
+        self.assertFalse(caps['previous_can_stream_speech']);self.assertFalse(caps['can_previous_live_result'])
+        engines=[]
+        async def render(engine,source):
+            engines.append(engine);return b'synthetic audio',{'audio_sha256':'c'*64}
+        with patch.object(Speech,'render',render):
+            denied=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'current'},headers=self.headers)
+            self.assertEqual(denied.status_code,409)
+            response=self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
+            self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual([v.binding for v in engines],[binding])
+        self.assertEqual(self.speech.calls,[])
+
     def test_conversation_reading_uses_own_saved_studio_voice(self):
         from dashboard.speech import Speech
         from dashboard.avatar_workshop import AvatarWorkshop
@@ -663,7 +739,7 @@ class Companion(unittest.TestCase):
             'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
             'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
         binding.chmod(0o600)
-        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True}
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True,'streaming_output':True}
         self.client.close();self.client=self.client_for()
         self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
@@ -698,7 +774,13 @@ class Companion(unittest.TestCase):
             self.assertGreater(len(rendered_parts[-1]['text']),240)
             self.assertLessEqual(len(rendered_parts[-1]['text']),640)
             self.assertEqual(provisional.headers['x-presentation-lookahead-offset'],'')
-        self.assertEqual(len(engines),2)
+            streamed=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','stream':True},headers=self.headers)
+            self.assertEqual(streamed.status_code,200,streamed.text)
+            self.assertTrue(streamed.headers['content-type'].startswith('audio/wav'))
+            self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
+            self.assertFalse(engines[-1].streaming)
+
+        self.assertEqual(len(engines),3)
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True

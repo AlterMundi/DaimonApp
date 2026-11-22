@@ -23,8 +23,8 @@ def connect(endpoint, model, token, timeout):
         suppress_origin=True,redirect_limit=0)
 
 
-def render(config, fields, token, max_audio, *, connector=None, progress=None):
-    """One source-bound audio response, completed before returning a WAV."""
+def render(config, fields, token, max_audio, *, connector=None, progress=None, on_pcm=None):
+    """One source-bound response; emit verified PCM deltas before final WAV."""
     started=time.monotonic();deadline=started+config['timeout_seconds']
     socket=(connector or connect)(config['endpoint'],config['model'],token,config['timeout_seconds'])
     pcm=bytearray();seen=set();response=None;item=None;first_audio=None
@@ -77,7 +77,9 @@ def render(config, fields, token, max_audio, *, connector=None, progress=None):
                     if not data or len(pcm)+len(data)>max_audio-44:
                         raise SpeechError('speech-audio-bound')
                     if first_audio is None:first_audio=int((time.monotonic()-started)*1000)
+                    if len(data)%2:raise SpeechError('speech-pcm-alignment')
                     pcm.extend(data)
+                    if on_pcm:on_pcm(data)
                 else:
                     text=event.get('delta')
                     if not isinstance(text,str):raise SpeechError('speech-transcript-shape')

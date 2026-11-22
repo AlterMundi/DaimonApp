@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
-from dashboard.voice_admission import (HEADER, SCOPE_KEY, VoiceAdmission,
+from dashboard.voice_admission import (HEADER, COVERAGE_HEADER, COVERAGE, SCOPE_KEY, VoiceAdmission,
     VoiceAdmissionMiddleware, hold_voice_task, maintenance_guard, retained_voice, admit_voice, admission_failure)
 
 
@@ -160,11 +160,12 @@ class Admission(unittest.TestCase):
         with maintenance_guard(self.root):pass
         with self.assertRaises(ValueError):
             with retained_voice(scope):pass
-    def server(self, header):
+    def server(self, header, coverage=None):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(inner):
                 inner.send_response(200)
                 if header:inner.send_header(HEADER,header)
+                if coverage:inner.send_header(COVERAGE_HEADER,coverage)
                 inner.end_headers();inner.wfile.write(b'{"ok":true}')
             def log_message(*args):pass
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
@@ -173,11 +174,11 @@ class Admission(unittest.TestCase):
         self.addCleanup(close)
         return 'http://127.0.0.1:'+str(server.server_port)+'/health'
 
-    def command(self, url, code, seconds=5):
+    def command(self, url, code, seconds=5, require_speech=False):
         config=self.root/'config.toml';config.write_text('state_dir = '+json.dumps(str(self.root))+'\n');config.chmod(0o600)
         script=Path(__file__).resolve().parents[1]/'scripts/interaction_web_maintenance.py'
         return subprocess.run([sys.executable,str(script),'--config',str(config),
-            '--health-url',url,'--seconds',str(seconds),'--',sys.executable,'-c',code],
+            '--health-url',url,'--seconds',str(seconds),*(['--require-speech'] if require_speech else []),'--',sys.executable,'-c',code],
             capture_output=True,text=True,timeout=10)
 
     def test_actual_operator_exec_inherits_exclusion_and_releases_on_success(self):
@@ -195,6 +196,13 @@ class Admission(unittest.TestCase):
             result=self.command(self.server(header),code)
             self.assertEqual(result.returncode,78,result.stderr)
         self.assertFalse(target.exists())
+
+    def test_speech_maintenance_requires_actual_serving_coverage_before_execution(self):
+        target=self.root/'speech-effect';code='from pathlib import Path;Path('+repr(str(target))+').write_text("effect")'
+        result=self.command(self.server(self.admission.header),code,require_speech=True)
+        self.assertEqual(result.returncode,78,result.stderr);self.assertFalse(target.exists())
+        result=self.command(self.server(self.admission.header,COVERAGE),code,require_speech=True)
+        self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(target.read_text(),'effect')
 
     def test_operator_deadline_retains_unknown_receipt_and_does_not_retry(self):
         target=self.root/'owned-intent'

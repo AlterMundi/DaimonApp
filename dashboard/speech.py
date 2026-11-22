@@ -131,6 +131,7 @@ class Speech:
         result=copy.copy(self)
         result.frozen_route=speech_render.route(route)
         result.timeout=120
+        result.streaming=False  # Frozen Live readings must never stream the default voice.
         return result
 
     def receiving_route(self):
@@ -229,7 +230,9 @@ class Speech:
             raise SpeechUnavailable('Streaming speech unavailable or occupied')
         async with self.capacity:
             retention = getattr(self, 'media_retention', None)
-            original = await retain_io(retention.begin, source, 'assistant', 'audio/mpeg', speech_render.MAX_AUDIO) if retention else None
+            pcm = self.receiving_route()['provider']=='openai-realtime'
+            mime = 'audio/pcm;rate=24000;channels=1;encoding=s16le' if pcm else 'audio/mpeg'
+            original = await retain_io(retention.begin, source, 'assistant', mime, speech_render.MAX_AUDIO) if retention else None
             audio_hash = hashlib.sha256()
             config_bytes = speech_render.private_bytes(self.binding,16384)
             command = [sys.executable,str(Path(speech_render.__file__).resolve()),'--binding',str(self.binding),'--stream']

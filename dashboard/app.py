@@ -64,13 +64,17 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     telegram_launch = 'application_id' not in config
     companions = CompanionGrants(config, provider)
     home_auth = HomeAuth(config, provider)
-    speech = Speech(config['speech']) if config.get('speech') else None
+    only_openai = config.get('voice_services_only') == 'openai'
+    if config.get('voice_services_only') not in (None, 'openai') or only_openai and config.get('voice_services_default') != 'openai':
+        raise ValueError('Select a coherent OpenAI-only voice configuration')
+    base_speech = config.get('speech_openai') if only_openai else config.get('speech')
+    speech = Speech(base_speech) if base_speech else None
     if speech:
         speech.media_retention = MediaRetention(config['media_retention']) if config.get('media_retention') else None
     openai_speech = Speech(config['speech_openai']) if config.get('speech_openai') else None
     if openai_speech:
         from scripts.speech_render import route
-        if not speech or route(openai_speech.binding)['provider'] != 'openai-realtime' or openai_speech.streaming or openai_speech.word_timestamps:
+        if not speech or route(openai_speech.binding)['provider'] != 'openai-realtime' or openai_speech.word_timestamps:
             raise ValueError('Explicit OpenAI speech requires its own bounded Realtime route')
         openai_speech.capacity = speech.capacity
         openai_speech.media_retention = speech.media_retention
@@ -342,7 +346,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
         from .client_build import fingerprint, stamp, workshop_assets
         assets = []
-        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
             asset = (public / name).read_bytes()
             assets.append((name, asset))
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -446,7 +450,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]
@@ -458,8 +462,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
 
     @app.get('/health')
     def health():
-        from .voice_admission import HEADER
-        return JSONResponse({'ok': True},headers={HEADER:app.state.voice_admission.header})
+        from .voice_admission import HEADER, COVERAGE_HEADER, COVERAGE
+        return JSONResponse({'ok': True},headers={HEADER:app.state.voice_admission.header,COVERAGE_HEADER:COVERAGE})
 
     @app.post('/api/session')
     async def exchange(request: Request):
@@ -673,13 +677,15 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'voice_services_default':services_default,
                 'avatar_voice_default':'gpt-live-native' if native_avatar_default else None,
                 'can_openai_conversation':bool(openai_speech and 'openai' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
+                'openai_can_stream_speech':bool(openai_speech and openai_speech.streaming),
                 'openai_speech_live_response':bool(openai_speech and openai_speech.live_response),
                 'can_openai_live_result':bool(can_openai_stream_transcribe and config.get('streaming_transcription_openai',{}).get('mode')=='prepared' and 'openai-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'can_previous_live_result':bool(can_stream_transcribe and config.get('streaming_transcription',{}).get('mode','prepared')=='prepared' and 'previous-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}) and dict(session).get('scope')!='monitor_readonly'),
                 'can_stream_speech':bool(default_speech and default_speech.streaming),
                 'can_speak_live_response':bool(default_speech and default_speech.live_response),
-                'previous_can_stream_speech':bool(speech and speech.streaming),
-                'previous_can_speak_live_response':bool(speech and speech.live_response),
+                'voice_services_only':'openai' if only_openai else None,
+                'previous_can_stream_speech':bool(not only_openai and speech and speech.streaming),
+                'previous_can_speak_live_response':bool(not only_openai and speech and speech.live_response),
                 'can_download_files':can_files,'artifacts':files,
                 'can_speak':bool(getattr(provider, 'receiver', {}).get('voice')),
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
@@ -1303,6 +1309,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     or type(body.get('stream',False)) is not bool):
                 raise ValueError()
             profile = body.get('speech_provider',services_default)
+            if only_openai and profile != 'openai':
+                raise HTTPException(409, 'This voice is no longer available. Choose OpenAI.')
             if profile not in ('current', 'openai'):
                 raise ValueError('Unknown speech profile; no fallback')
             engine = openai_speech if profile == 'openai' else speech
@@ -1332,7 +1340,14 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         except (ProviderUnavailable, OSError, ValueError, KeyError, SpeechUnavailable, RenderError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)
-        if body.get('stream'):
+        from .voice_admission import admit_voice, VoiceAdmissionError
+        try:admit_voice(request.scope)
+        except VoiceAdmissionError as error:raise HTTPException(409, str(error)) from None
+        # Stream is a transport preference. A trusted saved Live choice keeps
+        # its exact existing buffered voice, before any attempt, rather than
+        # streaming the default route or retrying after a provider failure.
+        buffered_choice = getattr(engine, 'frozen_route', None) is not None and not engine.streaming
+        if body.get('stream') and not buffered_choice:
             if not engine.streaming or selected.get('kind')=='native_question':
                 raise HTTPException(409,'Streaming speech unavailable; use the ordinary reader')
             async def audio_frames():
@@ -1355,7 +1370,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'X-Presentation-Next-Offset':str(selected['next_offset']) if selected['next_offset'] is not None else '',
                 'X-Presentation-End-Offset':str(body['offset']+len(selected['text'])),
                 'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest(),
-                'X-Presentation-Prefetch':'true','X-Audio-Encoding':'mp3','X-Playback-Observation':'not_observed'})
+                'X-Presentation-Prefetch':'true','X-Audio-Encoding':('pcm_s16le' if engine.receiving_route()['provider']=='openai-realtime' else 'mp3'),'X-Playback-Observation':'not_observed'})
         try:
             data, rendered = await engine.render(selected)
             # Retained text, bindings and correction state are rechecked after synthesis.
