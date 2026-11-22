@@ -53,6 +53,22 @@ candidate while preserving active writers, then verify loaded defaults and the
 next ordinary use separately. This command makes no config, account, goal or
 service changes.
 
+For receiving qualification, identify the executable of the actual running
+native daemon and confirm that it resolves to the currently selected package
+in that receiver's Codex home. Run as the same owner, with the same effective
+profile, account, provider, endpoint and reasoning effort. Record the selected
+package identity alongside the version. Two copies can report the same version
+and still be different builds. A bootstrap launcher may still resolve to the
+onboarding package after a daemon update.
+
+An ephemeral CLI check using the exact package can confirm inference with
+that executable and configuration. Use native and application receipts for
+claims about normal listener admission, delivery and use. If a probe fails,
+retain its diagnostic privately and distinguish the selected model from a
+provider response. Use the owning bundle maintenance route to replace a stale
+bootstrap launcher. Keep the native daemon selection and the bootstrap
+selection explicit in the receiving record.
+
 For a listener that loads its configuration at startup, compare the running
 process start with the selected file change. If the process predates the
 change and has no supported reload, adopt at the next compatible maintenance
