@@ -71,8 +71,11 @@ def snapshot(path):
 
 
 class Metadata(Native):
+    methods = frozenset(('initialize', 'model/list', 'config/read', 'thread/read',
+                         'account/rateLimits/read', 'account/read'))
+
     def rpc(self, method, params):
-        if method not in ('initialize', 'model/list', 'config/read', 'thread/read', 'account/rateLimits/read', 'account/read'):
+        if method not in self.methods:
             raise ValueError('metadata_method_required')
         self.sequence += 1
         self.send({'id': self.sequence, 'method': method, 'params': params})
@@ -375,8 +378,7 @@ def family_fingerprint(value):
     return hashlib.sha256(normalized).hexdigest()
 
 
-def observe_native_family(config_path, metadata, target, *, initial_hash=None):
-    """Export authenticated availability for one receiving native default."""
+def native_family_snapshot(config_path, metadata, target, *, initial_hash=None):
     if not FAMILY_TARGET.fullmatch(target):
         raise ValueError('invalid_model_family_receiver')
     raw = bounded_bytes(config_path, 1024 * 1024)
@@ -428,7 +430,8 @@ def observe_native_family(config_path, metadata, target, *, initial_hash=None):
     if not any(model == current for _, model in accepted):
         raise ValueError('current_family_effort_unverified')
     availability.confirm_account()
-    if metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd})['config'] != native:
+    readback = metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd})
+    if readback['config'] != native:
         raise ValueError('native_config_changed')
     if raw != bounded_bytes(config_path, 1024 * 1024):
         raise ValueError('configuration_changed')
@@ -438,14 +441,105 @@ def observe_native_family(config_path, metadata, target, *, initial_hash=None):
          'available': True, 'qualification': None, 'observed_at': now}
         for release, model in sorted(accepted, reverse=True)[:16]
     ]
-    return {
-        'schema': 'cluster.model-family-evidence/v1',
-        'workloads': [{
-            **role, 'id': 'codex-default', 'contract': contract,
-            'follow': True, 'current': current, 'current_version': current_version,
-            'current_revision': revision, 'candidates': candidates,
-        }],
+    workload = {
+        **role, 'id': 'codex-default', 'contract': contract,
+        'follow': True, 'current': current, 'current_version': current_version,
+        'current_revision': revision, 'candidates': candidates,
     }
+    return workload, readback, cwd, availability
+
+
+def observe_native_family(config_path, metadata, target, *, initial_hash=None):
+    """Export authenticated availability without enabling any write method."""
+    workload, _, _, _ = native_family_snapshot(config_path, metadata, target, initial_hash=initial_hash)
+    return {'schema': 'cluster.model-family-evidence/v1', 'workloads': [workload]}
+
+
+class NativeDefaultWriter(Metadata):
+    methods = Metadata.methods | {'config/value/write'}
+
+
+def qualified_family_candidate(evidence, current):
+    if (not isinstance(evidence, dict) or evidence.get('schema') != 'cluster.model-family-evidence/v1'
+            or not isinstance(evidence.get('workloads'), list) or len(evidence['workloads']) != 1):
+        raise ValueError('single_owner_family_evidence_required')
+    supplied = evidence['workloads'][0]
+    binding = ('id', 'target', 'route', 'family', 'contract', 'current', 'current_version',
+               'current_revision', 'follow')
+    if not isinstance(supplied, dict) or any(supplied.get(k) != current[k] for k in binding):
+        raise ValueError('native_family_preimage_changed')
+    candidates = [c for c in current['candidates'] if c['version'] > current['current_version']]
+    if not candidates:
+        raise ValueError('no_compatible_successor')
+    newest = max(c['version'] for c in candidates)
+    matching = [c for c in candidates if c['version'] == newest]
+    if len(matching) != 1:
+        raise ValueError('ambiguous_native_family_successor')
+    candidate = matching[0]
+    declared = supplied.get('candidates')
+    if not isinstance(declared, list) or len(declared) > 16:
+        raise ValueError('bounded_family_candidates_required')
+    proof_candidates = [c for c in declared if isinstance(c, dict) and c.get('model') == candidate['model']]
+    if len(proof_candidates) != 1:
+        raise ValueError('qualified_native_family_successor_required')
+    proof_candidate = proof_candidates[0]
+    now = int(time.time())
+    observed = proof_candidate.get('observed_at')
+    proof = proof_candidate.get('qualification')
+    if (any(proof_candidate.get(k) != candidate[k] for k in
+            ('version', 'target', 'route', 'contract', 'family', 'available'))
+            or type(observed) is not int or not 0 <= now - observed <= 86400
+            or not isinstance(proof, dict) or proof.get('previous_model') != current['current']
+            or proof.get('previous_revision') != current['current_revision']
+            or type(proof.get('observed_at')) is not int or not 0 <= now - proof['observed_at'] <= 86400):
+        raise ValueError('qualified_native_family_successor_required')
+    return candidate['model']
+
+
+def apply_native_family(config_path, metadata, target, evidence, intent_path, *, initial_hash=None):
+    current, readback, cwd, availability = native_family_snapshot(
+        config_path, metadata, target, initial_hash=initial_hash)
+    candidate = qualified_family_candidate(evidence, current)
+    before = readback['config']
+    if not isinstance(before.get('model_reasoning_effort'), str):
+        raise ValueError('explicit_native_effort_required_for_selection')
+    origin = readback.get('origins', {}).get('model', {})
+    layer = origin.get('name', {})
+    config_file = Path.home() / '.codex/config.toml'
+    revision = origin.get('version', '')
+    if (layer.get('type') != 'user' or layer.get('file') != str(config_file)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', revision)):
+        raise ValueError('versioned_native_user_model_required')
+    private_file(config_file)
+    availability.confirm_account()
+    if metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd}) != readback:
+        raise ValueError('native_family_preimage_changed')
+    # One durable intent before the only writer call. Inspect a missing
+    # response with current config/read before any further operator action.
+    intent = {'target': target, 'previous_model': current['current'], 'model': candidate,
+              'previous_revision': current['current_revision']}
+    directory = os.open(intent_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+            raise ValueError('private_family_intent_directory_required')
+        fd = os.open(intent_path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+        with os.fdopen(fd, 'w') as output:
+            json.dump(intent, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    response = metadata.rpc('config/value/write', {
+        'filePath': str(config_file), 'keyPath': 'model', 'value': candidate,
+        'mergeStrategy': 'replace', 'expectedVersion': revision,
+    })
+    after = metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd})['config']
+    availability.confirm_account()
+    if response.get('status') != 'ok' or after != {**before, 'model': candidate}:
+        raise ValueError('native_family_write_unconfirmed')
+    return {**intent, 'state': 'selected-for-new-native-work', 'new_turns': 0}
 
 
 def main():
@@ -455,17 +549,25 @@ def main():
     mode.add_argument('--apply', action='store_true')
     mode.add_argument('--verify-default', metavar='MODEL')
     mode.add_argument('--observe-family', metavar='RECEIVER', help='Export read-only availability for the receiving native default')
+    mode.add_argument('--apply-family', metavar='RECEIVER')
+    parser.add_argument('--family-evidence', type=Path)
+    parser.add_argument('--family-intent', type=Path)
     parser.add_argument('--plan', type=Path)
     parser.add_argument('--include-unbound', action='store_true', help='Qualify explicit saved models for rows without a bound native thread')
     parser.add_argument('--include-inherited', action='store_true', help='Qualify the actual bound native model when the bridge selection is null')
     parser.add_argument('--replace', action='append', metavar='OLD=NEW', default=[])
     parser.add_argument('--exclude-native-thread', action='append', default=[])
     args = parser.parse_args()
-    if not (args.verify_default or args.observe_family or args.plan):
+    if not (args.verify_default or args.observe_family or args.apply_family or args.plan):
         parser.error('--plan is required when preparing or applying')
-    if args.observe_family and (args.plan or args.include_unbound or args.include_inherited
-                                or args.replace or args.exclude_native_thread):
-        parser.error('--observe-family is separate from migration planning and selection')
+    if (args.observe_family or args.apply_family) and (
+            args.plan or args.include_unbound or args.include_inherited or args.replace or args.exclude_native_thread):
+        parser.error('native family operations are separate from saved-session migration')
+    if args.apply_family:
+        if not (args.family_evidence and args.family_intent):
+            parser.error('--apply-family requires private evidence and a new intent file')
+    elif args.family_evidence or args.family_intent:
+        parser.error('--family-evidence and --family-intent require --apply-family')
     if args.replace and (args.apply or args.verify_default):
         parser.error('--replace is used only when preparing a plan')
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError('migration_deadline')))
@@ -474,7 +576,8 @@ def main():
     raw = bounded_bytes(args.config, 1024 * 1024)
     config = bridge_config(raw)
     initial_hash = hashlib.sha256(raw).hexdigest()
-    native = Metadata(config['codex'].get('binary', 'codex'))
+    client = NativeDefaultWriter if args.apply_family else Metadata
+    native = client(config['codex'].get('binary', 'codex'))
     try:
         if args.apply:
             plan = json.loads(bounded_bytes(args.plan, 512 * 1024))
@@ -483,6 +586,12 @@ def main():
             result = verify_default(args.config, native, args.verify_default, initial_hash=initial_hash)
         elif args.observe_family:
             result = observe_native_family(args.config, native, args.observe_family, initial_hash=initial_hash)
+        elif args.apply_family:
+            if private_file(args.family_evidence).stat().st_mode & 0o077:
+                raise ValueError('private_family_evidence_required')
+            evidence = json.loads(bounded_bytes(args.family_evidence, 128 * 1024))
+            result = apply_native_family(args.config, native, args.apply_family, evidence,
+                                         args.family_intent, initial_hash=initial_hash)
         else:
             pairs = [value.split('=', 1) for value in args.replace]
             mapping = dict(pairs) if pairs else None

@@ -165,3 +165,31 @@ Sysops pass. A newer model remains a candidate until the owner qualifies that
 exact release against the current revision. This command does not apply a
 selection or schedule a pass. An availability refresh cannot refresh an
 existing qualification.
+
+### Apply a qualified native family successor
+
+Use the receiving owner command when the exact newest compatible release has
+a fresh, independently retained qualification for the observed predecessor
+and configuration. Pass one private, mode-0600 family evidence document and a
+new intent path in the existing private operation directory.
+
+```sh
+python3 -B scripts/model_migration.py --config /owner/bridge.toml \
+  --apply-family receiver-id --family-evidence /owner/qualified-family.json \
+  --family-intent /owner/native-family-selection-intent.json
+```
+
+The command re-reads the canonical hosted catalog and compares the receiver,
+route, account-bound contract and exact predecessor revision. It refuses a
+missing or stale qualification, ambiguous latest version, inherited reasoning
+effort or an effective model selected outside the native user layer. The native
+writer changes only the model key with its actual user-layer version fence.
+The command then verifies the effective configuration and account. Saved bridge
+sessions, loaded turns, provider calls and schedules are outside this operation.
+A selected default still needs a subsequent ordinary native usage receipt.
+
+Retain the intent if the writer or readback fails. Inspect the effective user
+configuration and its revision before any further operator action. Reusing the
+intent path cannot submit another write. Use a distinct private intent only for
+a separately qualified, newly authorized operation. Keep previous model and
+revision in the owner's maintained operation record for compatible recovery.

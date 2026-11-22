@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import model_migration as migration
@@ -427,6 +428,104 @@ class FamilyObservation(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'current_family_effort_unverified'):
             migration.observe_native_family(self.config, MissingEffort(), 'fixture')
+
+
+class FamilyWriter(Metadata):
+    revision = 'sha256:' + 'a' * 64
+
+    def __init__(self, origin):
+        self.origin = origin
+        self.model = 'gpt-6.2-sol'
+        self.candidate = 'gpt-6.3-sol'
+        self.writes = []
+        self.concurrent_edit = False
+
+    def rpc(self, method, params):
+        if method == 'model/list':
+            models = ['gpt-6.2-sol', self.candidate]
+            return {'data': [{'model': model, 'supportedReasoningEfforts': [
+                {'reasoningEffort': 'medium'}]} for model in models]}
+        if method == 'config/read':
+            return {
+                'config': {'model': self.model, 'model_provider': 'openai', 'model_reasoning_effort': 'medium'},
+                'origins': {'model': {'name': {'type': 'user', 'file': str(self.origin)},
+                                      'version': self.revision}},
+            }
+        if method == 'config/value/write':
+            self.writes.append(params)
+            if self.concurrent_edit:
+                raise ValueError('config_version_conflict')
+            self.model = params['value']
+            return {'status': 'ok'}
+        return super().rpc(method, params)
+
+
+class FamilySelection(unittest.TestCase):
+    def setUp(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        self.home = Path(root.name)
+        self.config = self.home / 'bridge.toml'
+        self.config.write_text('[codex]\nshared_app_server=true\ndefault_cwd="/fixture"\n')
+        self.native_file = self.home / '.codex/config.toml'
+        self.native_file.parent.mkdir()
+        self.native_file.write_text('model = "gpt-6.2-sol"\n')
+        self.intent = self.home / 'family-intent.json'
+        self.native = FamilyWriter(self.native_file)
+        self.plan = migration.observe_native_family(self.config, self.native, 'fixture')
+        workload, = self.plan['workloads']
+        self.proof = workload['candidates'][0]['qualification'] = {
+            'previous_model': workload['current'], 'previous_revision': workload['current_revision'],
+            'observed_at': workload['candidates'][0]['observed_at'],
+        }
+
+    def apply(self):
+        with patch.object(migration.Path, 'home', return_value=self.home):
+            return migration.apply_native_family(self.config, self.native, 'fixture', self.plan, self.intent)
+
+    def test_qualified_candidate_writes_only_model_with_native_version(self):
+        result = self.apply()
+        self.assertEqual(result['state'], 'selected-for-new-native-work')
+        self.assertEqual(self.native.writes, [{
+            'keyPath': 'model', 'value': 'gpt-6.3-sol', 'filePath': str(self.native_file),
+            'mergeStrategy': 'replace', 'expectedVersion': FamilyWriter.revision,
+        }])
+        self.assertEqual(result['model'], json.loads(self.intent.read_text())['model'])
+        self.assertEqual(result['new_turns'], 0)
+
+    def test_unqualified_newer_candidate_does_not_fall_back(self):
+        self.native.candidate = 'gpt-6.4-sol'
+        with self.assertRaisesRegex(ValueError, 'qualified_native_family_successor_required'):
+            self.apply()
+        self.assertEqual(self.native.writes, [])
+
+    def test_stale_qualification_refuses(self):
+        self.proof['observed_at'] -= 86401
+        with self.assertRaisesRegex(ValueError, 'qualified_native_family_successor_required'):
+            self.apply()
+        self.assertFalse(self.intent.exists())
+
+    def test_project_or_other_config_file_refuses(self):
+        self.native.origin = self.config
+        with self.assertRaisesRegex(ValueError, 'versioned_native_user_model_required'):
+            self.apply()
+        self.assertEqual(self.native.writes, [])
+
+    def test_failed_intent_directory_fsync_prevents_writer(self):
+        with patch.object(migration.os, 'fsync', side_effect=[None, OSError('directory sync failed')]):
+            with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                self.apply()
+        self.assertEqual(self.native.writes, [])
+        self.assertTrue(self.intent.exists())
+
+    def test_version_conflict_retains_intent_and_cannot_repeat(self):
+        self.native.concurrent_edit = True
+        with self.assertRaisesRegex(ValueError, 'config_version_conflict'):
+            self.apply()
+        self.assertTrue(self.intent.exists())
+        with self.assertRaises(FileExistsError):
+            self.apply()
+        self.assertEqual(len(self.native.writes), 1)
 
 
 if __name__ == '__main__':
