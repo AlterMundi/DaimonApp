@@ -1,11 +1,13 @@
 # Speech rendering component
 
-`scripts/speech_render.py` renders exact selected text to a private WAV using an
-owner-configured NVIDIA Magpie, Qwen TTS or OpenAI Realtime endpoint. This is a provider component for #118
-and AlterMundi/daimon-matrix#313. The receiving presentation API below connects it
-to canonical results; device buttons and client playback remain separate work.
-The helper itself does not authenticate a human or authorize access to a conversation. Do not expose this CLI as a public
-endpoint or let a model choose its binding or receiving scope.
+`scripts/speech_render.py` implements the canonical OpenAI read-aloud route and
+its retained result reader. Ordinary current Conversation receiving is
+OpenAI-only: preserve the selected account, default voice and distinct saved
+OpenAI Live profiles. NVIDIA/Qwen formats below document historical artifacts;
+they are not current receiving defaults or permission to reactivate a provider.
+The helper does not authenticate a human or grant conversation access. The
+canonical presentation API validates source, actor and revision before synthesis;
+do not expose the CLI as a public endpoint or let a model choose its binding.
 
 The existing text result remains canonical. A future receiving caller must
 validate the human, source result, session, audience and current correction
@@ -19,7 +21,49 @@ canonical read/part API; a missing phase must not hide text that Telegram alread
 received. This compatibility does not enroll another work topic, invent request
 coverage, or regenerate a response. Explicit commentary keeps its progress kind.
 
-## Owner-local configuration
+## Current OpenAI configuration
+
+Reuse the existing owner-only OpenAI credential file; do not copy a key into
+arguments, browser data, this document or a second credential store. A private
+route can select the already qualified default:
+
+```json
+{
+  "schema": "telecodex.speech-route/v1",
+  "provider": "openai-realtime",
+  "model": "gpt-realtime-2.1-mini",
+  "voice": "cedar",
+  "language": "es-AR",
+  "credential_file": "/absolute/private/existing-openai-key",
+  "cache_root": "/absolute/private/speech-cache",
+  "timeout_seconds": 60,
+  "audio_cache_max_bytes": 67108864,
+  "audio_cache_max_entries": 4096,
+  "audio_retention_seconds": 3600
+}
+```
+
+Keep each receiver's actual selected voice/account instead of copying this
+example over later human choices. Realtime2.1mini uses the Realtime transport,
+not a model-name substitution in `/v1/audio/speech`. The receiving dashboard
+selects `voice_services_default="openai"` and `voice_services_only="openai"`;
+its `speech_openai` engine selects this binding with `streaming_output=true`.
+A compatible `speech` engine aliases that same OpenAI binding. Disable the
+legacy streaming-transcription route and retain the separately qualified OpenAI
+transcription profile. This changes no native model or other conversation.
+
+The canonical stream emits validated mono24kHz PCM16 before response completion.
+Verified cache hits reuse the exact completed source/voice identity without a
+global scan. Admission, prepared media, retention and unknown outcomes remain
+bounded as described below. Saved Live voices keep their own compatible WAV
+transport and history; do not silently replace them with this default.
+
+## Historical provider formats — retained recovery only
+
+The following examples explain existing private bindings, completed media and
+cache identities. They are not a current setup workflow. Do not fund, enroll or
+reactivate a historical provider during OpenAI-only receiving maintenance.
+
 
 Create a private route JSON file, mode `0600`, using absolute local paths:
 
