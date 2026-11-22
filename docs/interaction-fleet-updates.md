@@ -444,3 +444,36 @@ or silently replace it with Realtime. Keep image/other vendor consumers in the
 owning Cluster inventory rather than inventing an App image pipeline. A404 from
 the selected account/project for a candidate remains unavailable even when a
 public catalogue describes it. No candidate activation follows from this guide.
+
+### Conversation access monitoring
+
+Run `python3 -B scripts/interaction_access_probe.py HOME_ORIGIN ...` as a finite
+observation in the existing Cluster Sysops pass. Use the current Home roster,
+including Emma and each child. The probe checks the actual HTTPS access API and
+shared-login entry, verifies TLS and does not follow redirects. The expected
+application-specific anonymous HTTP 401 and the shared entry HTTP 200 both matter.
+It uses no session cookies or credentials. Exit 0 means all selected entries
+passed their anonymous-path check. Exit 1 includes a bounded per-receiver result.
+A deadline or failed execution is an unavailable observation. Positive signed-in
+access and individual browser session expiry require separate evidence.
+
+The generic process `/health` route can stay 200 when `/api/interaction/access`
+returns 503. On 22 November both a native observer-model selection and a legacy
+ASR retirement changed the loaded receiver fingerprint. They caused sign-in to
+return to the same error. Include the access probe in the existing config writer's
+readback whenever `receiving_authority` changes, even for a next-start model
+selection or a web-compatible ASR change. Before selecting the new config,
+qualify the exact previous and subsequent bindings and dependent journals.
+If the web constructor depends on those bindings, prepare requalification before
+restarting it.
+
+Use the probe's stable receiver and state in the existing Alerts projection,
+clearing the incident only when a fresh probe verifies recovery. A
+`receiver_binding_changed` or `alerts_binding_changed` observation identifies
+the relevant owning guard. It does not authorize arbitrary journal mutation.
+Register automatic repair only for a known same-actor configuration transition
+with a retained exact preimage and existing qualified writer, voice-idle fence,
+verified unchanged journal entries and post-action readback. Defer busy or
+uncertain work. Repeated restarts alone cannot correct a persisted binding
+mismatch. Keep cadence, incident delivery, repair and per-user acceptance as
+separately observed outcomes.
