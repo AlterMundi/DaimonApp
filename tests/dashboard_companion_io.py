@@ -655,6 +655,35 @@ class Companion(unittest.TestCase):
             self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
         self.assertEqual(self.speech.calls,[])
 
+    def test_openai_pcm_stream_uses_canonical_source_and_existing_shared_capacity(self):
+        from dashboard.speech import Speech
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'streaming_output':True}
+        self.config['voice_services_default']='openai'
+        self.client.close();self.client=self.client_for()
+        caps=self.client.get('/api/interaction',headers=self.headers).json()
+        self.assertTrue(caps['can_stream_speech']);self.assertTrue(caps['openai_can_stream_speech'])
+        seen=[]
+        async def stream(engine,source):
+            seen.append((engine,source))
+            yield {'type':'audio','sequence':0,'data':'AQACAA==','sha256':'synthetic'}
+            yield {'type':'end','audio_bytes':4,'audio_sha256':'synthetic',
+                   'format':{'encoding':'pcm_s16le','sample_rate_hz':24000,'channels':1}}
+        with patch.object(Speech,'stream',stream):
+            response=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers=self.headers)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['x-audio-encoding'],'pcm_s16le')
+        self.assertEqual(response.headers['x-presentation-source'],self.body['source'])
+        self.assertEqual(response.headers['x-presentation-revision'],self.body['revision'])
+        self.assertEqual([json.loads(line)['type'] for line in response.text.splitlines()],['audio','end'])
+        self.assertEqual(seen[0][0].binding,binding)
+        self.assertEqual(seen[0][1]['id'],self.body['source'])
+        self.assertEqual(self.speech.calls,[])
+
     def test_conversation_reading_uses_own_saved_studio_voice(self):
         from dashboard.speech import Speech
         from dashboard.avatar_workshop import AvatarWorkshop

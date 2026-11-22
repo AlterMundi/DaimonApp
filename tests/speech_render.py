@@ -279,6 +279,30 @@ class Render(unittest.TestCase):
         self.assertLessEqual(result['accounted_audio_bytes'],speech.MAX_AUDIO)
         self.assertEqual(len(self.calls),2)
 
+    def test_completed_cache_read_does_not_inspect_unrelated_receipts(self):
+        first = self.render()
+        unrelated = speech.directory(self.root/'cache'/('e'*64))
+        speech.atomic(unrelated/'state.json', b'not-valid-json')
+        # Own immutable payload/source verification is still required, but a
+        # cache read cannot depend on thousands of unrelated outcome receipts.
+        second = self.render()
+        self.assertTrue(second['cache_hit'])
+        self.assertEqual(second['audio_sha256'], first['audio_sha256'])
+        self.assertEqual(len(self.calls), 1)
+        with self.assertRaises(ValueError):
+            self.render({**self.request, 'scope': 'new-source'})
+        self.assertEqual(len(self.calls), 1, 'New growth must still account for retained state')
+
+    def test_busy_retention_cannot_admit_a_provider_or_new_intent(self):
+        root = speech.directory(self.root/'cache')
+        with speech.lock(root/'.retention.lock'):
+            with self.assertRaisesRegex(speech.RenderError, 'render-in-progress'):
+                self.render()
+        self.assertEqual(len(self.calls), 0)
+        self.assertEqual(list(root.rglob('state.json')), [])
+        self.assertFalse(self.render()['cache_hit'], 'Known unstarted admission may proceed after release')
+        self.assertEqual(len(self.calls), 1)
+
     def test_audio_budget_refuses_new_synthesis_before_storage_can_grow(self):
         self.config['audio_cache_max_bytes']=speech.MAX_AUDIO
         self.binding.write_text(json.dumps(self.config))

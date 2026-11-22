@@ -105,7 +105,7 @@ window.Conversation = (() => {
     function applyConversationServices(){
       const useOpenAI=conversationServices==='openai';
       if(lastVoiceCapabilities){
-        canStreamSpeech=canListen&&!useOpenAI&&!!(lastVoiceCapabilities.previous_can_stream_speech??lastVoiceCapabilities.can_stream_speech);
+        canStreamSpeech=canListen&&!!(useOpenAI?lastVoiceCapabilities.openai_can_stream_speech:(lastVoiceCapabilities.previous_can_stream_speech??lastVoiceCapabilities.can_stream_speech));
         canSpeakLive=canListen&&(useOpenAI?lastVoiceCapabilities.openai_speech_live_response:(lastVoiceCapabilities.previous_can_speak_live_response??lastVoiceCapabilities.can_speak_live_response))===true;
         microphone?.configure(lastVoiceCapabilities.can_speak,!useOpenAI&&(lastVoiceCapabilities.previous_can_stream_transcribe??lastVoiceCapabilities.can_stream_transcribe),lastVoiceCapabilities.streaming_transcription_mode,useOpenAI&&lastVoiceCapabilities.openai_can_stream_transcribe);
       }
@@ -1271,7 +1271,8 @@ window.Conversation = (() => {
     });
 
     const audioElement = $("#conversation-audio");
-    const audio = standalone && window.NativeSpeechAudio?.mount(audioElement) || audioElement;
+    const mountedAudio = standalone && window.NativeSpeechAudio?.mount(audioElement) || audioElement;
+    const audio = window.PcmSpeech?.mount(mountedAudio)||mountedAudio;
     audio.controls = false;
     audio.hidden = true;
     const replyActivity=window.WebRtcNativeAudio?.watchElement?.(audio,{
@@ -1686,7 +1687,7 @@ window.Conversation = (() => {
     }
     $("#conversation-voice-replies").addEventListener("click",()=>{
       if(voiceEnabled || active && blobUrl && !audio.ended){sound?.disable();disableVoice();}else {
-        enableVoice();
+        window.PcmSpeech?.unlock();enableVoice();
         if(captureBusy){voiceBusy=false;return;}
         if(active && blobUrl && !audio.ended){
           continueSpeech();voiceBusy=true;void startPlayback();
@@ -2173,7 +2174,7 @@ window.Conversation = (() => {
             || response.headers.get("x-presentation-revision") !== source.revision
             || response.headers.get("x-presentation-offset") !== String(offset)) throw new Error("Audio source mismatch");
         if(response.headers.get("content-type")?.startsWith("application/x-ndjson")){
-          if(!canStreamSpeech || !window.SpeechStream?.available() || response.headers.get("x-audio-encoding")!=="mp3")throw Error("Unexpected streaming audio");
+          if(!canStreamSpeech || !window.SpeechStream?.available() || !["mp3","pcm_s16le"].includes(response.headers.get("x-audio-encoding")))throw Error("Unexpected streaming audio");
           const nextHeader=response.headers.get("x-presentation-next-offset"),next=nextHeader===""?null:Number(nextHeader),end=Number(response.headers.get("x-presentation-end-offset"));
           if(!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end)throw Error("Invalid stream boundary");
           return {streaming:window.SpeechStream.open(response,controller.signal),next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:true};
@@ -2234,6 +2235,7 @@ window.Conversation = (() => {
       })().catch(()=>{waiting.controller.abort();if(prefetched===waiting)prefetched=undefined;});
     }
     async function listenTo(source, offset = 0, chain) {
+      window.PcmSpeech?.unlock();
       if(captureBusy)return;
       const key=preparationKey(source,offset);
       const prepared=queuedPreparations.get(key) || (prefetched?.source?.id===source.id && prefetched.source.revision===source.revision && prefetched.offset===offset?prefetched:undefined);
@@ -2314,6 +2316,7 @@ window.Conversation = (() => {
       if(voiceEnabled && generation===owned)nextSpokenReply("question",selected.source);
     });
     toggle.addEventListener("click", () => {
+      window.PcmSpeech?.unlock();
       if(nativeEnabled&&nativeVoiceSession?.active){if(nativeVoiceSession.paused)nativeVoiceSession.resume();else nativeVoiceSession.pause();return;}
       if(captureBusy)return;
       if (audio.paused) { cancelSpeechWait();continueSpeech();voiceSuspended=false;voiceStatus();if (audio.ended) audio.currentTime = 0; startPlayback(); }

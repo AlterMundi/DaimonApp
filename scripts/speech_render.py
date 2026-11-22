@@ -238,29 +238,7 @@ def _prune_audio(config, *, exclude=None, now=None):
     limit = config.get('audio_cache_max_bytes', 256 * 1024 * 1024)
     removed = 0
     with lock(root / '.retention.lock'):
-        candidates = []
-        for job in root.iterdir():
-            if not re.fullmatch(r'[a-f0-9]{64}', job.name) or job.name == exclude:
-                continue
-            try:
-                info = job.lstat()
-                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                    continue
-                state = json.loads(private_bytes(job / 'state.json', 32768))
-                audio_path = cached_audio(job, state)
-                audio = audio_path.lstat()
-                used = state.get('last_used_at', state.get('created_at'))
-                if (state.get('schema') != 'telecodex.speech-render/v1'
-                        or state.get('identity_sha256') != job.name
-                        or state.get('phase') not in ('rendered', 'audio_expired')
-                        or not isinstance(used, (int, float)) or isinstance(used, bool)
-                        or not stat.S_ISREG(audio.st_mode) or audio.st_uid != os.getuid()
-                        or audio.st_mode & 0o077 or audio.st_size != state.get('audio_bytes')):
-                    continue
-                candidates.append((used, job, audio.st_size))
-            except (OSError, ValueError, KeyError, TypeError, RenderError):
-                continue
-        remaining = audio_occupancy(root)
+        remaining, candidates = audio_inventory(root, exclude=exclude)
         for used, job, size in sorted(candidates):
             if now - used < 300 or (now - used < age and remaining <= limit):
                 continue  # A bounded grace protects a renderer's immediate reader.
@@ -293,47 +271,64 @@ def cached_audio(job, state):
     return job / name
 
 
-def audio_occupancy(root):
-    used = 0
+def audio_inventory(root, *, exclude=None):
+    """One authoritative pass counts protected bytes and eligible completed media."""
+    used, candidates = 0, []
     for job in root.iterdir():
-        if not re.fullmatch(r'[a-f0-9]{64}', job.name) or job.is_symlink() or not job.is_dir():
+        if not re.fullmatch(r'[a-f0-9]{64}', job.name):
+            continue
+        info = job.lstat()
+        if not stat.S_ISDIR(info.st_mode):
             continue
         try:
             prior = json.loads(private_bytes(job / 'state.json', 32768))
         except FileNotFoundError:
             prior = {}
         audio = cached_audio(job, prior)
-        if audio.exists() or audio.is_symlink():
-            info = audio.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        try:
+            payload = audio.lstat()
+        except FileNotFoundError:
+            payload = None
+        if payload is not None:
+            if (not stat.S_ISREG(payload.st_mode) or payload.st_uid != os.getuid()
+                    or payload.st_mode & 0o077):
                 raise RenderError('unsafe-audio-budget-artifact')
-            used += info.st_size
-        else:
+            used += payload.st_size
+            latest = prior.get('last_used_at', prior.get('created_at'))
+            if (job.name != exclude and info.st_uid == os.getuid() and not info.st_mode & 0o077
+                    and prior.get('schema') == 'telecodex.speech-render/v1'
+                    and prior.get('identity_sha256') == job.name
+                    and prior.get('phase') in ('rendered', 'audio_expired')
+                    and isinstance(latest, (int, float)) and not isinstance(latest, bool)
+                    and payload.st_size == prior.get('audio_bytes')):
+                candidates.append((latest, job, payload.st_size))
+        elif prior.get('phase') == 'intent':
+            # A dead writer's uncertain receipt stays retained, but no longer
+            # reserves bytes. This never makes that original eligible for replay.
             try:
-                prior = json.loads(private_bytes(job / 'state.json', 32768))
-                if prior.get('phase') == 'intent':
-                    # A killed renderer leaves its uncertain outcome intact,
-                    # but cannot still write bytes after releasing this lock.
-                    # Reserve capacity only for an actually running writer;
-                    # this never makes the old intent eligible for replay.
-                    try:
-                        with lock(job / '.lock'):
-                            pass
-                    except RenderError as error:
-                        if str(error) != 'render-in-progress':
-                            raise
-                        used += MAX_AUDIO
-            except FileNotFoundError:
-                pass
-    return used
+                with lock(job / '.lock'):
+                    pass
+            except RenderError as error:
+                if str(error) != 'render-in-progress':
+                    raise
+                used += MAX_AUDIO
+    return used, candidates
+
+
+def audio_occupancy(root):
+    return audio_inventory(root)[0]
 
 
 def reserve_audio(config, state_file, state):
-    """Bound payloads plus in-flight maximum sizes before a provider request."""
+    """Prune/count/reserve once under the existing shared budget lock."""
     root = Path(config['cache_root'])
     with lock(root / '.audio-budget.lock'):
-        used = audio_occupancy(root)
-        if used + MAX_AUDIO > config.get('audio_cache_max_bytes', 256 * 1024 * 1024):
+        headroom = config.get('audio_cache_max_bytes', 256 * 1024 * 1024) - MAX_AUDIO
+        # Do not swallow a busy prune as successful reservation. The job's own
+        # lock is held; no intent/provider request is admitted without capacity.
+        report = _prune_audio({**config, 'audio_cache_max_bytes': headroom},
+                              exclude=state_file.parent.name)
+        if report['accounted_audio_bytes'] > headroom:
             raise RenderError('audio-cache-capacity-text-remains-available')
         atomic(state_file, canonical(state))
 
@@ -448,10 +443,9 @@ def render_plan(binding, request):
     return config, fields, ident
 
 
-def render(binding, request, *, cancel=None, allow_regenerate=True):
+def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None):
     config, fields, ident = render_plan(binding, request)
     job = directory(directory(config['cache_root']) / ident)
-    prune_audio(config, exclude=ident)
     state_file, audio_file = job / 'state.json', job / 'audio.wav'
     with lock(job / '.lock'):
         generation = 1
@@ -469,6 +463,11 @@ def render(binding, request, *, cancel=None, allow_regenerate=True):
                     raise RenderError('retained-render-integrity-failed')
                 state['last_used_at'] = time.time()
                 atomic(state_file, canonical(state))
+                if on_pcm:
+                    with wave.open(io.BytesIO(data), 'rb') as cached:
+                        if cached.getparams()[:3] != (1, 2, 24000):
+                            raise RenderError('cached-pcm-format-mismatch')
+                        while part := cached.readframes(16384):on_pcm(part)
                 return result(state, audio_file, True)
             if not allow_regenerate:raise RenderError('audition-preview-expired-no-automatic-regeneration')
             # This is a known completed render whose disposable payload expired,
@@ -482,8 +481,6 @@ def render(binding, request, *, cancel=None, allow_regenerate=True):
             generation = state.get('generation', 1) + 1
         if audio_file.exists() or audio_file.is_symlink():
             raise RenderError('orphan-render-no-automatic-retry')
-        prune_audio({**config, 'audio_cache_max_bytes':
-                     config.get('audio_cache_max_bytes', 256 * 1024 * 1024) - MAX_AUDIO}, exclude=ident)
         if config['provider'] in ('qwen-tts','openai-realtime','openai-live'):
             token = private_bytes(config['credential_file'], 16384).decode().strip()
             if not token or any(c.isspace() for c in token):
@@ -527,7 +524,7 @@ def render(binding, request, *, cancel=None, allow_regenerate=True):
                 def progress(value):
                     state['provider_receipt']=value
                     atomic(state_file,canonical(state))
-                data,receipt=openai_speech.render(config,fields,token,MAX_AUDIO,progress=progress)
+                data,receipt=openai_speech.render(config,fields,token,MAX_AUDIO,progress=progress,on_pcm=on_pcm)
                 state['provider_receipt']={'stage':'response_completed',**receipt}
             elif config['provider'] == 'qwen-tts':
                 reply = json.loads(fetch(http, config['timeout_seconds'], json_response=True))
@@ -710,6 +707,28 @@ def sse_audio(response, sentence_end=None):
         yield bytes(pending)
 
 
+def realtime_stream(binding, request, emit):
+    """Reuse the exact WAV render identity/receipt; transport PCM without conversion."""
+    sequence, count = 0, 0
+    digest = hashlib.sha256()
+    def send(data):
+        nonlocal sequence, count
+        for offset in range(0, len(data), 32768):
+            part = data[offset:offset+32768]
+            count += len(part)
+            if count > MAX_AUDIO-44:raise RenderError('streamed-speech-audio-bound')
+            digest.update(part)
+            emit({'type':'audio', 'sequence':sequence, 'data':base64.b64encode(part).decode(),
+                  'sha256':sha(part)})
+            sequence += 1
+    # The same durable intent guards streaming, buffered and cache requests.
+    rendered = render(binding, {k:request[k] for k in ('scope','text')}, on_pcm=send)
+    if not count:raise RenderError('empty-streamed-speech')
+    emit({'type':'end', 'audio_bytes':count, 'audio_sha256':digest.hexdigest(),
+          'format':{'encoding':'pcm_s16le','sample_rate_hz':24000,'channels':1},
+          'render_id':rendered['render_id']})
+
+
 def stream_render(binding, request, emit):
     """One durable SSE attempt, cache reuse and bounded encoded output; no playback."""
     if (not isinstance(request, dict) or set(request) not in ({'scope','text'}, {'scope','text','timing'})
@@ -719,6 +738,8 @@ def stream_render(binding, request, emit):
             or len(request['text']) > 1800 or '\0' in request['text']):
         raise RenderError('invalid-speech-request')
     config = route(binding)
+    if config['provider'] == 'openai-realtime':
+        return realtime_stream(binding, request, emit)
     if config['provider'] != 'qwen-tts':
         raise RenderError('streaming-provider-unavailable')
     spoken = spoken_markdown(request['text'], config['language'])

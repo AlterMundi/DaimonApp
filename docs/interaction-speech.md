@@ -101,10 +101,10 @@ silently bypass it with a new identity. Provider error payloads and credentials
 are not reflected in errors. Cache state stores text hashes; audio still carries
 the spoken content and must retain the original audience's access policy.
 
-There is no playback lease, client acknowledgment, reconnect UI or speech
-streaming implementation here yet. Telegram delivery
-does not establish control over Telegram's audio player. Those remain receiving
-presentation work; synthesis success alone is not hearing or comprehension.
+Synthesis receipts do not establish a playback lease, client acknowledgment or
+human hearing. Canonical receiving presentation owns progressive playback and
+recovery below; Telegram delivery does not establish control over Telegram's
+audio player.
 
 ## Qualification
 
@@ -242,8 +242,14 @@ behavior, not physical audibility or real Telegram Android/iOS acceptance.
 
 The text result is durable; synthesized WAV files are disposable. The owner route
 accepts `audio_retention_seconds` (default3600, minimum300) and
-`audio_cache_max_bytes` (default256MiB, maximum1GiB). Rendering performs maintenance
-without calling the provider. The same cleanup can be explicitly run with:
+`audio_cache_max_bytes` (default256MiB, maximum1GiB). Before a new generation,
+rendering performs one inventory/prune/reservation pass under the existing
+budget lock, without calling the provider. Protected payloads and active writers'
+maximum sizes remain accounted. A verified cache hit checks only its own source,
+private payload, format and digest, then refreshes last use; it cannot allocate
+new audio and does not scan unrelated receipts. Age expiry is opportunistic on
+new generation or explicit cleanup, not a scheduled wall-clock deletion. The
+same cleanup can be explicitly run with:
 
 ```sh
 python3 scripts/speech_render.py --binding /private/route.json --prune
@@ -421,8 +427,31 @@ ordinary `[speech]` route. Its private `binding` must select
 existing approved `credential_file`, `language: "es-AR"`, bounded timeout and
 cache quotas; the same cache root shares accounting with the ordinary route.
 `instruction` can specify Argentine/Río de la Plata pronunciation. This profile
-returns a complete 24kHz mono PCM WAV; `streaming_output` and `word_timestamps`
-remain false. It does not claim certified alignment or physical hearing.
+retains a complete 24kHz mono PCM WAV. With `streaming_output=true`, the same
+source-bound render emits verified PCM16 little-endian deltas before provider
+completion, then a hashed terminal frame. It uses the identical render identity,
+cache, durable intent and two synthesis slots as buffered reading; switching
+transport cannot repeat an uncertain request. `word_timestamps` remains false.
+It does not claim certified alignment or physical hearing.
+
+The authenticated NDJSON route identifies this format with
+`X-Audio-Encoding: pcm_s16le`; terminal format is mono24kHz. Canonical source,
+revision and access are rechecked before every emitted frame. The existing
+original-audio retention stores those exact PCM bytes with explicit format MIME;
+it does not fabricate a WAV header for an unfinished capture.
+
+The canonical browser player schedules PCM directly through Web Audio without a
+transcode, waiting for120ms of received audio (or known completion), with at most
+half a second scheduled ahead and three prepared players. Each stream remains
+bounded to8MiB including its eventual WAV header,16MiB wire and145seconds. Pause,
+seek, mute, source teardown and cancellation use the existing Conversation player
+controls. Cancellation stops that reader/provider process and never retries.
+A completed verified PCM stream can supply a WAV from the same bytes for existing
+playback recovery. User-gesture unlocking is separate from provider completion;
+a browser refusing output offers the existing Play action rather than hanging.
+Saved GPT-Live voice readings keep their frozen nonstreaming route until their
+own progressive adapter is qualified; enabling the default stream cannot
+silently read a selected voice through the default voice.
 
 The renderer opens one Realtime socket, verifies `session.updated`, and creates
 one out-of-band audio response with no tools, microphone input or conversation

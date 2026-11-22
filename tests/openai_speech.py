@@ -82,6 +82,40 @@ class Reading(unittest.TestCase):
         self.assertEqual(state['phase'],'unconfirmed');self.assertEqual(state['provider_receipt']['response_id'],'response-one')
         self.assertFalse((Path(self.cfg['cache_root'])/self.ident/'audio.wav').exists())
 
+    def test_pcm_is_emitted_before_completion_with_same_buffered_cache_identity(self):
+        frames=[]
+        def emit(value):
+            if value['type']=='audio':
+                self.assertTrue(any(e.get('type')=='response.done' for e in self.socket.events),
+                                'Provider completion must not gate first PCM delivery')
+            frames.append(value)
+        with patch.object(realtime,'connect',self.connect):
+            speech.stream_render(self.binding,self.request,emit)
+            buffered=speech.render(self.binding,self.request)
+            cached=[]
+            speech.stream_render(self.binding,self.request,cached.append)
+        self.assertEqual(len(self.connections),1)
+        self.assertTrue(buffered['cache_hit'])
+        self.assertEqual(frames[-1]['render_id'],buffered['render_id'])
+        self.assertEqual(frames[-1]['format']['encoding'],'pcm_s16le')
+        for result in (frames,cached):
+            data=b''.join(base64.b64decode(v['data']) for v in result if v['type']=='audio')
+            self.assertEqual(data,self.socket.pcm)
+            self.assertEqual(result[-1]['audio_sha256'],speech.sha(data))
+            self.assertEqual(result[-1]['audio_bytes'],len(data))
+
+    def test_disconnected_pcm_consumer_retains_uncertain_attempt_without_retry(self):
+        def disconnect(value):raise BrokenPipeError('Synthetic consumer disconnected')
+        with patch.object(realtime,'connect',self.connect):
+            with self.assertRaises(speech.RenderError):
+                speech.stream_render(self.binding,self.request,disconnect)
+            with self.assertRaises(speech.RenderError):
+                speech.render(self.binding,self.request)
+        self.assertEqual(len(self.connections),1)
+        self.assertTrue(self.socket.closed)
+        state=json.loads((Path(self.cfg['cache_root'])/self.ident/'state.json').read_text())
+        self.assertEqual(state['phase'],'unconfirmed')
+
     def test_changed_voice_refuses_before_audio_request(self):
         self.socket.events[0]['session']['audio']['output']={**self.fields['session']['audio']['output'],'voice':'marin'}
         with self.assertRaises(realtime.SpeechError):
