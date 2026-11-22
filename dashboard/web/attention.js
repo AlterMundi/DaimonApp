@@ -20,6 +20,7 @@ window.AttentionCarousel = (() => {
     closeButton.type="button";scope.className="note";
     dialog.append(heading,closeButton,scope,panel);document.body.append(dialog);
     const stream=localOnly?el("div"):undefined,homes=new Map();
+    let hiddenDuplicates=new Set();
     if(stream){stream.className="for-you-items";stream.setAttribute("aria-label","Pending work, newest first");panel.prepend(stream);}
 
     let items=[],selected,position=0,timer,returnFocus,hover=false,focused=false,drag,dragged=false;
@@ -44,9 +45,22 @@ window.AttentionCarousel = (() => {
       strip.title=items.length?`${position+1} of ${items.length}`:"";schedule();
     }
     function step(delta){if(!items.length)return;position=(position+delta+items.length)%items.length;render();}
+    function selectItems(){
+      const values=getItems(),unique=new Map(),duplicates=new Set();
+      if(!localOnly)return {values,duplicates};
+      for(const item of values){
+        const preferred=unique.get(item.id);
+        if(!preferred)unique.set(item.id,item);
+        else if(preferred.box!==item.box)duplicates.add(item.box);
+      }
+      return {values:[...unique.values()],duplicates};
+    }
     function refresh(){
-      const values=getItems();
+      const {values,duplicates}=selectItems();
       if(localOnly){
+        for(const box of hiddenDuplicates)if(!duplicates.has(box))box.hidden=false;
+        for(const box of duplicates)box.hidden=true;
+        hiddenDuplicates=duplicates;
         const date=item=>{const value=Date.parse(item.created_at||"");return Number.isFinite(value)?value:0;};
         values.sort((a,b)=>date(b)-date(a));
         const present=new Set(values.map(item=>item.box));
@@ -72,7 +86,7 @@ window.AttentionCarousel = (() => {
       if(item){
         // Re-select from current metadata so an obsolete carousel row cannot
         // invoke a removed or different request after a concurrent refresh.
-        const selected=getItems().find(v=>v.id===item.id);
+        const selected=selectItems().values.find(v=>v.id===item.id);
         if(!selected){refresh();scope.textContent="This request changed. Choose a current pending request.";return;}
         await selected.open();
         if(!dialog.open)return;
@@ -100,7 +114,7 @@ window.AttentionCarousel = (() => {
     // Existing card readers remain the writers. Observe their metadata changes,
     // without another network poller or a second pending store.
     new MutationObserver(refresh).observe(panel,{childList:true,subtree:true,characterData:true});
-    refresh();return {refresh,close,open:restore=>open(undefined,typeof restore==='function'?restore:undefined),get count(){return getItems().length;}};
+    refresh();return {refresh,close,open:restore=>open(undefined,typeof restore==='function'?restore:undefined),get count(){return selectItems().values.length;}};
   }
   return {mount};
 })();
