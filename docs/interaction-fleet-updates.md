@@ -457,6 +457,11 @@ passed their anonymous-path check. Exit 1 includes a bounded per-receiver result
 A deadline or failed execution is an unavailable observation. Positive signed-in
 access and individual browser session expiry require separate evidence.
 
+The standalone Conversation page retries one transient access failure while
+visible. Its manual Retry connection action rechecks the existing session.
+Only an authentication-required response can start shared sign-in. The retry
+reads access metadata and never resubmits a conversation original.
+
 The generic process `/health` route can stay 200 when `/api/interaction/access`
 returns 503. On 22 November both a native observer-model selection and a legacy
 ASR retirement changed the loaded receiver fingerprint. They caused sign-in to
