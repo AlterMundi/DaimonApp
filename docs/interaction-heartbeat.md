@@ -864,3 +864,23 @@ package-sibling engine and stdio invocation. It needs no actor file/directory re
 grant and does not expose native custody. Use the private-layout qualification in
 `docs/private-projection.md`; preserve existing configuration and package receipts.
 The private runtime still owns environment, process group, heap and deadline.
+
+### Change-driven operational tasks
+
+A review task can select an optional `change_source` using the existing bounded
+report contract (`id`, absolute owner `path`, exact JSON `pointers`). Select
+semantic incident state/revisions and acceptance; omit observation clocks. The
+ordinary producer checks that source at its existing programmatic cadence. Its
+value fingerprint, rather than the observation counter, identifies the offer.
+Unchanged observations therefore reserve no new native execution or provider
+allowance. An unavailable source is one stable observation; later recovery is a
+new revision. Current-source verification rejects a superseded unsubmitted offer.
+
+Only the Reports lane must be conditionally paused for an exact task amendment;
+global admission and other lanes need not pause. Source selection does not resume
+a lane, refill funding or replay an earlier result. Omitted `change_source`
+preserves a deliberately periodic task, including its original cadence. Faster
+event-source observation does not advance unrelated periodic task counters.
+Operational service detection and supported fixed recovery belong to the producer,
+not to an LLM review of an unchanged report. Account-holder login and unsupported
+repairs remain concrete escalations; observation is not proof of repair.

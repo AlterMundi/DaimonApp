@@ -82,7 +82,8 @@ pub(super) fn due(conn: &Connection, p: &producer::Parent) -> Result<bool> {
         && resources::finite_available_on(conn, p.session, p.human)?
         && p.review.as_ref().is_some_and(|r| {
             r.contract.max_checks.is_none_or(|max| r.checks < max)
-                && Utc::now().timestamp_millis() >= r.next_check_ms
+                && (Utc::now().timestamp_millis() >= r.next_check_ms
+                    || r.tasks.iter().any(|task| task.change_source.is_some()))
         }))
 }
 pub(super) fn reserve_on(conn: &rusqlite::Transaction<'_>, p: &producer::Parent) -> Result<Value> {
@@ -219,6 +220,20 @@ pub struct HeartbeatReviewTask {
     pub purpose: HeartbeatPurpose,
     pub purpose_revision: String,
     pub instructions: String,
+    /// Programmatic semantic observation; only a changed selected value offers
+    /// this task. Omitted legacy tasks retain their explicitly selected cadence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_source: Option<HeartbeatReportSource>,
+}
+
+fn offer_revision(task: &HeartbeatReviewTask, checks: u32) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let value = if let Some(source) = &task.change_source {
+        serde_json::to_vec(&(task, super::reports::snapshot(source)?.1))?
+    } else {
+        serde_json::to_vec(&(task, checks))?
+    };
+    Ok(format!("{:x}", Sha256::digest(value)))
 }
 
 pub(in crate::store) fn task_current(
@@ -234,14 +249,16 @@ pub(in crate::store) fn task_current(
         return Ok(false);
     };
     let (_, revision) = producer::purpose_source(conn, p.human, p.entry, &p.native, &task.purpose)?;
-    Ok(revision == task.purpose_revision && offer.evidence["task"] == serde_json::to_value(task)?)
+    Ok(revision == task.purpose_revision
+        && offer.evidence["task"] == serde_json::to_value(task)?
+        && (task.change_source.is_none()
+            || offer.revision == offer_revision(task, p.review.as_ref().unwrap().checks)?))
 }
 
 pub(in crate::store) fn task_offers(
     conn: &Connection,
     p: &producer::Parent,
 ) -> Result<Vec<producer::Offer>> {
-    use sha2::{Digest, Sha256};
     let Some(review) = &p.review else {
         return Ok(vec![]);
     };
@@ -255,10 +272,7 @@ pub(in crate::store) fn task_offers(
         if revision != task.purpose_revision {
             continue;
         }
-        let revision = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&(task, review.checks))?)
-        );
+        let revision = offer_revision(task, review.checks)?;
         offers.push(producer::Offer {key:format!("review-task:{}",task.id),revision:revision.clone(),evidence:json!({
             "kind":"periodic_review_task","task":task,"revision":revision,
             "reader":{"operation":"heartbeat_source","arguments":{"source":format!("periodic:{}",task.id),"revision":revision}},
@@ -319,13 +333,12 @@ impl Store {
         )?;
         let control: Control = serde_json::from_str(&raw)?;
         anyhow::ensure!(
-            control.paused
-                && control.generation == generation
+            control.generation == generation
                 && control
                     .lanes
                     .get(&HeartbeatLane::Reports)
-                    .is_none_or(|l| l.paused),
-            "Pause exact Reports/global controls before task selection"
+                    .is_some_and(|l| l.paused),
+            "Pause the exact Reports lane before task selection"
         );
         anyhow::ensure!(
             producer::bound(&tx, &p)?
@@ -353,6 +366,9 @@ impl Store {
                 && task.instructions.len() <= 8000,
             "Bounded task identity/instructions required"
         );
+        if let Some(source) = &task.change_source {
+            super::reports::validate(std::slice::from_ref(source))?;
+        }
         let (_, revision) = producer::purpose_source(&tx, human, entry, &p.native, &task.purpose)?;
         task.purpose_revision = revision;
         let review = p

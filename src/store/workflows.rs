@@ -6542,6 +6542,7 @@ mod tests {
             generation,
             HeartbeatReviewTask {
                 id: "intake".into(),
+                change_source: None,
                 purpose,
                 purpose_revision: String::new(),
                 instructions: "Reconcile selected intake and refresh the same private view.".into(),
@@ -6850,6 +6851,7 @@ mod tests {
         s.heartbeat_select_review(100, e.key, generation, contract.clone())
             .unwrap();
         let task=crate::store::HeartbeatReviewTask {
+            change_source: None,
             id:"bitacora".into(), purpose:contract.purpose.clone(), purpose_revision:String::new(),
             instructions:"Reconcile selected institutional intake; preserve selected originals before cache cleanup; no publication.".into(),
         };
@@ -6967,6 +6969,39 @@ mod tests {
                 super::heartbeat::review::task_current(&conn, &next, &first[0]).unwrap(),
                 "Pending old work remains valid across observations"
             );
+            let task = &mut next.review.as_mut().unwrap().tasks[0];
+            task.change_source = Some(contract.reports[0].clone());
+            let event = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            next.review.as_mut().unwrap().checks += 1;
+            let unchanged = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_eq!(
+                event[0].revision, unchanged[0].revision,
+                "A programmatic check never invents new incident work"
+            );
+            std::fs::write(
+                report.path(),
+                r#"{"status":"pending","blocker":"native admission","checked_at":999}"#,
+            )
+            .unwrap();
+            let clock_only = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_eq!(
+                event[0].revision, clock_only[0].revision,
+                "Unselected producer clocks cannot wake a model"
+            );
+            std::fs::write(
+                report.path(),
+                r#"{"status":"resolved","blocker":"native admission"}"#,
+            )
+            .unwrap();
+            let changed = super::heartbeat::review::task_offers(&conn, &next).unwrap();
+            assert_ne!(event[0].revision, changed[0].revision);
+            assert!(!super::heartbeat::review::task_current(&conn, &next, &event[0]).unwrap());
+            assert!(super::heartbeat::review::task_current(&conn, &next, &changed[0]).unwrap());
+            std::fs::write(
+                report.path(),
+                r#"{"status":"pending","blocker":"native admission"}"#,
+            )
+            .unwrap();
         }
         producer_edit(&s, &e, |p| {
             p["review"]["checks"] = json!(7);
