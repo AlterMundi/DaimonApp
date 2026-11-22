@@ -107,6 +107,12 @@ surface that admitted it. Preserve an active turn. Reconcile the native
 selection when the owning surface can change future turns safely, and confirm
 its subsequent ordinary use.
 
+For a loaded native subagent, check its parent binding and the server's
+`thread.canAcceptDirectInput` capability before attempting a settings update.
+An idle subagent with direct input disabled still belongs to its parent.
+Verify the parent's current selection and any explicit agent-role model in
+the owning configuration. Preserve the child's retained settings and work.
+
 A null bridge model is not proof that an existing native conversation follows
 the current global default. After a native-default upgrade, inspect its bound
 thread. For this case prepare with `--include-inherited`: the plan freezes the
