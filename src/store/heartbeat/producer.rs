@@ -1866,7 +1866,7 @@ mod inbox_tests {
             "Compaction cannot reopen dispatch capacity in the same hour"
         );
         conn.execute("UPDATE interaction_matrix_inbox SET handling=json_set(handling,'$.at','2000-01-01T00:00:00Z') WHERE entry_session=?1",[session]).unwrap();
-        let id = item(64)["message_id"].as_str().unwrap().to_owned();
+        let id: String = conn.query_row("SELECT message_id FROM interaction_matrix_inbox WHERE entry_session=?1 ORDER BY rowid DESC LIMIT 1",[session],|r|r.get(0)).unwrap();
         conn.execute("UPDATE interaction_matrix_inbox SET handling=json_set(handling,'$.phase','uncertain') WHERE message_id=?1",[id]).unwrap();
         compact_resolved_on(&conn, &mut parent).unwrap();
         let count: i64 = conn
