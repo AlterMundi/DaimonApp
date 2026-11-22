@@ -743,8 +743,14 @@ const conversationView = window.Conversation?.mount({
   if(standaloneConversation && document.documentElement.dataset.sharedAuth === 'true'){
     document.title='Daimon Interaction';
     const feedback=$('#feedback');
-    const signIn=el('button','Sign in');signIn.type='button';
-    let reconnecting;
+    const accessButton=el('button','Sign in');accessButton.type='button';
+    let reconnecting, accessStatus;
+    function accessUnavailable(status,message){
+      accessStatus=status;
+      accessButton.textContent=status===401?'Sign in':'Retry connection';
+      feedback.replaceChildren(el('p',message||(status===401?'Sign in with your existing Daimon Matrix account.':
+        status===403?'This account cannot access this conversation.':'Connection unavailable. Try reconnecting.')),accessButton);
+    }
     const reconnect=()=>{
       if(reconnecting)return reconnecting;
       reconnecting=sharedAccess().then(access=>{
@@ -754,23 +760,24 @@ const conversationView = window.Conversation?.mount({
         feedback.replaceChildren();conversationView?.authenticated();schedule();
         // Re-read observations only; accepted or uncertain inputs are not replayed.
         void refresh(true);return true;
-      }).catch(()=>false).finally(()=>{reconnecting=undefined;});
+      }).catch(error=>{accessUnavailable(error.status);return false;}).finally(()=>{reconnecting=undefined;});
       return reconnecting;
     };
     sharedSignInAction=()=>{
       clearConversationAlerts();sharedConversationConnected=false;authenticated=false;
       $('#conversation-account').textContent='';$('#conversation-account').hidden=true;
-      feedback.replaceChildren(el('p','Sign in again to reconnect.'),signIn);
+      accessUnavailable(401,'Sign in again to reconnect.');
       void reconnect();
     };
-    signIn.addEventListener('click',async()=>{
-      signIn.disabled=true;
+    accessButton.addEventListener('click',async()=>{
+      accessButton.disabled=true;
       try{
         if(await reconnect())return;
+        if(accessStatus!==401)return;
         const result=await window.DaimonHomeAccess.createClient().signIn();
         if(result?.status!=='redirecting')location.reload();
-      }catch(_){feedback.replaceChildren(el('p','Sign-in did not finish. You can try again.'),signIn);}
-      finally{signIn.disabled=false;}
+      }catch(_){accessUnavailable(401,'Sign-in did not finish. You can try again.');}
+      finally{accessButton.disabled=false;}
     });
     document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!authenticated)void reconnect();});
     window.addEventListener('online',()=>{if(!authenticated)void reconnect();});
@@ -785,10 +792,14 @@ const conversationView = window.Conversation?.mount({
     }catch(error){
       sharedConversationConnected=false;
       $('#conversation-account').textContent='';$('#conversation-account').hidden=true;
-      feedback.replaceChildren(el('p',error.status===401?'Sign in with your existing Daimon Matrix account.':error.status===403?'This account cannot access this conversation.':'Connection unavailable. You can retry signing in.'),signIn);
+      accessUnavailable(error.status);
       if(error.status===401){
         try{await window.DaimonHomeAccess.createClient().signIn();}
         catch(_){/* Keep the explicit retry when a browser cancels sign-in. */}
+      }else if(!error.status||error.status>=500){
+        // A brief service failure can clear while the existing session is valid.
+        // Retry the read once while visible and leave the manual retry available.
+        setTimeout(()=>{if(!document.hidden&&!authenticated)void reconnect();},1500);
       }
     }
     return;

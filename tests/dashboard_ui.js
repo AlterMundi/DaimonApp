@@ -169,8 +169,23 @@ const hung = (options) => new Promise((resolve, reject) => {
     const denied=boot(()=>Promise.resolve({ok:false,status,json:async()=>({})}),undefined,'conversation',true);
     await settle();
     assert.equal(denied.signIns(),status===401?1:0,'Only a missing session starts common sign-in');
-    assert.equal(denied.nodes.get('#feedback').children[1].textContent,'Sign in');
+    const button=denied.nodes.get('#feedback').children[1];
+    assert.equal(button.textContent,status===401?'Sign in':'Retry connection');
+    await button.handlers.click();
+    assert.equal(denied.signIns(),status===401?2:0,'Service and account errors cannot start another sign-in');
   }
+  let reads=0;
+  const interrupted=boot(route=>Promise.resolve(route==='api/interaction/access'&&++reads===1
+    ?{ok:false,status:503}:{ok:true,json:async()=>({csrf:'shared-csrf',label:'Human'})}),undefined,'conversation',true);
+  await settle();
+  assert.equal(interrupted.nodes.get('#feedback').children[1].textContent,'Retry connection');
+  const foregroundRetry=[...interrupted.timers.values()].find(t=>t.milliseconds===1500);
+  assert(foregroundRetry,'One startup retry is scheduled for a transient failure');
+  interrupted.context.document.hidden=false;
+  foregroundRetry.callback();await settle();
+  assert.equal(interrupted.nodes.get('#feedback').children.length,0);
+  assert.equal(reads,2);
+  assert.equal(interrupted.signIns(),0,'Recovered access reuses the same browser session');
   const monitor=boot(()=>Promise.resolve({ok:true,json:async()=>({binding:"fixture",viewer:{label:"TEST <fixture>",expires:1900000000}})}),undefined,true);
   await settle();
   assert.equal(monitor.requests.length,0,"An unopened monitor must not use ambient owner cookies");
