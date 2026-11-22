@@ -518,10 +518,19 @@ def apply_native_family(config_path, metadata, target, evidence, intent_path, *,
     # response with current config/read before any further operator action.
     intent = {'target': target, 'previous_model': current['current'], 'model': candidate,
               'previous_revision': current['current_revision']}
-    with intent_path.open('x') as output:
-        json.dump(intent, output)
-        output.flush()
-        os.fsync(output.fileno())
+    directory = os.open(intent_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+            raise ValueError('private_family_intent_directory_required')
+        fd = os.open(intent_path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+        with os.fdopen(fd, 'w') as output:
+            json.dump(intent, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     response = metadata.rpc('config/value/write', {
         'filePath': str(config_file), 'keyPath': 'model', 'value': candidate,
         'mergeStrategy': 'replace', 'expectedVersion': revision,

@@ -511,6 +511,13 @@ class FamilySelection(unittest.TestCase):
             self.apply()
         self.assertEqual(self.native.writes, [])
 
+    def test_failed_intent_directory_fsync_prevents_writer(self):
+        with patch.object(migration.os, 'fsync', side_effect=[None, OSError('directory sync failed')]):
+            with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                self.apply()
+        self.assertEqual(self.native.writes, [])
+        self.assertTrue(self.intent.exists())
+
     def test_version_conflict_retains_intent_and_cannot_repeat(self):
         self.native.concurrent_edit = True
         with self.assertRaisesRegex(ValueError, 'config_version_conflict'):
