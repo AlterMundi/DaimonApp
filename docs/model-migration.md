@@ -53,6 +53,27 @@ candidate while preserving active writers, then verify loaded defaults and the
 next ordinary use separately. This command makes no config, account, goal or
 service changes.
 
+For a listener that loads its configuration at startup, compare the running
+process start with the selected file change. If the process predates the
+change and has no supported reload, adopt at the next compatible maintenance
+window. Use the existing admission and idle-work checks for a listener
+restart. A zero busy-row count alone does not fence incoming work.
+When the bridge has no explicit model default, qualify the receiving native
+configuration instead of restarting the listener just to refresh a default
+it does not set.
+
+Check `codex.session_profiles` for explicit per-topic model selection.
+The receiver resolves the selected profile from
+`<native-home>/<profile>.config.toml` when it prepares the native turn.
+That profile takes precedence over the bridge row, and the subsequent native
+observation can write the profile's model back to the row. When it pins a
+predecessor model, first qualify and update the selected profile with the same
+provider, route and effective reasoning effort. Then reconcile the bridge
+selection and verify the next ordinary turn through its native metadata.
+A cold thread can still report its previous model before admission.
+Keep its history and goal state intact and use the normal receiving surface
+for adoption.
+
 A null bridge model is not proof that an existing native conversation follows
 the current global default. After a native-default upgrade, inspect its bound
 thread. For this case prepare with `--include-inherited`: the plan freezes the
