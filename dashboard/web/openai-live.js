@@ -20,6 +20,7 @@ window.PublicLiveConversation=(()=>{
     // Avatar/notice renderer cannot interrupt Stop before closing is cleared.
     const present=(callback,value)=>{try{callback(value);}catch{/* Keep owned audio cleanup running. */}};
     const state=message=>present(onState,{active,starting,working:closing,untilStop:continuity,pending:originals.size>0,floor:false,
+      reviewRequired:!!replacementReview&&replacementReview.binding===getBinding(),
       reconnecting:!closing&&(renewing||peer?.connectionState==='disconnected'),
       audioEnabled:audible,audioPaused:paused,playback:paused?'paused':audible&&outputLevel>0?'playing':'idle',outputLevel:paused||!audible?0:outputLevel,inputLevel:active&&!closing?inputLevel:0,...(message?{message}:{})});
     const notify=()=>present(onRecovery,[...originals.values()]);
@@ -238,6 +239,25 @@ window.PublicLiveConversation=(()=>{
       state('Preparing voice');
       try{
         if(!renewal)await review();if(!current())throw Error('Voice activation ended');
+        if(backend==='native'&&!renewal&&!(replacementReview?.binding===binding&&replacementReview.backend===backend)){
+          const check=new URL('api/interaction/voice/gpt-live/visits?entry_check=true',window.location.href);
+          const response=await wait(fetch(check,{headers:{...headers(),'x-voice-binding':binding},
+            cache:'no-store',redirect:'error',signal:AbortSignal.timeout(6000)}),6500);
+          if(!response.ok)throw Error('Voice access could not be checked.');
+          const entry=await wait(response.json(),2000);
+          if(!current()||entry.binding!==binding)throw Error('Voice activation ended');
+          const prior=entry.replacement;
+          if(prior){
+            if(!/^[a-f0-9-]{36}$/.test(prior.id||'')||!/^[a-f0-9]{64}$/.test(prior.revision||''))
+              throw Error('Voice access could not be checked.');
+            replacementReview={binding,backend,value:prior};
+            starting=false;state('Tap Reconnect voice to continue. Your earlier recordings are kept.');
+            return false;
+          }
+        }else if(!continuation&&!renewal&&replacementReview?.binding===binding&&replacementReview.backend===backend){
+          starting=false;state('Tap Reconnect voice to continue. Your earlier recordings are kept.');
+          return false;
+        }
         const locksForCapture=captureLocks;
         let granted;
         const locked=new Promise(resolve=>{granted=resolve;});
@@ -268,7 +288,7 @@ window.PublicLiveConversation=(()=>{
               for(const reason of value.admission?.source_close_reasons||[])if(typeof reason==='string'&&/^source_[a-z_]{1,40}$/.test(reason))sourceReasons.add(reason);
               voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='context_preparing'){
-              acceptReplacement(value);state('Preparing previous conversation');
+              acceptReplacement(value);state('Preparing your conversation');
             }
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event'){

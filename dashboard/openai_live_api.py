@@ -33,7 +33,7 @@ from .openai_live_native_backend import prepare_native, return_next_native_part
 from .openai_live_native_session import PublicLiveSessionContext
 from .native_context import ResumePending
 from .provider import ProviderUnavailable
-from scripts.speech_render import private_bytes, RenderError
+from scripts.speech_render import private_bytes, RenderError, route
 
 
 def _startup_failure_code(error):
@@ -63,7 +63,7 @@ def install(app, config, provider, authorize, origins):
     native_backend=backend_mode=='native'
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
@@ -80,6 +80,16 @@ def install(app, config, provider, authorize, origins):
     native_instructions=instructions
     if native_file is not None and (native_backend or native_enabled):
         native_instructions=private_bytes(native_file,8192).decode()
+    match_voice=selected.get('match_conversation_voice',False)
+    if type(match_voice) is not bool:raise ValueError('Select explicit shared Conversation voice delivery')
+    if match_voice:
+        reading=route(Path(config['speech_openai']['binding']))
+        output_voice=selected.get('session_options',{}).get('audio',{}).get('output',{}).get('voice')
+        if reading['provider']!='openai-realtime' or reading['voice']!=output_voice:
+            raise ValueError('Match Avatar to the selected Conversation default voice')
+        delivery=reading.get('instruction','').strip()
+        if delivery:
+            native_instructions+='\nShared Conversation pronunciation and delivery preferences:\n'+delivery
     backend=None if native_backend else private_bytes(selected['backend_instructions_file'],8192).decode()
     context=selected.get('conversation_context',False)
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
@@ -126,9 +136,17 @@ def install(app, config, provider, authorize, origins):
         return session,binding
 
     @app.get('/api/interaction/voice/gpt-live/visits')
-    async def visits(request:Request,before:str|None=None):
+    async def visits(request:Request,before:str|None=None,entry_check:bool=False):
         session,binding=await http_owner(request)
-        try:return await asyncio.to_thread(history.visits,session['human'],binding,before=before)
+        try:
+            if entry_check:
+                if before is not None or not (configured_native or native_enabled):
+                    raise ValueError('Native voice entry is unavailable')
+                owner=await asyncio.to_thread(provider.public_live_binding,binding)
+                replacement=await asyncio.to_thread(history.replacement_offer,session['human'],owner)
+                await http_owner(request)
+                return {'binding':binding,'replacement':replacement}
+            return await asyncio.to_thread(history.visits,session['human'],binding,before=before)
         except (OSError,ValueError,RenderError):raise HTTPException(409,'Voice history page unavailable') from None
 
     @app.get('/api/interaction/voice/gpt-live/visits/{visit}')
@@ -293,13 +311,16 @@ def install(app, config, provider, authorize, origins):
                 profiles=configured_profiles(config)
                 workshop=getattr(app.state,'avatar_workshop',None)
                 voice_choice=None
+                select_current_voice=match_voice and native_backend and not meta.get('renewal')
+                if select_current_voice and (not profiles or workshop is None):
+                    raise ValueError('Current Conversation voice is unavailable')
                 if profiles and workshop is not None:
-                    revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if meta.get('voice_start')=='new' else None
+                    revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if select_current_voice or meta.get('voice_start')=='new' else None
                     voice_choice=choice(revision,revision['profile'] if revision is not None else profiles[0])
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
-                    voice_choice=voice_choice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
+                    voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
                 admitted=True
                 startup_stage='configuration'
                 if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'],profiles)

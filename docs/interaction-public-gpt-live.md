@@ -1248,3 +1248,30 @@ are distinct; inspect the recorded stage before choosing an authorized recovery.
 A browser `source_upload_unconfirmed` reason alone does not establish network,
 quota, crash or physical phone cause. Keep active visits and their uncertain
 finalization intact during maintenance; use the existing voice-idle fence.
+
+### Review before native Avatar entry and shared voice delivery
+
+Before a manual native Avatar opening, the client checks the existing visits
+endpoint with `entry_check=true` and the current conversation binding. An
+eligible known-created visit with ended capture offers its exact replacement
+revision before the browser opens a voice connection or asks for the microphone.
+The existing **Reconnect voice** action confirms that replacement. The write
+still verifies current authority, revision and the voice lease. Unknown creation,
+active capture and failed finalization remain distinct. Scheduled renewal keeps
+its separate confirmed-close and context-settlement barrier.
+
+For receivers that explicitly set `openai_live.match_conversation_voice=true`,
+match the configured Avatar voice name to the canonical OpenAI reading default.
+Native Avatar uses the same current voice selection and the reading binding's
+pronunciation and delivery instructions. An explicit reconnect can carry the
+earlier conversation forward while using the current voice. Historical voice
+choices remain on their original visits, and automatic physical renewal
+retains the logical visit's frozen voice. Realtime reading and GPT-Live dialogue
+have different synthesis engines, so matching names and delivery instructions
+do not guarantee identical sound.
+
+Native Avatar opens a bounded current-source window from the same integrating
+thread. That window is read after settling the eligible previous voice source.
+Older audio remains attributed to its original visit. Startup guidance waits for
+the current human request instead of proactively resuming the last voice topic.
+Older material remains available through the integrating thread.

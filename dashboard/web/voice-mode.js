@@ -152,7 +152,7 @@ window.ConversationVoiceMode=(()=>{
       if(value.sent){waiting=true;heard=false;}
       if(continuous){
         const left=remaining===undefined?'':` · ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`;
-        status.textContent=reconnecting?'Reconnecting voice':preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Reply playback · microphone off':listening?'Listening'+left:'Voice paused';
+        status.textContent=reconnecting?'Reconnecting voice':preparing?'Preparing voice':directPending?'Recording needs review':directWorking?'Saving your voice':listening&&!audioEnabled?'Audio off · listening'+left:listening&&audioPaused?'Audio paused · listening'+left:playing&&listening?'Speaking · listening'+left:playing?'Reply playback · microphone off':listening?'Listening'+left:value.continuousState?.reviewRequired?'Ready to reconnect':'Voice paused';
         status.dataset.nearLimit=String(listening&&remaining!==undefined&&remaining<=15);
         status.setAttribute('aria-label',status.textContent+(listening&&remaining!==undefined?`. ${remaining} seconds of recording remaining`:''));
         if(Object.hasOwn(value,'caption'))caption.textContent=value.caption;
