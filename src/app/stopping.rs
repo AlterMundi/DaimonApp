@@ -21,6 +21,9 @@ pub(super) async fn command(
     args: &str,
     nonce: Option<String>,
 ) -> Result<Value> {
+    if let Some(selected) = args.strip_prefix("goal ") {
+        return goal_controls::owner_command(app, human, selected).await;
+    }
     if let Some(selected) = args.strip_prefix("controller ") {
         return controller::command(app, human, selected).await;
     }
@@ -29,6 +32,27 @@ pub(super) async fn command(
     }
     if args == "topics publications" {
         return app.shared.store.topic_publication_inventory(human);
+    }
+    if let Some(selected) = args.strip_prefix("topics notices ") {
+        let mut fields = selected.split_whitespace();
+        let native = fields.next().context("Native thread required")?;
+        let after = fields.next().map(str::parse).transpose()?;
+        if fields.next().is_some() {
+            bail!("Expected topics notices NATIVE_THREAD [AFTER]");
+        }
+        return app
+            .shared
+            .store
+            .thread_control_notices(human, native, after);
+    }
+    if let Some(selected) = args.strip_prefix("creation ") {
+        return creation::owner_command(app, human, selected).await;
+    }
+    if let Some(selected) = args.strip_prefix("workflow ") {
+        return workflows::owner_command(app, human, selected).await;
+    }
+    if let Some(selected) = args.strip_prefix("heartbeat ") {
+        return heartbeat::owner(app, human, selected).await;
     }
     if let Some(selected) = args.strip_prefix("observer ") {
         return observer::owner_command(app, human, selected);

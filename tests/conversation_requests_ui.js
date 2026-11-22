@@ -2,9 +2,9 @@
 const assert=require('node:assert/strict'), fs=require('node:fs'), vm=require('node:vm');
 const clone=value=>JSON.parse(JSON.stringify(value));
 const deferred=()=>{let release,enter;return {promise:new Promise(yes=>{release=yes;}),entered:new Promise(yes=>{enter=yes;}),release:()=>release(),enter:()=>enter()};};
-function boot(count=1, mayDecide=true) {
+function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   const nodes=new Map();
-  const element=tag=>({tag,children:[],handlers:{},textContent:'',value:'',hidden:false,disabled:false,
+  const element=tag=>({tag,children:[],handlers:{},dataset:{},textContent:'',value:'',hidden:false,disabled:false,
     setAttribute(key,value){this[key]=value;},addEventListener(name,fn){this.handlers[name]=fn;},
     append(...values){for(const child of values){child.parent=this;this.children.push(child);}},
     replaceChildren(...values){this.children=[];this.append(...values);},
@@ -53,12 +53,12 @@ function boot(count=1, mayDecide=true) {
     if(heldDetail){const hold=heldDetail;heldDetail=undefined;hold.enter();await hold.promise;}
     return value;
   }
-  const context=vm.createContext({window:{},document,TextEncoder,URLSearchParams});
+  const context=vm.createContext({window:{},document,TextEncoder,URL,URLSearchParams});
   vm.runInContext(fs.readFileSync('dashboard/web/requests.js','utf8'),context);
-  let ui;ui=context.window.RequestControls.mount({api,getBinding:()=>binding,setCsrf(){},unauthorized(){ui.reset();},onReply:(reference,label)=>replies.push({reference:clone(reference),label}),onListen:source=>listens.push(clone(source)),getCanListen:()=>canListen,getCanDecide:()=>mayDecide});
+  let ui;ui=context.window.RequestControls.mount({api,getBinding:()=>binding,setCsrf(){},unauthorized(){ui.reset();},onReply:(reference,label)=>replies.push({reference:clone(reference),label}),onListen:source=>listens.push(clone(source)),getCanListen:()=>canListen,getCanDecide:()=>mayDecide,allowCancel,maxCards});
   const all=(el,predicate)=>[...(predicate(el)?[el]:[]),...el.children.flatMap(child=>all(child,predicate))];
   const button=(card,text)=>all(card,el=>el.tag==='button'&&el.textContent===text)[0];
-  return {ui,nodes,sources,receipts,calls,replies,listens,button,all,goals:args=>context.window.GoalControls.mount({getBinding:()=>binding,...args}),speech(value){canListen=value;},
+  return {ui,nodes,sources,receipts,calls,replies,listens,button,all,tasks:args=>context.window.HumanTaskControls.mount({getBinding:()=>binding,...args}),goals:args=>context.window.GoalControls.mount({getBinding:()=>binding,...args}),speech(value){canListen=value;},
     cards:()=>nodes.get('#conversation-request-cards').children,
     mode:value=>{mode=value;},bind(value){binding=value;for(const source of sources.values())source.binding=value;},
     holdList(){return heldList=deferred();},holdDetail(){return heldDetail=deferred();},holdPost(){return heldPost=deferred();},
@@ -66,6 +66,27 @@ function boot(count=1, mayDecide=true) {
   };
 }
 (async()=>{
+  const bounded=boot(3,true,2);await bounded.ui.refresh();
+  assert.equal(bounded.cards().length,2);
+  assert.match(bounded.nodes.get('#conversation-request-state').textContent,/up to 2 loaded/);
+  assert.equal(bounded.nodes.get('#conversation-requests-more').hidden,false);
+  const first=bounded.cards()[0];await bounded.read(first);
+  const boundedDraft=bounded.all(first,v=>v.tag==='textarea')[0];boundedDraft.value='Keep my draft';
+  await bounded.ui.refresh();assert.equal(boundedDraft.value,'Keep my draft');
+  bounded.sources.get('request-2').state='expired';await bounded.ui.refresh();
+  await bounded.button(bounded.cards()[1],'Dismiss').handlers.click();
+  await bounded.nodes.get('#conversation-requests-more').handlers.click();
+  assert.equal(bounded.cards().length,2,'The skipped page must remain reachable after a card is dismissed');
+  assert(bounded.ui.attentionItems().some(v=>v.id==='request:request-3'));
+  const limits=boot(0),template={binding:'bound',state:'pending',kind:'question',actionable:true,title:'Scope',body:'Choose scope',choices:[],revision:'public-revision',capture_version:'b'.repeat(64)};
+  limits.sources.set('a'.repeat(32),{...template,id:'a'.repeat(32),sequence:1});
+  limits.sources.set('c'.repeat(32),{...template,id:'c'.repeat(32),sequence:2,kind:'approval'});
+  limits.sources.set('d'.repeat(32),{...template,id:'d'.repeat(32),sequence:3,binding:'other'});
+  limits.sources.set('e'.repeat(32),{...template,id:'e'.repeat(32),sequence:4,capture_version:'invalid'});
+  await limits.ui.refresh();const beforeQuestionChange=clone(limits.ui.captureQuestions());
+  assert.deepEqual(beforeQuestionChange,{['a'.repeat(32)]:'b'.repeat(64)},'Only observed current owned questions contribute a capture restriction');
+  limits.sources.get('a'.repeat(32)).capture_version='f'.repeat(64);await limits.ui.refresh();
+  assert.equal(limits.ui.captureQuestions()['a'.repeat(32)],'f'.repeat(64));assert.equal(beforeQuestionChange['a'.repeat(32)],'b'.repeat(64),'Previously frozen question data cannot mutate on refresh');
   const f=boot();await f.ui.refresh();const card=f.cards()[0];
   await f.button(card,'Read request').handlers.click();
   const option=f.button(card,'Selected scope');assert(option.disabled,'A partial proposal cannot be approved/answered');
@@ -113,6 +134,11 @@ function boot(count=1, mayDecide=true) {
   await offline.button(off,'Check decision').handlers.click();assert.equal(offline.receipts.size,0);
   await offline.button(off,'Retry this same decision').handlers.click();assert.equal(offline.receipts.size,1);
   const posts=offline.calls.filter(v=>v.body);assert.deepEqual(posts[0].body,posts[1].body,'Explicit retry must freeze source revision and exact action');
+
+  let mayCancel=false;const granted=boot(1,true,200,()=>mayCancel);await granted.ui.refresh();const gc=granted.cards()[0];await granted.read(gc);
+  const cancel=granted.button(gc,'Cancel this turn');assert(cancel.hidden);await cancel.handlers.click();assert.equal(granted.calls.filter(v=>v.body).length,0);
+  mayCancel=true;await granted.read(gc);assert.equal(cancel.hidden,false);
+  mayCancel=false;await cancel.handlers.click();assert.equal(granted.calls.filter(v=>v.body).length,0,'A revoked cancel capability fences an already-rendered button');
 
   const draft=boot();await draft.ui.refresh();const dc=draft.cards()[0];await draft.read(dc);
   const editor=draft.all(dc,v=>v.tag==='textarea')[0];editor.value='Draft for the original question';editor.handlers.input();
@@ -182,6 +208,55 @@ function boot(count=1, mayDecide=true) {
   const readonly=boot(0), ro=readonly.goals({readOnly:true,api:async()=>clone(proposal),onChoose:()=>{throw Error('Read-only client chose');}});
   await ro.observe({binding:"bound",items:[proposal],cursor:1,more:false});const readonlyCard=readonly.nodes.get('#conversation-goal-cards').children[0];
   await readonly.button(readonlyCard,'Review proposal and outcome').handlers.click();assert(readonly.button(readonlyCard,'Confirm in conversation').hidden);
+  }
+  {
+    const f=boot(0), replies=[];let offline=false,hold;
+    let task={id:'a'.repeat(32),binding:'bound',revision:'r1',kind:'task',state:'pending',title:'Observe the result',label:'#Alpha',preview:'Original action',body:'Original action <script> is literal text.',offset:0,next_offset:null,read_only:true,can_withdraw:false,links:[{label:'Unsafe',url:'javascript:alert(1)'},{label:'App',url:'https://example.test'}]};
+    const ui=f.tasks({onReply:v=>{replies.push(clone(v));return true;},api:async route=>{
+      if(offline)throw Error('Offline');
+      if(route.startsWith('interaction/tasks?'))return {binding:'bound',items:task.state==='pending'?[clone(task)]:[],cursor:1,more:false};
+      const value=clone(task);if(hold){const h=hold;hold=undefined;h.enter();await h.promise;}return value;
+    }});
+    await ui.refresh();let card=f.nodes.get('#conversation-task-cards').children[0];
+    assert(f.button(card,'Reply in conversation').disabled);
+    await f.button(card,'Read action').handlers.click();assert(!f.button(card,'Reply in conversation').disabled);
+    assert(f.all(card,n=>n.tag==='div'&&n.textContent.includes('<script>')).length);
+    assert.equal(f.all(card,n=>n.tag==='a').length,1,'Only HTTP(S) task links may be rendered');
+    f.button(card,'Reply in conversation').handlers.click();assert.equal(replies[0].id,task.id);assert(task.state==='pending','Reading/reply preparation must not resolve a task');
+    offline=true;await ui.refresh();assert(f.button(card,'Reply in conversation').disabled);
+    offline=false;task={...task,state:'withdrawn',revision:'r2'};await ui.refresh();assert(f.button(card,'Reply in conversation').disabled);
+    assert(f.all(card,n=>n.textContent==='No longer needed.').length);
+    task={...task,id:'b'.repeat(32),state:'pending',revision:'r3'};await ui.refresh();card=f.nodes.get('#conversation-task-cards').children.at(-1);
+    hold=deferred();const h=hold,pending=f.button(card,'Read action').handlers.click();await h.entered;ui.reset();h.release();await pending;
+    assert.equal(f.nodes.get('#conversation-task-cards').children.length,0,'A late task read must not revive a reset scope');
+    task={...task,id:'c'.repeat(32),revision:'native-question-r1',title:'Choose',body:'Choose\n- Luna\n- Estrella',native_question:{item:'native-question',index:0,revision:'source-r1'}};
+    await ui.refresh();card=f.nodes.get('#conversation-task-cards').children[0];
+    assert(f.all(card,n=>n.textContent==='A question for you.').length);
+    assert(f.button(card,'Answer in conversation').disabled);
+    await f.button(card,'Read question').handlers.click();
+    f.button(card,'Answer in conversation').handlers.click();
+    assert.equal(replies.at(-1).id,task.id);assert.equal(replies.at(-1).revision,task.revision);
+    assert.equal(replies.at(-1).native_question.item,'native-question');
+    assert.equal(task.state,'pending','Selecting an async question reply is ordinary draft context, not native approval or resolution');
+  }
+  {
+    const f=boot(),posts=[];let task={id:'c'.repeat(32),binding:'bound',revision:'r1',state:'pending',can_dismiss:true,label:'#Worker',title:'Observe result',preview:'Observation',body:'Read this action',next_offset:null};
+    let lose=false;
+    const ui=f.tasks({api:async(route,body)=>{
+      if(route.startsWith('interaction/tasks?'))return {binding:'bound',items:task.state==='pending'?[clone(task)]:[],cursor:1,more:false};
+      if(body){posts.push(clone(body));assert.equal(body.action,'dismiss');assert.equal(body.revision,task.revision);task={...task,state:'cancelled',can_dismiss:false,dismissal:{revision:body.revision}};if(lose)throw TypeError('Lost acknowledgment');return {id:task.id,binding:'bound',revision:body.revision,dismissed:true};}
+      return {...clone(task),offset:0,next_offset:null};
+    }});
+    await ui.refresh();let card=f.nodes.get('#conversation-task-cards').children[0];
+    assert(!f.button(card,'Dismiss').hidden,'An open human task can be explicitly dismissed');
+    await f.button(card,'Read action').handlers.click();assert(f.button(card,'Collapse action'));
+    ui.observeInput({binding:'bound',id:'human-original',phase:'accepted',reply:{source:'task:'+task.id,revision:'r1',context_only:true}});
+    assert(f.all(card,n=>n.textContent.includes('Your reply reached the conversation')).length);
+    assert.equal(task.state,'pending','Reply feedback is not task completion');
+    task={...task,revision:'r2'};await ui.refresh();assert(f.all(card,n=>n.textContent==='An action for you.').length,'Earlier feedback cannot satisfy a changed action');
+    await f.button(card,'Dismiss').handlers.click();assert.equal(posts.length,1);assert.equal(f.nodes.get('#conversation-task-cards').children.length,0);
+    task={...task,id:'d'.repeat(32),revision:'r3',state:'pending',can_dismiss:true};lose=true;await ui.refresh();card=f.nodes.get('#conversation-task-cards').children[0];
+    await f.button(card,'Dismiss').handlers.click();assert.equal(posts.length,2,'A lost dismissal acknowledgment only reads back; it never repeats the write');assert.equal(f.nodes.get('#conversation-task-cards').children.length,0);
   }
   console.log('Request UI: full-source gating, source-fenced choices, receipt-only recovery, exact retry, saved drafts, pagination/closure and async scope reset passed; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

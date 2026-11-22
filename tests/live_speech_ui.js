@@ -1,0 +1,175 @@
+"use strict";
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto');
+const context={window:{},crypto,TextEncoder};vm.runInNewContext(fs.readFileSync('dashboard/web/live-speech.js','utf8'),context);
+const deadline=setTimeout(()=>{throw Error("Live speech test did not settle");},10000);
+(async()=>{
+ const empty=context.window.LiveSpeech.mount();empty.unsent(undefined);
+ const state=context.window.LiveSpeech.mount(),turn='native-turn',item='native-item',key={native_turn:turn,native_item:item};
+ const listed=context.window.LiveSpeech.mount();
+ listed.observe({...key,text:'1. **Mientras se prepara una página**, acá afinamos el texto'},'listed');
+ assert.equal(await listed.next(),undefined,'An ordered-list marker alone has no useful spoken text');
+ listed.observe({...key,text:'1. **Mientras se prepara una página**, acá afinamos el texto. Siguiente'},'listed');
+ const listedFirst=await listed.next();assert(listed.admit(listedFirst));
+ assert.equal(listedFirst.speech_start,0,'Skipping a structural boundary must not consume canonical characters');
+ assert.equal(listedFirst.preview,'1. **Mientras se prepara una página**, acá afinamos el texto. ');
+ assert.equal(listedFirst.id.split(':').at(-1),crypto.createHash('sha256').update(listedFirst.preview).digest('hex'));
+ const numberedAnswer=context.window.LiveSpeech.mount();numberedAnswer.observe({...key,text:'11 es el resultado. Siguiente'},'numeric');
+ assert.equal((await numberedAnswer.next()).preview,'11 es el resultado. ','Numeric content remains useful speech');
+
+ const clause=context.window.LiveSpeech.mount();
+ const opening='Corregirme cambia cómo sigo trabajando, pero no cancela las tareas que ya autorizaste: ';
+ clause.observe({...key,text:opening+'incorporo tu corrección y continúo'},'clause');
+ const usefulClause=await clause.next();assert(usefulClause,'A substantial clause need not wait for the rest of a long sentence');
+ assert.equal(usefulClause.preview,opening);assert(clause.admit(usefulClause));
+ clause.observe({...key,text:opening+'incorporo tu corrección y continúo con lo que sigue vigente. Más'},'clause');
+ const clauseEnd=await clause.next();assert.equal(clauseEnd.speech_start,usefulClause.speech_end);
+ assert.equal(clauseEnd.preview,'incorporo tu corrección y continúo con lo que sigue vigente. ');
+ const semicolon=context.window.LiveSpeech.mount(),separate=opening.replace(':',';');
+ semicolon.observe({...key,text:separate+'la tarea continúa'},'semicolon');
+ assert.equal((await semicolon.next()).preview,separate);
+ for(const text of ['The answer is: still unfinished','Details; still unfinished',
+   'A long link https://example.test/'+ 'a'.repeat(80),
+   'An open `code block '+opening+'more', 'An open [link '+opening+'more']){
+   const guarded=context.window.LiveSpeech.mount();guarded.observe({...key,text},'guarded-clause');
+   assert.equal(await guarded.next(),undefined,'Short lead-ins, URLs and unclosed markup cannot become early clauses');
+ }
+
+ state.observe({...key,text:'Hola Nicolás. Incomplete',provisional:true},'binding');
+ const first=await state.next();assert(state.admit(first));assert.equal(first.speech_start,0);assert.equal(first.preview,'Hola Nicolás. ');
+ assert.equal(await state.next(),undefined,'Incomplete text cannot become audible');
+ state.ended(first);
+ state.observe({...key,text:'Hola Nicolás. Second useful sentence. Next',provisional:true},'binding');
+ const second=await state.next();assert(state.admit(second));assert.equal(second.speech_start,Array.from(first.preview).length);
+ assert.equal(second.preview,'Second useful sentence. ');
+ assert.equal(crypto.createHash('sha256').update('Hola Nicolás. Second useful sentence. ').digest('hex'),second.id.split(':').at(-1));
+ assert.equal(crypto.createHash('sha256').update('binding:'+second.id).digest('hex'),second.revision);
+ const canonical={...key,id:'native:1',revision:'canonical',kind:'integrator_answer',text_characters:100};
+ const result=await state.reconcile(canonical,async selected=>assert.equal(selected.id,second.id));
+ assert.equal(result.source.speech_start,second.speech_end,'Canonical automatic reading never repeats an attempted prefix');
+ assert.equal(result.resume,first.speech_end,'Explicit resume retains the last completed media boundary, not a hearing claim');
+ assert.equal(await state.next(),undefined,'Canonical item retires future provisional attempts');
+ const corrected=await state.reconcile(canonical,async()=>{throw Object.assign(Error('Changed'),{status:409});});
+ assert.equal(corrected.changed,true);assert.equal(corrected.source.speech_start,0);
+ await assert.rejects(state.reconcile(canonical,async()=>{throw new TypeError('Offline');}),/Offline/,'Observation failure cannot silently restart canonical narration');
+ state.observe({...key,text:'A code `not yet closed. Still',provisional:true},'other-binding');assert.equal(await state.next(),undefined);
+ state.observe({...key,text:'A complete sentence. Next',provisional:true},'third-binding');assert.equal((await state.next()).speech_start,0,'Changed entry binding clears previous cursors');
+ state.observe(null,'third-binding');assert.equal(await state.next(),undefined,'Terminal/missing snapshot does not replay old speech');
+ // Canonical arrival while hashing must revoke the unadmitted selection.
+ const releases=[];const delayed={window:{},TextEncoder,crypto:{subtle:{digest:(_algorithm,bytes)=>new Promise(resolve=>{releases.push(()=>resolve(crypto.createHash('sha256').update(bytes).digest()));})}}};
+ vm.runInNewContext(fs.readFileSync('dashboard/web/live-speech.js','utf8'),delayed);
+ const raced=delayed.window.LiveSpeech.mount();raced.observe({...key,text:'A complete sentence. Next'},'binding');
+ const pending=raced.next();await raced.reconcile(canonical,()=>assert.fail('No paid prefix existed'));
+ releases.shift()();await new Promise(resolve=>setImmediate(resolve));assert.equal(releases.length,1);releases.shift()();assert.equal(await pending,undefined);
+ assert.equal(await raced.next(),undefined,'Canonical answer cannot race a late prefix');
+ // A long first sentence must not hold useful output until canonical completion.
+ const longState=context.window.LiveSpeech.mount();
+ const longText='Puedo conservar el texto exacto y comenzar a explicar cada paso mientras seguimos trabajando juntos sin esperar a que termine toda la respuesta porque las palabras ya disponibles describen una acción concreta y útil para nuestra conversación y después continuamos con más detalles';
+ longState.observe({...key,text:longText,provisional:true},'long-binding');
+ const longFirst=await longState.next();assert(longFirst,'A full first window can use a complete-word boundary without punctuation');
+ assert.equal(longFirst.speech_start,0);assert(longFirst.speech_end<=240);assert(/\s$/u.test(longFirst.preview));
+ assert.equal(longFirst.preview,Array.from(longText).slice(0,longFirst.speech_end).join(''));
+ assert(longState.admit(longFirst));assert.equal(await longState.next(),undefined,'The shorter trailing fragment waits for a useful boundary');
+ longState.observe({...key,text:longText+'. Más detalles',provisional:true},'long-binding');
+ const longSecond=await longState.next();assert(longSecond);assert.equal(longSecond.speech_start,longFirst.speech_end);
+ assert.equal(longFirst.preview+longSecond.preview,longText+'. ');
+ const unicodeLong=context.window.LiveSpeech.mount();const unicodeText='Más información 🚀 para comprender el trabajo pendiente y seguir nuestra conversación sin interrumpir las tareas. '.replace('.', '').repeat(4);
+ unicodeLong.observe({...key,text:unicodeText,provisional:true},'unicode-long');
+ const unicodePrefix=await unicodeLong.next();assert(unicodePrefix);assert(unicodePrefix.speech_end<=240);
+ assert.equal(unicodePrefix.preview,Array.from(unicodeText).slice(0,unicodePrefix.speech_end).join(''));
+ for(const opening of ['An unfinished `','An unfinished [','An unfinished (']){
+   const guarded=context.window.LiveSpeech.mount();guarded.observe({...key,text:opening+longText,provisional:true},'guarded-long');assert.equal(await guarded.next(),undefined,'Long text cannot release an unclosed code/link/parenthesis span');
+ }
+ const shortDraft=context.window.LiveSpeech.mount();shortDraft.observe({...key,text:'A short unfinished thought without punctuation'},'short');assert.equal(await shortDraft.next(),undefined);
+ const interruptedState=context.window.LiveSpeech.mount();interruptedState.observe({...key,text:'One useful sentence. Next'},'binding');
+ const owned=await interruptedState.next();assert(interruptedState.admit(owned));interruptedState.interrupt(owned);
+ interruptedState.observe({...key,text:'One useful sentence. Another sentence. More'},'binding');assert.equal(await interruptedState.next(),undefined);
+ const held=await interruptedState.reconcile(canonical,async()=>{});assert.equal(held.skip,true);
+ const continuation=interruptedState.continueSource(owned);assert.equal(continuation.speech_start,owned.speech_end);
+ const gap=context.window.LiveSpeech.mount();gap.observe({...key,text:'First sentence. Second sentence. Still'},'binding');
+ const interrupted=await gap.next();assert(gap.admit(interrupted));
+ gap.observe({...key,text:'First sentence. Second sentence. Still another sentence. More'},'binding');
+ const later=await gap.next();assert(gap.admit(later));gap.ended(later);
+ const unplayed=await gap.reconcile(canonical,async()=>{});assert.equal(unplayed.resume,0,'Later completion cannot hide the first unsaid gap');
+ const completed=gap.ended(interrupted);assert.equal(completed.resume,later.speech_end,'Finishing a live prefix after confirmation updates the canonical cursor');
+ assert.equal(gap.resume(canonical),later.speech_end);
+ const partial=context.window.LiveSpeech.mount();partial.observe({...key,text:'A useful spoken sentence. Unfinished'},'binding');
+ const playing=await partial.next();assert(partial.admit(playing));
+ partial.checkpoint(playing,0,12);partial.interrupt(playing);
+ assert.equal((await partial.reconcile(canonical,async()=>{})).resume,12,'Confirmation retains partial aligned media position');
+ assert.equal(partial.checkpoint(playing,0,4).resume,4,'Backward media seek replaces a partial high-water mark');
+ assert.equal(partial.checkpoint(playing,0,playing.speech_end+1),undefined);assert.equal(partial.resume(canonical),4);
+ assert.equal(partial.ended(canonical,4,100).resume,100,'Explicit canonical remainder joins the retained partial prefix');
+ const changedPartial=context.window.LiveSpeech.mount();changedPartial.observe({...key,text:'A useful spoken sentence. Unfinished'},'binding');
+ const obsolete=await changedPartial.next();assert(changedPartial.admit(obsolete));changedPartial.checkpoint(obsolete,0,12);
+ assert.equal((await changedPartial.reconcile(canonical,async()=>{throw Object.assign(Error('Changed'),{status:409});})).resume,0);
+ assert.equal(changedPartial.checkpoint(obsolete,0,20),undefined,'Old timing cannot refine a changed canonical reply');
+ const partialGap=context.window.LiveSpeech.mount();partialGap.observe({...key,text:'First sentence. Unfinished'},'binding');
+ const missing=await partialGap.next();assert(partialGap.admit(missing));
+ partialGap.observe({...key,text:'First sentence. Second useful sentence. Unfinished'},'binding');
+ const ahead=await partialGap.next();assert(partialGap.admit(ahead));partialGap.checkpoint(ahead,ahead.speech_start,ahead.speech_start+5);
+ assert.equal((await partialGap.reconcile(canonical,async()=>{})).resume,0,'A later aligned prefix cannot hide the earlier unplayed range');
+ let validateAgain;const rechecking=partialGap.reconcile(canonical,()=>new Promise(resolve=>{validateAgain=resolve;}));
+ assert.equal(partialGap.resume(canonical),0,'Revalidating the same source cannot remove its known earlier-gap fence');
+ assert.equal(partialGap.resume({...canonical,revision:'unverified-new-revision'}),undefined,'The previous gap fence is scoped to its validated revision');
+ assert.equal(partialGap.checkpoint(ahead,ahead.speech_start,ahead.speech_start+6),undefined);
+ validateAgain();assert.equal((await rechecking).resume,0);
+ assert.equal(partialGap.ended(missing).resume,ahead.speech_start+6,'An earlier completed gap joins the later partial cursor');
+ partialGap.reset();assert.equal(partialGap.checkpoint(ahead,ahead.speech_start,ahead.speech_start+10),undefined,'Entry reset retires timing state');
+ for(const outcome of ['match','changed','offline','reset']){
+   const pendingState=context.window.LiveSpeech.mount();pendingState.observe({...key,text:'A useful spoken sentence. Unfinished'},'binding');
+   const selected=await pendingState.next();assert(pendingState.admit(selected));pendingState.checkpoint(selected,0,12);
+   let release,reject;const validation=new Promise((yes,no)=>{release=yes;reject=no;});
+   const mapping=pendingState.reconcile(canonical,()=>validation);
+   assert.equal(pendingState.checkpoint(selected,0,20),undefined,'Pending validation cannot publish a canonical cursor');
+   assert.equal(pendingState.resume(canonical),undefined);
+   assert.equal(pendingState.continuation(selected),undefined);
+   if(outcome==='reset'){pendingState.reset();release();assert.equal((await mapping).skip,true);assert.equal(pendingState.resume(canonical),undefined);}
+   else if(outcome==='offline'){
+     reject(new TypeError('Offline'));await assert.rejects(mapping,/Offline/);
+     assert.equal(pendingState.checkpoint(selected,0,22),undefined,'A failed observation cannot expose an unverified canonical mapping');
+   }else{
+     if(outcome==='changed')reject(Object.assign(Error('Changed'),{status:409}));else release();
+     assert.equal((await mapping).resume,outcome==='match'?20:0);
+   }
+ }
+ // Reload before canonical confirmation retains an unsaid gap without storing
+ // text or automatically repeating a possibly synthesized/played prefix.
+ const disk=new Map(),storage={read:key=>disk.get(key),write:(key,value)=>disk.set(key,value)};
+ const beforeReload=context.window.LiveSpeech.mount(storage);
+ beforeReload.observe({...key,text:'First private sentence. Another sentence. Unfinished'},'saved-binding');
+ const firstSaved=await beforeReload.next();assert(beforeReload.admit(firstSaved));
+ beforeReload.checkpoint(firstSaved,0,8);beforeReload.interrupt(firstSaved);
+ assert(![...disk.values()].join('').includes('private sentence'),'Local continuity must not retain provisional text');
+ const restored=context.window.LiveSpeech.mount(storage);
+ restored.observe({...key,text:'First private sentence. Another sentence. Still writing'},'saved-binding');
+ assert.equal(await restored.next(),undefined,'Reload must not repeat a possibly paid prefix');
+ let validations=0;
+ const restoredMapping=await restored.reconcile(canonical,async selected=>{validations++;assert.equal(selected.id,firstSaved.id);});
+ assert.equal(validations,1);assert.equal(restoredMapping.skip,true);assert.equal(restoredMapping.resume,8);
+ assert.equal(restored.resume(canonical),8);
+ assert.equal(JSON.parse(disk.get('interaction-live-speech:saved-binding')).length,1,'Keep the provisional checkpoint until canonical persistence confirms success');
+ const afterFailedSave=context.window.LiveSpeech.mount(storage);afterFailedSave.observe(null,'saved-binding');
+ assert.equal((await afterFailedSave.reconcile(canonical,async()=>{})).resume,8,'A failed canonical write leaves the durable provisional boundary intact');
+ restored.canonicalSaved(canonical);
+ assert.equal(JSON.parse(disk.get('interaction-live-speech:saved-binding')).length,0,'Successful canonical persistence retires the provisional checkpoint');
+ assert.equal(restored.checkpoint(canonical,20,40),undefined,'Canonical playback cannot jump across an earlier unsaid gap');
+ assert.equal(restored.checkpoint(canonical,8,40).resume,40,'Explicit canonical playback extends the validated contiguous cursor');
+ assert.equal(restored.checkpoint(canonical,8,12).resume,12,'Backward canonical seeking replaces the cursor');
+ const otherBinding=context.window.LiveSpeech.mount(storage);
+ otherBinding.observe({...key,text:'First private sentence. Unfinished'},'another-binding');
+ assert((await otherBinding.next()),'A different binding does not inherit attempts');
+ // A failed canonical read leaves the retained selector available for a later
+ // reload; a definite changed prefix clears its old cursor.
+ const offline=context.window.LiveSpeech.mount(storage);
+ offline.observe({...key,text:'First private sentence. Unfinished'},'offline-binding');
+ const offlinePrefix=await offline.next();assert(offline.admit(offlinePrefix));offline.checkpoint(offlinePrefix,0,9);
+ await assert.rejects(offline.reconcile(canonical,async()=>{throw new TypeError('Offline');}),/Offline/);
+ const afterOffline=context.window.LiveSpeech.mount(storage);afterOffline.observe(null,'offline-binding');
+ const changedReload=await afterOffline.reconcile(canonical,async()=>{throw Object.assign(Error('Changed'),{status:409});});
+ assert.equal(changedReload.resume,0);assert.equal(changedReload.changed,true);assert.equal(changedReload.skip,true,'Changed restored prefixes still require explicit Listen');
+ for(const raw of ['not JSON',JSON.stringify([{}]),'x'.repeat(32769)]){
+   const invalid=context.window.LiveSpeech.mount({read:()=>raw});invalid.observe(null,'bad');
+   assert.equal((await invalid.reconcile(canonical,async()=>assert.fail('Invalid storage cannot select a source'))).resume,undefined);
+ }
+ clearTimeout(deadline);console.log('PASS live prefixes: useful boundary, Unicode hash, one owned attempt, canonical handover, manual cursor, changed source, network uncertainty, code and entry fences; zero media/providers.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

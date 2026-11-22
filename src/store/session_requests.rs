@@ -29,6 +29,21 @@ pub(super) fn author_on(conn: &Connection, input: &str) -> Result<Option<Value>>
     raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
 }
 
+pub(super) fn interview_target_allowed_on(
+    conn: &Connection,
+    human: i64,
+    caller_session: i64,
+    target: SessionKey,
+) -> Result<bool> {
+    let protected:bool=conn.query_row("SELECT EXISTS(
+        SELECT 1 FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id
+        JOIN json_each(c.doc,'$.context.sources') source
+        WHERE e.session_id=?1 AND e.human_id=?2 AND json_extract(c.doc,'$.context.purpose')='interview'
+        AND json_extract(source.value,'$.source_session')=(SELECT id FROM sessions WHERE chat_id=?3 AND thread_id=?4))",
+        params![caller_session,human,target.chat_id,target.thread_id],|r|r.get(0))?;
+    Ok(!protected)
+}
+
 fn instruction_on(conn: &Connection, id: &str, human: i64) -> Result<Instruction> {
     let (raw,phase):(String,String)=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut i: Instruction = serde_json::from_str(&raw)?;
@@ -118,13 +133,7 @@ impl Store {
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,
         // independently of the interview model's output or role prompt.
-        let source_protected:bool=tx.query_row("SELECT EXISTS(
-            SELECT 1 FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id
-            JOIN json_each(c.doc,'$.context.sources') source
-            WHERE e.session_id=?1 AND e.human_id=?2 AND json_extract(c.doc,'$.context.purpose')='interview'
-            AND json_extract(source.value,'$.source_session')=(SELECT id FROM sessions WHERE chat_id=?3 AND thread_id=?4))",
-            params![p.target_session,human,target.chat_id,target.thread_id],|r|r.get(0))?;
-        if source_protected {
+        if !interview_target_allowed_on(&tx, human, p.target_session, target)? {
             return Err(anyhow!(
                 "An interview cannot activate its pinned source work"
             ));
@@ -153,6 +162,7 @@ impl Store {
         )
         .to_string();
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
             event_id: id.clone(),
@@ -268,6 +278,9 @@ impl Store {
         let Some(author) = author_on(&conn, &i.input_id)? else {
             return Ok(true);
         };
+        if author["kind"] == "workflow_step" {
+            return super::workflows::input_allowed_on(&conn, &author, &i);
+        }
         let call = author["local_request"]
             .as_str()
             .context("Missing local request provenance")?;
@@ -289,6 +302,7 @@ impl Store {
     pub fn interaction_withdraw_session_requests(&self, caller: SessionKey) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        super::workflows::withdraw_on(&tx, caller)?;
         tx.execute("INSERT OR IGNORE INTO interaction_session_withdrawals SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND i.phase='accepted'",params![caller.chat_id,caller.thread_id])?;
         tx.execute("UPDATE interaction_session_requests SET phase='withdrawn' WHERE caller_chat=?1 AND caller_topic=?2 AND (phase='requested' OR (phase='returned' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(interaction_session_requests.doc,'$.return_instruction') AND i.phase IN ('queued','submitting','steering'))))",params![caller.chat_id,caller.thread_id])?;
         tx.execute("UPDATE interaction_instructions SET phase='retained_unsent' WHERE phase='queued' AND input_id IN (SELECT a.input_id FROM interaction_session_authors a JOIN interaction_session_requests c ON json_extract(a.doc,'$.local_request')=c.id WHERE c.caller_chat=?1 AND c.caller_topic=?2 AND c.phase='withdrawn' AND json_extract(a.doc,'$.kind')='session_result')",params![caller.chat_id,caller.thread_id])?;
@@ -389,6 +403,7 @@ impl Store {
             d.body.chars().take(16000).collect::<String>()
         );
         let source = SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "local-session-result".into(),
             event_id: call.id.clone(),
@@ -474,6 +489,7 @@ mod tests {
         let i = s
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "human-parent".into(),

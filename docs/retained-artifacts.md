@@ -2,7 +2,9 @@
 
 An actual native execution writes deliverables in its existing turn output
 folder. With `interaction.artifact_store` configured, Telecodex registers a
-separate durable byte-copy job before releasing that execution. The native
+separate durable byte-copy job at each canonical final response, even when a
+continuous goal execution remains active. Jobs are keyed to that actual native
+response, rather than only to the longer collector execution. The native
 conversation can accept its next input while files wait for storage. Restarting
 resumes only copying; it never repeats native work or a user message.
 
@@ -18,7 +20,11 @@ The directory must be private, owned by the service account and dedicated to
 this receiver database. It is bound to that database; a different receiver
 cannot adopt the same directory silently. Configure large output storage on the
 host's established data filesystem. The output anchor is captured before native
-execution and checked again when copying, including after restart. At most ten
+execution and checked again when copying, including after restart. Each new
+response freezes its bounded filename/metadata selection: files added later
+cannot be attributed to an earlier response, and changed files are refused.
+Unchanged already retained files keep their original attribution and are not
+published again with every goal continuation. At most ten
 top-level regular files are considered per execution, with configured byte limits.
 Symlinks, directories, hard-linked files and replaced output directories do not
 become downloads. Copied bytes are hashed and frozen under content-addressed
@@ -96,3 +102,39 @@ The source-projection fixture holds an actual multipart upload while admitting
 the next input to that same session, checks original text/image bytes and media
 fields, loses one ACK and restarts the bridge. It waits for retained publication
 outcomes, then verifies no native work or file upload is replayed.
+
+Continuous-collector adoption migrates legacy one-job-per-execution records
+transactionally without dropping their outcomes. Keep a compatible native reader
+after that migration; a web/UI rollback must not reinstall the older job writer.
+Original audio and artifact bytes remain retained. Delivery and hearing still
+require actual observations; a local path written in Markdown is not an attachment.
+
+
+## Explicit retained-output recovery
+
+An output created before storage was configured may lack a durable copy job.
+An owner can recover selected existing bytes through the same native writer:
+
+```sh
+telecodex --control OWN_RECEIVER_CONFIG input artifacts recover '{"binding":"CURRENT_BINDING","local_turn":5,"directory":"/own/workspace/.telecodex/turns/5-11111111-1111-4111-8111-111111111111/out","output":{"native":"EXACT_NATIVE","turn":"EXACT_TURN","item":"EXACT_FINAL_ITEM"},"files":{"drawing.png":"EXACT_SHA256"}}'
+```
+
+This is an explicit owner association with an actual completed final in the same
+logical conversation; it does not claim historical automatic capture. The selected
+output directory must belong to that execution under its own current workspace.
+The trusted workspace is anchored, and every descendant directory is opened
+relative to descriptors without following symlinks, both initially and when the
+copy job reopens it. Workspace identity is frozen. Reads also reject hard links,
+changed bytes and unexpected owners. Current owner/grant/generation and the canonical final are checked in the
+same transaction that registers the existing copy job. Copying verifies the frozen
+SHA256 again. Existing jobs keep their original immutable selection. No native
+turn, prompt, image generation, email, topic publication or original input is replayed.
+The operation is owner control, not an additional browser/device write capability.
+Inspect the existing artifact list for actual availability afterward.
+
+PNG, JPEG and WebP attachments up to8MiB offer **View image** in their original
+reply. They use the same authenticated immutable download and full hash check;
+no public link or external viewer is created. At most four previews/16MiB stay
+open per page, sharing the existing two-download limit. Close, removed replies,
+expiry, binding reset or file-access revocation releases their object URLs.
+Other files keep the existing verified download/Android Save behavior.

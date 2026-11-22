@@ -1,0 +1,14 @@
+// Test-only second UID. Included only with -PfocusProbe=true; never bundled in app.
+plugins { id 'com.android.application' }
+android {
+    namespace 'homes.dmn.interaction.focusprobe'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'homes.dmn.interaction.focusprobe'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName 'test-only'
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}

@@ -388,6 +388,7 @@ async fn deliver(app: &App, id: &str, chat_kind: &str) -> Result<()> {
         if active
             .sender
             .send(CodexSteerRequest {
+                tool_output: None,
                 observation: None,
                 images: vec![],
                 admission_check: None,
@@ -407,11 +408,13 @@ async fn deliver(app: &App, id: &str, chat_kind: &str) -> Result<()> {
         }
         match tokio::time::timeout(Duration::from_secs(10), rx).await {
             Ok(Ok(Ok(Some(native)))) => app.shared.store.merge_accept(id, &native)?,
-            Ok(Ok(Err(CodexSteerError::Rejected(_)))) => app.shared.store.merge_phase(
-                id,
-                "rejected",
-                "Native explicitly rejected merge steering; no input replayed",
-            )?,
+            Ok(Ok(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired))) => {
+                app.shared.store.merge_phase(
+                    id,
+                    "rejected",
+                    "Native explicitly rejected merge steering; no input replayed",
+                )?
+            }
             _ => app.shared.store.merge_phase(
                 id,
                 "unconfirmed",
@@ -436,7 +439,7 @@ async fn deliver(app: &App, id: &str, chat_kind: &str) -> Result<()> {
         // The command remains its original journaled human ingress, not a second fabricated update.
         let admission_epoch = super::stopping::input_epoch(&app.shared, key)?;
         let worker = app.worker_for(key).await?;
-        worker.sender.send(QueuedTurn{request:TurnRequest{session_key:key,from_user_id:human,prompt:"Incorporate the explicitly requested context exchange and briefly explain what changed or remains open.".into(),runtime_instructions:None,attachments:vec![],review_mode:None,override_search_mode:None},chat_kind:chat_kind.into(),update_id:None,conversation_input:None,tribu_admission:None,goal:None,nexus:None,stop_resume:None,interaction:None,admission_epoch,merge:Some(id.to_string())}).map_err(|_|anyhow!("merge worker closed"))?;
+        worker.sender.send(QueuedTurn{request:TurnRequest{session_key:key,from_user_id:human,prompt:"Incorporate the explicitly requested context exchange and briefly explain what changed or remains open.".into(),runtime_instructions:None,attachments:vec![],review_mode:None,override_search_mode:None},chat_kind:chat_kind.into(),update_id:None,conversation_input:None,workflow_return:None,tribu_admission:None,goal:None,nexus:None,stop_resume:None,interaction:None,admission_epoch,merge:Some(id.to_string())}).map_err(|_|anyhow!("merge worker closed"))?;
     }
     Ok(())
 }

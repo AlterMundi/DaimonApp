@@ -2,13 +2,23 @@
 """Live task retirement over the real controller and durable ledger; synthetic models."""
 import json
 import re
+import subprocess
 from pathlib import Path
 import sys
 from warm_controller_io import Warm
 
 
+class NotifiedWarm(Warm):
+    def start(self):
+        if self.routed:
+            text = self.config.read_text()
+            if 'telegram_projection=true' not in text:
+                self.config.write_text(text.replace('[interaction]\n', '[interaction]\ntelegram_projection=true\n'))
+        return super().start()
+
+
 def qualify(binary):
-    j=Warm(binary)
+    j=NotifiedWarm(binary)
     try:
         j.prepare(seed_entry=True)
         j.allow_native_launch=True
@@ -16,7 +26,7 @@ def qualify(binary):
         j.wait(lambda:'native-topic-9' in j.runs)
         entry=j.access(1)
         caps=j.cli(entry,'capabilities')
-        assert all(name in caps['operations'] for name in ('human_tasks','human_task','withdraw_task'))
+        assert all(name in caps['operations'] for name in ('human_tasks','human_task','withdraw_task','publish_tasks'))
         original=j.cli(entry,'inputs')['inputs'][-1]['input_ref']
         j.declare_task=True
         j.cli(entry,'dispatch',{'input_ref':original,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
@@ -36,9 +46,18 @@ def qualify(binary):
         worker=j.access(7)
         own=j.cli(worker,'human_tasks')['items']
         assert any(item['id']==selected['id'] for item in own)
+        before_packets=len(j.packets['native-topic-7'])
         result=j.cli(entry,'withdraw_task',args)
         assert result['new_withdrawal'] and result['human_completion'] is False
         assert not j.cli(entry,'withdraw_task',args)['new_withdrawal']
+        j.wait(lambda:j.row("SELECT phase FROM topic_publications WHERE kind='task_control' AND json_extract(source,'$[0]')=?",(selected['id'],))==[('sent',)])
+        notices=[m for m,_ in j.messages if 'Integrator action' in m['text'] and 'request withdrawn' in m['text']]
+        assert len(notices)==1 and notices[0].get('message_thread_id')==7
+        assert selected['id'] not in notices[0]['text'] and args['reason'] not in notices[0]['text']
+        assert len(j.packets['native-topic-7'])==before_packets, 'A visible retirement never becomes more worker input'
+        reply=subprocess.run([j.binary,'--control',str(j.config),'topics','notices','native-topic-7'],capture_output=True,text=True,check=True,timeout=20)
+        feed=json.loads(reply.stdout)['result']
+        assert feed['available'] and 'request withdrawn' in feed['items'][-1]['text']
         assert j.cli(entry,'human_tasks')['items']==[]
         row=j.row("SELECT state,payload_json FROM human_interactions WHERE id=?",(selected['id'],))[0]
         assert row[0]=='cancelled'
@@ -59,9 +78,22 @@ def qualify(binary):
         j.admit('Direct work with its own observation.',topic=7)
         j.wait(lambda:len(j.packets['native-topic-7'])>before_direct)
         j.wait(lambda:j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 AND t.status='running'")==[(1,)])
-        context=j.packets['native-topic-7'][-1]['additionalContext']['telecodex.runtime']['value']
+        context=''.join(v['value'] for k,v in sorted(j.packets['native-topic-7'][-1]['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
         manifest=Path(re.search(r'explicitly declare it in (\S+human-requests\.json)',context).group(1))
-        manifest.write_text(json.dumps({'schema':'telecodex.human-requests/v1','requests':[{'id':'direct-observation','title':'Direct observation','action':'Only this direct topic needs this action.','links':[]}]}))
+        declaration={'schema':'telecodex.human-requests/v1','requests':[{'id':'direct-observation','title':'Direct observation','action':'Only this direct topic needs this action.','links':[]}]}
+        manifest.write_text(json.dumps(declaration))
+        worker=j.access(7)
+        published=j.cli(worker,'publish_tasks',declaration)
+        assert len(published['ids'])==1 and published['human_completion'] is False
+        assert j.cli(worker,'publish_tasks',declaration)['ids']==published['ids']
+        assert j.cli(worker,'human_task',{'id':published['ids'][0]})['action']==declaration['requests'][0]['action']
+        assert j.row("SELECT count(*) FROM human_interactions WHERE kind='task' AND state='pending'")==[(1,)]
+        assert j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 AND t.status='running'")==[(1,)]
+        changed=json.loads(json.dumps(declaration));changed['requests'][0]['action']='Changed source'
+        j.cli(worker,'publish_tasks',changed,ok=False)
+        invalid=json.loads(json.dumps(declaration));invalid['requests'][0]['links']=[{'label':'Private','url':'https://user:secret@example.org'}]
+        j.cli(worker,'publish_tasks',invalid,ok=False)
+        j.cli(worker,'publish_tasks',{**declaration,'target':{'thread_id':8}},ok=False)
         j.broadcast('native-topic-7','turn/completed',{'turn':{'id':j.runs['native-topic-7'],'status':'completed'}})
         j.wait(lambda:j.row("SELECT count(*) FROM human_interactions WHERE kind='task' AND state='pending'")==[(1,)])
         assert j.cli(entry,'human_tasks')['items']==[]

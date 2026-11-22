@@ -28,8 +28,24 @@ pub struct GoalPlan {
     pub followup: Option<String>,
 }
 impl GoalPlan {
+    pub(crate) fn delegatable(&self) -> bool {
+        matches!(
+            self.action,
+            GoalAction::Edit | GoalAction::Pause | GoalAction::Resume
+        ) && self.token_budget.is_none()
+            && self.followup.is_none()
+    }
     pub fn validate(&self) -> Result<()> {
         use GoalAction::*;
+        if self
+            .objective
+            .as_ref()
+            .is_some_and(|v| v.chars().count() > 4000)
+        {
+            bail!(
+                "Goal objective must be at most 4000 characters; retain full task context separately"
+            );
+        }
         if self.expected.revision.is_empty()
             || self.expected.revision.len() > 512
             || !self
@@ -38,10 +54,7 @@ impl GoalPlan {
                 .bytes()
                 .all(|v| (33..=126).contains(&v))
             || self.token_budget.is_some_and(|v| v <= 0)
-            || self
-                .objective
-                .as_ref()
-                .is_some_and(|v| v.trim().is_empty() || v.len() > 12000)
+            || self.objective.as_ref().is_some_and(|v| v.trim().is_empty())
             || self
                 .followup
                 .as_ref()
@@ -81,6 +94,34 @@ impl GoalPlan {
     }
 }
 
+// One bounded compatibility repair for legacy oversized start intents. Other
+// native rejections, partial effects and missing/uncertain receipts stay immutable.
+fn repairable_objective_rejection(value: &Value, next: &Value) -> bool {
+    let d = &value["intent"];
+    let old = &d["plan"];
+    let r = &value["result"];
+    value["phase"] == "rejected"
+        && d["proposal"] == false
+        && d["delegation"].is_null()
+        && d["recovery"].is_null()
+        && d["objective_validation_repair"].is_null()
+        && r["native_error_code"] == -32600
+        && r["error"] == "goal objective must be at most 4000 characters | code -32600"
+        && r["native_receipt"].is_null()
+        && r["replacement_clear"].is_null()
+        && old["action"] == "start"
+        && old["expected"]["goal"].is_null()
+        && old["objective"]
+            .as_str()
+            .is_some_and(|s| s.chars().count() > 4000)
+        && next["objective"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty() && s.chars().count() <= 4000)
+        && ["action", "expected", "token_budget", "followup"]
+            .iter()
+            .all(|k| old[*k] == next[*k])
+}
+
 pub(super) fn unclaimed_on(conn: &Connection, human: i64, kind: &str, event: &str) -> Result<()> {
     let held:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_inputs WHERE human_id=?1 AND source_kind=?2 AND source_event=?3)",params![human,kind,event],|r|r.get(0))?;
     if held {
@@ -89,7 +130,7 @@ pub(super) fn unclaimed_on(conn: &Connection, human: i64, kind: &str, event: &st
     Ok(())
 }
 
-fn binding_on(conn: &Connection, human: i64, key: SessionKey) -> Result<Value> {
+pub(super) fn binding_on(conn: &Connection, human: i64, key: SessionKey) -> Result<Value> {
     let (session, native) = super::presentation::entry_on(conn, human, key)?;
     Ok(json!([
         super::presentation::entry_binding(conn, human, key, session)?,
@@ -98,7 +139,7 @@ fn binding_on(conn: &Connection, human: i64, key: SessionKey) -> Result<Value> {
         super::stopping::admission_epoch_on(conn, key)?
     ]))
 }
-fn read_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Result<Value> {
+pub(super) fn read_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Result<Value> {
     super::presentation::entry_on(conn, human, entry)?;
     let (raw,phase,result):(String,String,Option<String>)=conn.query_row(
         "SELECT doc,phase,result FROM interaction_goal_controls WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4",
@@ -122,7 +163,10 @@ fn control_view_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -
         "proposal":doc["proposal"],"plan":doc["plan"],"reason":doc["reason"],"result":value["result"]}))
 }
 
-fn command_generation_on(conn: &Connection, target: SessionKey) -> Result<Option<String>> {
+pub(super) fn command_generation_on(
+    conn: &Connection,
+    target: SessionKey,
+) -> Result<Option<String>> {
     conn.query_row(
         "SELECT value FROM bot_state WHERE key=?",
         [format!(
@@ -137,6 +181,12 @@ fn command_generation_on(conn: &Connection, target: SessionKey) -> Result<Option
 fn eligible_on(conn: &Connection, human: i64, entry: SessionKey, value: &Value) -> Result<()> {
     let d = &value["intent"];
     let target: SessionKey = serde_json::from_value(d["target"].clone())?;
+    if d["delegation"].is_object() {
+        super::goal_delegations::validate_on(conn, human, target, &d["delegation"])?;
+    }
+    if d["recovery"].is_object() {
+        super::goal_retries::validate_control_on(conn, human, target, d)?;
+    }
     let generation = serde_json::to_value(command_generation_on(conn, target)?)?;
     let expected_generation = if d["ever_claimed"] == true
         || matches!(value["phase"].as_str(), Some("claimed" | "submitted"))
@@ -150,9 +200,10 @@ fn eligible_on(conn: &Connection, human: i64, entry: SessionKey, value: &Value) 
     }
     if binding_on(conn, human, entry)? != d["entry_binding"]
         || binding_on(conn, human, target)? != d["target_binding"]
-        || d["expires_at"]
-            .as_i64()
-            .is_none_or(|t| t <= Utc::now().timestamp())
+        || (!d["recovery"].is_object()
+            && d["expires_at"]
+                .as_i64()
+                .is_none_or(|t| t <= Utc::now().timestamp()))
         || super::stopping::fenced_on(conn, entry)?
         || super::stopping::fenced_on(conn, target)?
         || super::maintenance_writer_held_on(conn, entry)?
@@ -224,12 +275,121 @@ fn validate_claimed_on(
     eligible_on(conn, human, entry, &value)
 }
 
+pub(super) fn record_attempt_on(
+    conn: &Connection,
+    id: &str,
+    outcome: &Value,
+    actor: &Value,
+) -> Result<()> {
+    let (Some(attempt), Some(phase)) = (outcome["attempt"].as_str(), outcome["phase"].as_str())
+    else {
+        return Ok(());
+    };
+    let result = outcome["result"].to_string();
+    conn.execute("INSERT OR IGNORE INTO goal_control_attempt_receipts(control_id,attempt,phase,result,actor,recorded_at) VALUES(?1,?2,?3,?4,?5,?6)",params![id,attempt,phase,result,actor.to_string(),now_string()])?;
+    let retained:String=conn.query_row("SELECT result FROM goal_control_attempt_receipts WHERE control_id=?1 AND attempt=?2 AND phase=?3",params![id,attempt,phase],|r|r.get(0))?;
+    if serde_json::from_str::<Value>(&retained)? != outcome["result"] {
+        bail!("Retained goal attempt receipt is immutable");
+    }
+    Ok(())
+}
+
+pub(super) fn claim_on(
+    conn: &Connection,
+    instance: &str,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+    execution_actor: Value,
+) -> Result<(Value, bool)> {
+    let value = read_on(conn, human, entry, id)?;
+    if !matches!(
+        value["phase"].as_str(),
+        Some("prepared" | "known_unsent" | "retained_unsent")
+    ) {
+        return Ok((value, false));
+    }
+    eligible_on(conn, human, entry, &value)?;
+    let d = &value["intent"];
+    let newer:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND id!=?4 AND json_extract(doc,'$.authorization_order')>?5)",params![human,d["target"]["chat_id"].as_i64(),d["target"]["thread_id"].as_i64(),id,d["authorization_order"].as_i64()],|r|r.get(0))?;
+    if newer {
+        conn.execute(
+            "UPDATE interaction_goal_controls SET phase='superseded' WHERE id=?1",
+            [id],
+        )?;
+        let value = read_on(conn, human, entry, id)?;
+        return Ok((value, false));
+    }
+    let conflict:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND phase IN ('submitted','uncertain','partial'))",params![human,d["target"]["chat_id"].as_i64(),d["target"]["thread_id"].as_i64()],|r|r.get(0))?;
+    if conflict {
+        bail!("Target has an unconfirmed goal-control outcome; inspect it before another mutation");
+    }
+    let mut claimed = d.clone();
+    if value["result"].is_object() {
+        let previous = json!({"attempt":d["attempt"],"phase":value["phase"],"result":value["result"],"worker_execution":d["worker_execution"]});
+        if !claimed["previous_outcomes"].is_array() {
+            claimed["previous_outcomes"] = json!([]);
+        }
+        claimed["previous_outcomes"]
+            .as_array_mut()
+            .expect("array")
+            .push(previous);
+        let retained = claimed["previous_outcomes"].as_array_mut().expect("array");
+        for outcome in retained.iter() {
+            record_attempt_on(
+                conn,
+                id,
+                outcome,
+                &json!({"source":"retained_previous_outcome","worker_execution":outcome["worker_execution"]}),
+            )?;
+        }
+        if retained.len() > 16 {
+            retained.drain(..retained.len() - 16);
+        }
+        claimed["previous_outcomes_count"] = json!(
+            d["previous_outcomes_count"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(1)
+        );
+    }
+    claimed["worker_execution"] = Value::Null;
+    claimed["execution_actor"] = execution_actor;
+    claimed["ever_claimed"] = json!(true);
+    claimed["attempt"] = json!(Uuid::now_v7().to_string());
+    let target: SessionKey = serde_json::from_value(d["target"].clone())?;
+    conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("goal_intent:{}:{}",target.chat_id,target.thread_id),id])?;
+    conn.execute(
+            "UPDATE interaction_goal_controls SET phase='claimed',instance_id=?2,doc=?3,result=NULL WHERE id=?1",
+            params![id, instance,claimed.to_string()],
+        )?;
+    Ok((read_on(conn, human, entry, id)?, true))
+}
+
 impl Store {
     pub(super) fn init_goal_controls(&self) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_goal_controls(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,target_chat INTEGER NOT NULL,target_topic INTEGER NOT NULL,phase TEXT NOT NULL,doc TEXT NOT NULL,result TEXT,instance_id TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS goal_control_attempt_receipts(control_id TEXT NOT NULL REFERENCES interaction_goal_controls(id),attempt TEXT NOT NULL,phase TEXT NOT NULL,result TEXT NOT NULL,actor TEXT NOT NULL,recorded_at TEXT NOT NULL,PRIMARY KEY(control_id,attempt,phase));
         CREATE TABLE IF NOT EXISTS interaction_goal_inputs(human_id INTEGER NOT NULL,source_kind TEXT NOT NULL,source_event TEXT NOT NULL,control_id TEXT NOT NULL REFERENCES interaction_goal_controls(id),PRIMARY KEY(human_id,source_kind,source_event));")?;
-        conn.execute("UPDATE interaction_goal_controls SET phase=CASE WHEN phase='submitted' THEN 'uncertain' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('prepared','claimed','submitted')",[&self.instance_id])?;
+        let tx = conn.transaction()?;
+        let interrupted = {
+            let mut query=tx.prepare("SELECT id,CASE WHEN phase='submitted' THEN 'uncertain' ELSE 'retained_unsent' END FROM interaction_goal_controls WHERE instance_id!=?1 AND phase IN ('claimed','submitted') AND json_extract(doc,'$.attempt') IS NOT NULL")?;
+            query
+                .query_map([&self.instance_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        // Retain the actual prior attempt/actor before another claim replaces
+        // them. A restart before the durable write marker is known unsent;
+        // after that marker the effect stays uncertain, never replayable.
+        tx.execute("UPDATE interaction_goal_controls SET result=json_object('restart_reconciliation',json('true'),'native_write_started',json(CASE WHEN phase='submitted' THEN 'true' ELSE 'false' END),'outcome',CASE WHEN phase='submitted' THEN 'uncertain' ELSE 'known_unsent' END) WHERE instance_id!=?1 AND phase IN ('claimed','submitted') AND json_extract(doc,'$.attempt') IS NOT NULL AND result IS NULL",[&self.instance_id])?;
+        tx.execute("UPDATE interaction_goal_controls SET phase=CASE WHEN phase='submitted' THEN 'uncertain' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('prepared','claimed','submitted')",[&self.instance_id])?;
+        for (id, phase) in interrupted {
+            super::topic_publications::goal_control_on(&tx, &id, &phase)?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn goal_control_read(&self, human: i64, entry: SessionKey, id: &str) -> Result<Value> {
@@ -289,14 +449,29 @@ impl Store {
         closed: &CancellationToken,
     ) -> Result<(Value, bool)> {
         plan.validate()?;
-        if !actor.integrator || reason.trim().is_empty() || reason.len() > 2000 {
-            bail!("Owned integrating execution and bounded reason required");
+        if reason.trim().is_empty() || reason.len() > 2000 {
+            bail!("Bounded goal-control reason required");
         }
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         super::live_tasks::actor_on(&tx, actor, closed)?;
         let entry_binding = binding_on(&tx, actor.human, actor.key)?;
         let actual_binding = binding_on(&tx, actor.human, target)?;
+        let delegation = if reference.is_none() && plan.delegatable() {
+            super::goal_delegations::grant_on(&tx, actor.human, target, false)
+                .ok()
+                .map(|mut grant| {
+                    grant["principal"] = json!("daimon");
+                    grant
+                })
+        } else {
+            None
+        };
+        if !actor.integrator && (delegation.is_none() || reference.is_some()) {
+            bail!(
+                "This execution requires an effective goal delegation for the selected operation"
+            );
+        }
         // Match the inspected public binding format, including incarnation.
         if json!({"binding":actual_binding[0],"entry_binding":[actor.human,target,actual_binding[1],actual_binding[2]]})
             != *target_binding
@@ -341,7 +516,60 @@ impl Store {
         if existing {
             let value = read_on(&tx, actor.human, actor.key, &id)?;
             let d = &value["intent"];
-            if d["plan"] != serde_json::to_value(plan)?
+            let next_plan = serde_json::to_value(plan)?;
+            if let Some(reference) = reference
+                && repairable_objective_rejection(&value, &next_plan)
+                && d["target"] == serde_json::to_value(target)?
+                && d["entry_binding"] == entry_binding
+                && d["target_binding"] == actual_binding
+            {
+                // The native peer definitively rejected validation before any
+                // effect. Preserve the original authority, key, deadline and
+                // complete failed plan. Fresh interpretation has one bounded
+                // submission window; expired payloads cannot execute unchanged.
+                let mut checked = value.clone();
+                checked["intent"]["expires_at"] = json!(Utc::now().timestamp() + 900);
+                eligible_on(&tx, actor.human, actor.key, &checked)?;
+                let held: String = tx.query_row(
+                    "SELECT control_id FROM interaction_goal_inputs WHERE human_id=?1 AND source_kind=?2 AND source_event=?3",
+                    params![actor.human, if reference.update().is_some() { "telegram" } else { "conversation" }, reference.event()],
+                    |r| r.get(0),
+                )?;
+                let (source, _) = super::dialogue::original_owned_on(
+                    &tx,
+                    actor.key,
+                    actor.human,
+                    actor.native,
+                    reference,
+                    "",
+                    false,
+                )?;
+                let order = super::dialogue::original_order_on(&tx, &source)?;
+                if held != id
+                    || d["original"]["source"] != serde_json::to_value(source)?
+                    || d["original"]["capture_order"] != serde_json::to_value(order)?
+                {
+                    bail!("Original goal authority changed");
+                }
+                let mut revised = d.clone();
+                revised["objective_validation_repair"] = json!({
+                    "plan":d["plan"], "reason":d["reason"], "result":value["result"],
+                    "attempt":d["attempt"], "actor":d["actor"], "expires_at":d["expires_at"], "at":now_string()
+                });
+                revised["expires_at"] = checked["intent"]["expires_at"].clone();
+                revised["plan"] = next_plan;
+                revised["reason"] = json!(reason);
+                revised["repair_actor"] =
+                    json!({"native":actor.native,"physical":actor.physical,"local":actor.local});
+                if closed.is_cancelled() {
+                    bail!("Goal controller expired before validation repair");
+                }
+                tx.execute("UPDATE interaction_goal_controls SET phase='known_unsent',doc=?2,instance_id=?3 WHERE id=?1 AND phase='rejected'", params![id,revised.to_string(),self.instance_id])?;
+                let repaired = read_on(&tx, actor.human, actor.key, &id)?;
+                tx.commit()?;
+                return Ok((repaired, false));
+            }
+            if d["plan"] != next_plan
                 || d["target"] != serde_json::to_value(target)?
                 || d["reason"] != reason
                 || d["entry_binding"] != entry_binding
@@ -365,15 +593,16 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        let phase = if source.is_some() {
+        let phase = if source.is_some() || delegation.is_some() {
             "prepared"
         } else {
             "awaiting_confirmation"
         };
         let doc = json!({"entry":actor.key,"entry_binding":entry_binding,"target":target,"target_binding":actual_binding,
-            "goal_command_generation":command_generation_on(&tx,target)?,"plan":plan,"reason":reason,"original":source,"proposal":source.is_none(),"confirmation":null,
-            "proposal_capture_barrier":barrier,"authorization_order":source.as_ref().map(|s|&s["capture_order"]),"expires_at":Utc::now().timestamp()+900,
-            "actor":{"native":actor.native,"physical":actor.physical,"local":actor.local},"created_at":now_string()});
+            "goal_command_generation":command_generation_on(&tx,target)?,"plan":plan,"reason":reason,"original":source,"proposal":source.is_none() && delegation.is_none(),"confirmation":null,
+            "proposal_capture_barrier":barrier,"authorization_order":source.as_ref().map(|s|s["capture_order"].clone()).or_else(||delegation.as_ref().map(|_|json!(barrier))),"expires_at":Utc::now().timestamp()+900,
+            "delegation":delegation,
+            "actor":{"kind":if delegation.is_some(){"daimon"}else{"human_instruction_interpreter"},"native":actor.native,"physical":actor.physical,"local":actor.local},"created_at":now_string()});
         let value = json!({"id":id,"phase":phase,"intent":doc});
         eligible_on(&tx, actor.human, actor.key, &value)?;
         tx.execute("INSERT INTO interaction_goal_controls(id,human_id,entry_chat,entry_topic,target_chat,target_topic,phase,doc,instance_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id,actor.human,actor.key.chat_id,actor.key.thread_id,target.chat_id,target.thread_id,phase,doc.to_string(),self.instance_id])?;
@@ -455,57 +684,24 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         super::live_tasks::actor_on(&tx, actor, closed)?;
-        let value = read_on(&tx, actor.human, actor.key, id)?;
-        if !matches!(
-            value["phase"].as_str(),
-            Some("prepared" | "known_unsent" | "retained_unsent")
-        ) {
-            return Ok((value, false));
-        }
-        eligible_on(&tx, actor.human, actor.key, &value)?;
-        let d = &value["intent"];
-        let newer:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND id!=?4 AND json_extract(doc,'$.authorization_order')>?5)",params![actor.human,d["target"]["chat_id"].as_i64(),d["target"]["thread_id"].as_i64(),id,d["authorization_order"].as_i64()],|r|r.get(0))?;
-        if newer {
-            tx.execute(
-                "UPDATE interaction_goal_controls SET phase='superseded' WHERE id=?1",
-                [id],
-            )?;
-            let value = read_on(&tx, actor.human, actor.key, id)?;
-            tx.commit()?;
-            return Ok((value, false));
-        }
-        let conflict:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND phase IN ('submitted','uncertain','partial'))",params![actor.human,d["target"]["chat_id"].as_i64(),d["target"]["thread_id"].as_i64()],|r|r.get(0))?;
-        if conflict {
+        if read_on(&tx, actor.human, actor.key, id)?["intent"]["recovery"].is_object() {
             bail!(
-                "Target has an unconfirmed goal-control outcome; inspect it before another mutation"
+                "Recovery attempts belong to the backend scheduler; prepare a separately attributed delegated action instead"
             );
         }
-        let mut claimed = d.clone();
-        if value["result"].is_object() {
-            let previous = json!({"attempt":d["attempt"],"phase":value["phase"],"result":value["result"],"worker_execution":d["worker_execution"]});
-            if !claimed["previous_outcomes"].is_array() {
-                claimed["previous_outcomes"] = json!([]);
-            }
-            claimed["previous_outcomes"]
-                .as_array_mut()
-                .expect("array")
-                .push(previous);
-        }
-        claimed["worker_execution"] = Value::Null;
-        claimed["ever_claimed"] = json!(true);
-        claimed["attempt"] = json!(Uuid::now_v7().to_string());
-        let target: SessionKey = serde_json::from_value(d["target"].clone())?;
-        tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("goal_intent:{}:{}",target.chat_id,target.thread_id),id])?;
-        tx.execute(
-            "UPDATE interaction_goal_controls SET phase='claimed',instance_id=?2,doc=?3,result=NULL WHERE id=?1",
-            params![id, self.instance_id,claimed.to_string()],
+        let result = claim_on(
+            &tx,
+            &self.instance_id,
+            actor.human,
+            actor.key,
+            id,
+            json!({"native":actor.native,"physical":actor.physical,"local":actor.local}),
         )?;
         if closed.is_cancelled() {
             bail!("Goal controller expired before submission claim");
         }
-        let value = read_on(&tx, actor.human, actor.key, id)?;
         tx.commit()?;
-        Ok((value, true))
+        Ok(result)
     }
     /// Revalidate the already claimed attempt immediately before the native write.
     pub fn goal_control_validate_submission(
@@ -543,7 +739,26 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         validate_claimed_on(&tx, &self.instance_id, human, entry, id, attempt)?;
+        let value = read_on(&tx, human, entry, id)?;
+        let doc = &value["intent"];
+        if doc["recovery"].is_object() {
+            let target: SessionKey = serde_json::from_value(doc["target"].clone())?;
+            super::goal_retries::pending_on(
+                &tx,
+                target,
+                doc["target_binding"][1]
+                    .as_i64()
+                    .context("Recovery target missing")?,
+                doc["worker_execution"]["local"].as_i64(),
+            )?;
+        }
         tx.execute("UPDATE interaction_goal_controls SET phase='submitted' WHERE id=?1 AND phase='claimed' AND instance_id=?2",params![id,self.instance_id])?;
+        if doc["recovery"].is_object() {
+            tx.execute(
+                "UPDATE goal_retries SET phase='submitted' WHERE control_id=?1 AND phase='claimed'",
+                [id],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -582,12 +797,16 @@ impl Store {
         } else {
             &doc["confirmation"]["original"]
         };
-        let reference: InputReference = serde_json::from_value(selected["input_ref"].clone())?;
-        let source = match reference {
-            InputReference::Conversation(id) => id,
-            InputReference::Telegram(update) => format!("telegram:{update}"),
-        };
-        super::conversation_inputs::select_return_on(&tx, human, native, &source)?;
+        if doc["delegation"].is_null() {
+            let reference: InputReference = serde_json::from_value(selected["input_ref"].clone())?;
+            let source = match reference {
+                InputReference::Conversation(id) => id,
+                InputReference::Telegram(update) => format!("telegram:{update}"),
+            };
+            super::conversation_inputs::select_return_on(&tx, human, native, &source)?;
+        }
+        // Delegated control is an application action. It preserves the latest
+        // actual human-selected return, without inventing another ingress.
         let changed=tx.execute("UPDATE interaction_goal_controls SET doc=?2 WHERE id=?1 AND phase IN ('claimed','submitted') AND instance_id=?3",params![id,doc.to_string(),self.instance_id])?;
         if changed != 1 {
             bail!("Goal submission no longer owned");
@@ -602,8 +821,18 @@ impl Store {
         id: &str,
         attempt: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute("UPDATE interaction_goal_controls SET phase=CASE WHEN phase='claimed' THEN 'known_unsent' ELSE 'uncertain' END,result=json_patch(COALESCE(result,'{}'),?5) WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4 AND phase IN ('claimed','submitted') AND instance_id=?6 AND json_extract(doc,'$.attempt')=?7",params![id,human,entry.chat_id,entry.thread_id,json!({"error":"Selected collector ended before retaining a goal-control receipt","automatic_retry":false}).to_string(),self.instance_id,attempt])?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = tx.execute("UPDATE interaction_goal_controls SET phase=CASE WHEN phase='claimed' THEN 'known_unsent' ELSE 'uncertain' END,result=json_patch(COALESCE(result,'{}'),?5) WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4 AND phase IN ('claimed','submitted') AND instance_id=?6 AND json_extract(doc,'$.attempt')=?7",params![id,human,entry.chat_id,entry.thread_id,json!({"error":"Selected collector ended before retaining a goal-control receipt","automatic_retry":false}).to_string(),self.instance_id,attempt])?;
+        if changed == 1 {
+            let phase: String = tx.query_row(
+                "SELECT phase FROM interaction_goal_controls WHERE id=?",
+                [id],
+                |r| r.get(0),
+            )?;
+            super::topic_publications::goal_control_on(&tx, id, &phase)?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn goal_control_finish(
@@ -622,19 +851,77 @@ impl Store {
         {
             bail!("Invalid goal-control receipt");
         }
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let current_attempt:Option<String>=conn.query_row("SELECT json_extract(doc,'$.attempt') FROM interaction_goal_controls WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4",params![id,human,entry.chat_id,entry.thread_id],|r|r.get(0))?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let current_attempt:Option<String>=tx.query_row("SELECT json_extract(doc,'$.attempt') FROM interaction_goal_controls WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4",params![id,human,entry.chat_id,entry.thread_id],|r|r.get(0))?;
         if current_attempt.as_deref() != Some(attempt) {
             return Ok(false);
         }
         // Preserve receipts after a binding/grant changes in flight; do not restore permission or resubmit.
-        let changed=conn.execute("UPDATE interaction_goal_controls SET phase=?5,result=?6 WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4 AND phase IN ('claimed','submitted') AND instance_id=?7",params![id,human,entry.chat_id,entry.thread_id,phase,result.to_string(),self.instance_id])?;
+        let changed=tx.execute("UPDATE interaction_goal_controls SET phase=?5,result=?6 WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4 AND phase IN ('claimed','submitted') AND instance_id=?7",params![id,human,entry.chat_id,entry.thread_id,phase,result.to_string(),self.instance_id])?;
         if changed == 0 {
-            let retained:(String,Option<String>)=conn.query_row("SELECT phase,result FROM interaction_goal_controls WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4",params![id,human,entry.chat_id,entry.thread_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let retained:(String,Option<String>)=tx.query_row("SELECT phase,result FROM interaction_goal_controls WHERE id=?1 AND human_id=?2 AND entry_chat=?3 AND entry_topic=?4",params![id,human,entry.chat_id,entry.thread_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
             if retained != (phase.to_owned(), Some(result.to_string())) {
                 bail!("Goal receipt is immutable or belongs to another instance");
             }
         }
+        super::topic_publications::goal_control_on(&tx, id, phase)?;
+        tx.commit()?;
         Ok(changed == 1)
+    }
+}
+
+#[cfg(test)]
+mod objective_repair_tests {
+    use super::*;
+
+    #[test]
+    fn unicode_limit_and_exact_effect_free_legacy_rejection() {
+        let mut plan = GoalPlan {
+            action: GoalAction::Start,
+            expected: NativeGoalSnapshot {
+                goal: None,
+                revision: "original:0".into(),
+            },
+            objective: Some("😀".repeat(4000)),
+            token_budget: None,
+            followup: None,
+        };
+        assert!(plan.validate().is_ok());
+        plan.objective = Some("x".repeat(4001));
+        assert!(plan.validate().is_err());
+        let old = serde_json::to_value(&plan).unwrap();
+        plan.objective = Some("Compact complete task; preserve its retained context".into());
+        let next = serde_json::to_value(&plan).unwrap();
+        let v = json!({"phase":"rejected","intent":{"proposal":false,"plan":old},
+            "result":{"native_error_code":-32600,"error":"goal objective must be at most 4000 characters | code -32600","native_receipt":null,"replacement_clear":null}});
+        assert!(repairable_objective_rejection(&v, &next));
+        for phase in [
+            "submitted",
+            "uncertain",
+            "partial",
+            "acknowledged",
+            "known_unsent",
+        ] {
+            let mut changed = v.clone();
+            changed["phase"] = json!(phase);
+            assert!(!repairable_objective_rejection(&changed, &next));
+        }
+        for field in ["native_receipt", "replacement_clear"] {
+            let mut changed = v.clone();
+            changed["result"][field] = json!({"effect":true});
+            assert!(!repairable_objective_rejection(&changed, &next));
+        }
+        for field in ["expected", "token_budget", "followup", "action"] {
+            let mut changed = next.clone();
+            changed[field] = json!("changed");
+            assert!(!repairable_objective_rejection(&v, &changed));
+        }
+        let mut changed = v.clone();
+        changed["intent"]["objective_validation_repair"] = json!({});
+        assert!(!repairable_objective_rejection(&changed, &next));
+        let mut changed = v.clone();
+        changed["result"]["error"] = json!("another validation failure");
+        assert!(!repairable_objective_rejection(&changed, &next));
     }
 }

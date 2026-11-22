@@ -8,6 +8,18 @@ uses the same transcriber with a one-button recording flow, while the separate
 [speech player](interaction-speech.md) renders selected retained replies. Accessible
 realtime comparison and receiving device/human acceptance remain separate work.
 
+Browser voice messages request a best-effort foreground screen wake lock during
+recording, releasing it when recording ends or the page becomes hidden. Unsupported
+or denied requests do not prevent recording. This does not guarantee mobile OS
+background capture. Pagehide/native background stops capture and finalizes the
+same original into existing local recovery for explicit review; it must not erase
+an ordinary unedited message or automatically restart capture/send it. Repeated
+background events during finalization/review preserve the original identity,
+attachments and edited draft. A later explicit Send uses that recovered original.
+The existing 120-second/20-MiB capture limits still apply. A duration-limit cut
+is distinct from an observed screen-lock interruption; qualify actual phone
+preservation separately from synthetic browser lifecycle tests.
+
 ```toml
 [voice]
 transcription_command = ["/absolute/python3", "/absolute/transcribe-file.py"]
@@ -137,3 +149,61 @@ of final text availability; cleanup failure returns false while preserving the
 completed text receipt for exact recovery without a new provider call. The
 caller's original input and upstream provider retention are outside that scope.
 Without the flag the established response shape is unchanged.
+
+### Composer transcription preview
+
+The ordinary microphone can show provisional words from its existing streaming
+recognizer directly in the composer. This remains one audio message: the preview
+is read-only while recording and is never posted as an additional text input or
+used to invoke a second recognizer. The prior typed draft and selection return
+when recording ends or is discarded. Late captions cannot overwrite another
+capture, binding or a newer draft. Status and recovery details remain in the
+existing compact notice popover. A source without streaming captions leaves the
+typed draft in place. Continuous Avatar keeps its own caption presentation.
+
+A selected message reference occupies a separate composer row above the writing
+field; attachment, microphone and Send controls stay below it. The existing
+synthetic Chromium fixture supports `QUALIFICATION_HUD=1 QUALIFICATION_REPLY=1`
+with a fresh bounded `QUALIFICATION_OUTPUT` directory to verify narrow,
+keyboard-sized and desktop layouts, preserved drafts and exact reply references.
+These checks open no provider or native session and do not establish physical
+phone stability or hearing acceptance.
+
+## Retained ordinary Conversation failure diagnostics
+
+Ordinary file-backed voice preparation retains one fixed `voice_failure` in the
+existing original input document. It records the earliest observed stage, whether
+listener shutdown interrupted preparation, and whether the command was restricted
+to reading an already-completed transcript. The vocabulary distinguishes source
+read/validation, decode/signal checks, the configured transcriber command, final
+transcript validation/commit and native admission. A command-stage failure is not
+proof that a provider accepted a request; existing provider intent/result receipts
+remain authoritative.
+
+The first diagnostic is retained across restart and completed-result recovery.
+It never overwrites the original bytes, digest, transcript, native outcome, owner
+or phase uncertainty. Its size is bounded by fixed enums and two booleans in one
+existing row; no separate log, queue or growing error history is introduced. No
+database migration is needed. Older input documents omit it, and older ordinary
+input readers ignore the additional root field. Keep the current native reader
+with a web rollback; do not restore databases.
+
+Only the existing authorized input trace exposes the diagnostic. Normal input
+responses continue to show useful product states; arbitrary errors, stderr,
+provider payloads, paths and transcript text are not copied into diagnostics.
+No failure starts ASR, resends an original or retries native work. Historical
+failures without this observation stay unexplained. Telegram normalization and
+forwarded-speaker provenance in #817 remain separate unfinished work; this change
+does not retroactively diagnose the reported phone or forwarded-audio failures.
+
+## Ordinary Avatar feedback
+
+Avatar shows short product states (listening, processing, saving, sent) and a
+useful recording-review action. Capture/analysis lag and handoff stages remain in
+the existing technical timing inspector instead of appearing as warning prose in
+the ordinary voice view. The Reconnect control does not describe diagnostic
+storage; its existing connection/recovery action still runs unchanged. Keep
+transcripts, stale-phrase fences, actual recovery warnings, Stop, For You and
+reconnect readiness intact. Detector progress alone must not claim that the
+microphone is active; that readiness comes from the current engine state. This presentation correction does not establish a
+phone startup diagnosis or sustained voice/hearing acceptance.

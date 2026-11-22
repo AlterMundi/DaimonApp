@@ -8,6 +8,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub goal_recovery: GoalRecoveryConfig,
     pub voice: Option<crate::voice::VoiceConfig>,
     pub telegram: TelegramConfig,
     pub codex: CodexConfig,
@@ -32,6 +34,41 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GoalRecoveryConfig {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub batch_size: usize,
+    pub alerts: Option<GoalRecoveryAlerts>,
+}
+impl Default for GoalRecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: 60,
+            batch_size: 4,
+            alerts: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalRecoveryAlerts {
+    /// Trusted operator argv; credentials belong in its private config file.
+    pub command: Vec<String>,
+    pub human_id: i64,
+    pub producer_id: String,
+    pub receiving_scope: String,
+    pub resource_ref: String,
+    #[serde(default = "default_goal_alert_after")]
+    pub after_seconds: i64,
+}
+fn default_goal_alert_after() -> i64 {
+    600
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionControlConfig {
     pub socket_path: PathBuf,
@@ -41,6 +78,8 @@ pub struct SessionControlConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TribuConfig {
+    #[serde(default)]
+    pub mode: TribuMode,
     pub socket_path: PathBuf,
     pub owner_client_file: PathBuf,
     pub being_ref: String,
@@ -54,6 +93,15 @@ pub struct TribuConfig {
     pub deadline_seconds: u64,
     #[serde(default = "default_tribu_pending")]
     pub max_pending: usize,
+}
+
+/// Legacy bounded topic and integrated ingress are deliberately separate policies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TribuMode {
+    #[default]
+    Bounded,
+    Interaction,
 }
 
 fn default_tribu_deadline() -> u64 {
@@ -79,6 +127,9 @@ pub enum HumanRequestLanguage {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
+    /// Optional transport; the shared backend and owner controls remain available.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub bot_token: Option<String>,
     pub bot_token_env: Option<String>,
     pub bot_token_file: Option<PathBuf>,
@@ -138,6 +189,9 @@ pub struct CodexConfig {
     pub auto_attach_latest_history: bool,
     pub default_cwd: PathBuf,
     pub default_model: Option<String>,
+    /// Named native model profiles selected by exact local conversation key.
+    #[serde(default)]
+    pub session_profiles: Vec<SessionModelProfile>,
     pub default_reasoning_effort: Option<String>,
     #[serde(default = "default_sandbox")]
     pub default_sandbox: String,
@@ -153,6 +207,42 @@ pub struct CodexConfig {
     pub import_desktop_history: bool,
     #[serde(default = "default_true")]
     pub import_cli_history: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionModelProfile {
+    pub chat_id: i64,
+    pub topic_id: i64,
+    pub profile: String,
+    pub reasoning_effort: Option<String>,
+}
+
+impl SessionModelProfile {
+    pub fn key(&self) -> crate::models::SessionKey {
+        crate::models::SessionKey::new(self.chat_id, Some(self.topic_id))
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.chat_id == 0
+            || self.topic_id < 0
+            || self.profile.is_empty()
+            || self.profile.len() > 64
+            || !self
+                .profile
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            || self.reasoning_effort.as_deref().is_some_and(|v| {
+                !matches!(
+                    v,
+                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+                )
+            })
+        {
+            bail!("Invalid scoped native model profile");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
@@ -185,6 +275,40 @@ impl Config {
     }
 
     fn validate(&mut self) -> Result<()> {
+        if !(5..=3600).contains(&self.goal_recovery.interval_seconds)
+            || !(1..=16).contains(&self.goal_recovery.batch_size)
+        {
+            bail!("Goal recovery interval must be 5..=3600 seconds and batch_size 1..=16");
+        }
+        if let Some(alerts) = &self.goal_recovery.alerts {
+            let safe = |s: &str| {
+                !s.is_empty()
+                    && s.len() <= 128
+                    && s.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            };
+            if alerts.command.is_empty()
+                || alerts.command.len() > 16
+                || alerts
+                    .command
+                    .iter()
+                    .any(|s| s.is_empty() || s.len() > 4096 || s.contains('\0'))
+                || alerts.human_id <= 0
+                || !(60..=86400).contains(&alerts.after_seconds)
+                || !safe(&alerts.producer_id)
+                || !safe(&alerts.receiving_scope)
+                || !safe(&alerts.resource_ref)
+            {
+                bail!("Invalid scoped goal-recovery Alerts configuration");
+            }
+        }
+        let mut profile_keys = std::collections::HashSet::new();
+        for profile in &self.codex.session_profiles {
+            profile.validate()?;
+            if !profile_keys.insert(profile.key()) {
+                bail!("Duplicate native model profile for a conversation");
+            }
+        }
         if let Some(voice) = &self.voice {
             voice.validate()?;
             if self.interaction.is_none() {
@@ -197,8 +321,10 @@ impl Config {
                 bail!("Interaction requires the selected shared native App Server");
             }
             if self.tribu.as_ref().is_some_and(|p| {
-                p.key() == interaction.entry()
-                    || interaction.target(p.topic_id).is_some() && p.chat_id == interaction.chat_id
+                p.mode == TribuMode::Bounded
+                    && (p.key() == interaction.entry()
+                        || interaction.target(p.topic_id).is_some()
+                            && p.chat_id == interaction.chat_id)
             }) {
                 bail!("Interaction entry/targets cannot overlap the bounded I/O profile");
             }
@@ -217,6 +343,16 @@ impl Config {
             }
         }
         if let Some(policy) = &self.tribu {
+            if policy.mode == TribuMode::Interaction
+                && self
+                    .interaction
+                    .as_ref()
+                    .is_none_or(|i| i.entry() != policy.key() || i.human_id != policy.human_id)
+            {
+                bail!(
+                    "Integrated Tribu ingress requires the existing Interaction entry and paired human"
+                );
+            }
             if !policy.socket_path.is_absolute()
                 || !policy.owner_client_file.is_absolute()
                 || policy.human_id <= 0
@@ -296,9 +432,11 @@ impl Config {
             );
         }
 
-        let token = self.telegram.resolve_token()?;
-        if token.trim().is_empty() {
-            bail!("telegram bot token is empty");
+        if self.telegram.enabled {
+            let token = self.telegram.resolve_token()?;
+            if token.trim().is_empty() {
+                bail!("telegram bot token is empty");
+            }
         }
         if let Some(days) = self.telegram.stale_topic_days {
             if days < 1 {
@@ -561,6 +699,67 @@ fn find_vendored_codex_exe(wrapper_path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integrated_tribu_requires_exact_interaction_owner_and_entry() {
+        let raw = r#"
+            [telegram]
+            bot_token = 'synthetic'
+            [codex]
+            default_cwd = '/tmp'
+            shared_app_server = true
+            [interaction]
+            human_id = 100
+            chat_id = 100
+            topic_id = 1
+            targets = [{name='Alpha',topic_id=7}]
+            [tribu]
+            mode = 'interaction'
+            socket_path = '/tmp/fixture.sock'
+            owner_client_file = '/tmp/fixture-owner.json'
+            being_ref = 'fixture-being'
+            body_label = 'fixture.codex@fixture'
+            embodiment_id = 'fixture-embodiment'
+            human_id = 100
+            chat_id = 100
+            topic_id = 1
+            activated_after = 1
+        "#;
+        let mut config: Config = toml::from_str(raw).unwrap();
+        config.codex.binary = std::env::current_exe().unwrap();
+        config.validate().unwrap();
+        for mode in ["bounded", "unknown"] {
+            let selected = raw.replace("mode = 'interaction'", &format!("mode = '{mode}'"));
+            let result = toml::from_str::<Config>(&selected).and_then(|mut c| {
+                c.codex.binary = config.codex.binary.clone();
+                c.validate().map_err(serde::de::Error::custom)
+            });
+            assert!(result.is_err());
+        }
+        let mut wrong_owner = config.clone();
+        wrong_owner.tribu.as_mut().unwrap().human_id = 101;
+        assert!(wrong_owner.validate().is_err());
+        let mut wrong_entry = config;
+        wrong_entry.tribu.as_mut().unwrap().topic_id = 7;
+        assert!(wrong_entry.validate().is_err());
+    }
+
+    #[test]
+    fn backend_configuration_loads_without_resolving_telegram_secrets() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = std::env::current_exe().unwrap();
+        let raw = format!(
+            "[telegram]\nenabled = false\nbot_token_file = {}\n[codex]\nbinary = {}\ndefault_cwd = {}\n",
+            serde_json::to_string(&root.path().join("absent-secret")).unwrap(),
+            serde_json::to_string(&binary).unwrap(),
+            serde_json::to_string(&root.path()).unwrap(),
+        );
+        let path = root.path().join("backend.toml");
+        fs::write(&path, &raw).unwrap();
+        assert!(!Config::load(path.clone()).unwrap().telegram.enabled);
+        fs::write(&path, raw.replace("enabled = false", "enabled = true")).unwrap();
+        assert!(Config::load(path).is_err());
+    }
 
     #[test]
     fn portable_defaults_require_explicit_auxiliary_opt_in() {

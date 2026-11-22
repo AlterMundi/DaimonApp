@@ -1,0 +1,221 @@
+// Foreground coordinator with synthetic devices, analysis and retained originals.
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
+const tick=()=>new Promise(yes=>setImmediate(yes));
+const until=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(yes=>setTimeout(yes,5));}throw Error('Expected continuous voice transition');};
+const deferred=()=>{let resolve;return {promise:new Promise(yes=>resolve=yes),resolve};};
+function boot(){
+ const events={},timers=[],analyses=[],sources=[],recorders=[],medias=[],retained=[],commits=[],sent=[],reviews=[],states=[],captions=[],timings=[];
+ let binding='a'.repeat(64),interrupts=0,permission,commitHold,retainHold,retentionCalls=0,questions={old:'v1'},playback={source:'synthetic-reply',position_millis:123};
+ const document={hidden:false,addEventListener:(n,f)=>events[n]=f};
+ const window={crypto,addEventListener:(n,f)=>events[n]=f,navigator:{mediaDevices:{async getUserMedia(options){
+  assert.equal(options.audio.echoCancellation,true);assert.equal(options.video,false);
+  if(permission){const p=permission;permission=undefined;return p.promise;}
+  const value={stops:0,getTracks(){return [{stop:()=>value.stops++}];}};medias.push(value);return value;
+ }}}};
+ window.StreamingVoice={
+  async openActivity(options){
+   const value={options,pcm:[],closed:false,feed(pcm){this.pcm.push(pcm);return !this.closed;},boundary(v){this.boundaries.push(v);return true;},boundaries:[],close(){this.closed=true;},emit(v){options.onActivity(v);}};analyses.push(value);return value;
+  },
+  async openCapture(media){
+   const listeners=new Set(),s={media,bytes:0,acoustic(activityBytes,totalBytes){for(const f of [...listeners])f({activityBytes,totalBytes});},closed:false,started:false,subscribe(fn){listeners.add(fn);return ()=>listeners.delete(fn);},observe(){},start(){this.started=true;},close(){this.closed=true;for(const f of [...listeners])f({captureError:'capture_closed'});listeners.clear();},emit(n,value=1){const pcm=new ArrayBuffer(n);new Uint8Array(pcm).fill(value);this.bytes+=n;for(const f of [...listeners])f({pcm,totalBytes:this.bytes});}};sources.push(s);return s;
+  },
+  async create(_media,options){
+   const events={},s=options.captureSource;
+   const r={options,parts:[],state:'inactive',addEventListener:(n,f)=>events[n]=f,
+    start(){this.state='recording';this.parts.push(...options.initialPCM(s.bytes));this.unsubscribe=s.subscribe(v=>{if(v.pcm)this.parts.push(v.pcm);});s.start();},
+    stop(){if(this.state==='inactive')return;this.state='inactive';this.unsubscribe?.();this.flushedBlob=new Blob(this.parts,{type:'audio/wav'});options.onFlushed(s.bytes,this.flushedBlob);},
+    discard(){this.state='inactive';this.unsubscribe?.();},
+    partial(text){options.onPartial(text);},
+    complete(text){if(text)this.preparedText=text;events.dataavailable({data:this.flushedBlob||new Blob(this.parts,{type:'audio/wav'})});events.stop();}
+   };recorders.push(r);return r;
+  }
+ };
+ vm.runInNewContext(fs.readFileSync('dashboard/web/voice-session.js','utf8'),{window,document,AbortController,ArrayBuffer,JSON,Map,Promise,Infinity,setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.closed=true;}});
+ const session=window.ContinuousConversation.create({headers:()=>({}),getBinding:()=>binding,getQuestions:()=>questions,getPlayback:()=>playback,
+  async retain(original){retentionCalls++;const v={...original,audio_sha256:Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex')};if(retainHold)await retainHold.promise;retained.push(v);return v;},
+  async commit(original){commits.push(original);if(commitHold)return commitHold.promise;return {confirmed:true,value:{id:original.id,voice:{audio_sha256:original.audio_sha256}}};},
+  onTiming:(id,stage,detail)=>timings.push({id,stage,detail}),onState:v=>states.push(v),onCaption:v=>captions.push(v),onInterrupt:()=>interrupts++,onSent:v=>sent.push(v),onReview:v=>reviews.push(v)
+ });
+ const activity=(generation,onset,endpoint)=>analyses.at(-1).emit({schema:'telecodex.turn-activity/v1',type:'activity',generation,audio_bytes:sources.at(-1).bytes,speech_seen:true,speaking:!endpoint,
+  ...(onset?{onset:{generation,audio_bytes:sources.at(-1).bytes}}:{}),...(endpoint?{endpoint:{generation,audio_bytes:sources.at(-1).bytes,probability:.9,authority:'analysis_only'}}:{})});
+ return {session,analyses,sources,recorders,medias,retained,commits,sent,reviews,states,captions,timings,document,events,timers,activity,interrupts:()=>interrupts,
+  questions:v=>questions=v,playback:v=>playback=v,bind:v=>binding=v,permission:()=>{permission=deferred();return permission;},holdCommit:()=>{commitHold=deferred();return commitHold;},holdRetention:()=>{retainHold=deferred();return retainHold;},retentionCalls:()=>retentionCalls};
+}
+(async()=>{
+ const early=boot();await early.session.start();early.sources[0].emit(3200);early.activity(1,true,false);
+ early.session.hold('Voice view closed.');
+ await until(()=>early.retained.length===1);
+ assert.equal(early.retained[0].blob.size,3200,'The flushed original is durable before any provider final/stop event');
+ assert.equal(early.retained[0].preparedText,undefined);assert.equal(early.commits.length,0,'Durability is not permission to submit an unconfirmed recording');
+ assert.equal(early.session.originals.length,1);assert(early.reviews.length,'Leaving the view exposes the retained original without waiting for ASR');
+ const earlyId=early.retained[0].id,earlyHash=early.retained[0].audio_sha256;
+ early.recorders[0].complete('Late provider confirmation');await tick();
+ assert.equal(early.retained.length,1,'Late provider confirmation must reuse the existing durable original');
+ assert.equal(early.session.originals[0].id,earlyId);assert.equal(early.session.originals[0].audio_sha256,earlyHash);assert.equal(early.commits.length,0);
+ const fallback=boot();await fallback.session.start();fallback.sources[0].emit(3200);
+ fallback.recorders[0].partial('Una frase completa');fallback.activity(1,true,false);fallback.activity(1,false,true);
+ await until(()=>fallback.recorders.length===2);fallback.recorders[0].complete();
+ await until(()=>fallback.commits.length===1);
+ assert.equal(fallback.commits[0].preparedText,undefined,'A completed endpoint can use the existing file-ASR upload when stream finalization fails');
+ assert.equal(fallback.commits[0].id,fallback.retained[0].id);assert.equal(fallback.commits[0].blob,fallback.retained[0].blob);
+ assert.equal(fallback.commits[0].audio_sha256,fallback.retained[0].audio_sha256);
+ assert.equal(fallback.sent.length,1);assert(fallback.session.active,'Known complete utterance fallback does not end continuous capture');
+ fallback.sources[0].emit(3200);fallback.recorders[1].partial('La frase siguiente');fallback.activity(2,true,false);fallback.activity(2,false,true);
+ await until(()=>fallback.recorders.length===3);fallback.recorders[1].complete('La frase siguiente');await until(()=>fallback.sent.length===2);
+ assert.equal(fallback.commits.length,2);assert.notEqual(fallback.commits[0].id,fallback.commits[1].id);
+ fallback.session.hold();fallback.recorders[2].complete();await tick();assert.equal(fallback.commits.length,2,'Exiting never grants file-ASR or Send for the unfinished fragment');
+ const limitedFallback=boot();await limitedFallback.session.start();limitedFallback.sources[0].emit(3200);
+ limitedFallback.recorders[0].partial('Una frase');limitedFallback.activity(1,true,false);limitedFallback.recorders[0].captureStop='audio_flush_unconfirmed';limitedFallback.activity(1,false,true);
+ await until(()=>limitedFallback.recorders.length===2);limitedFallback.recorders[0].complete();await until(()=>limitedFallback.reviews.length>0);
+ assert.equal(limitedFallback.commits.length,0,'An unconfirmed audio ending still requires explicit review');assert(limitedFallback.reviews.length);
+ const retaining=boot(),transaction=retaining.holdRetention();await retaining.session.start();retaining.sources[0].emit(3200);retaining.recorders[0].partial('Una frase completa');retaining.activity(1,true,false);retaining.activity(1,false,true);
+ await until(()=>retaining.recorders.length===2);retaining.recorders[0].complete('Una frase completa');await tick();
+ assert.equal(retaining.retentionCalls(),1);assert.equal(retaining.commits.length,0,'Provider confirmation cannot outrun the original durability transaction');
+ transaction.resolve();await until(()=>retaining.sent.length===1);
+ assert.equal(retaining.retentionCalls(),1,'Successful confirmation reuses the flushed original rather than replacing it');
+ assert.equal(retaining.commits[0].preparedText,'Una frase completa');retaining.session.hold();retaining.recorders[1].complete();await tick();
+ const countdown=boot();await countdown.session.start();assert.equal(countdown.states.at(-1).remaining,120);
+ for(let n=0;n<105;n++)countdown.sources[0].emit(32000,0);
+ assert.equal(countdown.states.at(-1).remaining,15,'The displayed budget follows this exact recorder PCM, including silence');
+ const updates=countdown.states.length;countdown.sources[0].emit(320,0);countdown.sources[0].emit(320,0);
+ assert.equal(countdown.states.length,updates,'Subsecond PCM does not create countdown update loops');
+ countdown.recorders[0].partial('Frase');countdown.activity(1,true,false);countdown.activity(1,false,true);
+ await until(()=>countdown.recorders.length===2);assert.equal(countdown.states.at(-1).remaining,120,'The next exact original gets a fresh recording budget');
+ countdown.recorders[0].complete('Frase');await until(()=>countdown.commits.length===1);countdown.session.hold();countdown.recorders[1].complete();await tick();
+ const delayed=boot();await delayed.session.start();delayed.sources[0].emit(3200);delayed.activity(1,true,false);
+ delayed.activity(1,false,true);delayed.sources[0].emit(64000,0);
+ assert.equal(delayed.session.floor,false,'A confirmed acoustic endpoint releases playback while captions are still pending');
+ assert.equal(delayed.recorders[0].state,'recording','Releasing playback must not discard or dispatch the unconfirmed recording');
+ assert.equal(delayed.commits.length,0);
+ delayed.recorders[0].partial('Una frase completa que llegó después del silencio');
+ assert.equal(delayed.recorders[0].state,'inactive','Silent PCM cannot invalidate an exact endpoint while captions arrive late');
+ await until(()=>delayed.recorders.length===2);delayed.recorders[0].complete('Una frase completa');await until(()=>delayed.commits.length===1);
+ assert.equal(delayed.retained[0].blob.size,67200);assert.equal(delayed.analyses[0].boundaries.length,1);
+ delayed.session.hold();delayed.recorders[1].complete();await tick();
+ // Energy can be ambient noise: wait for analysis to cover it, rather than
+ // permanently invalidating an otherwise current acoustic endpoint.
+ const noisy=boot();await noisy.session.start();noisy.sources[0].emit(3200);noisy.activity(1,true,false);
+ noisy.sources[0].acoustic(4000,4000);noisy.recorders[0].partial('Una frase completa');
+ noisy.activity(1,false,true);assert.equal(noisy.recorders[0].state,'recording','Unanalyzed energy still fences a delayed endpoint');
+ noisy.sources[0].emit(3200,0);
+ noisy.analyses[0].emit({generation:1,audio_bytes:6400,speaking:false,speech_seen:true});
+ assert.equal(noisy.recorders[0].state,'inactive','Later quiet analysis covering ambient energy must release the retained endpoint');
+ await until(()=>noisy.recorders.length===2);noisy.recorders[0].complete('Una frase completa');await until(()=>noisy.commits.length===1);
+ noisy.session.hold('Analysis could not continue.');noisy.recorders[1].complete();await tick();
+ assert.equal(noisy.states.at(-1).message,'Analysis could not continue.','Finalizing a retained original must preserve the first stop reason');
+ // The analyzer has network latency while local ambient energy keeps moving.
+ // A same-generation acknowledgment must be able to cover the watermark
+ // observed with the endpoint, without chasing every newer noise frame.
+ const ambient=boot();await ambient.session.start();ambient.sources[0].emit(3200);ambient.activity(1,true,false);
+ ambient.recorders[0].partial('Una frase completa');ambient.sources[0].acoustic(6400,6400);
+ ambient.activity(1,false,true);assert.equal(ambient.recorders[0].state,'recording');
+ assert.equal(ambient.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_analysis');
+ ambient.sources[0].emit(3200,0);ambient.sources[0].acoustic(9600,9600);
+ ambient.analyses[0].emit({generation:1,audio_bytes:6400,speaking:false,speech_seen:true});
+ assert.equal(ambient.recorders[0].state,'inactive','Continuous ambient energy must not starve a confirmed same-generation endpoint');
+ await until(()=>ambient.recorders.length===2);ambient.recorders[0].complete('Una frase completa');await until(()=>ambient.commits.length===1);
+ ambient.session.hold();ambient.recorders[1].complete();await tick();
+ const ambientRenewed=boot();await ambientRenewed.session.start();ambientRenewed.sources[0].emit(3200);ambientRenewed.activity(1,true,false);
+ ambientRenewed.recorders[0].partial('Primera frase');ambientRenewed.sources[0].acoustic(6400,6400);ambientRenewed.activity(1,false,true);
+ ambientRenewed.sources[0].emit(3200);ambientRenewed.activity(2,true,false);
+ assert.equal(ambientRenewed.recorders[0].state,'recording','Renewed classified speech invalidates a pending older noise-watermark decision');
+ assert.equal(ambientRenewed.commits.length,0);assert.equal(ambientRenewed.analyses[0].boundaries.length,0);
+ ambientRenewed.session.hold();ambientRenewed.recorders[0].complete();await tick();
+ const observed=boot();await observed.session.start();observed.sources[0].emit(3200);
+ for(let n=0;n<20;n++)observed.analyses[0].emit({generation:0,audio_bytes:3200,speaking:false,speech_seen:false});
+ assert.equal(observed.timings.filter(v=>v.stage==='handoff').length,1,'Unchanged analysis does not create per-chunk diagnostics');
+ observed.recorders[0].partial('Private transcript must not enter diagnostics');
+ assert.equal(observed.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_speech','Captions alone do not establish detected speech');
+ observed.session.hold();observed.recorders[0].complete();await tick();
+ const lastObservation=observed.timings.filter(v=>v.stage==='handoff').at(-1).detail;
+ assert.equal(lastObservation.gate,'review');assert.equal(lastObservation.review_after,'waiting_speech');
+ assert(!JSON.stringify(observed.timings.filter(v=>v.stage==='handoff')).includes('Private transcript'));
+ const silent=boot();await silent.session.start();silent.sources[0].emit(3200);silent.activity(1,true,false);silent.activity(1,false,true);
+ assert.equal(silent.session.floor,false,'A brief detected sound without words cannot hold playback for the entire capture budget');
+ silent.activity(1,true,false);assert.equal(silent.session.floor,false,'A repeated old onset cannot reacquire a released floor');
+ silent.questions({arrivedWhileWaiting:'v2'});
+ silent.playback({source:'new-integrated-result',position_millis:456});
+ silent.sources[0].emit(3200);silent.activity(2,true,false);
+ assert(silent.session.floor,'Renewed speech interrupts playback even before the delayed first caption');
+ assert.equal(silent.interrupts(),2);
+ silent.analyses[0].emit({generation:1,speaking:false,endpoint:{generation:1,audio_bytes:3200}});
+ assert(silent.session.floor,'An earlier endpoint cannot release the renewed human turn');
+ silent.activity(2,false,true);assert.equal(silent.session.floor,false);
+ assert.equal(silent.recorders.length,1);assert.equal(silent.commits.length,0);
+ silent.session.hold();silent.recorders[0].complete();await until(()=>silent.retained.length===1);
+ assert.equal(silent.session.originals.length,1,'The original sound remains available for review on exit');
+ assert.equal(silent.retained[0].playback.source,'new-integrated-result','The frozen original refers to the reply interrupted on reacquiring the floor, not an older sound');
+ assert.equal(JSON.stringify(silent.retained[0].captureQuestions),JSON.stringify({old:'v1'}),'Reacquiring playback cannot widen the original question snapshot');
+ const renewed=boot();await renewed.session.start();renewed.sources[0].emit(3200);renewed.activity(1,true,false);renewed.activity(1,false,true);
+ renewed.sources[0].emit(64000,0);renewed.sources[0].acoustic(67200,67200);renewed.recorders[0].partial('La persona volvió a hablar');
+ assert.equal(renewed.recorders[0].state,'recording','New acoustic activity still fences an earlier endpoint');
+ assert.equal(renewed.timings.filter(v=>v.stage==='handoff').at(-1).detail.gate,'waiting_analysis');
+ renewed.session.hold();renewed.recorders[0].complete();await tick();assert.equal(renewed.commits.length,0);
+ const expired=boot();await expired.session.start();expired.sources[0].emit(3200);expired.activity(1,true,false);expired.activity(1,false,true);
+ for(let n=0;n<9;n++)expired.sources[0].emit(32000,0);expired.recorders[0].partial('La confirmación llegó demasiado tarde');
+ assert.equal(expired.session.active,true,'An old endpoint is safe when the original still owns all later quiet PCM');
+ expired.sources[0].emit(32,2);
+ await until(()=>expired.recorders.length===2&&expired.recorders[1].state==='recording');
+ assert.equal(expired.recorders[1].parts.reduce((n,p)=>n+p.byteLength,0),32,'The next original begins at the actual flush boundary, not the stale acoustic endpoint');
+ expired.recorders[0].complete('Frase conservada');await until(()=>expired.commits.length===1);
+ assert.equal(expired.retained[0].blob.size,291200,'All PCM through the delayed caption remains in its one exact original');
+ assert.equal(expired.reviews.length,0);expired.session.hold();expired.recorders[1].complete();await tick();
+ const f=boot();assert(await f.session.start());assert(f.session.active);assert.equal(f.medias.length,1);assert.equal(f.analyses.length,1);
+ f.sources[0].emit(3200);f.recorders[0].partial('Una frase');assert.equal(f.interrupts(),0,'Captions cannot interrupt or admit work');
+ f.activity(1,true,false);assert(f.session.floor);assert.equal(f.interrupts(),1);assert.equal(f.commits.length,0);
+ f.activity(1,true,false);assert.equal(f.interrupts(),1,'A repeated onset does not interrupt twice');
+ f.activity(1,false,true);assert(!f.session.floor);
+ f.sources[0].emit(32,2); // Next PCM arrives before the next ASR recorder is armed.
+ await until(()=>f.recorders.length===2&&f.recorders[1].state==='recording');
+ assert.equal(f.sources.length,1);assert.equal(f.medias.length,1);assert.equal(f.analyses.length,1);
+ assert.equal(f.recorders[1].parts.reduce((n,p)=>n+p.byteLength,0),32,'The boundary gap belongs to the next exact original');
+ f.recorders[0].preparationTiming={provider_final_ms:456};
+ f.recorders[0].complete('Una frase');await until(()=>f.sent.length===1);
+ assert.deepEqual(f.timings.filter(v=>v.id===f.retained[0].id&&v.stage!=='handoff').map(v=>v.stage),['requested','started','partial','ended','ready','prepared']);
+ assert.equal(f.timings.find(v=>v.stage==='prepared').detail.provider_final_ms,456);
+ assert.deepEqual(f.timings.filter(v=>v.id===f.retained[0].id&&v.stage==='handoff').map(v=>v.detail.gate),['waiting_speech','waiting_speech','speaking','finishing','confirming','confirmed']);
+ assert.equal(f.retained[0].blob.size,3200);assert.equal(f.commits.length,1);assert.equal(f.session.active,true,'Finalizing an old original does not stop the next microphone capture');
+ f.sources[0].emit(3200,3);f.recorders[1].partial('Otra frase');f.activity(2,true,false);f.activity(2,false,true);
+ await until(()=>f.recorders.length===3);f.recorders[1].complete('Otra frase');await until(()=>f.sent.length===2);
+ assert.equal(f.retained[1].blob.size,3232);assert.equal(f.retained[1].playback.position_millis,123);
+ assert.notEqual(f.retained[0].id,f.retained[1].id);assert.equal(f.interrupts(),2);
+ f.sources[0].emit(64);f.session.hold();f.recorders[2].complete();await until(()=>f.session.originals.length===1);
+ assert.equal(f.commits.length,2,'Leaving retains the unsent fragment without automatic file transcription or dispatch');
+ assert.equal(f.medias[0].stops,1);assert(f.sources[0].closed);assert(f.analyses[0].closed);assert(!f.session.active);
+
+ const lost=boot(),held=lost.holdCommit();await lost.session.start();
+ lost.sources[0].emit(3200);lost.recorders[0].partial('Primera');lost.activity(1,true,false);lost.activity(1,false,true);
+ await until(()=>lost.recorders.length===2);lost.recorders[0].complete('Primera');await until(()=>lost.commits.length===1);
+ lost.sources[0].emit(3200);lost.recorders[1].partial('Segunda');lost.activity(2,true,false);lost.activity(2,false,true);
+ await tick();assert.equal(lost.recorders.length,2,'Two unresolved originals stop admission of a third');
+ lost.recorders[1].complete('Segunda');await until(()=>lost.retained.length===2);
+ held.resolve({confirmed:false});await tick();await tick();
+ assert.equal(lost.commits.length,1,'A later original cannot pass an uncertain predecessor');
+ assert.equal(lost.session.originals.length,2);assert.equal(lost.medias[0].stops,1);assert(!lost.session.active);
+ assert.equal(lost.sources.length,1);assert.equal(lost.analyses.length,1);
+
+ const reversed=boot();await reversed.session.start();
+ reversed.sources[0].emit(3200);reversed.recorders[0].partial('Primera');reversed.activity(1,true,false);reversed.activity(1,false,true);await until(()=>reversed.recorders.length===2);
+ reversed.sources[0].emit(3200);reversed.recorders[1].partial('Segunda');reversed.activity(2,true,false);reversed.activity(2,false,true);await tick();
+ reversed.recorders[1].complete('Segunda');await until(()=>reversed.retained.some(v=>v.id===reversed.recorders[1].options.id));assert.equal(reversed.commits.length,0,'A later ASR final cannot pass the earlier unfinished original');
+ reversed.recorders[0].complete('Primera');await until(()=>reversed.sent.length===2);
+ assert.deepEqual(reversed.commits.map(v=>v.id),reversed.recorders.map(r=>r.options.id));
+
+ const scoped=boot();await scoped.session.start();scoped.questions({visibleBeforeSpeech:'v2'});scoped.sources[0].acoustic(640,640);
+ scoped.questions({arrivedLater:'v3'});scoped.sources[0].emit(3200);scoped.recorders[0].partial('Respuesta');scoped.activity(1,true,false);scoped.activity(1,false,true);
+ await until(()=>scoped.recorders.length===2);scoped.recorders[0].complete('Respuesta');await until(()=>scoped.sent.length===1);
+ assert.equal(JSON.stringify(scoped.retained[0].captureQuestions),JSON.stringify({visibleBeforeSpeech:'v2'}),'Passive ASR arming cannot predate a question heard before speech; later questions remain excluded');
+ scoped.sources[0].emit(10);scoped.session.hold();scoped.recorders[1].complete();await tick();
+
+ const late=boot(),permission=late.permission(),starting=late.session.start();
+ await until(()=>late.analyses.length===1);await tick();late.session.hold();assert(await late.session.start());
+ const old={stops:0,getTracks(){return [{stop:()=>old.stops++}];}};permission.resolve(old);assert.equal(await starting,false);
+ assert.equal(old.stops,1);assert(late.session.active,'Late permission from an old view cannot close the newer voice session');
+ late.sources[0].emit(20);late.session.hold();late.recorders[0].complete();await tick();
+
+ const hidden=boot();await hidden.session.start();hidden.sources[0].emit(10);hidden.document.hidden=true;hidden.events.visibilitychange();hidden.recorders[0].complete('draft');
+ await until(()=>hidden.retained.length===1);assert.equal(hidden.commits.length,0);assert.equal(hidden.medias[0].stops,1);
+ const moved=boot();await moved.session.start();moved.sources[0].emit(12);moved.bind('b'.repeat(64));moved.activity(1,true,false);moved.recorders[0].complete('draft');
+ await until(()=>moved.retained.length===1);assert.equal(moved.commits.length,0);assert.equal(moved.retained[0].binding,'a'.repeat(64));
+ console.log('Continuous foreground: one mic/analyzer, floor/barge-in, gap preservation, exact ordered originals, uncertainty/capacity, exit/hidden/binding and late permission passed; no devices or models.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -8,8 +8,10 @@ not qualify a real receiving model, human account, participant or funding grant.
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import threading
+import uuid
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,17 +25,21 @@ spec = importlib.util.spec_from_file_location(
 adapter = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = adapter
 spec.loader.exec_module(adapter)
-from matrix_execution import MatrixConversationTransport, make_received_task
-from matrix_operator import send as operator_send
+MatrixConversationTransport = adapter.MatrixConversationTransport
+make_received_task = adapter.make_received_task
+operator_send = adapter.operator_send
 
 
-def qualify(binary):
+def qualify(binary, *, funded=False):
     sdk = adapter.AdapterTests()
     sdk.setUp()
     j = ColdEntry(str(Path(binary).resolve()))
     b = None
     observed = []
-    mode = {"drop": False}
+    reads = []
+    inbox_reads = []
+    mode = {"drop": False, "funded": None, "hold_read": False}
+    read_entered, read_release = threading.Event(), threading.Event()
     source_author = {
         "being_ref": sdk.sender.lane.being_ref,
         "embodiment_id": sdk.sender.lane.local_embodiment_id,
@@ -47,7 +53,34 @@ def qualify(binary):
             value = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert value["source"] == source_author
             client = adapter.SignedGroupClient(sdk.fixture, sdk.sender)
-            outcome = operator_send(value, client, timeout=1)
+            if "channel_id" in value:
+                inbox_reads.append(value["after"])
+                outcome=adapter.operator_inbox(value,client,timeout=1)
+                raw=json.dumps(outcome).encode()
+                self.send_response(200)
+                self.send_header("Content-Length",str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            if "after" in value:
+                assert "results" not in value["status"]
+                reads.append(value["status"]["request"]["id"])
+                outcome = adapter.operator_receive(value, client, timeout=1)
+                if mode["hold_read"]:
+                    read_entered.set()
+                    assert read_release.wait(timeout=8), "Selected-read fixture was not released"
+                raw = json.dumps(outcome).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            if funded and mode["funded"] is None:
+                state = sdk.funded_original(status=value["status"])
+                mode["funded"] = state
+                outcome = state.outcome
+            else:
+                outcome = operator_send(value, client, timeout=1)
             observed.append((value, outcome))
             if mode["drop"]:
                 self.close_connection = True
@@ -88,6 +121,7 @@ def qualify(binary):
             + json.dumps(source_author["embodiment_id"])
             + "}"
         )
+        configured += '\nmatrix_inbox_channel="tribe"'
         configured += (
             "\nmatrix_transport={command="
             + argv
@@ -116,6 +150,21 @@ def qualify(binary):
                 "requests": [],
             },
         )
+        # The human console and scoped integrator use one persistent gate.
+        paused = j.read("heartbeat", "pause")["result"]
+        assert paused["admission_paused"] is True
+        same = j.call("route-heartbeat-shared-status", "heartbeat_control", {"action": "status"})
+        # Both entry points expose the same durable gate; readiness is freshly
+        # observed for each read and must not freeze its observation timestamp.
+        assert same["operational_evidence"]["observed_at_unix_ms"] >= paused["operational_evidence"]["observed_at_unix_ms"]
+        same["operational_evidence"]["observed_at_unix_ms"] = paused["operational_evidence"]["observed_at_unix_ms"]
+        assert same == paused
+        j.call("route-heartbeat-stale-resume", "heartbeat_control", {"action": "resume", "generation": 0}, ok=False)
+        resumed = j.call("route-heartbeat-explicit-resume", "heartbeat_control", {"action": "resume", "generation": paused["generation"]})
+        assert resumed["admission_paused"] is False
+        paused_again = j.read("heartbeat", "pause")["result"]
+        assert paused_again["generation"] > resumed["generation"]
+        assert paused_again["attention_engine"] == "not_configured"
         request = selected["request"]
         assert request["original"]["text"] == original
         assert b.status(ident)["phase"] == "matrix_requested"
@@ -124,6 +173,15 @@ def qualify(binary):
             "host_calls": len(observed),
         }
         assert len(observed) == 1
+        for label, invalid in (
+            ("message-selector", {"message_id": request["id"], "receive_after": 0}),
+            ("oversized-cursor", {"request_id": request["id"], "receive_after": 2**53}),
+            ("boolean-cursor", {"request_id": request["id"], "receive_after": True}),
+            ("both-cursors", {"request_id": request["id"], "receive_after": 0, "receive_next": True}),
+            ("message-next", {"message_id": request["id"], "receive_next": True}),
+        ):
+            j.call("route-reject-selected-read-" + label, "matrix_status", invalid, ok=False)
+        assert reads == []
         assert selected["claimed_source"] == source_author
         snapshot, outcome = observed[0]
         broker = MatrixConversationTransport(
@@ -150,13 +208,73 @@ def qualify(binary):
         reply_scope = replace(
             sdk.scope, thread=sent["thread_id"], tool="messaging_reply", action="reply"
         )
-        receiving_task = make_received_task(message, reply_scope)
-        responder = sdk.make_broker(sdk.receiver, reply_scope, task=receiving_task)
-        returned = responder.submit(
-            reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}, 1
-        )
+        if funded:
+            state = mode["funded"]
+            assert state.sent["message_id"] == sent["message_id"]
+            context = state.controller.run_due_once(
+                state.instruction.instruction_id, 1, state.purpose, work_id=state.work
+            )
+            admissions = []
+            context.inference(
+                lambda: admissions.append("synthetic bounded provider admission"),
+                exposure=dict(
+                    route="isolated-fake",
+                    max_charge=30,
+                    provider=state.instruction.provider,
+                    model=state.instruction.model,
+                    max_input_tokens=state.instruction.max_input_tokens,
+                    max_output_tokens=state.instruction.max_output_tokens,
+                ),
+            )
+            returned = context.native(
+                reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}
+            )
+            state.store.finish(context.cycle, "completed")
+            assert admissions == ["synthetic bounded provider admission"]
+            assert state.store.funding_status("episode")["calls"] == 1
+            assert state.store.funding_status("episode")["reserved"] == 30
+            assert len(state.runner.starts) == 1
+        else:
+            receiving_task = make_received_task(message, reply_scope)
+            responder = sdk.make_broker(sdk.receiver, reply_scope, task=receiving_task)
+            returned = responder.submit(
+                reply_scope, {"text": "La respuesta exacta del daimon seleccionado."}, 1
+            )
         signed_answer = sdk.sender.message(returned["message_id"])
         callback = broker.conversation_return(sent, signed_answer)
+        inspected = j.call("route-inspect-selected-matrix-reply", "matrix_status", {
+            "request_id": request["id"], "receive_after": 0,
+        })
+        assert inspected["phase"] == "reply_received"
+        assert inspected["inspection"]["canonical_replies"] == 1
+        assert inspected["inspection"]["native_input"] is False
+        attention = j.call("route-matrix-canonical-attention", "workflow_attention", {})
+        offer = attention["matrix"]["envelopes"][0]
+        assert offer["completed"] is None and offer["author"] == callback["author"]
+        source = j.call("route-matrix-attention-exact-source", "conversation_part", offer["reader"]["arguments"])
+        assert source["text"] == callback["text"]
+        assert source["revision"] == offer["revision"]
+        reported = j.call("route-matrix-attention-incorporated", "matrix_reported", offer["after_incorporation"]["arguments"])
+        assert reported["incorporation_reported"] is True
+        assert reported["task_completed"] is False and reported["peer_reply_sent"] is False
+        assert j.call("route-matrix-no-duplicate-attention", "workflow_attention", {})["matrix"]["envelopes"] == []
+        cursor = inspected["inspection"]["next_cursor"]
+        empty = j.call("route-inspect-selected-matrix-after-cursor", "matrix_status", {
+            "request_id": request["id"], "receive_next": True,
+        })
+        assert empty["inspection"]["after"] == cursor
+        assert empty["inspection_cursor"] == cursor
+        assert empty["inspection"]["canonical_replies"] == 0
+        assert len(observed) == 1  # No additional authored send.
+        assert reads == [request["id"], request["id"]]
+        if funded:
+            assert signed_answer["payload"]["body"]["coordination"]["kind"] == "result"
+            assert (
+                state.store.enqueue_coordination(
+                    signed_answer["event_id"], sdk.sender.message
+                )
+                is None
+            )
         outcome = j.read("matrix", "return", json.dumps(callback))["result"]
         assert outcome["phase"] == "reply_received" and outcome["current"]
         j.read("matrix", "return", json.dumps(callback))
@@ -173,6 +291,65 @@ def qualify(binary):
         assert part["text"] == callback["text"]
         after = b.get("/api/interaction?matrix=" + str(page["cursor"]["matrix"]))
         assert not any(v["kind"] == "matrix_result" for v in after["items"])
+        # A normal native signed reply needs no invented execution marker.
+        # The owner imports it as verbatim speech, never as completed work.
+        speech_text = "Sí, podemos continuar desde la misma conversación."
+        spoken = sdk.fixture.send_and_settle(
+            sdk.receiver, client_id="test", send_id=str(uuid.uuid4()),
+            thread_id=sent["thread_id"], text=speech_text,
+            response_to=(sdk.receiver, sent["message_id"]),
+        )
+        ordinary = j.call("route-inspect-ordinary-native-speech", "matrix_status", {
+            "request_id": request["id"], "receive_next": True,
+        })
+        assert ordinary["inspection"]["after"] == cursor
+        assert ordinary["inspection"]["canonical_replies"] == 1
+        spoken_result = next(row["result"] for row in ordinary["results"]
+                             if row["result"]["message_id"] == spoken["message_id"])
+        assert spoken_result["reply_kind"] == "speech" and spoken_result["text"] == speech_text
+        assert "execution_ref" not in spoken_result
+        spoken_page = b.get("/api/interaction?matrix=0")
+        spoken_view = next(row for row in spoken_page["items"]
+                           if row["id"] == "matrix:" + spoken["message_id"])
+        assert spoken_view["reply_kind"] == "speech" and spoken_view["completed"] is None
+        assert j.row("SELECT count(*) FROM interaction_matrix_results") == [(2,)]
+        assert len(observed) == 1
+        if funded:
+            assert state.store.funding_status("episode")["calls"] == 1
+            assert state.store.funding_status("episode")["reserved"] == 30
+        # A new native original has no prior human-origin Matrix request.
+        # Read and retain it through the SAME authenticated integrator while
+        # heartbeat admission stays paused; no fabricated human/work input.
+        fresh=sdk.fixture.send_and_settle(sdk.receiver,client_id="test",
+            send_id=str(uuid.uuid4()),thread_id=str(uuid.uuid4()),
+            text="New peer original; no human instruction or execution grant.",
+            destination={"kind":"body",**source_author})
+        intake=j.call("route-new-native-inbox-page","matrix_status",{"inbox_next":True})
+        native_source=next(v for v in intake["items"] if v["source"]=="matrix-inbox:"+fresh["message_id"])
+        exact=j.call("route-read-new-native-original","conversation_part",
+            {"source":native_source["source"],"revision":native_source["revision"],"offset":0})
+        assert exact["kind"]=="matrix_inbox" and exact["text"]=="New peer original; no human instruction or execution grant."
+        assert exact["source_author"]["being_ref"]==sdk.receiver.lane.being_ref
+        assert exact["completed"] is None and exact["current"] is True
+        projection=b.get("/api/interaction?matrix=0&inbox=0&responses=0")
+        projected=next(v for v in projection["items"] if v["id"]==native_source["source"])
+        assert projected["direction"]=="incoming" and projected["revision"]==native_source["revision"]
+        assert "Matrix" in projected["label"] and projected["source_author"]==exact["source_author"]
+        assert projection["cursor"]["inbox"]>0 and projection["cursor"]["responses"]==0
+        assert b.get("/api/interaction/part?source="+projected["id"]+"&revision="+projected["revision"])["text"]==exact["text"]
+        assert inbox_reads==[0],"Rendering retained sources must not perform live Matrix I/O"
+        context={"source":projected["id"],"revision":projected["revision"],"context_only":True}
+        b.provider.check_reply(context)
+        try:b.provider.check_reply({k:v for k,v in context.items() if k!="context_only"})
+        except ValueError:pass
+        else:raise AssertionError("A Matrix original cannot select peer routing without contextual scope")
+        duplicate=j.call("route-read-after-native-cursor","matrix_status",{"inbox_next":True})
+        assert duplicate["items"]==[] and duplicate["next_cursor"]==intake["next_cursor"]
+        assert inbox_reads==[0,intake["next_cursor"]]
+        assert j.row("SELECT count(*) FROM interaction_matrix_inbox")==[(3,)]
+        assert j.row("SELECT count(*) FROM interaction_instructions")==[(0,)]
+        assert j.read("heartbeat","status")["result"]["admission_paused"] is True
+        assert len(observed)==1 and not j.messages
         # A contextual response carries the selected canonical event, not an
         # automatic peer send or a forged local worker request.
         next_id, _ = b.text(
@@ -231,17 +408,70 @@ def qualify(binary):
         uncertain = j.call("route-matrix-lost-host-response", "matrix_request", args)
         assert uncertain["phase"] == "submission_uncertain" and len(observed) == 3
         lost_id = uncertain["request"]["id"]
+        before_reads = len(reads)
+        j.call("route-reject-unacknowledged-reply-read", "matrix_status", {
+            "request_id": lost_id, "receive_after": 0,
+        }, ok=False)
+        assert len(reads) == before_reads
         assert sdk.receiver.message(observed[-1][1]["submission"]["message_id"])
         duplicate = j.call("route-matrix-no-uncertain-replay", "matrix_request", args)
         assert duplicate["phase"] == "submission_uncertain" and len(observed) == 3
+        # Recheck the existing native owner after SDK I/O, before exposing or
+        # retaining its result. Only test-owned session state is changed here.
+        count_before_retirement = j.row("SELECT count(*) FROM interaction_matrix_results")
+        mode["hold_read"] = True
+        attempted = {}
+        def retired_read():
+            try:
+                attempted["result"] = j.call("route-retired-selected-matrix-read", "matrix_status", {
+                    "request_id": request["id"], "receive_after": 0,
+                }, ok=False)
+            except BaseException as error:
+                attempted["error"] = error
+        pending_read = threading.Thread(target=retired_read)
+        pending_read.start()
+        try:
+            assert read_entered.wait(timeout=8), {"boundary": "selected SDK read", "attempt": attempted}
+            with sqlite3.connect(j.root / "state.sqlite") as database:
+                database.execute("UPDATE sessions SET codex_thread_id='fixture-successor-native' WHERE chat_id=100 AND thread_id=1")
+            read_release.set()
+            pending_read.join(timeout=8)
+            assert not pending_read.is_alive() and "error" not in attempted, attempted
+            assert attempted["result"]["success"] is False
+            assert j.row("SELECT count(*) FROM interaction_matrix_results") == count_before_retirement
+        finally:
+            read_release.set()
+            pending_read.join(timeout=8)
+            mode["hold_read"] = False
+            with sqlite3.connect(j.root / "state.sqlite") as database:
+                database.execute("UPDATE sessions SET codex_thread_id=? WHERE chat_id=100 AND thread_id=1", (j.web_thread,))
         j.stop()
         j.start()
         j.wait_control_socket(j.socket)
         retained = j.read("matrix", "status", lost_id)["result"]
         assert retained["phase"] == "submission_uncertain" and len(observed) == 3
         assert retained["claimed_source"] == source_author
+        if funded:
+            print(
+                "FUNDED_RETURN_EVIDENCE",
+                json.dumps(
+                    {
+                        "call_fuel_consumed": 1,
+                        "reserved_charge_retained": 30,
+                        "selected_source_only": set(state.reads)
+                        == {state.source["event_id"]},
+                        "result_passive": True,
+                        "canonical_return_rows": j.row("SELECT count(*) FROM interaction_matrix_results")[0][0],
+                        "ordinary_speech_completed": spoken_view["completed"],
+                        "provider_model_calls": 0,
+                        "native_reader_identity_preserved": True,
+                        "worker_kind": "controlled-model-free-stand-in",
+                        "real_peer_activation": False,
+                    }
+                ),
+            )
         print(
-            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; zero inference. Receiving native work/automatic return attachment remain unqualified."
+            "PASS actual HTTP/native controller automatically invokes configured host -> signed SDK technical send -> finite authenticated selected-thread reader -> owner callback -> canonical HTTP; duplicate reservation, explicit signed amendment, lost child response/restart without replay, independent cursor and local exclusion; new native original retained atomically and read through same integrator source reader during heartbeat pause, without human/work fabrication; zero provider/model calls. Funded mode uses a controlled worker stand-in; real receiving native work/automatic integrator incorporation remain unqualified."
         )
     finally:
         if b:
@@ -253,4 +483,4 @@ def qualify(binary):
 
 
 if __name__ == "__main__":
-    qualify(sys.argv[1])
+    qualify(sys.argv[1], funded="--funded" in sys.argv[2:])

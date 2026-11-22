@@ -1,6 +1,9 @@
 # Daimon Interaction v0.2 — coherent single-chat experience
 
-Status: executable plan, amended after the human-requested Astra high constructive adversarial review on 2026-10-19. Implementation and acceptance remain pending; the review inspected source and did not execute native race experiments. Parent: AlterMundi/daimon-matrix#313; coordination: Daimon Interaction Project 14. Build progressively toward the final local product, reuse native state and existing adapters, and use Git for history. No throwaway staging architecture.
+Full horizon and next selected delivery: [maintained roadmap](interaction-roadmap.md).
+This document owns the remaining v0.2 obligations; continuous voice is milestone9.
+
+Status: the human accepted the current independent app and integrating channel as a solid, reasonably reliable and versatile functional base on 2026-10-26. The immutable tag is `interaction-functional-baseline-2026-10-26`. Preserve that working experience while completing the remaining milestone 8 / Project 14 / #208 requirements. The human rejected Qwen as the conversational/integrating LLM; PR288/#285 is a completed historical experiment, not pending work. The then-selected integrating default was gpt-6.1-sol / openai / medium, with same-thread native verification. Preserve deliberate integrator provider/model switching; the role is not permanently tied to Sol. Qwen TTS/STT and the subsequently selected Qwen Avatar foreground are separate roles, not a revival of that experiment. The header identifies the selected daimon and authenticated human on two lines; remaining #213/#221 refinements stay in scope. General functional acceptance does not invent specific physical or aesthetic judgments. Parent: AlterMundi/daimon-matrix#313.
 
 ## Outcome and scope
 
@@ -16,17 +19,58 @@ This is the single-body product stage following immutable first-functional v0.1.
 - Automate all meaningful tests possible. Use inexpensive real workers for necessary semantic/effect checks. Ask the human only for a genuinely non-automatable observation, after preparing the whole journey. No physical capture is implicit in a deployment or readiness check.
 - Preserve existing credentials, native bindings, accepted/uncertain work, live goals, raw canonical events and immutable release tags. Successful source audio is deleted after durable transcript verification; failed/uncertain audio and TTS caches retain their actual bounded policy. No new raw-media archive.
 
+## Current UI and sound delivery
+
+Interaction is an independent application: web now, native later, compatible
+with a physical/Bluetooth badge. Telegram is an optional session projection, not
+the app shell, entry requirement or identity experience. A child should be able
+to interact with their daimon entirely inside this app. Reuse shared Matrix auth;
+account provisioning gaps must remain explicit rather than becoming another login
+or pairing system.
+
+The next delivery must be assessed as one experience:
+
+- An authored, beautiful composition centered on readable conversation and one
+  obvious text/voice interaction. Useful intermediate communication and live
+  questions remain understandable and reachable.
+- Monitoring, raw worker output, test-session material, graph and operational
+  detail live in the initially closed header inspector overlay. Inspection has
+  readable space and its own scrolling, without tiny nested scroll panes. Do not hide the only copy of a
+  useful worker answer merely because it lacks an integrator paraphrase.
+- Simple presentation is the default; read-only exploration remains discoverable.
+  Advanced presentation never grants otherwise unavailable permissions.
+- A cared-for per-being ASCII presence, inspired by inspected Ani/Oliva/Nexus
+  material with attribution; independent terminal, Telegram and app renderings.
+  Local finite gestures, response/rest expressions and real phase changes must be
+  perceptible in actual use, with reduced motion and static accessible alternatives.
+- Compact, truthful transcription, routing, observer and parallel-work indicators.
+  Visual polish must not counterfeit progress or conceal latency.
+- A recognizable Beacon-derived hum/purr/rhythm and aggregate session chord,
+  using the Beacon series of 40.4 and additive components: idle F1, active F2,
+  running tools/subagents F3, active goal F4, pending F7, blockage/error F11.
+  Follow the corrected composition in sonic-expression.md. Provide an obvious opt-in listening control, volume and mute;
+  voice capture and spoken replies take precedence.
+
+The current renderer work removes fixed-height/nested inspection scroll limits,
+keeps history controls and full worker commentary under inspection, retains one
+attributed recent update per session and all useful final answers in the chat,
+and separates authored response poses
+from background work indicators so concurrent work cannot suppress expression.
+Beacon activation/status stays visible in the main app, including errors,
+suspension, quiet arbitration and mute. Browser-generated signal and muted zero
+output are measured separately from physical listening. Source Beacon revision 6 is the current accepted click-free phone baseline: additive 40.4 Hz sine components, independent proportional LFOs and continuous carriers with smooth transitions. Reply playback/preparation ducks to 18%; recording may fade to silence. The compact controls and functional application have human acceptance. The shipped Source portrait has 12 authored colored frames and state-driven speaking/ambient motion, with separate per-being packs and reduced motion. Preserve these deliveries. Remaining specific sonic, aesthetic, background-phone and real-session qualification stays explicit in #213/#221 and the current qualification protocol; automation alone does not establish human perception.
+
 ## Existing basis and corrections
 
 The accepted v0.1 text/voice round trip, existing 21-case qualification protocol, source-linked observer, canonical event/return journal, native writer coordination, scoped request broker, device grants and browser graph are the starting point. Do not rebuild them behind another queue or daemon. Human acceptance covered one actual heard voice return; automated/synthetic/native/human evidence remain separate.
 
-Native CLI/daemon 0.163.0 hashes match. Installed schema and a read-only daemon probe establish external goal get/set/clear and execution state reads. Native source inspection explains further behavior, but is not exact-runtime mutation qualification. Telecodex #211 is merged: explicit completed-goal resume preserves accounting and actual exhausted budget is checked. Local 12 goal journeys, Clippy and 314 unit tests passed; receiving adoption is still pending. #212 filters valid controller footer metadata at the shared presentation boundary, preserving canonical originals. Neither is a claim that the general integrator control adapter exists.
+The selected-session goal adapter is implemented with retained explicit commands or single-use confirmed proposals, native goal preconditions and ordered follow-ups. See docs/integrator-controls.md and docs/native-goals.md for the current contract. Retained real native goal/artifact journeys include a failed campaign boundary followed by observation-only recovery of the original work; do not report the failed run as a pass or replay it. #212's presentation filter preserves canonical originals while removing valid controller metadata from visible replies. #241 still owns destination visibility for controls that produce no worker speech. Current receiving evidence and remaining acceptance are recorded in docs/interaction-qualification.md; implementation is not complete product acceptance.
 
 Detailed basis: docs/interaction-qualification.md and docs/integrator-controls.md in PR #209; docs/native-goals.md in current master; docs/human-requests.md. Existing concerns remain owned in #208 (stage/acceptance), #210 (goal controls), #61 (pending usability), #108 (topic catalog/lifecycle), and #203 (supported attributed native cross-session delivery).
 
 ## Delivery slices and dependencies
 
-1. **Conversation surface and ASCII companion.** Build on the existing standalone conversation client and supported Homemaker appearance consumer. Default to a readable text/voice stream and one obvious voice action. Collapse diagnostics/graph/history below it; native questions and confirmed control proposals remain in the main interaction. Keep graph history and read-only detail accessible, including original inputs and exact routes. Add an operator-selected simple/advanced presentation using existing actor/grant checks; hiding controls is not permission. This is child-friendly visual design, not a claim of new child accounts or tested child usability.
+1. **Conversation surface and ASCII companion.** Build on the existing standalone conversation client. This receiving Interaction app currently selects authored appearance; automatic Homemaker inheritance is disabled for it while Sessions retains its configured consumer. Future opt-in inheritance remains supported by configuration. Default to a readable text/voice stream and one obvious voice action. Keep diagnostics/graph/history in the initially closed header inspector; native questions and confirmed control proposals remain in the main interaction. Keep graph history and read-only detail accessible, including original inputs and exact routes. Add an operator-selected simple/advanced presentation using existing actor/grant checks; hiding controls is not permission. This is child-friendly visual design, not a claim of new child accounts or tested child usability.
 
    Adapt original glyph motifs/rendering from Ani and Oliva's MIT ASCII-Interfaces, as already integrated in Nexus, preserving attribution and license when copying code/art. Inspect actual sources and prototype first; do not import private research cases/media or a full map engine when a compact companion suffices. Use a stable lightweight glyph portrait with a restrained procedural setting, keeping chat/composer visible with the keyboard open. Honor existing style roles, light/dark choices and local fallback. Critical information remains readable HTML with accessible labels, never ASCII alone.
 
@@ -155,145 +199,416 @@ Milestone: [v0.2](https://github.com/AlterMundi/telecodex/milestone/8).
 | lifecycle | [#108](https://github.com/AlterMundi/telecodex/issues/108) |
 | native_delivery | [#203](https://github.com/AlterMundi/telecodex/issues/203) |
 
-## Implementation checkpoint — 2026-10-19
+## Retained receiving checkpoint — 2026-10-21
 
-- Plan/protocol review merged as #217; shared visible-footer correction merged
-  as #212. Receiving adoption remains batched with the qualified product.
-- The installed-native two-client experiment reproduced all three stale goal
-  mutation cases without inference or work-session mutation. #210 requires native
-  generation/definition preconditions on set and clear; see integrator-controls.md.
-- A live scoped terminal fallback for older native tool sets is implemented in
-  the #203 branch. It reuses the same controller handlers and current execution,
-  including a routed steer into an already-running worker. The synthetic process
-  journey passes routing, dependency/return, immutable retry, binding/role/token
-  denial, expiry and ordinary direct ingress independence; Clippy passes.
-  This is development evidence, not receiving or real-model acceptance.
-- UI/companion, speech pacing, native control preconditions/transactions, task
-  withdrawal, projections/lifecycle and artifact delivery remain in progress or
-  pending in their owning issues. The finished-version real-session campaign
-  has not started.
+The standalone web selects `d65ff7a`, including #243–#246. Populated desktop,
+phone and keyboard-sized browser checks cover readable replies, collapsed
+inspection, finite Source glyph/response transitions and reduced motion.
+The receiver-selected expression pack retains independent client defaults;
+[companion contracts](interaction-companion.md), [visual expression](interaction-avatar.md)
+and the shared ASCII skill own that vocabulary. They do not imply every existing
+terminal or Telegram client automatically renders an avatar.
 
-### Conversation shell development checkpoint — 2026-10-20
+Source hum revision 2 and its actual generated spectrum/mute/speech-priority
+behavior have device-free evidence. The receiving app exposes activation, volume
+and distinct quiet/suspended/error states. [Sonic expression](sonic-expression.md)
+owns configuration and composition. Human recognition, comfort and visual appeal
+remain unaccepted in #213/#221.
 
-The standalone client now groups observation controls and routing/history panes
-under one initially collapsed **Under the hood** panel. Live requests remain in
-the main interaction area. The shell uses explicit grid rows for history, text,
-voice, playback and diagnostics, preserving the existing DOM/API contracts and
-Homemaker roles. The existing foreground refresh timer uses two seconds in
-conversation mode and ten seconds for the session dashboard; this adds no poller.
+The listener now selects the exact CI-tested executable from #249/#250
+(PR head `1b7ad96`, tested commit `fdd5aedd`). Three active collectors reattached
+to the unchanged native daemon; observed goal definitions, states, budgets and
+accounting were preserved. No global Stop or new native kickoff was used.
+The current owner notice feed is available. The optional foreground client from
+[Codex#7](https://github.com/compaii/codex/pull/7) is selected for new ordinary local
+CLI launches, after full native CI and an actual TUI check with a synthetic owner
+notice. Existing running clients do not hot-reload. See
+[passive notices](interaction-notices.md) for source/client boundaries.
 
-Development evidence: existing conversation/request/microphone/dashboard UI
-checks pass. Actual Chromium with synthetic native messages was visually checked
-at 1100×850 and 390×844; the diagnostic panel opens, retains refresh/monitor
-controls, and a 390×460 viewport remains scrollable without horizontal overflow.
-These checks are not a real-session campaign, actual Android keyboard test or
-receiving adoption. Companion gestures, truthful phase indicators and the rest of
-#213 remain unfinished; the issue stays in progress.
+A real two-worker journey received ordinary direct input while routed work was
+active in that same native execution. The direct input created no router
+admission, its later correction changed the actual output, the other worker
+finished independently, and one destination answer plus the canonical integrating
+reply were retained. API observation of the existing reply and authorized file
+verified its actual bytes/hash without replaying work. The verifier must follow
+normalized shared-request membership, distinguish result IDs from delivery IDs
+and page history; one representative request or first page is insufficient.
 
-### UI controls and profiles checkpoint — 2026-10-20
+The [qualification protocol](interaction-qualification.md) retains the scope and
+limits of earlier native, deterministic and human evidence. Complete only after
+its explicit requirements are reconciled against the delivered version. Human
+visual/hearing assessment and normal daily use remain open; source publication,
+installation, observed transport and human perception are separate findings.
 
-Draft #220 now implements the original portrait, finite local gestures, concurrent
-receiver/local indicators, and optional immutable native-turn-bound cosmetic
-choices through the existing stable controller (including warm fallback). Simple
-and explorer presentation profiles are selected by receiving configuration or
-operator enrollment; they only choose the initial read-only diagnostic-panel
-state and do not grant owner controls or approvals. Existing credentials retain
-their identity/audience, and manual inspection survives ordinary refresh.
+## Real-use composer feedback — 2026-10-25
 
-Companion/conversation tests and 27 HTTP grant/capture/profile tests pass locally.
-CI at `8fed690` passed formatting, Clippy, unit tests and release build; its process
-journeys and the subsequent profile change require final-head qualification.
-The process fixture now covers existing integrator/worker hint registration,
-immutable repeat, invalid/changed choices and retained returned-source metadata.
-This is implementation/development progress, not receiving deployment or the
-finished-version Q/V campaign. #213 remains open for integration and acceptance.
+The composer groups text, Send and an accessible microphone action in one block, with an accessible speaker toggle for spoken replies. Camera and gallery are separate image choices feeding the same immutable-image preview/point/upload path. Camera capture is user initiated through the device chooser; desktop/browser fallback may remain a file chooser. No live camera stream or automatic microphone start is added. Voice/draft/selection/retry ownership is unchanged. Beacon revision 6 keeps the accepted click-free 40.4 Hz sine composition and reply ducking; see sonic-expression.md and #221.
 
-### Per-being representation scope — 2026-10-20
+The real-use follow-up also requires stable composer coordinates across asynchronous conversation/observer updates, and a permanently visible recording/send icon. The compact player appears to the left only while needed; Send and recording retain their right-hand positions. Messages scroll separately. Image decoding falls back to browser Image/HTML canvas when ImageBitmap/OffscreenCanvas is unavailable or rejects the file. The selected image accompanies the next text or voice submission without a separate inclusion checkbox; a failed attachment remains visible rather than being silently dropped. The current backend accepts one selected image per original; multi-image messages remain a separate unimplemented increment, not a claimed fix.
 
-Human steering expands #213 from one portrait to a selected per-being visual
-vocabulary, with independent defaults/rendering for terminal, Telegram and the
-animated app. The shared `ascii-expression` skill supplies guidance, a bounded
-portable renderer and an explicitly selected abstract Source example. A daimon
-need not resemble a human, share Source's appearance or use fixed mood names.
+While recording or retaining an unsent recording, the composer has one Send action owned by that recording. It cannot submit the retained text draft. The microphone is hidden during capture and a visible × discards the recording; finishing/discarding restores ordinary text Send without clearing the draft. Voice retries preserve the existing capture identity and uncertainty rules. The attachment affordance is an inline SVG paperclip with an accessible image label, independent of font glyph support.
 
-The existing seven-pose implementation remains provisional. #213 must integrate
-a receiver-selected pack before final acceptance, retaining native source
-fences, ordinary evidence labels and finite local playback. Extend its component
-checks and the finished-version campaign to cover two different vocabularies,
-client defaults, narrow layout fallback, unknown expression, delayed/repeated
-source, reduced motion and unavailable activity without false operational claims.
-HIT may inform an evolving vocabulary; there is no universal mapping of
-consonance/dissonance to emotions. Shared-skill delivery and product integration
-are separate evidence.
+The independent client moves the existing companion/status node into a compact fixed header beside Apps, with no duplicate renderer or separate presence card. The center conversation takes the remaining viewport and scrolls independently; the composer stays below. Current state labels must not resize the header or move Send.
 
-### Expression pack implementation checkpoint — 2026-10-20
+Ordinary camera/gallery originals up to20MiB are accepted by the client. The client transparently fits both dimensions and actual encoded bytes to the existing immutable PNG transport bounds; it never rejects a normal photo merely because its first2048px PNG exceeds2MiB. Every fit is rendered from the decoded original, and preview/point/hash/dimensions refer to the final transmitted copy. No high-resolution original is uploaded or archived as a side effect.
 
-The optional receiver-selected `interaction.expression_pack` is now implemented
-in draft #220: bounded inert vocabulary, per-client defaults, advertised exact
-pack/revision/content fingerprint, immutable native-turn choices and matched web
-rendering. This replaces hardwired expression names when a pack is selected while
-preserving existing turn/source fences. The app fits complete compositions and
-plays finite local sequences; no universal face/mood ontology is imposed.
+Standalone Interaction can use `conversation_appearance = "authored"` to omit the automatic Homemaker stylesheet/script while Sessions continues to inherit its configured appearance. This is an explicit product choice; shared login and permissions remain unchanged. Its compact header, conversation area and composer remain separate, with recording status inside the composer and a paperclip-only attachment trigger.
 
-Shared skill publication merged as AlterMundi/Skills#102; selective local
-installation and the Hermes/Codex surface check passed. New web component checks
-pass with two vocabularies, stale selection, reduced motion and narrow fallback.
-Server validation and legacy/custom warm process journeys still require final
-head CI. Full browser, real-session campaign and receiving adoption remain
-outstanding; this checkpoint does not complete #213 or the stage.
+With Voice on, standalone Interaction permits verified reply playback, continuation gaps and incoming-reply live updates while the document is hidden. Returning resumes a browser-paused segment after source validation, preserving its position. A human pause, Stop, loss of authorization or real page unload still stops automatic playback. Transient connection failures and offline transitions preserve opted-in Voice intent and already loaded audio; returning online revalidates a paused segment before resuming. Standalone playback exposes standard OS Media Session play/pause/stop controls where supported. These controls retain explicit human pause/Stop semantics. Mobile OS/browser suspension can prevent background execution; returning restores the existing opted-in intent, never a human-paused one. Physical phone background acceptance remains a separate check.
 
-### Sonic expression direction — 2026-10-20
+Presentation resolves fallback `t<ID>` labels from the current authorized owner's session title without changing routing selectors, source IDs, revisions or explicit route aliases. A renamed session needs no route recreation.
 
-Human steering adds opt-in Beacon-derived humming/purring/rhythm and a chord of
-current session voices, tracked in #221 (milestone 8 / Project 14). Initial
-authored associations are 1:11 for blockage and 1:7 for waiting on a reply; they
-are vocabulary proposals, not universal acoustic or emotional facts. Consult
-maintained Beacon/HIT and the research corpus before selecting synthesis.
+The default standalone composer is two compact rows: one text line above a single attachment/voice/send strip. Routine capture/transcription/playback phases remain in the header presence; the composer retains their accessible status text without a duplicate visible line or reserved blank height. Actionable errors remain readable inside the composer and may expand it upward. The paperclip opens an anchored Camera/Gallery sheet and selected-image preview; closed attachment controls take no extra conversation space.
 
-Reuse actual state observations and per-being vocabulary/event provenance. Keep
-unknown/stale states distinct, aggregate membership visible and silence/volume
-under human control. The sound layer must cooperate with owned speech playback,
-local browser audio activation and suspension. No new inference loop, capture,
-background attention or unsolicited hardware playback is authorized. Qualify
-mapping, finite transitions, concurrent membership and real mute/stop behavior
-device-free before opt-in browser/listening acceptance. See #221 for scope and
-dependencies. The implementation checkpoint below records development evidence;
-receiving adoption and the full S01–S05 campaign remain separate requirements.
+Standalone chat startup preserves the authored paperclip and one-row text field. The Beacon toggle lives beside Apps in the fixed header; its volume and detailed sound status remain under the hood. The empty former sound row no longer reserves conversation space.
 
-### Sonic expression implementation checkpoint — 2026-10-20
+A selected image uses the same immutable attachment for the next text or voice submission. There is no separate image-with-voice switch; Voice on controls spoken replies. Successful consumption clears that selection.
 
-The web client now has an explicit opt-in Web Audio renderer, owner-selected
-bounded vocabulary and an inspectable per-session score under collapsed
-diagnostics. It reuses the existing database-bound activity observer, including
-native waiting flags; the sound endpoint starts neither inference nor a new
-native observer. Missing configuration, stale observations, changed native
-bindings and unauthorized targets remain unknown. Logical topic identity is
-stable across native renewal. See `docs/sonic-expression.md` for configuration,
-authored interval meanings, limits and speech priority.
+The conversational caption uses a full-width presence row below the fixed header. The header shows `daimon: <configured name>` and `human: <authenticated name>` on two adjacent lines. The account name no longer sits under the inspector or occupies the full-width caption row with a connected label. `daimon_name` is escaped display configuration, not native identity or authority.
 
-Four actual SQLite/cache/HTTP tests and shipped JavaScript mapping/audio-graph
-tests pass. Muted headless Chromium also verified deliberate audio activation,
-owned context closure, responsive layouts and actual OfflineAudioContext signal
-samples: the selected blocked interval was present, with zero samples after
-quiet/stop. Its native peer and state stimuli were synthetic, with no models or
-physical playback. This does not establish live-session state transitions,
-receiving acceptance or human perception; those remain in S01–S05.
+The presence caption keeps one fixed-height row. Overflow scrolls at18CSSpx/second with pauses and reverses smoothly; fitting text stays still. Reduced-motion preference keeps it static, with the full caption available as text/title.
 
-### Live task reassessment checkpoint — 2026-10-20
+Discarding a voice recording requires explicit browser confirmation. Declining keeps the captured recording; confirming deletes it without sending. The centered discard icon has a fixed44px hit target.
 
-The #61 branch adds live `human_tasks` / `human_task` / `withdraw_task` operations
-to the existing integrator and worker controller, including warm fallback. It
-reuses the task ledger, manifest mutation, agent-attributed audit and capture
-arming lock. Reads and writes require the actual owned running execution; exact
-task revision and an immediate SQLite transaction fence changes/answers. Native
-questions/approvals and uncertain human receipts cannot be retired by this API.
 
-The coordinator's cross-session scope is tied to the original routed local turn,
-not a sticky native-thread association, so a later direct task remains direct.
-Unit cases and an actual-controller synthetic process journey were added for
-revision/receipt denial, immutable retry, attribution, active issuer, worker
-isolation and direct-topic independence. All combined CI39357678404 jobs passed and PR222 merged as427d666,
-including the actual-controller synthetic process journey. Receiving adoption
-and the finished real-session campaign remain outstanding; #61 stays open.
-The runtime guidance now points scoped callers to these live operations while
-retaining the successful-turn manifest fallback.
+### Installed client and live updates
+
+The independent conversation advertises a scoped web manifest with standalone
+window display, app icons and the existing shared-auth start URL. Installation
+adds no account or browser credential upload. There is no private offline cache;
+conversation APIs and authentication remain network-only.
+
+Conversation updates use an authenticated fetch/SSE connection. Linux inotify
+watches the existing receiving SQLite/WAL and atomically replaced observer file;
+no additional HTTP polling or message queue is introduced. Notifications only
+invalidate the current read view. Reconnection catches up through existing
+canonical cursors; it never replays a submission. Bursts and refreshes already
+in flight are coalesced. A slow stream is reconnected with bounded backoff; proxy
+buffering is disabled. Stream authorization is checked on admission and every
+15 seconds, including current scope expiry. Other Sessions views retain their
+existing refresh behavior. Voice-on/background intent remains independent.
+
+
+### Recovering a failed voice original
+
+A failed preparation retains the original audio UUID, digest and ingress order.
+The owner control `input voice recover` accepts that exact UUID and current entry
+binding. It claims only `preparation_unconfirmed` under the existing ingress lock;
+already active/completed originals are observed without repeating work. The
+optional `voice.completed_transcription_command` must be a completed-result reader,
+never a transcription command. The maintained adapter's `--completed-only` mode
+checks the source, route, helper and completed result digest without probing or
+calling a provider. Missing or uncertain results remain unconfirmed. Normal
+upload retries continue to observe existing captures without restarting ASR.
+
+For operator recovery, inspect the adapter journal before doing anything. A job
+with no intent and only its lock precedes the maintained adapter's provider call;
+an explicitly requested recovery may finish that preparation once. A retained
+provider intent/uncertain outcome cannot be retried this way. Once completed text
+exists, recover the same original through owner control, not a fabricated text
+input or direct database mutation. Commit precedes audio retirement and routing;
+all original authorship, corrections and receiving grants remain applicable.
+
+## Human-task attention in the conversation
+
+`Read action` expands the selected action; `Collapse action` only folds its text.
+Explicit human `Dismiss` cancels that selected pending human-task entry in the
+existing ledger, with the current entry binding, exact revision and an audited,
+idempotent receipt. It never marks the requested work done, answers a native
+question, approves anything or stops a session. Direct-only tasks remain outside
+the integrating conversation scope. A lost acknowledgment is read back without
+automatically repeating the write. Existing Telegram /pending reads the same state.
+
+`Reply in conversation` prepares ordinary text/voice context. Show the saved
+original's real ingress progress beside the matching task revision: accepted
+conversation feedback awaits source-session reassessment; uncertain delivery stays
+uncertain. The reply does not complete the task. A changed action cannot inherit an
+earlier reply badge. Dismissal and ordinary status refresh preserve drafts, image
+selection and recording objects, including stale advisory reply context.
+
+## Spoken-reply following
+
+Follow starts enabled unless explicitly disabled. With Voice on and verified
+playback running, it first positions at the answer and then advances a reading
+window using real media time/duration within the certified text segment. Segment
+offsets remain exact; positioning within a segment is approximate, not word-level
+alignment or a claim derived from generated tokens. Continuations do not return
+to the beginning. The existing canonical reader reuses the already-validated
+segment and loads missing prefixes only when needed. Visible Update from cards
+share that exact source/revision text rather than scrolling a hidden duplicate.
+
+Pause, Voice off, Stop, hidden pages and the open inspector suspend movement.
+Resuming keeps the current segment and position; replaced sources stop playback
+and following. Unknown media duration never invents progress. Wheel/touch reading,
+scrollbar dragging and reading keys release Follow in the current view; checking
+it again resumes at the current position. Only explicit checkbox changes persist
+the preference across reloads. Reduced motion uses instant
+positioning. Ordinary incoming replies do not pull the reader to the bottom while
+spoken following owns the reading window.
+
+Telegram entry originals appear as human bubbles in the independent chat through
+the existing read-only ingress endpoint, without dispatch or replay. New Telegram
+capture timestamps are retained atomically in the shared ingress-order ledger.
+Older missing timestamps stay explicitly unknown instead of being backfilled
+with refresh time. Follow resolves the visible Update from card for the exact
+spoken progress source; it never scrolls to its hidden diagnostic duplicate.
+
+Spoken output uses one accessible speaker icon with on/off/paused states instead
+of a visible checkbox and status label. The compact player retains accessible
+status announcements without helper copy below its centered playback icons.
+Attachment choices and recording use authored stroke vectors, avoiding
+platform-dependent emoji appearance. Input and speech state machines are unchanged.
+
+Shared-login and interaction-device grants permit read-only Telegram originals
+and their existing trace/image routes, with the same receiving human and entry
+binding as the app inputs. A denied optional Telegram observation must not clear
+the conversation, draft or recording; it is not evidence that the whole browser
+session expired. Authentication expiry still follows the existing reconnect path.
+
+### Chat message time labels
+
+Human originals, integrating replies and visible session updates show a small
+bottom-right day and 24-hour time label, such as `mon 23:40`. Use retained receive
+or observation time in the device local timezone, matching the current English
+UI. The semantic time element retains the full ISO timestamp and a readable full
+local date tooltip. Missing or invalid timestamps stay hidden; refresh/status
+updates never fabricate a send time. Assessment of coherent application-wide
+internationalization is tracked separately in #295; this slice introduces no
+language selector or partial translated UI.
+
+Human correction (2026-10-26): Follow remains enabled during manual scrolling. A held pointer/touch owns the reading viewport; release resumes the spoken position. Wheel and keyboard scrolling have a short settle interval. Only the explicit Follow checkbox changes its preference. Background Voice must preserve opted-in intent across transient network errors, with OS media controls where supported; phone screen-lock playback remains a separate actual-device acceptance item.
+
+### Keyboard message entry
+
+Enter submits the existing composer form; Shift+Enter keeps the textarea's normal
+newline behavior. IME composition, composition keycode229 and modifier shortcuts
+do not submit. Repeated keydown and a disabled Send do not create another input.
+The same submit handler retains draft, attachment, pending voice and uncertain
+delivery behavior; there is no separate keyboard dispatch path.
+
+
+### Visible client version — human correction, 2026-10-28
+
+Keep the palette-colored client identifier in the identity text column above
+the daimon/human names, with a small separation. It must not occupy its own
+conversation row or reduce the avatar; the avatar uses the action controls’
+header height. Preserve readable names at narrow widths. The identifier names the loaded asset bundle; it is not
+a claim about backend or other-body adoption.
+
+### Pending navigation — human correction, 2026-10-27
+
+Keep two surfaces separate: **For you** contains the integrating conversation's
+canonical questions, durable actions and proposals; the header carousel is for
+pending items from internal owned sessions. For you needs permanent explicit
+access, including an understandable empty state. It must not depend on a card
+happening to be visible during refresh.
+
+The internal-session carousel should show one concise session/item line, rotate
+slowly, support horizontal drag and keyboard navigation, and open the selected
+current action. Pause rotation on hover/focus/drag, hidden state, an open detail
+and reduced motion. Give the item text the available row width between the
+arrows and a compact numeric list control; omit visible “loaded pending” labels.
+Retain the list control’s accessible name. Reuse existing ledgers and native
+responders; reading never approves, completes, cancels or resends anything.
+Direct-topic ingress stays direct. Canonical For you scope must never be labelled
+all sessions: global attention needs its own owner-scoped read/navigation contract.
+
+PR377 (source800ae05f81edda02330d6817f2aced457800f4c3) delivered a permanent For you
+header control and readable panel over the same retained card nodes. Existing
+request/conversation state tests pass. A synthetic Chromium component verifies
+open/close, reply-to-composer, preserved draft and explicit empty access. The full
+shipped HTML/JS with synthetic read-only HTTP verifies Escape/draft preservation,
+question/task reply preparation and scrollable dialogs at320/390/1040px. A found
+desktop header overflow was corrected; inspected screenshots and updated metrics
+show contained44px header access and no horizontal overflow. These fixtures send
+no native decisions, models or capture. Global session data/navigation, carousel
+drag/focus and the exact reported Review-item diagnosis remain unfinished.
+PR377 CI40587818579 passed; its web-only release was receiving-verified against
+local/public assets and the successor web process, preserving the existing native
+listener and daemon. This is digital verification, not new device acceptance.
+
+PR379 extends `requests internal list CURSOR` into a separate owner-scoped
+internal-session carousel. Its bounded existing-ledger query excludes the entry,
+rechecks current native/session/turn ownership and retains source dates and
+revisions. Internal detail, question decisions and receipts reuse the existing
+native responder and transactional decision ledger; they never widen canonical
+For you or ordinary capture-question context. Internal durable task detail and
+explicit Dismiss reuse the same task ledger without human completion or work
+cancellation. The internal task view offers no misleading reply-to-integrator
+shortcut for direct-session work.
+
+HTTP and device access use the existing authenticated provider and CSRF contract.
+Conversation-only devices may answer current questions; approval and cancellation
+remain unavailable, with approvals directing the human to Sessions. The carousel
+rotates every6.5seconds when idle, supports drag/arrows and pauses on interaction,
+open detail, hidden state and reduced motion. Its count describes loaded items,
+not a complete global total. Existing card readers retain at most200 requests and
+200 actions per selected source; overflow is visible, pagination does not advance
+past skipped cards, and unsent drafts are never evicted to make room. Closed cards
+can be dismissed locally to load more. Metadata refresh reuses the conversation's
+existing refresh path; it adds no separate network poller or pending store.
+
+This is a draft implementation, not receiving adoption. Qualification includes
+owner-scope/ledger tests, synthetic UI checks and an actual authenticated HTTP to
+synthetic-native journey for a direct-session question, denied device actions,
+CSRF, one decision/receipt and revocation. A passing CI run and integrated browser
+qualification must be recorded separately; this paragraph does not assert either.
+Owning task #61; stage4 attention and native repair remain in plan #301/milestone9.
+
+## Original generic files — #380
+
+The Files composer increment carries unchanged PDFs and other original bytes
+through the retained conversation and native/routed attachment path. This remains
+milestone8 base-experience work. See [the contract and qualification boundary](conversation-files.md).
+A PNG-only selector or an upload receipt does not close native file delivery.
+
+
+### Background reply continuity
+
+Voice-on in the standalone client remains opted in across hidden state and the
+end of an individual reply. Tests cover a later reply arriving while the page is
+still hidden, as well as continuation within one reply; explicit OS/manual Pause
+and Stop keep their existing meaning. This does not prove phone background
+acceptance or override browser/OS suspension.
+
+The notification stream previously aborted on pagehide but restored only for a
+BFCache pageshow. A non-BFCache return could leave the client marked active with
+no subscription. Lifecycle and network recovery now replace that exact stream,
+request a retained-view catch-up and fence obsolete callbacks by generation.
+A single45-second deadline detects missing15-second server heartbeats, then uses
+the existing1–10second reconnect backoff. Each mount retains at most one selected
+subscription, one heartbeat/retry timer and64KiB of unfinished event text. Stop,
+expired access and pagehide abort owned I/O and clear timers; no work is submitted
+or replayed by reconnect. This is a reproduced client failure and correction,
+not an established diagnosis of the human's particular Android interruption.
+Physical testing must still cover two separate replies while another app is
+foreground and after screen lock. For full OS-managed background playback beyond
+web lifecycle guarantees, the native-mobile roadmap remains the owning track.
+
+
+### Listen to session progress
+
+Visible Update from cards expose Listen alongside Inspect update, reusing the
+original card's source/revision, saved position and verified player. They do not
+create a second speech path or choose a reply destination. An already loaded
+update resumes without another synthesis attempt. The same capture, capability
+and read-only checks apply as for final replies. This addresses the previously
+missing control on the coalesced progress card; it does not add Reply-to-session
+or claim a new receiving deployment.
+
+### Session audio Solo and reset
+
+Conversation, session update and result headings expose Mute, Solo (S), and, while a filter is
+active, Hear all sessions. Solo clears prior explicit mutes; several selected
+solos form the audible session selection. Removing the last solo restores all
+sessions without reviving old mutes. Hear all sessions clears both sets. These
+filters include automatic conversation replies, progress and live speech as one
+Conversation track. Solo Conversation excludes internal-session updates; muting
+Conversation leaves internal sessions audible. Native questions use their actual
+Conversation or internal-session identity, so Solo Conversation also excludes
+internal questions. Sources without a known track stay silent while any Solo is
+selected. Explicit Listen remains available. Filtering stops excluded automatic playback without pausing global
+Voice or native work. Returning a session to the mix never replays silent history.
+
+Preferences are local to the conversation binding, capped at 256 mute and 256
+solo identities in one versioned local-storage document (32 KiB read limit). The
+previous mute-only format is read when the new document is absent and retired on
+the next filter change. The reserved `conversation` identity shares this same
+store and reset control. No transcript, labels, or audio backlog is persisted.
+
+### Screenshot version and human identity
+
+The standalone header has a compact multicolor `ui` identifier above presence.
+Its twelve hexadecimal characters identify the HTML/JavaScript/CSS bundle
+selected when that page loaded, not a later server deployment or a native daemon
+version. The full SHA-256 is retained in its title. Compute it from original
+index.html followed by each versioned asset name, a NUL separator and its bytes
+in shell order; exact deployed source can reproduce it without a Git checkout.
+It contains no actor, host, private state or credentials. A new deployment does
+not rewrite the identifier in an already open page. The authenticated human name
+uses the secondary palette role, separate from the human label and daimon accent.
+
+
+### Inspector session status — 2026-10-28
+
+The Under the hood inspector includes one bounded row per current enrolled
+conversation, reusing the Beacon's authenticated observer read without enabling
+audio or adding another poller. Rows distinguish work, goal status, tools or
+subagents, human attention and error observations. Running duration uses the
+existing collector's actual native turn/command start; unknown starts remain
+unavailable. It is elapsed work time, never a completion estimate or proof that
+a goal is progressing.
+
+The page advances counters locally once per second only while the inspector is
+open and visible, and stops at the existing twenty-second freshness boundary.
+Closing/hiding/resetting stops this display timer. At most65 current rows and
+one frame remain in page memory; no status history, media or telemetry is stored.
+The later compact expressive view for the conversation/avatar is still a design
+requirement, not this precise inspector's acceptance.
+
+Human-facing update cards keep Listen and Reply to this update. They do not
+open the inspector through an Inspect shortcut; detailed originals and routing
+remain available through the explicit header Under the hood control.
+
+
+Inspector refinements: session status and the existing Codex weekly-remaining
+percentage/reset countdown appear first. Weekly quota reuses the collector's
+account-rate-limit observation through its private, database-bound health record;
+no additional provider poll is installed. Missing, stale, replaced or invalid
+quota stays unavailable. Session original messages are collapsed by default.
+
+The message/update routing-map icon opens the existing graph at that exact
+source node, preserving real declared edges without inventing a nearest-input
+connection. Pointer dragging pans the graph; ordinary clicks still select
+evidence. Back to message, graph close or inspector close restores the invoking
+message focus and reading position. This is navigation only, never dispatch or
+proof of incorporation. The plain Inspect update answer-list shortcut remains
+removed.
+
+
+## Copy conversation text
+
+Every ordinary human message, assistant reply, session update, For you action and native question
+has an explicit Copy action beside its existing actions. It copies the message
+body from the source, preserving text/Markdown, Unicode and line breaks rather
+than labels, controls or an excerpt. A complete loaded body is reused; otherwise
+Copy reads the existing exact source or original-text endpoint through all pages.
+Native question copying does not mark its proposal reviewed, answer it or enable
+approval. It uses the existing read-only revision-fenced detail API.
+
+The clipboard write begins from the click; ClipboardItem can carry a promised
+text Blob on browsers requiring activation before asynchronous reads complete.
+Other browsers use writeText. Missing clipboard access or stale/failed/incomplete
+reads show Copy failed, without replacing the clipboard with a partial result.
+Copying is bounded to128 pages,262144 UTF-16 code units and15 seconds before
+starting another page (plus the existing in-flight API deadline). Source/binding
+changes stop the read. Copy does not generate speech, resend input or run work.
+The button reports Copied only after browser clipboard confirmation. Local
+clipboard success is separate from real phone/browser acceptance.
+
+
+## Visible update text recovery — 2026-11-01
+
+Compact Update from cards use the same canonical source reader as their full
+message. Keep its read/continue control and error state visible on that card
+whenever the text is incomplete. Automatic viewport loading stays bounded;
+a failed text read exposes Retry reading, and reaching the automatic text bound
+retains Continue reading. Successful completion hides the reader and clears the
+error. The controls follow the current source/revision, without opening diagnostics
+or issuing any new input, speech, decision or worker operation.
+
+The source selected from the reported cut-off screenshot retained294characters
+and its presentation preview held240; the canonical reader returned all294. This
+establishes that its source text was intact, not the exact browser failure cause.
+A reproduced transient automatic-read failure previously left compact cards at
+the preview while their reader/error stayed inside the hidden full-message view.
+The regression now verifies visible retry and complete recovery, plus continuation
+after the automatic text bound. Actual Chromium at320/390px verifies the contained
+retry control, the full canonical rendered source and hidden completed controls.
+These are read-only synthetic/browser observations, not new phone acceptance.
+
+Clipboard images pasted into the message textarea use the same ordered image
+preview, fitting, removal and explicit-send path as gallery/camera selections.
+Text-only paste remains native; mixed plain text is retained. No clipboard
+permission, background read or upload is performed by paste. Existing eight-image
+and per-image limits remain unchanged.

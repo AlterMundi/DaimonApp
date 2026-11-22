@@ -1,5 +1,55 @@
 # Visible and recoverable human requests
 
+## Tribu ingress into the existing Interaction integrator
+
+The explicitly selected `[tribu] mode = "interaction"` profile admits genuine
+paired-human public mentions into the **existing** native integrating conversation
+used by Daimon Interaction. I/O is ingress/egress, not a separate reasoning agent
+or a new context owner. The configured human and chat/topic must match
+`[interaction]` exactly; a work destination cannot serve as this entrance.
+Unspecified mode remains the historical `bounded` profile, whose dedicated-topic
+limits and retained journal are unchanged.
+
+The existing owner-private Unix socket accepts only the source ID. The adapter
+reads the canonical original through the maintained authenticated Tribu API,
+checks the current human/body selector and activation boundary, then captures it
+through Interaction's original-input transaction. The browser cannot supply
+Tribu provenance. The original retains its public source ID/revision, author,
+platform context and attestation; quoted/peer context is data. Routed work and
+new work-session creation retain the same provenance. No whole transcript or
+private memory is pooled.
+
+Admission uses a stable original-derived UUID independent of source revisions
+and native-session renewal. Exact repeats inspect retained state without another
+native submission, including after a lost acknowledgement or restart. The socket
+response preserves `id = "tribu:SOURCE_ID"`, which the existing Matrix attention
+producer requires before acknowledging its outbox. `conversation_input` separately
+identifies the correlated native original UUID; it is not a reminted send. Existing
+legacy admissions are observed without migration or replay. A source edit or
+withdrawal before native submission withdraws the retained original; it never
+mints another activation. Validation uses the existing native submission/steer
+boundary, including routed work, rather than a second launcher or polling loop.
+A new deployment must select a fresh activation boundary; old backlog stays inert.
+
+`/tribu pause` in the integrating topic pauses **incoming Tribu admission only**:
+queued Tribu originals become known-unsent, and arrivals during pause remain
+unsent under their exact identities. Resume does not replay them. Ordinary
+Interaction input, goals and work continue. Integrated mode does not install the
+legacy dedicated-topic deadline, disable goals/subagents or interrupt the whole
+integrator. `/tribu status` and the existing local `status` operation expose the
+bounded retained ingress state. `max_pending` bounds outstanding Tribu originals
+separately from ordinary input; native originals use the existing history store,
+not a new accumulating capture cache. Uncertain submission is never automatic
+retry fuel; integrated `retry` is rejected.
+
+Public replies remain explicitly selected `tribu-human` operations with their
+actual parent, audience and delivery evidence. Never mirror the private final
+answer automatically. Passive peer receipt does not start inference; peer-driven
+coordination remains a separately selected and enforced Matrix #312 policy.
+This profile's source implementation and fixture qualification are distinct from
+receiving activation and a genuine human public-mention acceptance journey.
+
+
 This change implements [#43](https://github.com/AlterMundi/telecodex/issues/43)
 using the existing native question broker and activity observer. It does not
 add a native RPC queue, model attention, memory ingestion or a Mini App.
@@ -31,6 +81,34 @@ handoff. Routine confirmations, optional suggestions and conversational question
 do not need a widget or a task. Do not redeclare an existing pending action.
 The runtime names this distinction in each turn's application context; it does
 not infer or create requests from ordinary messages.
+
+## Durable actions in the independent conversation
+
+The conversation's **For you** section reads the same durable task ledger through
+`GET /api/interaction/tasks` and `/api/interaction/tasks/ID`. It is distinct from
+`/requests`, which retains live native question/approval channels. These owner
+reads use the controller's existing task scope: current entry tasks and tasks
+whose actual originating local turn was routed from this exact entry. Later
+ordinary direct-topic tasks are not imported, even when the worker also receives
+routed work. Ownership, allowed human and current source/native bindings remain
+required. Lists are paginated; complete action text is revision-pinned.
+
+Read and **Reply in conversation** do not complete, approve, withdraw or send
+anything. Reply preserves an existing draft and selects a `task:ID` context hint
+for the next ordinary text/voice original. Its ID/revision also reach the selected
+worker as bounded provenance, so a short reply retains its task context. That hint
+is source metadata, never
+human speech or authorization. The integrator must inspect `human_task` before
+interpreting feedback and use the existing scoped `withdraw_task` only when the
+action is obsolete, preserving its reason and actual actor. Stale hints do not
+block a new topic, answer native questions or manufacture completion. No new
+responder, task store or task-mutation HTTP endpoint is introduced. Monitor-only
+credentials do not gain access to task contents.
+
+Resolved/withdrawn cards identify their actual state and can be dismissed from
+the current view without deleting the retained task. **For you** remains hidden
+when empty; native live questions keep their existing dedicated controls.
+Receiving adoption and human experience acceptance are separate from source/tests.
 
 ## Reopen without scrolling
 
@@ -222,3 +300,22 @@ metadata and task controls read the same ledger; no parallel request store,
 responder or human impersonation is introduced. This is development work for
 #61/#208: new real-controller process cases use synthetic model peers and do not
 replace the finished-version real-session/phone/voice campaign.
+
+## Publish necessary tasks during an active goal
+
+A turn manifest is processed only after successful logical-turn completion.
+An automatic goal can keep that turn open across many physical turns; a failed
+turn preserves its file but does not publish it. A file alone is not a durable
+request receipt.
+
+Use the current scoped controller `publish_tasks` with the same
+`telecodex.human-requests/v1` schema and `requests` array when the human action
+is needed while work continues. The receiver derives the human, conversation,
+logical and physical turn from the current execution; arguments cannot override
+them. The ordinary title/action/link bounds apply, with at most ten task records
+per logical turn. Publication starts no model and acknowledges no human action.
+Use `human_tasks`/`human_task` to inspect the retained receipt. Exact stable IDs
+and unchanged content return the original record, including after resolution or
+a lost acknowledgement; changed content refuses. The successful-turn manifest
+also reuses those receipts, so it cannot duplicate or reopen a published task.
+Keep withdrawals on `withdraw_task`, with its exact inspected revision.

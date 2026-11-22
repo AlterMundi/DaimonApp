@@ -31,7 +31,7 @@ class Goals(Journey):
         self.broadcast(thread,'turn/completed',{'turn':{'id':turn,'status':'completed'}})
         if self.goals.get(thread,{}).get('status')=='active' and not continuation:
             def follow():
-                time.sleep(.6 if self.mode=='delayed_snapshot' else .1)
+                time.sleep(45 if self.mode=='checkpoint45' else .6 if self.mode=='delayed_snapshot' else .1)
                 if self.goals.get(thread,{}).get('status')!='active': return
                 next_turn=turn+'-continued'; self.native_turns+=1
                 self.broadcast(thread,'turn/started',{'turn':{'id':next_turn,'status':'inProgress'}})
@@ -69,6 +69,14 @@ class Goals(Journey):
                 if hasattr(self, 'handle_extra_rpc') and self.handle_extra_rpc(m, send):
                     continue
                 if method=='initialize':send({'id':ident,'result':{}})
+                elif method=='config/read':send({'id':ident,'result':{'config':{'goals':{'continuation_idle_seconds':{'native-topic-7':45}}} if self.mode=='checkpoint45' else {}}})
+                elif method=='thread/read':
+                    # Subclass foreground peers own their detached turns. This
+                    # base cannot infer idle from its ordinary holding map.
+                    status=('active' if self.holding.get(p['threadId']) else
+                        'notLoaded' if getattr(self,'web_thread',None)==p['threadId'] else 'idle')
+                    send({'id':ident,'result':{'thread':{'id':p['threadId'],
+                        'status':{'type':status}}}})
                 elif method in ('thread/start','thread/resume'):
                     if method=='thread/start':self.thread_sequence+=1;thread=f'native-topic-{self.thread_sequence+6}'
                     else:thread=p['threadId'];assert p['excludeTurns'] is True
@@ -97,7 +105,7 @@ class Goals(Journey):
                         if k in p:g[k]=p[k]
                     send({'id':ident,'result':{'goal':copy.deepcopy(g)}})
                     self.broadcast(t,'thread/goal/updated',{'goal':copy.deepcopy(g)})
-                    if g['status']=='active' and t in self.holding and self.mode=='complete':
+                    if g['status']=='active' and t in self.holding and self.mode in ('complete','checkpoint45'):
                         active=self.holding.pop(t)
                         threading.Thread(target=lambda:(time.sleep(.15),self.finish(t,active)),daemon=True).start()
                 elif method=='turn/start':
@@ -112,7 +120,7 @@ class Goals(Journey):
                             time.sleep(.1);self.finish(selected,selected_turn)
                         threading.Thread(target=late_start,daemon=True).start();continue
                     send({'id':ident,'result':{'turn':{'id':turn}}});self.broadcast(thread,'turn/started',{'turn':{'id':turn,'status':'inProgress'}})
-                    if self.mode=='complete' and self.goals.get(thread):self.holding[thread]=turn
+                    if self.mode in ('complete','checkpoint45') and self.goals.get(thread):self.holding[thread]=turn
                     elif self.mode=='hold':self.holding[thread]=turn
                     else:self.finish(thread,turn)
                 elif method=='turn/steer':send({'id':ident,'result':{'turnId':turn}})
@@ -156,7 +164,10 @@ def lifecycle(binary):
         j.command('/goal clear','Goal cleared.');j.command('/goal clear','No goal to clear.')
         before=len(j.rpc);j.stop();j.start();j.command('/goal','No goal currently set')
         assert not any(x.get('method')=='turn/start' for x in j.rpc[before:])
-        assert j.row("select count(*) from incoming_updates where status in ('received','processing','queued','started')")==[(0,)]
+        # Telegram observes the reply before its HTTP send returns and the
+        # dispatcher settles the ingress row. Require that same settled state
+        # within the fixture's existing bound, rather than sampling mid-send.
+        j.wait(lambda:j.row("select count(*) from incoming_updates where status in ('received','processing','queued','started')")==[(0,)])
         print('PASS lifecycle, continuation, summary, ForceReply edit, replacement, isolation, clear, restart')
     finally:j.close()
 
@@ -286,6 +297,21 @@ def exhausted_budget(binary):
         print('PASS exhausted resume rejected without effects; objective edits retain usage and explicit pause')
     finally:j.close()
 
+
+def checkpoint_collector(binary):
+    j=Goals(binary,'checkpoint45')
+    try:
+        j.start();j.admit('/goal start Preserve checkpoint continuation')
+        j.wait(lambda:j.has('Initial goal turn delivered.'))
+        j.wait(lambda:j.has('Continuation delivered.'),seconds=65)
+        j.idle()
+        assert j.native_turns==2
+        assert sum(m.get('method')=='turn/start' for m in j.rpc)==1
+        assert not any(m.get('method')=='turn/interrupt' for m in j.rpc)
+        assert j.goals['native-topic-7']['status']=='complete'
+        print('PASS collector retains same active goal across actual45s native checkpoint; one original start, no attach/replay')
+    finally:j.close()
+
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     lifecycle(binary);live_controls(binary);unsupported(binary);staged_controls(binary,'pause');staged_controls(binary,'clear');adopt_live_turn(binary);delayed_snapshot(binary);long_summary(binary)
@@ -293,3 +319,4 @@ if __name__=='__main__':
     resume_preserves_goal(binary,'complete',True)
     resume_preserves_goal(binary,'budgetLimited',False)
     exhausted_budget(binary)
+    checkpoint_collector(binary)

@@ -1,0 +1,20 @@
+// Trusted duration receipts, uncertainty and bounded private UI; no providers.
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto');
+const window={},document={createElement:()=>({})};
+vm.runInNewContext(fs.readFileSync('dashboard/web/live-usage.js','utf8'),{window,document});
+const api=window.PublicLiveUsage;
+assert.equal(api.summary({finalization:{voice_usage_confirmed:true,usage_seconds:71}}),'71s confirmed · voice estimate USD 0.0592');
+assert.equal(api.summary({finalization:{voice_usage_confirmed:true,usage_seconds:0}}),'0s confirmed · voice estimate USD 0.0000');
+for(const bad of [null,'71',-1,NaN,Infinity,86401])assert(!api.summary({closed:true,finalization:{voice_usage_confirmed:true,usage_seconds:bad}}).includes('estimate'));
+assert.equal(api.summary({usage:{seconds:58},closed:true}),'58s observed · final usage unconfirmed');
+assert(!api.summary({usage:{seconds:58}}).includes('estimate'),'Provisional usage cannot become a final estimate');
+const list={items:[],replaceChildren(){this.items=[];},append(item){this.items.push(item);}},root={hidden:true,querySelector:()=>list};
+const view=api.mount(root),id=crypto.randomUUID();view.observe({visit:id});assert.match(list.items[0].textContent,/not yet confirmed/);
+view.observe({visit:id,backend:'native',usage:{seconds:58}});assert.match(list.items[0].textContent,/58s observed/);
+view.observe({visit:id,finalization:{voice_usage_confirmed:true,usage_seconds:71},closed:true});
+view.observe({visit:id,usage:{seconds:60}});assert.match(list.items[0].textContent,/71s confirmed/,'Late provisional data cannot replace final usage');
+for(let n=0;n<12;n++)view.observe({visit:crypto.randomUUID(),backend:'responses',closed:true});
+assert.equal(list.items.length,8);assert(!root.hidden);
+view.observe({visit:'<script>'});assert.equal(list.items.length,8);
+view.reset();assert(root.hidden);assert.equal(list.items.length,0);
+console.log('Public Live usage: confirmed/provisional/unknown/invalid receipts, exact seconds pricing, bounded8rows and reset passed.');

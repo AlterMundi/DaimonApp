@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub(super) fn schema() -> Value {
-    json!({"type":"object","properties":{"input_ref":{"oneOf":[{"type":"integer","minimum":0},{"type":"string","format":"uuid"}]},"name":{"type":"string","description":"Short single-token topic selector; stable tID names are reserved"},"reason":{"type":"string","description":"Why this original input is a distinct task; uncertainty or a busy worker is not a reason"},"context_selectors":{"type":"array","items":{"type":"string"},"maxItems":5}},"required":["input_ref","name","reason","context_selectors"],"additionalProperties":false})
+    json!({"type":"object","properties":{"input_ref":{"oneOf":[{"type":"integer","minimum":0},{"type":"string","format":"uuid"}]},"name":{"type":"string","description":"Human-selected topic title, including spaces (1-64 UTF-8 bytes, no surrounding whitespace, controls or markup). Multiword titles route through the returned stable tID selector; stable tID titles are reserved"},"reason":{"type":"string","description":"Why this original input is a distinct task; uncertainty or a busy worker is not a reason"},"context_selectors":{"type":"array","items":{"type":"string"},"maxItems":5}},"required":["input_ref","name","reason","context_selectors"],"additionalProperties":false})
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,6 +16,43 @@ struct Create {
     name: String,
     reason: String,
     context_selectors: Vec<String>,
+}
+
+/// Only fixed, non-sensitive pre-admission diagnostics cross the tool boundary.
+#[derive(Debug)]
+pub(super) struct PreflightRejection(pub &'static str, pub &'static str);
+impl std::fmt::Display for PreflightRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.1)
+    }
+}
+impl std::error::Error for PreflightRejection {}
+
+pub(super) fn rejection(error: &anyhow::Error) -> Option<Value> {
+    error.downcast_ref::<PreflightRejection>().map(|e| json!({
+        "kind":"creation_rejected","code":e.0,"stage":"before_intent",
+        "message":e.1,"effect":"This call made no creation intent or topic mutation. Inspect creation_status for this original before correcting arguments; a prior or concurrent call may still exist."
+    }))
+}
+
+fn validate_name(name: &str) -> Result<()> {
+    let reserved = name
+        .strip_prefix('t')
+        .or_else(|| name.strip_prefix('T'))
+        .is_some_and(|s| s.parse::<i64>().is_ok());
+    if name.is_empty()
+        || name.len() > 64
+        || name.trim() != name
+        || reserved
+        || name.chars().any(|c| {
+            c.is_control()
+                || (c.is_whitespace() && c != ' ')
+                || matches!(c, '#' | '`' | '"' | '\'' | '<' | '>')
+        })
+    {
+        return Err(PreflightRejection("invalid_creation_title", "Use a 1-64 byte topic title. Ordinary spaces are supported; surrounding whitespace, controls, markup and reserved tID titles are not.").into());
+    }
+    Ok(())
 }
 
 /// Keep the selected captured revisions, not an unbounded copy of their text.
@@ -115,27 +152,22 @@ async fn create_selected(
     }
     let shared = &app.shared;
     let cfg = super::routing::profile(shared)?;
-    let reserved = args
-        .name
-        .strip_prefix('t')
-        .or_else(|| args.name.strip_prefix('T'))
-        .is_some_and(|s| s.parse::<i64>().is_ok());
-    if args.name.len() > 64
-        || reserved
-        || args.name.is_empty()
-        || args.name.chars().any(|c| {
-            c.is_whitespace() || c.is_control() || matches!(c, '#' | '`' | '"' | '\'' | '<' | '>')
-        })
-        || !(12..=1000).contains(&args.reason.len())
-        || args.context_selectors.len() > 5
-        || cfg.targets.len() >= 64
+    validate_name(&args.name)?;
+    if !(12..=1000).contains(&args.reason.len()) || args.context_selectors.len() > 5 {
+        return Err(PreflightRejection(
+            "invalid_creation_arguments",
+            "Use a 12-1000 byte reason and at most five context selectors.",
+        )
+        .into());
+    }
+    if cfg.targets.len() >= crate::interaction::MAX_LOCAL_TARGETS
         || !cfg.resolve(&args.name).is_empty()
         || cfg
             .matrix_targets
             .iter()
             .any(|target| target.name.eq_ignore_ascii_case(&args.name))
     {
-        bail!("Invalid, duplicate or unsupported new destination");
+        return Err(PreflightRejection("destination_unavailable", "The title already selects a destination or destination capacity is full. Inspect candidates; do not create a duplicate.").into());
     }
     args.input_ref.validate()?;
     let (original, message) = shared.store.interaction_entry_original(
@@ -213,13 +245,14 @@ async fn create_selected(
         &args.name,
         &args.reason,
         &context,
-        64 - shared
-            .config
-            .interaction
-            .as_ref()
-            .context("Missing profile")?
-            .targets
-            .len(),
+        crate::interaction::MAX_LOCAL_TARGETS
+            - shared
+                .config
+                .interaction
+                .as_ref()
+                .context("Missing profile")?
+                .targets
+                .len(),
         closed,
     )?;
     if !fresh {
@@ -277,7 +310,16 @@ async fn execute_claimed(
     let intent = &operation["intent"];
     let name = intent["name"].as_str().context("Missing retained name")?;
     let reference: InputReference = serde_json::from_value(intent["input_update"].clone())?;
-    let topic = if operation["phase"] == "prepared" {
+    let topic = if operation["phase"] == "prepared" && !shared.config.telegram.enabled {
+        let reserved = super::routing::profile(shared)?
+            .targets
+            .iter()
+            .map(|target| target.topic_id)
+            .collect::<Vec<_>>();
+        shared
+            .store
+            .interaction_creation_local_topic(id, human, &reserved)?
+    } else if operation["phase"] == "prepared" {
         let topic = shared
             .telegram
             .create_forum_topic_checked(key.chat_id, name, || {
@@ -329,9 +371,87 @@ async fn execute_claimed(
     )
 }
 
+/// Authenticated operator recovery for one retained uncertain creation. This
+/// does not create a Telegram topic, change the original or resume any goal.
+pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    let parts: Vec<_> = args.split_whitespace().collect();
+    let cfg = super::routing::profile(&app.shared)?;
+    anyhow::ensure!(cfg.human_id == human, "Creation owner mismatch");
+    let [verb, id, tail @ ..] = parts.as_slice() else {
+        bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID");
+    };
+    let op = app.shared.store.interaction_creation(id, human)?;
+    let key: SessionKey = serde_json::from_value(op["intent"]["entry"].clone())?;
+    anyhow::ensure!(key == cfg.entry(), "Creation belongs to another entry");
+    if *verb == "status" && tail.is_empty() {
+        return Ok(op);
+    }
+    anyhow::ensure!(
+        app.shared.config.telegram.enabled && app.shared.bot_id > 0,
+        "Telegram service receipt requires its configured bot"
+    );
+    let reference: InputReference = serde_json::from_value(op["intent"]["input_update"].clone())?;
+    let native = op["intent"]["entry_native"]
+        .as_str()
+        .context("Missing original native binding")?;
+    match (*verb, tail) {
+        ("reconcile", [event]) => {
+            let reserved = cfg.targets.iter().map(|t| t.topic_id).collect::<Vec<_>>();
+            let (receipt, fresh) = app.shared.store.interaction_creation_reconcile(
+                id,
+                human,
+                app.shared.bot_id,
+                event.parse()?,
+                &reserved,
+            )?;
+            if !fresh {
+                return Ok(receipt);
+            }
+        }
+        ("resume", []) => anyhow::ensure!(
+            op["topic"].as_i64().is_some() && op["phase"] == "retained_topic",
+            "Only a confirmed retained topic may resume here; inspect existing instructions"
+        ),
+        _ => bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID"),
+    }
+    resume(
+        app,
+        key,
+        human,
+        native,
+        reference,
+        &CancellationToken::new(),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titles_preserve_human_spaces_and_rejections_are_safe() {
+        for name in ["Diamond Badge", "Research", "共同 調査"] {
+            validate_name(name).unwrap();
+        }
+        for name in [
+            "",
+            " padded",
+            "trailing ",
+            "t77",
+            "bad\nname",
+            "bad\tname",
+            "<tag>",
+            "#route",
+        ] {
+            let error = validate_name(name).unwrap_err();
+            let result = rejection(&error).unwrap();
+            assert_eq!(result["code"], "invalid_creation_title");
+            assert_eq!(result["stage"], "before_intent");
+        }
+        assert!(validate_name(&"x".repeat(65)).is_err());
+        assert!(rejection(&anyhow::anyhow!("private arbitrary failure")).is_none());
+    }
 
     #[test]
     fn bounded_interview_keeps_source_identity_indices_and_small_originals() {

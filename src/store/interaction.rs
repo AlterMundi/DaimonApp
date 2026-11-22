@@ -26,14 +26,34 @@ pub(super) fn record_native_message_on(
     if !bound {
         return Err(anyhow!("native output does not match the owning execution"));
     }
+    // A return binding can belong to an earlier human turn on this native
+    // thread. It does not authorize progress from an internal-only execution.
+    let internal_only: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id WHERE json_extract(i.doc,'$.local_turn')=?1)
+         AND NOT EXISTS(SELECT 1 FROM interaction_instructions i WHERE json_extract(i.doc,'$.local_turn')=?1 AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id))",
+        [local_turn], |r|r.get(0),
+    )?;
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO interaction_native_messages
              (native_thread,native_turn,item_id,local_turn,phase,text,observed_at,presentation_input)
              VALUES(?1,?2,?3,?4,?5,?6,?7,(SELECT p.source_input FROM conversation_returns p
                JOIN conversation_inputs c ON c.id=p.source_input AND c.human_id=p.human_id
-               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id))",
-        params![thread, turn, item, local_turn, phase, text, now_string()],
+               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0))",
+        params![thread, turn, item, local_turn, phase, text, now_string(),internal_only],
     )? == 1;
+    if inserted {
+        // An independently admitted human retains their presentation lifetime,
+        // including when a worker return joins the SAME physical turn. Freeze
+        // its source association separately so useful returning commentary can
+        // reach voice without promoting ordinary progress or changing audience.
+        let sources = super::workflows::native_return_sources_on(conn, local_turn)?;
+        if !sources.is_empty() {
+            conn.execute("UPDATE interaction_native_messages SET native_return_sources=?4 WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3",params![thread,turn,item,serde_json::to_string(&sources)?])?;
+        }
+        if let Some(marker) = super::workflows::native_publication_on(conn, local_turn)? {
+            conn.execute("UPDATE interaction_native_messages SET presentation_input=?4 WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3",params![thread,turn,item,marker])?;
+        }
+    }
     if !inserted {
         let matches: bool = conn.query_row(
             "SELECT phase IS ?4 AND text=?5 FROM interaction_native_messages
@@ -94,6 +114,7 @@ pub(super) fn admit_on(
     {
         return Err(anyhow!("Invalid interaction input"));
     }
+    let mut creation_target = false;
     {
         let reference = source
             .update_id
@@ -101,9 +122,25 @@ pub(super) fn admit_on(
             .unwrap_or_else(|| {
                 crate::interaction::InputReference::Conversation(source.event_id.clone())
             });
-        let reserved:Option<(String,Option<i64>,i64)>=tx.query_row("SELECT phase,topic,entry_chat FROM interaction_creations WHERE human_id=?1 AND input_update=?2",params![source.human_id,reference],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-        if let Some((phase, topic, chat)) = reserved {
-            if !matches!(phase.as_str(), "topic_known" | "ready")
+        let reserved:Option<(String,Option<i64>,i64,String)>=tx.query_row("SELECT phase,topic,entry_chat,doc FROM interaction_creations WHERE human_id=?1 AND input_update=?2",params![source.human_id,reference],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if let Some((phase, topic, chat, raw)) = reserved {
+            let intent: serde_json::Value = serde_json::from_str(&raw)?;
+            if let Some(prior) = intent.get("prior_dispatch") {
+                use sha2::{Digest, Sha256};
+                if prior["source_sha256"]
+                    != format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_string(source)?.as_bytes())
+                    )
+                {
+                    bail!("Creation cannot replace the retained dispatch source");
+                }
+                // Existing destinations keep their exact immutable source.
+                // Only the operation's confirmed topic may be added to it.
+                creation_target = matches!(phase.as_str(), "topic_known" | "ready")
+                    && topic == Some(target.thread_id)
+                    && chat == target.chat_id;
+            } else if !matches!(phase.as_str(), "topic_known" | "ready")
                 || topic != Some(target.thread_id)
                 || chat != target.chat_id
                 || source.target_sessions.len() != 1
@@ -112,6 +149,7 @@ pub(super) fn admit_on(
             }
         }
     }
+
     if let Some(transcription) = &source.transcription
         && source.channel != "conversation"
     {
@@ -179,7 +217,7 @@ pub(super) fn admit_on(
             &source.event_id,
         )?;
     }
-    if !source.target_sessions.contains(&session) {
+    if !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
         ));
@@ -338,6 +376,12 @@ impl Store {
             if !presentation {
                 conn.execute_batch(
                     "ALTER TABLE interaction_native_messages ADD COLUMN presentation_input TEXT;",
+                )?;
+            }
+            let returns:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('interaction_native_messages') WHERE name='native_return_sources')",[],|r|r.get(0))?;
+            if !returns {
+                conn.execute_batch(
+                    "ALTER TABLE interaction_native_messages ADD COLUMN native_return_sources TEXT;",
                 )?;
             }
             let old:bool=conn.query_row("SELECT [notnull] FROM pragma_table_info('interaction_sources') WHERE name='origin_message'",[],|r|r.get(0))?;
@@ -825,6 +869,7 @@ mod tests {
     }
     fn input(event: i64, targets: &[i64]) -> crate::interaction::SourceInput {
         crate::interaction::SourceInput {
+            tribu_source: None,
             transcription: None,
             channel: "telegram:test-bot".into(),
             event_id: event.to_string(),

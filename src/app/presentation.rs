@@ -90,10 +90,9 @@ pub(super) fn turn_telegram(shared: &Arc<AppShared>, local: Option<i64>) -> Tele
         return shared.telegram.clone();
     };
     let owner = shared.clone();
-    shared
-        .telegram
-        .clone()
-        .with_publication_guard(move || Ok(!owner.store.conversation_turn_return(local)?))
+    shared.telegram.clone().with_publication_guard(move || {
+        Ok(owner.config.telegram.enabled && !owner.store.conversation_turn_return(local)?)
+    })
 }
 
 /// Read-only receiver presentation; no native/model/Telegram operation.
@@ -134,6 +133,41 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
         ["goals", "detail", id] if Uuid::parse_str(id).is_ok() => {
             app.shared.store.goal_control_view(human, cfg.entry(), id)
         }
+        [
+            operation,
+            delivery,
+            native,
+            matrix,
+            inbox,
+            responses,
+            publications,
+        ] if matches!(*operation, "list" | "before") => {
+            app.shared.store.interaction_presentation_page_publications(
+                human,
+                cfg.entry(),
+                delivery.parse()?,
+                native.parse()?,
+                Some(matrix.parse()?),
+                Some(inbox.parse()?),
+                Some(responses.parse()?),
+                Some(publications.parse()?),
+                *operation == "before",
+            )
+        }
+        [operation, delivery, native, matrix, inbox, responses]
+            if matches!(*operation, "list" | "before") =>
+        {
+            app.shared.store.interaction_presentation_page_messages(
+                human,
+                cfg.entry(),
+                delivery.parse()?,
+                native.parse()?,
+                Some(matrix.parse()?),
+                Some(inbox.parse()?),
+                Some(responses.parse()?),
+                *operation == "before",
+            )
+        }
         [operation, delivery, native, matrix] if matches!(*operation, "list" | "before") => {
             app.shared.store.interaction_presentation_page_matrix(
                 human,
@@ -157,6 +191,10 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
             native.parse()?,
             true,
         ),
+        ["speech", id, revision, offset] if id.len() <= 448 && revision.len() == 64 => app
+            .shared
+            .store
+            .interaction_live_speech_part(human, cfg.entry(), id, revision, offset.parse()?),
         ["part", id, revision, offset] if id.len() <= 64 && revision.len() == 64 => app
             .shared
             .store
@@ -187,7 +225,16 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
             .shared
             .store
             .interaction_activity(human, cfg.entry(), &targets)?;
+        result["workflow_attention"] = super::workflows::view(app, human, cfg.entry())?;
         result["goal_controls"] = app.shared.store.goal_control_views(human, cfg.entry(), 0)?;
+        result["goal_failure_evidence"] = serde_json::Value::Array(
+            std::iter::once(cfg.entry()).chain(targets.iter().map(|(key,_)|*key)).map(|target| {
+                match app.shared.store.goal_recovery_summary(human,target) {
+                    Ok(evidence)=>json!({"target":target,"availability":"observed","evidence":evidence}),
+                    Err(_)=>json!({"target":target,"availability":"unknown","execution_enabled":false}),
+                }
+            }).collect()
+        );
     }
     if result["schema"]
         .as_str()
@@ -206,6 +253,38 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
 }
 
 fn source_label(shared: &AppShared, source: &mut serde_json::Value) -> Result<()> {
+    if matches!(
+        source["kind"].as_str(),
+        Some("matrix_inbox" | "matrix_response")
+    ) {
+        let cfg = super::routing::profile(shared)?;
+        let author = source["source_author"].clone();
+        let own = cfg
+            .matrix_transport
+            .as_ref()
+            .map(|t| serde_json::to_value(&t.source))
+            .transpose()?
+            .is_some_and(|v| {
+                v["being_ref"] == author["being_ref"]
+                    && v["embodiment_id"] == author["embodiment_id"]
+            });
+        let own = own || source["kind"] == "matrix_response";
+        source["direction"] = json!(if own { "outgoing" } else { "incoming" });
+        let name = cfg
+            .matrix_targets
+            .iter()
+            .find(|t| {
+                serde_json::to_value(&t.destination)
+                    .is_ok_and(|v| v["being_ref"] == author["being_ref"])
+            })
+            .map(|t| t.name.as_str())
+            .unwrap_or_else(|| author["being_ref"].as_str().unwrap_or("Unknown sender"));
+        source["label"] = json!(format!(
+            "Matrix · {} · {name}",
+            if own { "outgoing" } else { "incoming" }
+        ));
+        return Ok(());
+    }
     if source["kind"] == "matrix_result" {
         return Ok(());
     }

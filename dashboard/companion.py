@@ -8,28 +8,85 @@ import re
 import secrets
 import time
 import tomllib
+import uuid
 
 from .private_state import private_directory, read_json, write_json
 from scripts.speech_render import directory, sync_directory, lock, RenderError
 
 
+def application_identity(config, provider):
+    """Keep existing bot scopes intact; web-only receivers use an explicit ID."""
+    if 'application_id' not in config:
+        return config['bot_id']
+    ident = config['application_id']
+    human_ref = config.get('shared_auth', {}).get('human_ref')
+    if (not isinstance(ident, str) or str(uuid.UUID(ident)) != ident
+            or not isinstance(human_ref, str) or not re.fullmatch(r'human:[A-Za-z0-9:._/-]{1,240}', human_ref)
+            or any(key in config for key in ('bot_id', 'bot_username', 'miniapp_short_name'))
+            or getattr(provider, 'receiver', {}).get('telegram', {}).get('enabled') is not False
+            or config.get('alerts', {}).get('enabled') is True
+            or config.get('traffic', {}).get('enabled') is True):
+        raise ValueError('Web-only application requires disabled Telegram and no bot adapters')
+    return {'application_id': ident, 'human_ref': human_ref}
+
+
 def authority(config, provider):
-    return hashlib.sha256(json.dumps([config['bot_id'], config['origin'],
+    return hashlib.sha256(json.dumps([application_identity(config, provider), config['origin'],
         config.get('prefix', '/sessions'), provider.binding_bytes.hex()],
         separators=(',', ':')).encode()).hexdigest()
 
 
-def permitted(method, path, scope='interaction_only', artifact_access=False):
+def permitted(method, path, scope='interaction_only', artifact_access=False, alerts_access=False, coordination_access=False, coordination_control_access=False, workspace_access=False, native_decision_access=False):
+    if method=='POST' and re.fullmatch(r'/api/interaction/requests/[a-f0-9]{32}',path):
+        return scope=='interaction_only' and native_decision_access is True
+    if path in ('/api/interaction/avatars/voice','/api/interaction/avatars/voice/previews'):
+        return scope=='interaction_only' and method in ('GET','POST')
+    if re.fullmatch(r'/api/interaction/avatars/missions/[a-f0-9-]{36}',path):
+        return scope=='interaction_only' and method in ('GET','POST')
+    if path=='/api/interaction/avatars' or path.startswith('/api/interaction/avatars/'):
+        return scope=='interaction_only' and (method=='POST' and path=='/api/interaction/avatars'
+            or method=='GET' and re.fullmatch(r'/api/interaction/avatars(?:/[a-f0-9-]{36})?',path) is not None)
+    if path=='/api/interaction/heartbeat':
+        return method=='GET' and scope in ('interaction_only','monitor_readonly') or method=='POST' and scope=='interaction_only'
+    if path=='/api/interaction/voice/gpt-live' or path.startswith('/api/interaction/voice/gpt-live/'):
+        return scope=='interaction_only' and (
+            method=='POST' and path=='/api/interaction/voice/gpt-live'
+            or method=='POST' and re.fullmatch(r'/api/interaction/voice/gpt-live/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',path) is not None
+            or method=='GET' and path=='/api/interaction/voice/gpt-live/visits'
+            or method=='GET' and re.fullmatch(r'/api/interaction/voice/gpt-live/visits/[a-f0-9-]{36}(?:/events)?',path) is not None)
+    if path=='/api/interaction/voice/codex' or path.startswith('/api/interaction/voice/codex/'):
+        return scope=='interaction_only'and (
+            method=='POST'and path=='/api/interaction/voice/codex'
+            or method=='POST'and re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/recordings/(?:[0-9]|[12][0-9]|3[01])',path)is not None
+            or method=='POST'and re.fullmatch(r'/api/interaction/voice/codex/visits/[a-f0-9-]{36}/capture/ended',path)is not None
+            or method=='GET'and re.fullmatch(r'/api/interaction/voice/codex/visits(?:/[a-f0-9-]{36})?',path)is not None)
+    if path == '/api/interaction/sessions' or path.startswith('/api/interaction/sessions/'):
+        return method == 'GET' and scope == 'interaction_only' and workspace_access is True and re.fullmatch(r'/api/interaction/sessions(?:/[a-f0-9]{24})?',path) is not None
+    if path == '/api/interaction/coordination/control':
+        return method == 'POST' and scope == 'interaction_only' and coordination_control_access is True
+    if path == '/api/interaction/coordination':
+        return method == 'GET' and scope == 'interaction_only' and coordination_access is True
+    if path == '/api/interaction/foreground':
+        return method=='GET' and scope in ('interaction_only','monitor_readonly')
+    if path == '/api/interaction/alerts':
+        return scope == 'interaction_only' and alerts_access is True and method == 'GET'
     if path == '/api/interaction/artifacts' or path.startswith('/api/interaction/artifacts/'):
         return scope == 'interaction_only' and artifact_access is True and method == 'GET' and re.fullmatch(r'/api/interaction/artifacts(?:/[a-f0-9-]{36})?', path) is not None
+    if path == '/api/interaction/internal' or path.startswith('/api/interaction/internal/'):
+        return scope=='interaction_only' and (
+            method=='GET' and re.fullmatch(r'/api/interaction/internal(?:/(?:requests|tasks)/[a-f0-9]{32}(?:/receipt)?)?',path) is not None
+            or method=='POST' and re.fullmatch(r'/api/interaction/internal/(?:requests|tasks)/[a-f0-9]{32}',path) is not None)
     if scope == 'monitor_readonly':
-        return method == 'GET' and re.fullmatch(r'/api/interaction(?:/(?:part|sonic|goals(?:/[a-f0-9-]{36})?|telegram-inputs|inputs(?:/(?:[a-f0-9-]{36}|telegram:[0-9]+)(?:/trace(?:/(?:original|[a-f0-9-]{36}))?|/image)?)?))?', path) is not None
+        return method == 'GET' and re.fullmatch(r'/api/interaction(?:/(?:part|sonic|events|goals(?:/[a-f0-9-]{36})?|telegram-inputs|inputs(?:/(?:[a-f0-9-]{36}|telegram:[0-9]+)(?:/trace(?:/(?:original|[a-f0-9-]{36}))?|/image)?)?))?', path) is not None
     if scope != 'interaction_only':
         return False
     if method == 'GET':
-        return re.fullmatch(r'/api/interaction(?:/(?:part|sonic|goals(?:/[a-f0-9-]{36})?|inputs(?:/[a-f0-9-]{36}(?:/image|/trace(?:/(?:original|[a-f0-9-]{36}))?)?)?|requests(?:/[a-f0-9]{32}(?:/receipt)?)?))?', path) is not None
+        if re.fullmatch(r'/api/interaction/inputs/[a-f0-9-]{36}/files/[0-7]',path):return True
+        if path == '/api/interaction/telegram-inputs' or re.fullmatch(r'/api/interaction/inputs/telegram:[0-9]+(?:/trace(?:/(?:original|[a-f0-9-]{36}))?|/image)', path):
+            return True
+        return re.fullmatch(r'/api/interaction(?:/(?:part|sonic|events|goals(?:/[a-f0-9-]{36})?|inputs(?:/[a-f0-9-]{36}(?:/image|/trace(?:/(?:original|[a-f0-9-]{36}))?)?)?|tasks(?:/[a-f0-9]{32})?|requests(?:/[a-f0-9]{32}(?:/receipt)?)?))?', path) is not None
     if method == 'POST':
-        return path in ('/api/interaction/inputs', '/api/interaction/voice', '/api/interaction/visual', '/api/interaction/audio') or re.fullmatch(r'/api/interaction/inputs/[a-f0-9-]{36}/(?:route|retry)', path) is not None
+        return path in ('/api/interaction/inputs', '/api/interaction/voice', '/api/interaction/voice/limited', '/api/interaction/voice/openai', '/api/interaction/voice/openai/limited', '/api/interaction/voice/previous', '/api/interaction/voice/previous/limited', '/api/interaction/voice/openai-live', '/api/interaction/voice/openai-live/limited', '/api/interaction/voice/previous-live', '/api/interaction/voice/previous-live/limited', '/api/interaction/voice/recover', '/api/interaction/voice/live', '/api/interaction/voice/openai/live', '/api/interaction/voice/activity', '/api/interaction/voice/native', '/api/interaction/visual', '/api/interaction/files', '/api/interaction/audio') or re.fullmatch(r'/api/interaction/inputs/[a-f0-9-]{36}/(?:route|retry)', path) is not None or re.fullmatch(r'/api/interaction/tasks/[a-f0-9]{32}', path) is not None
     return False
 
 
@@ -66,6 +123,9 @@ class Grants:
                     or not now < grant['expires'] <= now + 30 * 86400
                     or not isinstance(grant.get('csrf'), str)
                     or not re.fullmatch(r'[A-Za-z0-9_-]{43}', grant['csrf'])
+                    or type(grant.get('workspace_access', False)) is not bool
+                    or type(grant.get('coordination_access', False)) is not bool
+                    or type(grant.get('coordination_control_access', False)) is not bool
                     or not self.provider.authorized(grant['human'])):
                 return None
             grant.setdefault('presentation_profile', self.default_profile)
@@ -73,7 +133,7 @@ class Grants:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False):
+    def enroll(self, label, output, seconds, *, scope='interaction_only', profile=None, artifact_access=False, coordination_access=False, workspace_access=False):
         profile = self.default_profile if profile is None else profile
         if profile not in ('simple','explorer'):
             raise ValueError('Unknown companion presentation profile')
@@ -83,6 +143,10 @@ class Grants:
             raise ValueError('Enabled companion route, bounded label and lifetime required')
         if type(artifact_access) is not bool or artifact_access and scope != 'interaction_only':
             raise ValueError('File access requires an interaction device')
+        if type(coordination_access) is not bool or coordination_access and scope != 'interaction_only':
+            raise ValueError('Budget access requires an interaction device')
+        if type(workspace_access) is not bool or workspace_access and scope != 'interaction_only':
+            raise ValueError('Workspace access requires an interaction device')
         output = Path(output)
         if not output.is_absolute() or output.exists() or output.is_symlink():
             raise ValueError('Select a new absolute private device credential file')
@@ -99,8 +163,12 @@ class Grants:
             'label':label, 'human':human, 'authority':authority(self.config, self.provider),
             'presentation_profile':profile,
             'expires':int(time.time()) + seconds, 'csrf':csrf}
+        if workspace_access:
+            grant['workspace_access'] = True
         if artifact_access:
             grant['artifact_access'] = True
+        if coordination_access:
+            grant['coordination_access'] = True
         credential = {'schema':'telecodex.companion-device/v1',
             'origin':self.config['origin'], 'prefix':self.config.get('prefix', '/sessions'),
             'authorization':'Companion ' + token, 'csrf':csrf,
@@ -130,6 +198,27 @@ class Grants:
             sync_directory(self.root)
             raise
         return {'grant_id':ident, 'scope':scope, 'expires':grant['expires']}
+
+    def workspace(self, ident, allow):
+        if self.root is None or not re.fullmatch(r'[a-f0-9]{64}', ident) or type(allow) is not bool:
+            raise ValueError('Select an enrolled interaction workspace grant')
+        with lock(self.root / 'owner-mutation.lock'):
+            path = self.root / (ident + '.json')
+            grant = read_json(path)
+            now = time.time()
+            if (not isinstance(grant,dict) or grant.get('schema') != 'telecodex.companion-grant/v1'
+                    or grant.get('scope') != 'interaction_only'
+                    or grant.get('authority') != authority(self.config, self.provider)
+                    or type(grant.get('human')) is not int
+                    or grant.get('human') != self.provider.human
+                    or type(grant.get('expires')) is not int
+                    or not now < grant['expires'] <= now + 30 * 86400
+                    or not self.provider.authorized(grant['human'])):
+                raise ValueError('Existing current owner interaction grant required')
+            self.provider.assert_binding()
+            grant['workspace_access'] = allow
+            write_json(path, grant)
+            return {'grant_id':ident,'workspace_access':allow,'scope':grant['scope']}
 
     def revoke(self, ident):
         if self.root is None or not re.fullmatch(r'[a-f0-9]{64}', ident):
@@ -235,6 +324,31 @@ class Grants:
             write_json(path,{**grant,'artifact_access':allow})
             return {'grant_id':ident,'artifact_access':allow,'scope':grant['scope']}
 
+    def coordination(self, ident, allow, *, control=False):
+        """Explicit owner change to this one device's retained-budget read permission."""
+        if (self.root is None or not isinstance(ident,str) or
+                not re.fullmatch('[a-f0-9]{64}',ident) or type(allow) is not bool or type(control) is not bool):
+            raise ValueError('Select one device and an explicit budget read permission')
+        with lock(self.root / 'owner-mutation.lock'):
+            self.provider.assert_binding()
+            path=self.root/(ident+'.json');grant=read_json(path)
+            if (not isinstance(grant,dict) or grant.get('schema')!='telecodex.companion-grant/v1' or grant.get('scope')!='interaction_only'
+                    or grant.get('authority')!=authority(self.config,self.provider)
+                    or grant.get('human')!=self.provider.human or type(grant.get('expires')) is not int or grant['expires']<=time.time()
+                    or not self.provider.authorized(self.provider.human)):
+                raise ValueError('Current same-human interaction grant required')
+            if control:
+                grant['coordination_control_access'] = allow
+                if allow:
+                    grant['coordination_access'] = True
+            else:
+                grant['coordination_access'] = allow
+                if not allow:
+                    grant['coordination_control_access'] = False
+            write_json(path,grant)
+            return {'grant_id':ident,'coordination_access':grant.get('coordination_access',False),
+                    'coordination_control_access':grant.get('coordination_control_access',False),'scope':grant['scope']}
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -247,6 +361,8 @@ def main():
     enroll.add_argument('--scope', choices=['interaction_only','monitor_readonly'], default='interaction_only')
     enroll.add_argument('--profile', choices=['simple','explorer'])
     enroll.add_argument('--artifact-access', action='store_true')
+    enroll.add_argument('--coordination-access', action='store_true')
+    enroll.add_argument('--workspace-access', action='store_true')
     revoke = commands.add_parser('revoke')
     revoke.add_argument('grant_id')
     renew = commands.add_parser('renew')
@@ -260,6 +376,17 @@ def main():
     decision=files.add_mutually_exclusive_group(required=True)
     decision.add_argument('--allow',dest='allow',action='store_true')
     decision.add_argument('--deny',dest='allow',action='store_false')
+    budgets=commands.add_parser('coordination')
+    budgets.add_argument('grant_id')
+    budgets.add_argument('--control', action='store_true', help='Explicit signed funding-control permission; includes budget reading')
+    budget_decision=budgets.add_mutually_exclusive_group(required=True)
+    budget_decision.add_argument('--allow',dest='allow',action='store_true')
+    budget_decision.add_argument('--deny',dest='allow',action='store_false')
+    workspace=commands.add_parser('workspace')
+    workspace.add_argument('grant_id')
+    workspace_decision=workspace.add_mutually_exclusive_group(required=True)
+    workspace_decision.add_argument('--allow',dest='allow',action='store_true')
+    workspace_decision.add_argument('--deny',dest='allow',action='store_false')
     args = parser.parse_args()
     from .provider import Provider
     provider = None
@@ -268,7 +395,11 @@ def main():
         provider = Provider(config)
         grants = Grants(config, provider)
         if args.command == 'enroll':
-            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access)
+            result = grants.enroll(args.label, args.output, args.seconds, scope=args.scope, profile=args.profile,artifact_access=args.artifact_access,coordination_access=args.coordination_access,workspace_access=args.workspace_access)
+        elif args.command == 'workspace':
+            result = grants.workspace(args.grant_id, args.allow)
+        elif args.command == 'coordination':
+            result = grants.coordination(args.grant_id, args.allow, control=args.control)
         elif args.command == 'renew':
             result = grants.renew(args.grant_id, args.seconds)
         elif args.command == 'reauthorize':

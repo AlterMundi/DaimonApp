@@ -238,7 +238,9 @@ mod tests {
             audio_sha256: "0".repeat(64),
             telegram_file_id: Some("synthetic-voice-file".into()),
             capture_id: None,
+            capture_stop: None,
             configured_transcriber: "fixture/no-inference".into(),
+            actual_transcriber: None,
             committed_at: now_string(),
             audio_millis: 1000,
             preparation_millis: 50,
@@ -560,6 +562,7 @@ mod tests {
             .set_session_codex_thread(target, "worker-native")
             .unwrap();
         let mut input = SourceInput {
+            tribu_source: None,
             transcription: Some(proof.clone()),
             channel: "telegram:fixture".into(),
             event_id: "20".into(),

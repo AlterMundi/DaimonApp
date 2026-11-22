@@ -1,0 +1,147 @@
+//! Source-independent transport state; each source keeps its existing journal.
+//! No synthetic workflow, coordinator, input or execution queue is introduced.
+use super::*;
+
+#[derive(Clone)]
+pub(super) enum ReturnParent {
+    Heartbeat(Box<crate::store::heartbeat::producer::Parent>),
+    Workflow(Box<Workflow>),
+    Routed(Box<super::routed::RoutedParent>),
+    Foreground(Box<super::foreground::ForegroundParent>),
+}
+
+#[derive(Clone)]
+pub(super) struct ReturnContext {
+    pub human: i64,
+    pub entry: SessionKey,
+    pub native: String,
+    pub epoch: String,
+    pub native_returns: Vec<WorkflowReturn>,
+    pub parent: ReturnParent,
+}
+
+/// The existing preview is full source evidence only when its raw UTF-8 hash
+/// matches the current canonical result. Truncated previews and questions still
+/// require their existing owned source reader; no additional text is copied.
+fn complete_result_preview(source: &Value) -> bool {
+    let Some(text) = source["preview"].as_str() else {
+        return false;
+    };
+    source["kind"] == "canonical_result"
+        && !text.is_empty()
+        && text.chars().count() <= 180
+        && source["text_sha256"].as_str()
+            == Some(format!("{:x}", Sha256::digest(text.as_bytes())).as_str())
+}
+
+impl ReturnContext {
+    pub fn heartbeat(parent: crate::store::heartbeat::producer::Parent) -> Self {
+        Self {
+            human: parent.human,
+            entry: parent.entry,
+            native: parent.native.clone(),
+            epoch: parent.epoch.clone(),
+            native_returns: parent.native_returns.clone(),
+            parent: ReturnParent::Heartbeat(Box::new(parent)),
+        }
+    }
+
+    pub fn foreground(parent: super::foreground::ForegroundParent) -> Self {
+        Self {
+            human: parent.human,
+            entry: parent.entry,
+            native: parent.native.clone(),
+            epoch: parent.epoch.clone(),
+            native_returns: parent.native_returns.clone(),
+            parent: ReturnParent::Foreground(Box::new(parent)),
+        }
+    }
+    pub fn workflow(w: Workflow) -> Self {
+        Self {
+            human: w.human,
+            entry: w.entry,
+            native: w.native.clone(),
+            epoch: w.epoch.clone(),
+            native_returns: w.native_returns.clone(),
+            parent: ReturnParent::Workflow(Box::new(w)),
+        }
+    }
+    pub fn routed(parent: super::routed::RoutedParent) -> Self {
+        Self {
+            human: parent.human,
+            entry: parent.entry,
+            native: parent.native.clone(),
+            epoch: parent.epoch.clone(),
+            native_returns: parent.returns.clone(),
+            parent: ReturnParent::Routed(Box::new(parent)),
+        }
+    }
+    pub fn name(&self) -> &'static str {
+        match &self.parent {
+            ReturnParent::Heartbeat(_) => "heartbeat_attention",
+            ReturnParent::Workflow(_) => "workflow_attention",
+            ReturnParent::Routed(_) => "conversation_attention",
+            ReturnParent::Foreground(_) => "foreground_context",
+        }
+    }
+    pub fn reported(&self, index: usize) -> Option<&str> {
+        match &self.parent {
+            ReturnParent::Workflow(w) => self
+                .native_returns
+                .get(index)
+                .and_then(|r| r.envelope["slot"].as_u64())
+                .and_then(|slot| w.reported.get(slot as usize))
+                .and_then(Option::as_deref),
+            ReturnParent::Heartbeat(_) | ReturnParent::Routed(_) | ReturnParent::Foreground(_) => {
+                self.native_returns
+                    .get(index)
+                    .and_then(|r| r.reported_revision.as_deref())
+            }
+        }
+    }
+    pub fn output(&self, index: usize) -> String {
+        let r = &self.native_returns[index];
+        match &self.parent {
+            ReturnParent::Heartbeat(_) => crate::store::heartbeat::producer::output(r),
+            ReturnParent::Foreground(parent) => {
+                let request=parent.checkpoint_request.as_ref().filter(|q|(r.envelope["checkpoint_generation"]==q["generation"] && r.envelope["checkpoint_request_revision"]==q["revision"]) || (q["reason"]=="reconnect" && q["generation"]==parent.generation && r.envelope["recovery_request_revision"].is_string() && r.envelope["recovery_request_revision"]==q["revision"]));
+                json!({"schema":"telecodex.foreground-context/v1","return_id":r.id,"dialogue":parent.dialogue,"generation":parent.generation,"evidence":r.envelope,
+                "checkpoint_request":request,
+                "checkpoint_reader":{"operation":"live_context","arguments":{"action":"read","dialogue":parent.dialogue,"full":true}},
+                "checkpoint_basis":{"revision":parent.checkpoint["revision"],"through":r.envelope["through"]},
+                "checkpoint_policy":"Inspect checkpoint_request in this notification and in every live_context read, part and incorporate response: a request can arrive after this notification was frozen. A request first observed in an incorporation response still requires the full checkpoint procedure below; an incorporation ACK alone does not complete it. Without a pending request, do not force a full-history read for every delta. When checkpoint_request is present, finish the exact supplied range and copy the after_incorporation template with arguments.action=incorporate first (after_incorporation is a field name, not an action). Then read the complete active checkpoint plus ALL post-checkpoint context using checkpoint_reader and exact overflow pages. Call that full reader's after_incorporation template with action incorporate, then use its checkpoint_writer template with action checkpoint, adding only your compact semantic text in arguments.text. The required CAS parameters arguments.revision and arguments.request_revision are already supplied by the template; preserve both. A continuation request prepares a small seed while the provider keeps speaking: target8KiB, preserve all meaning and do not replace the voice connection. A successful prefix checkpoint need not cover later sources that arrived during reading; those remain exact tail. Preserve identity/relationship, conversation purpose, corrections, unresolved requests, memory/source references and pending effect uncertainty. Summarizing only this newest delta is insufficient. Keep the checkpoint small enough for the 24KiB seed plus current guidance; no work, tool call or original is replayed. Do not end this internal turn with only a routine incorporation ACK while the requested checkpoint remains unwritten; it lets the still-conversational Live hand over before its bounded reserve expires. This does not grant work admission or require an ordinary chat announcement.",
+                "after_incorporation":{"operation":"live_context","arguments":{"action":"incorporate","dialogue":parent.dialogue,"revision":r.envelope["revision"]}},
+                "guidance_scope":{"dialogue":parent.dialogue,"generation":parent.generation,"basis":r.envelope["through"]},
+                "overflow_reader":{"operation":"live_context","arguments":{"action":"part","dialogue":parent.dialogue,"revision":r.envelope["revision"],"offset":0}},
+                "policy":"Both sides of this selected Live conversation are attributed context, not a new work request or permission to route these originals. Do not dispatch from this context or repeat admitted work. Complete inline content is supplied: incorporate it directly; incomplete evidence requires all exact pages before incorporation. Invoke after_incorporation only after incorporating this frozen range. This is internal bookkeeping; do not publish another ordinary chat response solely for this context. Genuine concurrent human/work requests retain their own presentation lifetime. When relevant, guide this SAME active Live dialogue with live_context guide using guidance_scope after incorporation, plus a stable UUID id, mode context_only or spoken_offer and bounded text. Do not guide just to acknowledge a routine context batch; do not replace it with ordinary chat publication. Use guide_status for a send receipt; it does not establish application or hearing. Sol carries durable continuity; curate meaningful lessons through existing memory capabilities. No memory write or hearing is established by transport acceptance."}).to_string()
+            },
+            ReturnParent::Routed(parent) => json!({"schema":"telecodex.native-attention/v1","return_id":r.id,"original_input_ref":parent.original,"evidence":r.envelope,"source_text_complete":complete_result_preview(&r.envelope["source"]),"after_offer":{"operation":"attention_reported","arguments":{"return_id":r.id,"revision":r.envelope["revision"]}},"policy":"Attributed internal evidence from work routed under this retained human original, not new human speech or authority. If source_text_complete is true, evidence.source.preview is the entire canonical source text, verified against its raw-text SHA256: use this supplied source directly for the useful offer, without attention_source or capabilities discovery. Otherwise read the exact source with attention_source before reporting its contents; a truncated preview or native question is not full evidence. Keep lookup narration in tool activity; incorporate the useful attributed result or question concisely once in this Conversation. Answer an arriving human correction without repeating an offer already provided; preserve unfinished work and ask the human when a decision is needed. No new helper chain, work, publication or hearing grant. Invoke the supplied after_offer controller call only after actually incorporating this exact offer; it is a complete call, with existing validation, and needs no capabilities lookup."}).to_string(),
+            ReturnParent::Workflow(w) => json!({"schema":"telecodex.workflow-native-return/v1","return_id":r.id,"workflow":w.id,"original_input_ref":w.plan.input_ref,"evidence":r.envelope,"policy":"Attributed internal evidence under this retained human workflow. Read exact source revisions before reporting their contents. Keep lookup narration in tool activity; incorporate the useful attributed result or question concisely once in this Conversation. Answer an arriving human correction without repeating an offer already provided. Preserve its selected milestone/final/question policy and unfinished required work. No new authority, helper chain, publication or hearing grant. Use workflow_reported only for an incorporated offer."}).to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_preview_requires_exact_full_utf8_source_hash() {
+        let text = "Informe de Alpha: revisión azul α.";
+        let mut source = json!({"kind":"canonical_result","preview":text,
+            "text_sha256":format!("{:x}",Sha256::digest(text.as_bytes()))});
+        assert!(complete_result_preview(&source));
+        source["preview"] = json!("Informe de Alpha");
+        assert!(!complete_result_preview(&source));
+        source["preview"] = json!(text);
+        source["kind"] = json!("native_question");
+        assert!(!complete_result_preview(&source));
+        source["kind"] = json!("canonical_result");
+        source["text_sha256"] = Value::Null;
+        assert!(!complete_result_preview(&source));
+        let oversized = "α".repeat(181);
+        source["preview"] = json!(oversized);
+        source["text_sha256"] = json!(format!("{:x}", Sha256::digest(oversized.as_bytes())));
+        assert!(!complete_result_preview(&source));
+    }
+}

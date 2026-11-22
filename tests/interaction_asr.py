@@ -2,7 +2,12 @@
 """Durable transcript/disposable preparation contracts; no provider or sensor."""
 import importlib.util
 import json
+import io
+import uuid
+import wave
+import hashlib
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -54,6 +59,201 @@ class Retention(unittest.TestCase):
     def calls(self):
         path=self.helper.with_suffix('.calls');return len(path.read_text().splitlines()) if path.exists() else 0
     def run_asr(self):return asr.process(self.source,self.binding)
+    def streaming_fixture(self):
+        self.source=self.root/str(uuid.uuid4())
+        pcm=b'\0\0'*1600
+        buffer=io.BytesIO()
+        with wave.open(buffer,'wb') as audio:
+            audio.setnchannels(1);audio.setsampwidth(2);audio.setframerate(16000);audio.writeframes(pcm)
+        self.source.write_bytes(buffer.getvalue())
+        root=self.root/'streamed';root.mkdir(mode=0o700)
+        self.cfg['streaming_cache_root']=str(root);self.write_config()
+        value={'schema':'telecodex.streaming-transcript/v1','capture_id':self.source.name,
+            'binding':'b'*64,'source_sha256':hashlib.sha256(self.source.read_bytes()).hexdigest(),
+            'pcm_sha256':hashlib.sha256(pcm).hexdigest(),'audio_millis':100,
+            'model':'qwen-audio-3.0-realtime-plus','text':'Live final words','final':True}
+        record=root/(self.source.name+'.json');record.write_text(json.dumps(value))
+        return record,value
+    def live_only(self, model='gpt-live-transcribe'):
+        record,value=self.streaming_fixture();value['model']=model;record.write_text(json.dumps(value))
+        self.cfg={'schema':'telecodex.interaction-asr/v1','provider':'live-result',
+            'models':[model],'cache_root':str(self.root/'cache'),
+            'streaming_cache_root':str(record.parent)};self.write_config()
+        return record,value
+    def test_live_only_reuses_exact_words_and_never_calls_another_recognizer(self):
+        record,value=self.live_only();original=self.source.read_bytes()
+        with patch.object(asr,'openai_recognizer',side_effect=AssertionError('Second recognition forbidden')), \
+             patch.object(asr,'process_cached',side_effect=AssertionError('File fallback forbidden')):
+            result=asr.process(self.source,self.binding,include_retention=True)
+            self.assertEqual(result,{'text':value['text'],'final':True,'live_model':'gpt-live-transcribe','preparation_audio_deleted':True})
+            record.unlink()
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],value['text'])
+        self.assertEqual(self.source.read_bytes(),original);self.assertEqual(self.calls(),0)
+    def test_live_only_missing_or_late_result_cannot_trigger_file_asr(self):
+        record,value=self.live_only();record.unlink()
+        with patch.object(asr,'openai_recognizer',side_effect=AssertionError('No second model')):
+            for completed in (False,True):
+                with self.assertRaisesRegex(asr.RenderError,'no-second-asr'):
+                    asr.process(self.source,self.binding,completed_only=completed)
+            record.write_text(json.dumps(value))
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],value['text'])
+        self.assertEqual(self.calls(),0)
+    def test_live_only_qwen_and_gemini_keep_their_actual_live_model(self):
+        record,value=self.live_only('gemini-3.5-transcribe-live')
+        result=asr.process(self.source,self.binding)
+        self.assertEqual(result['streaming_model'],'gemini-3.5-transcribe-live');self.assertEqual(self.calls(),0)
+    def test_live_only_rejects_wrong_model_and_fallback_configuration(self):
+        record,value=self.live_only();value['model']='qwen-audio-3.0-realtime-plus';record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'invalid-completed-streaming-transcript'):self.run_asr()
+        self.cfg['key_file']=str(self.root/'forbidden-key');self.write_config()
+        with self.assertRaisesRegex(asr.RenderError,'cannot-run-another-recognizer'):self.run_asr()
+        self.assertEqual(self.calls(),0)
+    def test_exact_completed_stream_skips_file_provider_and_retains_recovery(self):
+        record,_=self.streaming_fixture()
+        result=asr.process(self.source,self.binding,include_retention=True)
+        self.assertEqual(result,{'text':'Live final words','final':True,'preparation_audio_deleted':True,'streaming_model':'qwen-audio-3.0-realtime-plus'})
+        self.assertEqual(self.calls(),0)
+        record.unlink()
+        self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Live final words')
+        self.assertEqual(self.calls(),0)
+    def test_native_dialogue_transcript_uses_exact_existing_audio_receipt(self):
+        record,value=self.streaming_fixture();value['model']='gemini-3.8-live'
+        record.write_text(json.dumps(value))
+        result=asr.process(self.source,self.binding,completed_only=True)
+        self.assertEqual(result['text'],'Live final words')
+        self.assertEqual(result['streaming_model'],'gemini-3.8-live')
+        self.assertEqual(self.calls(),0)
+    def identity_job(self):
+        identity={'schema':'telecodex.interaction-asr-result/v1',
+            'source_sha256':asr.digest(self.source.read_bytes()),
+            'route_sha256':asr.digest(self.route.read_bytes()),'helper_sha256':asr.digest(self.helper.read_bytes())}
+        return self.root/'cache'/asr.digest(asr.canonical(identity))
+    def full_prepared_cache(self):
+        root=self.root/'streamed';root.mkdir(mode=0o700,exist_ok=True)
+        with (root/'retained.json').open('wb') as stream:stream.truncate(asr.PREPARED_BUDGET)
+        self.cfg['streaming_cache_root']=str(root);self.write_config();return root
+    def test_prepared_commit_does_not_rescan_or_sync_file_asr_history(self):
+        record,_=self.streaming_fixture();(self.root/'cache').mkdir(mode=0o700)
+        directory=asr.directory
+        def checked(path):
+            self.assertFalse(Path(path).is_relative_to(self.root/'cache'),'Prepared text must not establish another file-ASR outcome')
+            return directory(path)
+        with patch.object(asr,'directory',side_effect=checked),patch.object(asr,'reserve',side_effect=AssertionError('Historical file-ASR scan')):
+            self.assertEqual(self.run_asr()['text'],'Live final words')
+        self.assertEqual(len(list((self.root/'streamed').glob('asr-*.json'))),1)
+        self.assertFalse(list((self.root/'cache').glob('*/state.json')))
+        record.unlink();self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Live final words')
+        self.assertEqual(self.calls(),0)
+    def test_full_prepared_cache_preserves_legacy_completion_and_uncertainty(self):
+        self.run_asr();self.full_prepared_cache()
+        self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Final words')
+        self.assertEqual(self.calls(),1)
+        state=self.identity_job()/'state.json';value=json.loads(state.read_text());value['phase']='unconfirmed';state.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            self.run_asr()
+        self.assertEqual(self.calls(),1)
+    def late_receipt_fixture(self):
+        record, value = self.streaming_fixture()
+        self.run_asr()
+        mirror = next(record.parent.glob('asr-*.json')); mirror.unlink()
+        job = self.identity_job(); job.mkdir(mode=0o700, exist_ok=True)
+        identity = {'schema':'telecodex.interaction-asr-result/v1',
+            'source_sha256':asr.digest(self.source.read_bytes()),
+            'route_sha256':asr.digest(self.route.read_bytes()),
+            'helper_sha256':asr.digest(self.helper.read_bytes()), 'phase':'unconfirmed'}
+        state = job/'state.json'; state.write_bytes(asr.canonical(identity))
+        preparation = job/'preparation'; preparation.mkdir(mode=0o700)
+        original = preparation/'retained.media'; original.write_bytes(b'uncertain provider evidence')
+        return record, value, state, original
+    def test_completed_only_adopts_late_receipt_without_rewriting_uncertain_job(self):
+        record, value, state, original = self.late_receipt_fixture()
+        state_before = state.read_bytes(); original_before = original.read_bytes()
+        with patch.object(asr,'probe_duration',side_effect=AssertionError('No decoding or ASR retry')):
+            for _ in range(2):
+                result = asr.process(self.source,self.binding,completed_only=True,include_retention=True)
+                self.assertEqual(result['text'],value['text'])
+                self.assertFalse(result['preparation_audio_deleted'])
+                record.unlink(missing_ok=True)  # Subsequent reads reuse the retained mirror.
+        self.assertEqual(state.read_bytes(),state_before)
+        self.assertEqual(original.read_bytes(),original_before)
+        self.assertEqual(self.calls(),0)
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            self.run_asr()
+    def test_completed_only_late_receipt_requires_matching_legacy_identity(self):
+        record, value, state, _ = self.late_receipt_fixture()
+        previous = json.loads(state.read_text()); previous['source_sha256']='a'*64
+        state.write_bytes(asr.canonical(previous))
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            asr.process(self.source,self.binding,completed_only=True)
+        self.assertEqual(self.calls(),0)
+    def test_completed_only_missing_or_changed_late_receipt_never_retries(self):
+        record, value, state, _ = self.late_receipt_fixture()
+        before = state.read_bytes()
+        value['source_sha256']='a'*64;record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'invalid-completed-streaming-transcript'):
+            asr.process(self.source,self.binding,completed_only=True)
+        record.unlink()
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            asr.process(self.source,self.binding,completed_only=True)
+        self.assertEqual(self.calls(),0);self.assertEqual(state.read_bytes(),before)
+    def test_full_prepared_cache_does_not_disable_ordinary_file_fallback(self):
+        root=self.full_prepared_cache();self.assertEqual(self.run_asr()['text'],'Final words')
+        self.assertEqual(self.calls(),1);self.assertFalse(list(root.glob('asr-*.json')))
+    def test_new_stream_completion_obeys_shared_prepared_quota(self):
+        self.streaming_fixture();self.full_prepared_cache()
+        with self.assertRaisesRegex(asr.RenderError,'prepared-transcription-storage-full'):
+            self.run_asr()
+        self.assertEqual(self.calls(),0);self.assertFalse(list((self.root/'streamed').glob('asr-*.json')))
+    def test_late_old_helper_cannot_admit_file_asr_during_prepared_commit(self):
+        self.streaming_fixture();original=asr.streaming_result;attempts=[]
+        def late_writer(*args):
+            job=self.identity_job()
+            with self.assertRaisesRegex(asr.RenderError,'render-in-progress'):
+                with asr.lock(job/'.lock'):attempts.append('old helper admitted')
+            return original(*args)
+        with patch.object(asr,'streaming_result',side_effect=late_writer):
+            self.assertEqual(self.run_asr()['text'],'Live final words')
+        self.assertEqual(attempts,[]);self.assertEqual(self.calls(),0)
+        self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Live final words')
+    def test_changed_flat_completion_is_refused_without_file_asr(self):
+        self.streaming_fixture();self.run_asr()
+        record=next((self.root/'streamed').glob('asr-*.json'));value=json.loads(record.read_text());value['result']['text']='Changed';record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            self.run_asr()
+        self.assertEqual(self.calls(),0)
+    def test_stream_receipt_cannot_substitute_another_original(self):
+        record,value=self.streaming_fixture();value['source_sha256']='a'*64;record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'invalid-completed-streaming-transcript'):
+            self.run_asr()
+        self.assertEqual(self.calls(),0)
+    def test_gemini_manual_final_reuses_completed_text_without_file_asr(self):
+        record,value=self.streaming_fixture()
+        value['model']='gemini-3.5-transcribe-live';record.write_text(json.dumps(value))
+        self.assertEqual(self.run_asr(),{'text':'Live final words','final':True,'streaming_model':'gemini-3.5-transcribe-live'})
+        record.unlink()
+        self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['streaming_model'],'gemini-3.5-transcribe-live')
+        self.assertEqual(self.calls(),0)
+    def test_unselected_stream_model_is_not_a_trusted_transcript(self):
+        record,value=self.streaming_fixture()
+        value['model']='gemini-conversational-agent';record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'invalid-completed-streaming-transcript'):
+            self.run_asr()
+        self.assertEqual(self.calls(),0)
+    def test_stream_receipt_pcm_integrity_and_identity(self):
+        record,value=self.streaming_fixture();value['pcm_sha256']='a'*64;record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'streaming-audio-original-changed'):
+            self.run_asr()
+        self.assertEqual(self.calls(),0)
+    def test_uncertain_file_asr_is_not_overridden_by_later_live_text(self):
+        record,value=self.streaming_fixture();record.unlink()
+        self.helper.write_text(HELPER.replace("if source.read_bytes()==b'failed operation'",'if source.exists()'))
+        with self.assertRaisesRegex(asr.RenderError,'asr-unconfirmed'):
+            self.run_asr()
+        record.write_text(json.dumps(value))
+        with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome-no-automatic-retry'):
+            self.run_asr()
+        self.assertEqual(self.calls(),1)
+
     def test_completed_text_reused_after_media_disposal_without_paid_replay(self):
         first=self.run_asr();self.assertEqual(first,{'text':'Final words','final':True})
         self.assertEqual(self.calls(),1);self.assertTrue(self.source.exists())
@@ -77,6 +277,15 @@ class Retention(unittest.TestCase):
         self.assertFalse(list((self.root/'cache').rglob('source.media')))
         self.assertEqual(self.calls(),1)
 
+    def test_completed_only_reader_never_probes_or_calls_provider(self):
+        with self.assertRaises(asr.RenderError):
+            asr.process(self.source,self.binding,completed_only=True)
+        self.assertEqual(self.calls(),0)
+        self.run_asr()
+        with patch.object(asr,'probe_duration',side_effect=AssertionError('Reader prepared audio')):
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Final words')
+        self.assertEqual(self.calls(),1)
+
     def test_uncertain_helper_is_never_automatically_retried(self):
         self.source.write_bytes(b'failed operation')
         for _ in range(2):
@@ -91,6 +300,37 @@ class Retention(unittest.TestCase):
         self.source.write_bytes(b'another original')
         with self.assertRaisesRegex(asr.RenderError,'capacity'):self.run_asr()
         self.assertEqual(self.calls(),1)
+    def test_history_accounting_is_read_only_and_new_intent_remains_durable(self):
+        root=self.root/'cache';root.mkdir(mode=0o700)
+        for n in range(40):
+            old=root/f'{n:064x}';old.mkdir(mode=0o700)
+            (old/'state.json').write_text(json.dumps({'phase':'completed'}))
+            (old/'draft.json').write_text('retained transcript')
+        job=root/('f'*64);job.mkdir(mode=0o700)
+        synced=[];fsync=os.fsync
+        def record(fd):
+            info=os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode):synced.append((info.st_dev,info.st_ino))
+            return fsync(fd)
+        before={p:p.read_bytes() for p in root.glob('*/draft.json')}
+        with patch.object(os,'fsync',side_effect=record):
+            asr.reserve(root,job,{'phase':'intent'},asr.DEFAULT_BUDGET)
+        self.assertEqual(json.loads((job/'state.json').read_text()),{'phase':'intent'})
+        info=job.stat()
+        self.assertEqual(synced,[(info.st_dev,info.st_ino)],'Only the new intent directory needs a durability barrier')
+        self.assertEqual({p:p.read_bytes() for p in before},before)
+
+    def test_accounting_rejects_symlink_or_nonprivate_history_before_reserving(self):
+        root=self.root/'cache';root.mkdir(mode=0o700)
+        job=root/('f'*64);job.mkdir(mode=0o700)
+        old=root/('a'*64);old.symlink_to(self.root,target_is_directory=True)
+        with self.assertRaisesRegex(asr.RenderError,'unsafe-asr-cache-directory'):
+            asr.reserve(root,job,{'phase':'intent'},asr.DEFAULT_BUDGET)
+        self.assertFalse((job/'state.json').exists())
+        old.unlink();old.mkdir(mode=0o755);old.chmod(0o755)
+        with self.assertRaisesRegex(asr.RenderError,'unsafe-asr-cache-directory'):
+            asr.reserve(root,job,{'phase':'intent'},asr.DEFAULT_BUDGET)
+        self.assertFalse((job/'state.json').exists())
     def test_changed_derivative_is_protected_and_text_still_available(self):
         with patch.object(asr,'retire_preparation',side_effect=OSError('defer')):self.run_asr()
         media=next((self.root/'cache').rglob('source.media'));media.write_bytes(b'changed')
@@ -159,5 +399,45 @@ class Retention(unittest.TestCase):
         self.source.chmod(0o644)
         with self.assertRaises(asr.RenderError):self.run_asr()
         self.assertEqual(self.calls(),0)
+
+class OpenAIOriginal(unittest.TestCase):
+    tearDown=Retention.tearDown
+    write_config=Retention.write_config
+    run_asr=Retention.run_asr
+    def setUp(self):
+        Retention.setUp(self)
+        self.cfg={'schema':'telecodex.interaction-asr/v1','provider':'openai',
+                  'model':'gpt-transcribe','key_file':str(self.root/'key'),
+                  'cache_root':str(self.root/'cache')}
+        self.write_config()
+
+    def test_explicit_route_once_cached_recovery_without_other_vendors(self):
+        from unittest.mock import Mock
+        recognizer=Mock();recognizer.transcribe.return_value='Dale, Compai.'
+        with patch.object(asr,'openai_recognizer',return_value=recognizer), \
+             patch.object(asr,'probe_duration',return_value=(1,b'\1\0'*16000)), \
+             patch.object(asr.importlib.util,'spec_from_file_location',side_effect=AssertionError('No legacy provider')):
+            before=self.source.read_bytes()
+            self.assertEqual(self.run_asr()['text'],'Dale, Compai.')
+            self.assertEqual(asr.process(self.source,self.binding,completed_only=True)['text'],'Dale, Compai.')
+            self.assertEqual(self.run_asr()['text'],'Dale, Compai.')
+            self.assertEqual(recognizer.transcribe.call_count,1)
+            self.assertEqual(self.source.read_bytes(),before)
+            self.assertFalse(list((self.root/'cache').rglob('*.wav')))
+
+    def test_unknown_call_is_not_replayed_and_completed_only_never_calls(self):
+        from unittest.mock import Mock
+        recognizer=Mock();recognizer.transcribe.side_effect=OSError('Lost response')
+        with patch.object(asr,'openai_recognizer',return_value=recognizer), \
+             patch.object(asr,'probe_duration',return_value=(1,b'\1\0'*16000)):
+            with self.assertRaisesRegex(asr.RenderError,'no-completed'):asr.process(self.source,self.binding,completed_only=True)
+            self.assertEqual(recognizer.transcribe.call_count,0)
+            with self.assertRaisesRegex(asr.RenderError,'asr-unconfirmed'):self.run_asr()
+            with self.assertRaisesRegex(asr.RenderError,'retained-asr-outcome'):self.run_asr()
+            self.assertEqual(recognizer.transcribe.call_count,1)
+
+    def test_explicit_route_cannot_select_legacy_previews_or_helper(self):
+        self.cfg['streaming_cache_root']=str(self.root/'legacy');self.write_config()
+        with self.assertRaisesRegex(asr.RenderError,'no-fallback'):self.run_asr()
 
 if __name__=='__main__':unittest.main()

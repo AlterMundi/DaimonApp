@@ -21,6 +21,7 @@ use uuid::Uuid;
 mod artifact_outputs;
 mod attention;
 mod auth;
+mod backend;
 pub(crate) mod controller;
 mod conversation_inputs;
 mod conversation_requests;
@@ -28,12 +29,16 @@ mod creation;
 mod dialogue;
 mod forum;
 mod goal_controls;
+mod goal_recovery;
 mod goals;
+mod heartbeat;
 mod icons;
 mod interactions;
 mod io;
 mod matrix;
 mod merging;
+#[cfg(unix)]
+mod native_account;
 mod native_recovery;
 mod nexus;
 mod observer;
@@ -41,6 +46,7 @@ mod presentation;
 mod questions;
 mod rename;
 mod routing;
+mod scoped_maintenance;
 mod session_requests;
 mod stopping;
 mod support;
@@ -48,6 +54,7 @@ mod topic_publications;
 mod tribu;
 mod turns;
 mod voice;
+mod workflows;
 
 use crate::{
     codex::{
@@ -94,6 +101,10 @@ pub struct App {
 }
 
 struct AppShared {
+    heartbeat_loop: StdMutex<Option<tokio::task::AbortHandle>>,
+    heartbeat_loop_started_at: std::sync::atomic::AtomicI64,
+    heartbeat_owner_held: std::sync::atomic::AtomicBool,
+    goal_recovery_wakeup: tokio::sync::Notify,
     config: Config,
     store: Store,
     telegram: TelegramClient,
@@ -219,6 +230,7 @@ struct QueuedTurn {
     chat_kind: String,
     update_id: Option<i64>,
     conversation_input: Option<String>,
+    workflow_return: Option<String>,
     tribu_admission: Option<String>,
     goal: Option<crate::codex::GoalActivation>,
     nexus: Option<String>,
@@ -322,6 +334,7 @@ struct PendingApproval {
     responder: oneshot::Sender<CodexApprovalDecision>,
 }
 
+#[derive(Clone)]
 struct TurnWorkspace {
     root: PathBuf,
     out_dir: PathBuf,
@@ -334,11 +347,6 @@ impl App {
     const HISTORY_PAGE_CACHE_TTL_SECONDS: u64 = 300;
 
     pub async fn bootstrap(config: Config) -> Result<Self> {
-        let token = config.telegram.resolve_token()?;
-        let telegram = TelegramClient::new(token, config.telegram.api_base.clone())
-            .with_reaction_capture(config.telegram.capture_message_reactions)
-            .with_local_file_root(config.telegram.local_file_root.clone())?;
-        let me = telegram.get_me().await.context("telegram getMe failed")?;
         let handy_model_dir = detect_handy_parakeet_model_dir();
         let session_defaults = SessionDefaults::from(&config.codex);
         let store = Store::open(
@@ -346,8 +354,87 @@ impl App {
             &config.startup_admin_ids,
             &session_defaults,
         )?;
+        // A configured cold entry needs only owned metadata, never a priming turn.
+        if let Some(profile) = &config.interaction {
+            if !store
+                .get_user(profile.human_id)?
+                .is_some_and(|user| user.allowed)
+            {
+                bail!("Configured Interaction owner is not authorized");
+            }
+            if store.get_session(profile.entry())?.is_some() {
+                if store.session_creator(profile.entry())? != profile.human_id {
+                    bail!("Configured Interaction entry belongs to another owner");
+                }
+            } else {
+                store.ensure_session(profile.entry(), profile.human_id, &session_defaults)?;
+            }
+        }
+        store.save_bot_state(
+            "goal_recovery_backend",
+            &serde_json::json!({
+                "enabled":config.goal_recovery.enabled,
+                "interval_seconds":config.goal_recovery.interval_seconds,
+                "batch_size":config.goal_recovery.batch_size,
+                "meaning":"Configured backend settings, not a native execution or delivery receipt"
+            })
+            .to_string(),
+        )?;
+        let (telegram, me) = if config.telegram.enabled {
+            let token = config.telegram.resolve_token()?;
+            let client = TelegramClient::new(token, config.telegram.api_base.clone())
+                .with_reaction_capture(config.telegram.capture_message_reactions)
+                .with_local_file_root(config.telegram.local_file_root.clone())?;
+            let me = client.get_me().await.context("telegram getMe failed")?;
+            store.save_bot_state("telegram_identity", &serde_json::to_string(&me)?)?;
+            (client, Some(me))
+        } else {
+            let retained: Option<crate::telegram::User> = store
+                .bot_state_value("telegram_identity")?
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?;
+            (TelegramClient::disabled(), retained)
+        };
+        store.topic_projection_entry_selection(config.interaction.as_ref())?;
         let codex = CodexRunner::new(config.codex.binary.clone())
-            .with_shared_app_server(config.codex.shared_app_server);
+            .with_shared_app_server(config.codex.shared_app_server)
+            .with_session_profiles(config.codex.session_profiles.clone());
+        for profile in &config.codex.session_profiles {
+            let adoption: Result<()> = async {
+                let Some(session) = store.get_session(profile.key())? else {
+                    return Ok(());
+                };
+                let Some(native) = session
+                    .codex_thread_id
+                    .as_deref()
+                    .filter(|_| !session.force_fresh_thread)
+                else {
+                    return Ok(());
+                };
+                let human = store.session_creator(session.key)?;
+                store.validate_owned_binding(session.key, human, native)?;
+                if let Some((native, model, effort)) = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    codex.apply_session_profile(&session),
+                )
+                .await
+                .context("Scoped model adoption is still unconfirmed")??
+                {
+                    store.record_native_model(
+                        session.key,
+                        human,
+                        &native,
+                        &model,
+                        effort.as_deref(),
+                    )?;
+                }
+                Ok(())
+            }
+            .await;
+            if adoption.is_err() {
+                tracing::warn!(profile=%profile.profile, "Scoped native model adoption pending; other conversations remain available");
+            }
+        }
         let service_user_id = config.startup_admin_ids.first().copied().unwrap_or(0);
 
         let worker_budget = attention::WorkerBudget::new(
@@ -358,13 +445,21 @@ impl App {
         );
         Ok(Self {
             shared: Arc::new(AppShared {
+                heartbeat_loop: StdMutex::new(None),
+                heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+                heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
+                goal_recovery_wakeup: tokio::sync::Notify::new(),
                 config,
                 store,
                 telegram,
                 codex,
-                bot_username: me.username,
-                bot_id: me.id,
-                bot_has_topics: me.has_topics_enabled.unwrap_or(false),
+                bot_username: me.as_ref().and_then(|m| m.username.clone()),
+                // Zero denotes absent transport identity, never an actual bot.
+                bot_id: me.as_ref().map_or(0, |m| m.id),
+                bot_has_topics: me
+                    .as_ref()
+                    .and_then(|m| m.has_topics_enabled)
+                    .unwrap_or(false),
                 service_user_id,
                 handy_model_dir,
                 voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -391,7 +486,9 @@ impl App {
     }
 
     pub async fn run(self) -> Result<()> {
-        topic_publications::recover(self.shared.clone())?;
+        if self.shared.config.telegram.enabled {
+            topic_publications::recover(self.shared.clone())?;
+        }
         artifact_outputs::recover(self.shared.clone())?;
         tribu::start(self.clone()).await?;
         nexus::start(self.clone()).await?;
@@ -403,16 +500,34 @@ impl App {
                     .into(),
             });
         }
-        self.shared
-            .telegram
-            .set_my_commands(&menu)
-            .await
-            .context("failed to register bot commands")?;
+        if self.shared.config.telegram.enabled {
+            self.shared
+                .telegram
+                .set_my_commands(&menu)
+                .await
+                .context("failed to register bot commands")?;
+        }
 
         self.notify_primary_user(&format!("🟢 Telecodex {} started", app_version_label()))
             .await;
 
+        let maintenance_pending = scoped_maintenance::reconcile_startup(&self)?;
         stopping::start_control_socket(self.clone()).await?;
+        let maintenance_app = self.clone();
+        tokio::spawn(async move {
+            if scoped_maintenance::recover(maintenance_app, maintenance_pending)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "Scoped restoration unavailable; inspect retained owner transaction"
+                );
+            }
+        });
+        let recovery_app = self.clone();
+        tokio::spawn(async move {
+            goal_recovery::run(recovery_app).await;
+        });
         let restart_app = self.clone();
         tokio::spawn(async move {
             if stopping::recover_restart(restart_app).await.is_err() {
@@ -420,9 +535,14 @@ impl App {
             }
         });
         let heartbeat_app = self.clone();
-        tokio::spawn(async move {
+        let heartbeat_loop = tokio::spawn(async move {
             heartbeat_app.run_instance_heartbeat_loop().await;
         });
+        *self
+            .shared
+            .heartbeat_loop
+            .lock()
+            .expect("heartbeat loop mutex poisoned") = Some(heartbeat_loop.abort_handle());
 
         if self.shared.config.background_maintenance {
             let maintenance_app = self.clone();
@@ -431,6 +551,12 @@ impl App {
                     tracing::error!("background maintenance loop failed: {error:#}");
                 }
             });
+        }
+
+        if !self.shared.config.telegram.enabled {
+            tracing::info!("Shared backend started with Telegram adapter disabled");
+            shutdown_signal(self.shared.shutdown.clone()).await;
+            return Ok(());
         }
 
         // Polling must not wait for native steering, uploads or outbound rate limits.
@@ -528,36 +654,22 @@ impl App {
     }
 
     async fn run_instance_heartbeat_loop(&self) {
-        loop {
-            sleep(Duration::from_secs(
-                (Self::BACKGROUND_MAINTENANCE_INTERVAL_SECONDS / 2).max(1),
-            ))
-            .await;
-            if let Err(error) = self.shared.store.heartbeat_instance() {
-                tracing::error!("database instance heartbeat failed: {error:#}");
-                if error.to_string() == INSTANCE_LOCK_LOST_ERROR {
-                    self.shared.shutdown.cancel();
-                    return;
-                }
-            } else if topic_publications::recover(self.shared.clone()).is_err() {
-                tracing::warn!("Retained topic publication recovery unconfirmed");
-            }
-            if !self.shared.shutdown.is_cancelled()
-                && self.shared.config.codex.shared_app_server
-                && native_recovery::tick(self).await.is_err()
-            {
-                tracing::warn!("Native output recovery remains pending; no input replayed");
-            }
-            if !self.shared.shutdown.is_cancelled()
-                && artifact_outputs::recover(self.shared.clone()).is_err()
-            {
-                tracing::warn!("Retained file recovery unconfirmed");
-            }
-        }
+        self.shared.heartbeat_loop_started_at.store(
+            Utc::now().timestamp_millis(),
+            std::sync::atomic::Ordering::Release,
+        );
+        crate::backend::run(
+            self,
+            &self.shared.shutdown,
+            Duration::from_secs((Self::BACKGROUND_MAINTENANCE_INTERVAL_SECONDS / 2).max(1)),
+        )
+        .await;
     }
 
     async fn notify_primary_user(&self, text: &str) {
-        if !self.shared.config.telegram.lifecycle_notifications {
+        if !self.shared.config.telegram.enabled
+            || !self.shared.config.telegram.lifecycle_notifications
+        {
             return;
         }
         let Some(user_id) = self.shared.config.startup_admin_ids.first().copied() else {
@@ -801,7 +913,7 @@ impl App {
             .config
             .tribu
             .as_ref()
-            .is_some_and(|p| p.key() == session.key)
+            .is_some_and(|p| p.mode == crate::config::TribuMode::Bounded && p.key() == session.key)
             && is_text_only_steer_candidate(&message, text)
             && self
                 .try_steer_active_turn(session.key, from.id, text)
@@ -819,12 +931,9 @@ impl App {
             && attachments
                 .iter()
                 .all(|a| !matches!(a.kind, AttachmentKind::Audio | AttachmentKind::Voice))
-            && !self
-                .shared
-                .config
-                .tribu
-                .as_ref()
-                .is_some_and(|p| p.key() == session.key)
+            && !self.shared.config.tribu.as_ref().is_some_and(|p| {
+                p.mode == crate::config::TribuMode::Bounded && p.key() == session.key
+            })
             && self
                 .try_steer_active_input(session.key, from.id, &prompt, &attachments)
                 .await?
@@ -1420,6 +1529,35 @@ impl App {
                             .store
                             .uncertain_update_ids(user.tg_user_id, session_key)?;
                         let mut text = format_session_status(&session, &message.chat);
+                        if let Some(recovery) = self
+                            .shared
+                            .store
+                            .goal_recovery_summary_if_owned(user.tg_user_id, session_key)?
+                        {
+                            let latest = &recovery["recovery"]["latest"];
+                            if let Some(state) = latest["state"].as_str() {
+                                let enabled = recovery["recovery"]["effective_enabled"].as_bool();
+                                let availability = match enabled {
+                                    Some(true) => "enabled",
+                                    Some(false) => "disabled",
+                                    None => "availability unknown",
+                                };
+                                text.push_str(&format!(
+                                    "\n- goal recovery: {availability} · retained `{state}` · {} attempt(s)",
+                                    latest["attempts"].as_u64().unwrap_or(0)
+                                ));
+                                if state == "waiting"
+                                    && enabled == Some(true)
+                                    && let Some(due) = latest["next_attempt_at"].as_i64()
+                                {
+                                    text.push_str(&format!(
+                                        " · next check in {}s",
+                                        (due - Utc::now().timestamp()).max(0)
+                                    ));
+                                }
+                                text.push_str(" (native acknowledgment is separate from useful recovered work)");
+                            }
+                        }
                         text.push_str(
                             &self
                                 .shared
@@ -1999,7 +2137,7 @@ impl App {
         message: &Message,
         title: Option<String>,
     ) -> Result<()> {
-        if message.chat.is_forum.unwrap_or(false) && message.message_thread_id.is_none() {
+        if message.chat.is_forum.unwrap_or(false) && message.message_thread_id.unwrap_or(0) == 0 {
             self.send_status(
                 message.chat.id,
                 message.message_thread_id,
@@ -2009,17 +2147,25 @@ impl App {
             return Ok(());
         }
 
+        let title = match title.as_deref().map(rename::validate_title).transpose() {
+            Ok(title) => title,
+            Err(error) => {
+                return self
+                    .send_status(
+                        message.chat.id,
+                        message.message_thread_id,
+                        &error.to_string(),
+                    )
+                    .await;
+            }
+        };
         let session_key = SessionKey::new(message.chat.id, message.message_thread_id);
         let session = self.ensure_session(session_key, user.tg_user_id)?;
         self.shared.store.clear_session_conversation(session_key)?;
-        if let Some(title) = title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            self.shared
-                .store
-                .set_explicit_session_title(session_key, title)?;
+        if let Some(title) = title {
+            // Reuse /rename for both surfaces after clearing only this binding.
+            // An unbound native session receives its saved title at first start.
+            return self.rename_session(user, message, title, true).await;
         }
         self.send_status(
             message.chat.id,
@@ -2043,9 +2189,25 @@ impl App {
         if destination.busy || destination.codex_thread_id.is_some() {
             anyhow::bail!("Destination already active; existing conversation preserved");
         }
+        let mut inherited = template.clone();
+        if key != template.key
+            && self
+                .shared
+                .config
+                .codex
+                .session_profiles
+                .iter()
+                .any(|p| p.key() == template.key)
+        {
+            // A local profile belongs to its selected conversation, not future
+            // workers. Native history forks use the harness's new-thread config;
+            // independent topics likewise retain the receiving model defaults.
+            inherited.model = self.shared.session_defaults.model.clone();
+            inherited.reasoning_effort = self.shared.session_defaults.reasoning_effort.clone();
+        }
         self.shared
             .store
-            .apply_empty_session_template(key, template, user_id)?;
+            .apply_empty_session_template(key, &inherited, user_id)?;
         Ok(())
     }
 
@@ -2586,6 +2748,7 @@ impl App {
                 chat_kind: chat_kind.to_string(),
                 update_id,
                 conversation_input: None,
+                workflow_return: None,
                 tribu_admission: admission.map(|a| a.id),
                 goal,
                 nexus,
@@ -2681,6 +2844,7 @@ impl App {
         if active
             .sender
             .send(CodexSteerRequest {
+                tool_output: None,
                 observation: None,
                 images: attachments
                     .iter()
@@ -2689,11 +2853,11 @@ impl App {
                     .collect(),
                 admission_check: Some({
                     let shared = self.shared.clone();
-                    Arc::new(move || {
+                    crate::codex::SteerInputAdmission::Sync(Arc::new(move || {
                         shared
                             .store
                             .voice_validate(update_id, session_key, from_user_id)
-                    })
+                    }))
                 }),
                 client_message_id: update_id
                     .map(|id| format!("telegram:{}:{from_user_id}:{id}", session_key.chat_id)),
@@ -2731,12 +2895,14 @@ impl App {
                 }
                 Ok(true)
             }
-            Ok(Ok(Err(CodexSteerError::Rejected(error)))) => {
+            Ok(Ok(Err(
+                error @ (CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired),
+            ))) => {
                 active.attachments.release(attachments);
                 if let Some(id) = update_id {
                     self.shared.store.reject_update_steer(id)?;
                 }
-                tracing::debug!("active turn rejected steering; queueing as a new turn: {error}");
+                tracing::debug!("active turn rejected steering; queueing as a new turn: {error:?}");
                 Ok(false)
             }
             Ok(Ok(Err(CodexSteerError::Undetermined(_)))) | Ok(Err(_)) | Err(_) => {
@@ -2829,6 +2995,13 @@ impl App {
                 let nexus_id = turn.nexus.clone();
                 let merge_id = turn.merge.clone();
                 let conversation_input_id = turn.conversation_input.clone();
+                let workflow_return_id = turn.workflow_return.as_ref().and_then(|id| {
+                    shared
+                        .store
+                        .workflow_native_dispatch(id)
+                        .ok()
+                        .map(|r| (id.clone(), r.attempts))
+                });
                 let (registration, result) = match routing::begin(&shared, &turn) {
                     Ok(registration) => {
                         let result = match capacity {
@@ -2862,6 +3035,20 @@ impl App {
                         &tx,
                     );
                 }
+                if let Some((id, attempt)) = workflow_return_id {
+                    let phase = if result
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.is::<crate::codex::NativeInputNotSubmitted>())
+                    {
+                        "retained_unsent"
+                    } else {
+                        "uncertain"
+                    };
+                    let _ = shared
+                        .store
+                        .workflow_native_outcome_attempt(&id, attempt, phase, None);
+                }
                 if let Some(id) = merge_id {
                     let _ = shared.store.merge_finish(&id);
                 }
@@ -2893,6 +3080,15 @@ impl App {
                 }
                 if let Err(error) = result {
                     tracing::error!("turn failed for {:?}: {error:#}", key);
+                }
+                // A context return may have started a distinct physical turn
+                // just as this collector completed. Attach that exact writer
+                // now; waiting for maintenance would leave its tools unanswered.
+                if native_recovery::attach_foreground(&app, requester, target)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Exact foreground collector remains pending; no input replayed");
                 }
             }
         });

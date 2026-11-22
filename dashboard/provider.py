@@ -5,6 +5,7 @@ No bot update consumer, independent model client or arbitrary process kill.
 import hashlib
 from contextlib import closing
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -15,24 +16,41 @@ import threading
 import time
 import tomllib
 
-from scripts.activity_indicator import Native, Rollout, linked_child, readonly, timestamp, read_topic_inventory, topic_activity_inventory
+from scripts.activity_indicator import Native, Rollout, linked_child, readonly, timestamp, read_topic_inventory, topic_activity_inventory, pending_requests, goal_recovery_state, read_owner_json, inventory_source
 from scripts.speech_render import sync_directory
+from .media_retention import RetentionUnavailable
 
 
 class ProviderUnavailable(Exception):
     pass
 
 
+class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
+    """Known admission refusal, also compatible with existing voice consumers."""
+    pass
+
+
 def receiving_authority(receiver):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
+    interaction = receiver.get('interaction')
+    if isinstance(interaction, dict) and isinstance(interaction.get('matrix_transport'), dict):
+        # Resource/tool ceilings constrain native work, not dashboard identity.
+        # Keep all actor, route, credential and funding selectors in the binding.
+        transport = {key: value for key, value in interaction['matrix_transport'].items()
+                     if key != 'native_host_restrictions'}
+        interaction = {**interaction, 'matrix_transport': transport}
     return json.dumps({
         'db_path': receiver.get('db_path'),
         'session_control': receiver.get('session_control'),
-        'interaction': receiver.get('interaction'),
+        'interaction': interaction,
         'voice': receiver.get('voice'),
-        'telegram': {key: telegram.get(key) for key in
-                     ('api_base', 'bot_token', 'bot_token_file')},
+        # Disabled transport is part of a web-only receiver's authority. Keep
+        # legacy enabled/omitted bindings byte-identical while fencing any
+        # post-start change away from explicitly disabled Telegram.
+        'telegram': {**{key: telegram.get(key) for key in
+                       ('api_base', 'bot_token', 'bot_token_file')},
+                     **({'enabled': False} if telegram.get('enabled') is False else {})},
         'native_binary': receiver.get('codex', {}).get('binary', 'codex'),
     }, sort_keys=True, separators=(',', ':')).encode()
 
@@ -115,6 +133,8 @@ class Host:
 class Provider:
     def __init__(self, config):
         self.config = config
+        from .media_retention import MediaRetention
+        self.media_retention = MediaRetention(config["media_retention"]) if config.get("media_retention") else None
         self.receiver_path = Path(config['receiver_config'])
         self.receiver_bytes = self.receiver_path.read_bytes()
         self.receiver = tomllib.loads(self.receiver_bytes.decode())
@@ -175,9 +195,50 @@ class Provider:
             selected = item.get('entry_binding', [])
             if len(selected) != 4 or selected[0] != self.human or selected[1] != expected:
                 raise ProviderUnavailable('Loaded integrating entry does not match the receiving configuration')
-        return result
+        return self.display_labels(result)
 
-    def presentation_list(self, delivery, native, direction='after', matrix=None):
+    def display_labels(self, value):
+        """Resolve stable t<ID> display fallbacks from current owner bindings only.
+
+        Addresses, source revisions and authored aliases remain unchanged.
+        """
+        pending = []
+        def visit(node):
+            if isinstance(node, list):
+                for child in node: visit(child)
+            elif isinstance(node, dict):
+                label = node.get('label')
+                match = re.fullmatch(r'(#?)t([0-9]+)', label) if isinstance(label, str) else None
+                if match:
+                    tid = int(match[2])
+                    target = node.get('target')
+                    if isinstance(target, dict) and target.get('thread_id') == tid:
+                        chat = target.get('chat_id')
+                    elif node.get('selector') == 't'+str(tid):
+                        chat = self.receiver['interaction']['chat_id']
+                    else:
+                        chat = None
+                    if type(chat) is int:
+                        pending.append((node, chat, tid, match[1]))
+                for child in node.values(): visit(child)
+        visit(value)
+        if pending:
+            with closing(readonly(self.receiver['db_path'])) as db:
+                titles = {}
+                for _, chat, tid, _ in pending:
+                    key = (chat, tid)
+                    if key in titles: continue
+                    row = db.execute('''SELECT s.session_title FROM sessions s
+                        JOIN users u ON u.tg_user_id=s.creator_user_id
+                        WHERE s.creator_user_id=? AND u.allowed=1
+                        AND s.chat_id=? AND s.thread_id=?''', (self.human, chat, tid)).fetchone()
+                    title = row[0].strip() if row and isinstance(row[0], str) else ''
+                    titles[key] = title if title and len(title)<=200 and not any(ord(c)<32 or ord(c)==127 for c in title) else None
+                for node, chat, tid, prefix in pending:
+                    if titles[(chat, tid)]: node['label'] = prefix+titles[(chat, tid)]
+        return value
+
+    def presentation_list(self, delivery, native, direction='after', matrix=None, inbox=None, responses=None, publications=None):
         if type(delivery) is not int or type(native) is not int or min(delivery, native) < 0:
             raise ValueError('Invalid presentation cursor')
         if direction not in ('after', 'before'):
@@ -186,7 +247,103 @@ class Provider:
         if matrix is not None and (type(matrix) is not int or matrix < 0):
             raise ValueError('Invalid Matrix presentation cursor')
         suffix='' if matrix is None else f' {matrix}'
+        if inbox is not None or responses is not None:
+            if matrix is None or any(type(v) is not int or v<0 for v in (inbox,responses)):
+                raise ValueError('Invalid Matrix source cursors')
+            suffix+=f' {inbox} {responses}'
+        if publications is not None:
+            if type(publications) is not int or publications<0 or any(v is None for v in (matrix,inbox,responses)):
+                raise ValueError('Invalid publication cursor')
+            # Older receivers remain readable when this new optional capability is absent.
+            if self.receiver.get('interaction',{}).get('matrix_publication'):
+                suffix+=f' {publications}'
         return self.presentation(f'presentation {operation} {delivery} {native}'+suffix)
+
+    def session_workspace(self):
+        """All owned session metadata, without opening native/model processes."""
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        destinations={};latest_replies={};results_available={};entry_latest=None;destinations_state='unavailable'
+        try:
+            selected=self.presentation('input workspace')
+        except ProviderUnavailable:
+            selected=None  # Older readers retain the metadata-only workspace.
+        if selected is not None:
+            if selected.get('schema')!='daimon.session-destinations/v1' or not isinstance(selected.get('items'),list) or len(selected['items'])>128:
+                raise ProviderUnavailable('Session destination receipt unavailable')
+            for item in selected['items']:
+                if not isinstance(item,dict) or not isinstance(item.get('audio_key'),str):raise ProviderUnavailable('Invalid session destination')
+                self.check_reply(item.get('destination'))
+                if not item.get('destination',{}).get('source','').startswith('session:'):raise ProviderUnavailable('Missing session destination reference')
+                latest=item.get('latest_reply')
+                if latest is not None:
+                    self.check_reply(latest)
+                    if not latest['source'].startswith(item['destination']['source']+'/'):
+                        raise ProviderUnavailable('Latest reply does not belong to the selected session')
+                    latest_replies[item['audio_key']]=latest
+                if type(item.get('result_available')) is bool:results_available[item['audio_key']]=item['result_available']
+                destinations[item['audio_key']]=item['destination']
+            entry_latest=selected.get('entry_latest_reply')
+            if entry_latest is not None:
+                self.check_reply(entry_latest)
+                if not entry_latest['source'].startswith('native:') or entry_latest.get('context_only') is not True:
+                    raise ProviderUnavailable('Latest conversation reply is not contextual evidence')
+            destinations_state='available'
+        directory=self.config.get('activity_state_dir')
+        with closing(readonly(self.receiver['db_path'])) as db:
+            inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
+            owned=[v for v in inventory['items'] if v['human']==self.human]
+            if len(owned)>128 or inventory['truncated']:
+                raise ProviderUnavailable('Session inventory exceeds qualified bound')
+            items=[]
+            for row in owned:
+                chat,topic=map(int,row['key'].split(':'))
+                requests=pending_requests(db,chat,topic,self.human) if row.get('native') else None
+                ident=self.identity({'id':row['session'],'chat_id':chat,'thread_id':topic,'codex_thread_id':row['native']})
+                items.append({'id':ident,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
+                    'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
+                    **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
+                    'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
+                    'results_review':'unknown','result_available':results_available.get(row['key']),'destination':destinations.get(row['key']),
+                    'latest_reply':entry_latest if chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id'] else latest_replies.get(row['key']),
+                    'is_entry':chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']})
+        items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience changed')
+        return {'schema':'daimon.session-workspace/v1','observed_at':time.time(),'sessions':items,
+            'connected':inventory['connected'],'truncated':False,'destinations_state':destinations_state,
+            'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
+            'input_authority':'Metadata only; destination selection requires native admission.'}
+
+    def session_view(self,ident,**window):
+        """One explicitly selected owned root; never discover or open a model."""
+        if not isinstance(ident,str) or not re.fullmatch('[a-f0-9]{24}',ident):
+            raise ValueError('Select one owned session')
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
+        selected=next((r for r in self.bindings() if self.identity(r)==ident),None)
+        if selected is None or not selected.get('codex_thread_id'):
+            raise ProviderUnavailable('Selected session binding is unavailable')
+        with closing(readonly(self.native_home/'state_5.sqlite')) as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (selected['codex_thread_id'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Selected native history is unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Selected history is outside the native root')
+        from .session_view import read
+        meta=path.stat()
+        value=read(path,selected['codex_thread_id'],expected_file=(meta.st_dev,meta.st_ino),**window)
+        self.assert_binding()
+        current=next((r for r in self.bindings() if self.identity(r)==ident),None)
+        if current is None or self.identity(current)!=self.identity(selected) or not self.authorized(self.human):
+            raise ProviderUnavailable('Selected session audience or binding changed')
+        with closing(readonly(self.native_home/'state_5.sqlite')) as db:
+            current_path=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (selected['codex_thread_id'],)).fetchone()
+        if current_path is None or Path(current_path['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Selected native history binding changed')
+        return {**value,'session':ident,'title':current.get('session_title') or 'Untitled session'}
 
     def sonic_activity(self):
         """Finite read of the existing database-bound observer, never native work.
@@ -205,7 +362,8 @@ class Provider:
         # An after-maximum cursor returns metadata/choices without transporting
         # original messages. This is the existing input-list cursor contract.
         choices=self.presentation(f'input list {2**63-1} after')['routing_choices']
-        if not isinstance(choices,list) or len(choices)>64:
+        # 127 local destinations plus at most 16 explicit Matrix destinations.
+        if not isinstance(choices,list) or len(choices)>143:
             raise ProviderUnavailable('Routing membership unavailable')
         for target in choices:
             selector=target.get('selector')
@@ -216,13 +374,27 @@ class Provider:
         with closing(readonly(self.receiver['db_path'])) as db:
             inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
             owned={item['key']:item for item in inventory['items'] if item['human']==self.human}
+            quota={'state':'unavailable'}
+            try:health=read_owner_json(Path(directory)/'health.json') if directory else {}
+            except (OSError,ValueError):health={}
+            observed=health.get('updated_at');available=health.get('weekly_available');reset=health.get('weekly_resets_at')
+            if (health.get('source')==inventory_source(db) and health.get('connected') is True
+                    and type(observed) in (int,float) and math.isfinite(observed) and 0<=time.time()-observed<=20
+                    and type(available) in (int,float) and math.isfinite(available) and 0<=available<=100):
+                quota={'state':'observed','available_percent':available,'observed_at':observed,
+                    'resets_at':reset if type(reset) in (int,float) and math.isfinite(reset) and reset>0 else None}
             items=[]
             for key,label in selected.items():
                 item=owned.get(key,{})
+                chat,topic=map(int,key.split(':'))
+                requests=pending_requests(db,chat,topic,self.human) if item.get('session') else None
                 items.append({'id':key,'label':label,'session':item.get('session'),
                     'observed_at':item.get('observed_at'),'fresh':item.get('fresh',False),
                     'execution':item.get('execution','unknown'),'goal_state':item.get('goal_state','unknown'),
-                    'waiting_for_human':item.get('waiting_for_human')})
+                    'work_started_at':item.get('work_started_at'),
+                    'waiting_for_human':item.get('waiting_for_human'),
+                    'tools_running':item.get('tools_running'),'error':item.get('error'),
+                    'pending':bool(requests and requests['pending']) or item.get('waiting_for_human') is True})
         self.assert_binding()
         if not self.authorized(self.human):
             raise ProviderUnavailable('Interaction state audience changed')
@@ -230,14 +402,16 @@ class Provider:
         return {**descriptor(self.config),'schema':'telecodex.sonic-state/v1','observed_at':time.time(),
             'configured':bool(directory),'connected':inventory['connected'],
             'scope':'canonical routing registry and entry; current owned bindings only',
-            'sources':items,'truncated':inventory['truncated']}
+            'weekly_quota':quota,'sources':items,'truncated':inventory['truncated']}
 
     def presentation_part(self, source, revision, offset):
         import re
-        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32})', source)
+        if (not isinstance(source, str) or not re.fullmatch(r'(?:(?:delivery|input|matrix|matrix-inbox|matrix-response|matrix-publication):[a-f0-9-]{36}|native:[1-9][0-9]{0,18}|request:[a-f0-9]{32}|live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64})', source)
                 or not isinstance(revision, str) or not re.fullmatch(r'[a-f0-9]{64}', revision)
                 or type(offset) is not int or not 0 <= offset <= 10**9):
             raise ValueError('Invalid presentation selection')
+        if source.startswith('live:'):
+            return self.presentation(f'presentation speech {source} {revision} {offset}')
         if source.startswith('input:'):
             value = self.presentation(f'input status {self.input_id(source[6:])}')
             view = self.clarification_source(value)
@@ -327,7 +501,7 @@ class Provider:
         page = self.presentation(f'input list {before} {direction}')
         for item in page['items']:
             self.decorate_input(item,page.get('routing_choices'),page['entry_binding'],page['binding'])
-            self.retire_voice_capture(item)
+            self.retire_voice_capture(item, page["entry_binding"])
         return page
 
     def conversation_input_status(self, ident):
@@ -335,7 +509,7 @@ class Provider:
         self.retire_voice_capture(value)
         return value
 
-    def retire_voice_capture(self, value):
+    def retire_voice_capture(self, value, entry_binding=None):
         """Dispose only this receiver's clip after its matching durable transcript.
 
         Admission/delivery may still be pending: the retained transcript is the
@@ -368,10 +542,25 @@ class Provider:
                 current = path.lstat()
                 if (current.st_dev,current.st_ino) != (info.st_dev,info.st_ino):
                     return False
+                retention = getattr(self, 'media_retention', None)
+                receipt = None
+                if retention:
+                    source.seek(0)
+                    selected = value if entry_binding is None else {**value, 'entry_binding':entry_binding}
+                    receipt = retention.retain(selected, 'human', voice.get('mime', 'application/octet-stream'), source.read(20*1024*1024+1))
+                if voice.get('preserve_original') is True and receipt is None:
+                    # Removing/changing the capture selection cannot retire a
+                    # hold already committed for this exact original.
+                    value['media_retention'] = {'state':'pending', 'original_retained':True,
+                        'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
+                    return False
                 path.unlink()
                 sync_directory(directory)
             return True
         except FileNotFoundError:
+            return False
+        except RetentionUnavailable:
+            value['media_retention'] = {'state':'pending', 'original_retained':True, 'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
             return False
         except (OSError, ValueError, KeyError, TypeError):
             # Cleanup cannot turn an already committed input into a failed or
@@ -382,6 +571,17 @@ class Provider:
 
     def conversation_input_trace(self, ident):
         return self.presentation(f'input trace {self.trace_id(ident)}')
+
+    def conversation_input_trace_results(self, ident, instruction, before):
+        if type(before) is not int or not 0 <= before <= 2**63-1:
+            raise ValueError('Invalid trace result cursor')
+        return self.presentation(f'input trace-results {self.trace_id(ident)} {self.input_id(instruction)} {before}')
+
+    def conversation_input_trace_result(self, ident, source):
+        if not isinstance(source,str) or not source.startswith('delivery:'):
+            raise ValueError('Select a canonical delivery')
+        selected='delivery:'+self.input_id(source.removeprefix('delivery:'))
+        return self.presentation(f'input trace-result {self.trace_id(ident)} {selected}')
 
     @classmethod
     def trace_id(cls, ident):
@@ -445,17 +645,281 @@ class Provider:
             value['clarification'] = {k:source[k] for k in ('id','revision','kind','label','current')}
         return value
 
+    def conversation_foreground_retain(self, body):
+        """Server-owned text retention; no ordinary work submission or routing."""
+        if (not isinstance(body, dict) or not {'binding','id','text','dialogue_id'} <= set(body)
+                or set(body)-{'binding','id','text','dialogue_id','capture_questions'}
+                or not isinstance(body['binding'],str) or not re.fullmatch('[a-f0-9]{64}',body['binding'])
+                or not isinstance(body['text'],str) or not body['text'].strip()
+                or len(body['text'].encode())>32768 or '\0' in body['text']):
+            raise ValueError('Select one bounded foreground original')
+        self.input_id(body['id']);self.input_id(body['dialogue_id'])
+        self.check_capture_questions(body.get('capture_questions'))
+        return self.decorate_input(self.presentation('input foreground retain '+json.dumps(body,ensure_ascii=False)))
+
+    def prepare_native_voice(self, binding):
+        """Explicit voice entry only: initialize an empty own native context, no input."""
+        value=self.presentation('input voice capabilities')
+        entry=value.get('entry_binding')
+        if (value.get('binding')!=binding or value.get('voice_available') is not True
+                or not isinstance(entry,list) or len(entry)!=4 or entry[0]!=self.human):
+            raise ProviderUnavailable('Configured voice entry unavailable or changed')
+        if entry[3] not in (None,''):return
+        self.presentation('input voice native initialize '+json.dumps({'binding':binding}))
+
+    def public_live_binding(self, binding):
+        """Resolve the integrating owner without borrowing Codex voice entitlement."""
+        return self._voice_binding(binding, native=False)
+
+    def public_live_integrator_context(self, frozen, max_bytes=16384):
+        """Fresh current integrator conversation; existing observer, no work start."""
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed')
+        from .integrator_startup import read, integrating_sources
+        if type(max_bytes) is not int or not 3072<=max_bytes<=24576:
+            raise ValueError('Current integrator context needs semantic preparation')
+        deadline=time.monotonic()+12
+        def check():
+            if time.monotonic()>=deadline:
+                raise ProviderUnavailable('Current integrator context preparation deadline reached')
+        native=Native(self.receiver['codex'].get('binary','codex'))
+        try:
+            result=read(native,frozen['native_thread'],max_bytes=max_bytes//2,check=check)
+        finally:native.close()
+        result['integrating_sources']=integrating_sources(self,frozen,max_bytes=max_bytes//2-256,check=check)
+        if self.public_live_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Current integrator context owner changed during read')
+        return result
+
+    def heartbeat_status(self):
+        """Read the existing configured owner console; never activate attention."""
+        self.assert_binding()
+        profile=self.receiver.get('interaction',{})
+        if profile.get('human_id')!=self.human or not self.authorized(self.human):
+            raise ProviderUnavailable('Heartbeat owner is unavailable')
+        value=control(self.receiver['session_control']['socket_path'],None,'heartbeat status')
+        self.assert_binding()
+        if (not self.authorized(self.human) or value.get('schema')!='telecodex.heartbeat-control/v1'
+                or type(value.get('admission_paused')) is not bool
+                or type(value.get('generation')) is not int or not 0<=value['generation']<=2**53-1):
+            raise ProviderUnavailable('Heartbeat status is unavailable')
+        return value
+
+    def heartbeat_control(self, body):
+        """One conditional owner write. Never configure resources or retry a send."""
+        if not isinstance(body,dict):
+            raise ValueError('Select an exact heartbeat action')
+        action=body.get('action')
+        keys={'action','paused','generation'}
+        if action=='set_lane_paused':keys|={'lane','global_generation'}
+        if (action not in ('set_paused','set_lane_paused') or set(body)!=keys
+                or type(body.get('paused')) is not bool
+                or any(type(body.get(k)) is not int or not 0<=body[k]<=2**53-1
+                       for k in keys & {'generation','global_generation'})
+                or action=='set_lane_paused' and body.get('lane')!='messaging'):
+            raise ValueError('Select an exact heartbeat action')
+        current=self.heartbeat_status()  # Also rechecks the current actor/binding.
+        caps=current.get('controls')
+        kind='conditional_global' if action=='set_paused' else 'conditional_lane'
+        if (not isinstance(caps,dict) or caps.get('schema')!='telecodex.heartbeat-controls/v1'
+                or caps.get(kind) is not True or not isinstance(caps.get('actions'),list)
+                or action not in caps['actions']):
+            raise ProviderUnavailable('Conditional heartbeat controls unavailable')
+        if action=='set_paused':
+            if current['generation']!=body['generation']:
+                raise ValueError('Heartbeat state changed; refresh')
+            command=f"heartbeat {'pause' if body['paused'] else 'resume'} {body['generation']}"
+        else:
+            lanes=current.get('lanes')
+            lane=lanes.get('messaging') if isinstance(lanes,dict) else None
+            if (not isinstance(lane,dict) or lane.get('supported') is not True or type(lane.get('paused')) is not bool
+                    or type(lane.get('generation')) is not int
+                    or lane.get('generation')!=body['generation']
+                    or current['generation']!=body['global_generation']):
+                raise ValueError('Heartbeat lane changed or unavailable; refresh')
+            command=f"heartbeat {'pause-lane' if body['paused'] else 'resume-lane'} messaging {body['global_generation']} {body['generation']}"
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Heartbeat owner unavailable')
+        value=control(self.receiver['session_control']['socket_path'],None,command)
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Heartbeat owner unavailable')
+        return value
+
+    def codex_voice_binding(self, binding):
+        """Resolve the current integrating thread and native voice entitlement."""
+        return self._voice_binding(binding, native=True)
+
+    def _voice_binding(self, binding, *, native):
+        if not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
+            raise ValueError('Select a frozen native voice binding')
+        value=self.presentation('input voice native capabilities')
+        entry=value.get('entry_binding')
+        if (value.get('binding')!=binding or native and value.get('native_codex_voice')!='v1'
+                or not isinstance(entry,list) or len(entry)!=4
+                or entry[0]!=self.human or not isinstance(entry[3],str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}',entry[3])):
+            raise ProviderUnavailable('Native Codex voice owner is unavailable or changed')
+        return {'binding':binding,'entry_binding':entry,'native_thread':entry[3]}
+
+    def codex_voice_transcripts(self,frozen,sessions):
+        """Reconcile retained voice only from the exact enrolled native root."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Native voice history is unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Native voice history is outside its root')
+        meta=path.stat()
+        from .codex_voice_history import native_transcripts
+        result=native_transcripts(path,frozen['native_thread'],sessions,expected_file=(meta.st_dev,meta.st_ino))
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed during recovery')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            current=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if current is None or Path(current['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Native voice history binding changed')
+        return result
+
+    def codex_voice_memory(self,frozen,text,checkpoint=None):
+        """Canonical context proof for the exact current enrolled native owner."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if row is None:raise ProviderUnavailable('Native memory source unavailable')
+        path=Path(row['rollout_path']).resolve()
+        if not path.is_relative_to((self.native_home/'sessions').resolve()):
+            raise ProviderUnavailable('Native memory source is outside its root')
+        meta=path.stat()
+        from .codex_voice_history import native_memory_proof
+        proof=native_memory_proof(path,frozen['native_thread'],text,checkpoint,expected_file=(meta.st_dev,meta.st_ino))
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native memory ownership changed')
+        with closing(readonly(self.native_home/'state_5.sqlite'))as db:
+            current=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
+                (frozen['native_thread'],)).fetchone()
+        if current is None or Path(current['rollout_path']).resolve()!=path:
+            raise ProviderUnavailable('Native memory source binding changed')
+        return proof
+
+    def codex_voice_collect(self, frozen, native_turn):
+        """Collect an already admitted native voice turn; never submit its input."""
+        if (not isinstance(frozen,dict) or set(frozen)!={'binding','entry_binding','native_thread'}
+                or not isinstance(native_turn,str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}',native_turn)):
+            raise ValueError('Select an observed native voice writer')
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        value=self.presentation('input voice native attach '+json.dumps({
+            'binding':frozen['binding'],'native_thread':frozen['native_thread'],'native_turn':native_turn}))
+        if (value.get('binding')!=frozen['binding'] or value.get('entry_binding')!=frozen['entry_binding']
+                or value.get('native_turn')!=native_turn
+                or value.get('state') not in ('collecting','pending','not_current','attachment_queued')):
+            raise ProviderUnavailable('Native voice collection is unconfirmed')
+        return value
+
+    def codex_voice_current(self, frozen):
+        """Observe admitted work at a voice boundary without starting anything."""
+        if self.codex_voice_binding(frozen['binding'])!=frozen:
+            raise ProviderUnavailable('Native voice ownership changed')
+        value=self.presentation('input voice native current')
+        turn=value.get('native_turn')
+        if (value.get('binding')!=frozen['binding'] or value.get('entry_binding')!=frozen['entry_binding']
+                or value.get('native_codex_voice')!='v1'
+                or turn is not None and (not isinstance(turn,str)or not re.fullmatch('[A-Za-z0-9_-]{1,128}',turn))):
+            raise ProviderUnavailable('Native writer observation unavailable')
+        return turn
+
+    def conversation_foreground_delegate(self, body):
+        """One immutable source-bound formulation to the existing integrator."""
+        if (not isinstance(body,dict) or set(body) not in ({'binding','id','intent_id','formulation','source_ids'}, {'binding','id','intent_id','formulation','source_ids','live_window'})
+                or not isinstance(body['binding'],str) or not re.fullmatch('[a-f0-9]{64}',body['binding'])
+                or not isinstance(body['formulation'],str) or not body['formulation'].strip()
+                or len(body['formulation'].encode())>8192 or '\0' in body['formulation']
+                or not isinstance(body['source_ids'],list) or not 1<=len(body['source_ids'])<=(32 if 'live_window' in body else 8)
+                or any(not isinstance(i,str) for i in body['source_ids'])
+                or len(set(body['source_ids']))!=len(body['source_ids']) or body['id'] not in body['source_ids']):
+            raise ValueError('Select a bounded attributed foreground formulation')
+        if 'live_window' in body:
+            window=body['live_window']
+            if (not isinstance(window,dict) or set(window)!={'path','proof'}
+                    or not isinstance(window['path'],str) or not Path(window['path']).is_absolute()
+                    or not isinstance(window['proof'],dict)):
+                raise ValueError('Select one source-bound Live input window')
+        self.input_id(body['id']);self.input_id(body['intent_id'])
+        for source in body['source_ids']:self.input_id(source)
+        return self.decorate_input(self.presentation('input foreground delegate '+json.dumps(body,ensure_ascii=False)))
+
+    def conversation_foreground_originals(self, dialogue, binding, before=0):
+        """One bounded page of this live dialogue's exact owned source references."""
+        self.input_id(dialogue)
+        if (not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding)
+                or type(before) is not int or not 0<=before<=2**63-1):
+            raise ValueError('Select the bounded foreground source scope')
+        page=self.presentation(f'input list {before} before')
+        if page['binding']!=binding:
+            raise ProviderUnavailable('Foreground original binding changed')
+        sources=[{'id':row['id'],'phase':row['phase'],'capture_order':row.get('capture_order'),
+                  'text_excerpt':row.get('preview','')[:200],'excerpt_bounded':True,
+                  'voice':bool(row.get('voice'))}
+                 for row in page['items'] if row.get('foreground_dialogue')==dialogue]
+        return {'kind':'foreground_originals','sources':sources,'before':page.get('cursor'),
+                'more':page.get('more',False),'source_data':True,
+                'meaning':'References to retained human originals; excerpts are bounded. Captured/preparing originals are not ready for delegation. Retention or native acceptance does not establish work completion.'}
+
+    def conversation_live_context(self,body):
+        """Server-owned semantic producer; one request, never an audio/work retry."""
+        if not isinstance(body,dict) or body.get('action') not in ('open','sync','close','checkpoint_needed','guidance','guidance_begin','guidance_outcome','rollover_read','rollover_commit','rollover_status','rollover_abort','pin_read','resume_read'):
+            raise ValueError('Select a server-owned Live context operation')
+        self.input_id(body.get('dialogue'));self.input_id(body.get('generation'))
+        if len(json.dumps(body,ensure_ascii=False).encode())>131072:
+            raise ValueError('Live context batch exceeds its bound')
+        return self.presentation('input foreground context '+json.dumps(body,ensure_ascii=False))
+
+    def conversation_foreground_interpret(self, body):
+        """Import an exact completed machine interpretation; no ASR/work call."""
+        keys={'binding','id','dialogue_id','audio_sha256','model','text','audio_millis','transcription_millis'}
+        if (not isinstance(body,dict) or set(body)!=keys
+                or body.get('model')!='gpt-transcribe'
+                or any(not isinstance(body.get(k),str) or not re.fullmatch('[a-f0-9]{64}',body[k])
+                       for k in ('binding','audio_sha256'))
+                or not isinstance(body.get('text'),str) or not body['text'].strip()
+                or len(body['text'].encode())>16000 or '\0' in body['text']
+                or type(body.get('audio_millis')) is not int or not 1<=body['audio_millis']<=120000
+                or type(body.get('transcription_millis')) is not int or not 0<=body['transcription_millis']<=120000):
+            raise ValueError('Select one exact completed public interpretation')
+        self.input_id(body['id']);self.input_id(body['dialogue_id'])
+        return self.decorate_input(self.presentation('input foreground interpret '+json.dumps(body,ensure_ascii=False)))
+
+    def conversation_foreground_complete(self, ident, binding, dialogue):
+        """Read a now-completed receipt for the same retained acoustic original."""
+        self.input_id(ident);self.input_id(dialogue)
+        if not isinstance(binding,str) or not re.fullmatch('[a-f0-9]{64}',binding):
+            raise ValueError('Select the original foreground binding')
+        original=self.conversation_input_status(ident)
+        if original.get('foreground_dialogue')!=dialogue:
+            raise ValueError('Completed foreground original belongs to another dialogue')
+        value=self.decorate_input(self.presentation('input voice recover '+json.dumps({'id':ident,'binding':binding})))
+        self.retire_voice_capture(value)
+        return value
+
     def conversation_input_submit(self, body):
-        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual'}:
+        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files'}:
             raise ValueError('Select the conversation and provide one original message')
         self.input_id(body['id'])
         self.check_reply(body.get('reply'))
+        self.check_playback(body.get('playback'))
         from .visual import check_reference
         check_reference(body.get('visual'))
         self.check_visual_original(body.get('visual'),body['id'])
+        self.check_files_original(body.get('files'),body['id'])
         import re
         if (not isinstance(body['binding'], str) or not re.fullmatch('[a-f0-9]{64}', body['binding'])
-                or not isinstance(body['text'], str) or not body['text'].strip()
+                or not isinstance(body['text'], str) or not body['text'].strip() and not body.get('files')
                 or '\0' in body['text'] or len(body['text'].encode('utf-8')) > 32768):
             raise ValueError('A message must contain text and fit within 32 KiB')
         # The Rust journal owns idempotency and exact-source checks. No retry.
@@ -470,11 +934,36 @@ class Provider:
             existing=db.execute('SELECT 1 FROM conversation_inputs WHERE id=? AND human_id=?',(ident,self.human)).fetchone()
         if not existing:
             check_reference(value,fresh=True)
-            path=Path(str(self.receiver['db_path'])+'.visual')/value['image_sha256']
-            try:
-                data=read_png(path,value['image_sha256'])
-                if png_dimensions(data)!=(value['width'],value['height']):raise ValueError('Selected dimensions changed')
-            except (ValueError,OSError):raise VisualSelectionInvalid('Selected image unavailable. Select it again.') from None
+            for image in value if isinstance(value,list) else [value]:
+                path=Path(str(self.receiver['db_path'])+'.visual')/image['image_sha256']
+                try:
+                    data=read_png(path,image['image_sha256'])
+                    if png_dimensions(data)!=(image['width'],image['height']):raise ValueError('Selected dimensions changed')
+                except (ValueError,OSError):raise VisualSelectionInvalid('Selected image unavailable. Select it again.') from None
+
+    def check_files_original(self,files,ident):
+        from .files import check_reference,read_file
+        check_reference(files)
+        if not files:return
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Conversation unavailable')
+        for ref in files:read_file(self.receiver['db_path'],ref)
+
+    def conversation_file_upload(self,data,ref):
+        self.assert_binding()
+        if not self.receiver.get('interaction') or not self.authorized(self.human):raise ProviderUnavailable('Conversation unavailable')
+        from .files import retain_file
+        result=retain_file(self.receiver['db_path'],data,ref)
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Conversation grant changed')
+        return result
+
+    def conversation_file_read(self,ident,index):
+        original=self.conversation_input_status(ident)
+        files=original.get('files',[])
+        if type(index) is not int or not 0<=index<len(files):raise ValueError('No selected file')
+        from .files import read_file
+        return files[index],read_file(self.receiver['db_path'],files[index])
 
     def conversation_visual_upload(self, data, expected):
         import re
@@ -489,11 +978,13 @@ class Provider:
         if not self.authorized(self.human):raise ProviderUnavailable('Conversation grant changed')
         return result
 
-    def conversation_visual_image(self, ident):
+    def conversation_visual_image(self, ident, index=0):
         self.input_id(ident)
         original=self.conversation_input_status(ident)
         ref=original.get('visual')
-        if not isinstance(ref,dict):raise ValueError('No selected image')
+        images=ref if isinstance(ref,list) else [ref] if isinstance(ref,dict) else []
+        if type(index) is not int or not 0<=index<len(images):raise ValueError('No selected image')
+        ref=images[index]
         from .visual import read_png
         return read_png(Path(str(self.receiver['db_path'])+'.visual')/ref['image_sha256'],ref['image_sha256'])
 
@@ -503,19 +994,50 @@ class Provider:
         if value is None: return
         if (not isinstance(value, dict) or set(value) not in ({'source', 'revision'}, {'source', 'revision', 'context_only'})
                 or 'context_only' in value and value['context_only'] is not True
-                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:'))
+                or not isinstance(value['source'], str) or not value['source'].startswith(('delivery:', 'input:', 'request:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:', 'session:'))
                 or not isinstance(value['revision'], str) or not re.fullmatch('[a-f0-9]{64}', value['revision'])):
             raise ValueError('Select one retained original or worker result')
-        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:')):
+        if value.get('context_only') and not value['source'].startswith(('request:', 'delivery:', 'input:', 'matrix:', 'matrix-inbox:', 'matrix-response:', 'task:', 'native:')):
             raise ValueError('Context must refer to a reported conversation source')
-        if value['source'].startswith('matrix:') and not value.get('context_only'):
-            raise ValueError('Matrix replies are selected contextual evidence')
+        if value['source'].startswith(('matrix:','matrix-inbox:','matrix-response:','task:')) and not value.get('context_only'):
+            raise ValueError('Matrix/task references are selected contextual evidence')
         ident=value['source'].split(':', 1)[1]
-        if value['source'].startswith('request:'):
+        if value['source'].startswith(('native:','session:')):
+            parts=ident.split('/') if value['source'].startswith('session:') else [ident]
+            if len(parts)>2 or any(not re.fullmatch('[1-9][0-9]{0,18}',part) or int(part)>2**63-1 for part in parts):
+                raise ValueError('Select one retained native message')
+        elif value['source'].startswith(('request:','task:')):
             if not re.fullmatch('[a-f0-9]{32}',ident):
                 raise ValueError('Select one current question')
         else:
             cls.input_id(ident)
+
+    @classmethod
+    def check_playback(cls, value):
+        import re
+        if value is None:return
+        if (not isinstance(value,dict)
+                or set(value) not in ({'source','revision','segment_offset','position_millis','duration_millis','state'}, {'source','revision','segment_offset','position_millis','duration_millis','state','word_offset'})
+                or not isinstance(value['source'],str) or len(value['source'])>448
+                or not isinstance(value['revision'],str) or not re.fullmatch('[a-f0-9]{64}',value['revision'])
+                or type(value['segment_offset']) is not int or not 0<=value['segment_offset']<=1000000
+                or 'word_offset' in value and (type(value['word_offset']) is not int or not value['segment_offset']<=value['word_offset']<=min(1000000,value['segment_offset']+1600))
+                or type(value['position_millis']) is not int or not 0<=value['position_millis']<=3600000
+                or value['duration_millis'] is not None and (type(value['duration_millis']) is not int or not 1<=value['duration_millis']<=3600000)
+                or value['state'] not in ('playing','paused','interrupted')):
+            raise ValueError('Invalid bounded device playback context')
+        if value['source'].startswith('live:'):
+            if not re.fullmatch(r'live:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[0-9]{1,5}:[0-9]{1,5}:[a-f0-9]{64}',value['source']):
+                raise ValueError('Invalid live playback source')
+            fields=value['source'].split(':');start,end=int(fields[3]),int(fields[4])
+            if (str(start)!=fields[3] or str(end)!=fields[4] or not 0<end-start<=640 or end>65536
+                    or value['segment_offset']!=start or value.get('word_offset',start)>end):
+                raise ValueError('Invalid live playback boundary')
+        elif value['source'].startswith('native:'):
+            suffix=value['source'][7:]
+            if not re.fullmatch('[1-9][0-9]{0,18}',suffix) or int(suffix)>2**63-1:
+                raise ValueError('Invalid native playback source')
+        else:cls.check_reply({'source':value['source'],'revision':value['revision'],'context_only':True})
 
     def conversation_input_route(self, ident, body):
         import re
@@ -535,15 +1057,93 @@ class Provider:
         self.input_id(body['instruction'])
         return self.decorate_input(self.presentation('input retry '+json.dumps({**body, 'id':ident})))
 
-    def conversation_voice_submit(self, metadata, data):
+    @staticmethod
+    def check_capture_questions(value):
         import re
-        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual'}:
+        if value is None:return
+        if (not isinstance(value,dict) or len(value)>32
+                or any(not isinstance(k,str) or not re.fullmatch('[a-f0-9]{32}',k)
+                       or not isinstance(v,str) or not re.fullmatch('[a-f0-9]{64}',v) for k,v in value.items())):
+            raise ValueError('Invalid bounded capture question restriction')
+
+    def conversation_voice_recover(self, metadata, data, dialogue):
+        """Read an exact retained result; Avatar recovery never starts ASR."""
+        self.input_id(dialogue);self.input_id(metadata.get('id'))
+        self.assert_binding()
+        if not self.authorized(self.human):raise ProviderUnavailable('Voice recovery unavailable')
+        # Existence is not inferred from an unavailable native status read.
+        with closing(readonly(self.receiver['db_path'])) as db:
+            exists=db.execute('SELECT 1 FROM conversation_inputs WHERE id=?',(metadata['id'],)).fetchone()
+        if exists:
+            current=self.conversation_input_status(metadata['id'])
+            if (current.get('foreground_dialogue')!=dialogue
+                    or current.get('voice',{}).get('audio_sha256')!=metadata.get('audio_sha256')):
+                raise ValueError('Retained Avatar original changed')
+            if self.presentation('input list 0 before').get('binding')!=metadata.get('binding'):
+                raise ProviderUnavailable('Original conversation binding changed')
+        else:
+            profiles=self.receiver.get('voice',{}).get('transcription_profiles',{})
+            if 'previous-live' not in profiles:
+                raise ProviderUnavailable('Live result reader unavailable; keep the original')
+            current=self.conversation_voice_submit({**metadata,'transcription_profile':'previous-live'},data,
+                foreground_dialogue=dialogue,defer_foreground=True)
+        if current.get('phase') not in ('foreground_captured','preparation_unconfirmed'):
+            return {'current':current}  # Already preparing/completed: no ASR replay.
+        # Restore missing server media only from the exact hash-checked local copy.
+        if (not isinstance(data,bytes) or not 0<len(data)<=20*1024*1024
+                or hashlib.sha256(data).hexdigest()!=metadata.get('audio_sha256')):
+            raise ValueError('Original recovery bytes changed')
+        directory=Path(str(self.receiver['db_path'])+'.voice')
+        directory.mkdir(mode=0o700,parents=False,exist_ok=True)
+        info=directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o077:
+            raise ProviderUnavailable('Original recording storage changed')
+        sync_directory(directory.parent)
+        self.retain_voice_capture(directory,metadata['id'],data,metadata['audio_sha256'])
+        voice=self.receiver.get('voice',{})
+        profile=current.get('voice',{}).get('transcription_profile')
+        if profile is not None:
+            selected=voice.get('transcription_profiles',{}).get(profile)
+            if not isinstance(selected,dict):
+                raise ProviderUnavailable('Original result reader unavailable; no fallback')
+            voice={**voice,**selected}
+        from .native_caption_recovery import CaptionRecovery
+        command,_,timeout=CaptionRecovery.configuration(voice)
+        # Recovery can read a completed historical result or the same live
+        # receipt. It cannot run the base file recognizer to fill a missing one.
+        completed=voice.get('completed_transcription_command')
+        if (len(command)!=4 or Path(command[1]).name!='interaction_asr.py'
+                or command[2]!='--binding' or completed!=command+['--completed-only']):
+            raise ProviderUnavailable('Recovery requires a completed-only result reader')
+        if profile in ('openai-live','previous-live'):
+            from .private_state import read_json
+            binding=read_json(Path(command[3]))
+            if (not isinstance(binding,dict) or binding.get('provider')!='live-result'
+                    or any(k in binding for k in ('key_file','helper','route_binding','model'))):
+                raise ProviderUnavailable('Live recovery cannot select a file recognizer')
+        return {'current':current,'command':completed,'media':directory/metadata['id'],'timeout':timeout}
+
+    def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
+        import re
+        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile'}:
             raise ValueError('Select one original voice recording')
+        if metadata.get('transcription_profile') not in (None,'openai','previous','openai-live','previous-live'):
+            raise ValueError('Unknown transcription profile; no fallback')
         self.input_id(metadata['id'])
+        if foreground_dialogue is not None:
+            self.input_id(foreground_dialogue)
+            metadata={**metadata,'foreground_dialogue':foreground_dialogue}
+        if type(defer_foreground) is not bool or defer_foreground and foreground_dialogue is None:
+            raise ValueError('Deferred completion requires a foreground capture')
+        if defer_foreground:metadata={**metadata,'defer_foreground':True}
+        if metadata.get('capture_stop') not in (None,'duration_limit','audio_flush_unconfirmed'):raise ValueError('Invalid recording stop reason')
         self.check_reply(metadata.get('reply'))
+        self.check_playback(metadata.get('playback'))
+        self.check_capture_questions(metadata.get('capture_questions'))
         from .visual import check_reference
         check_reference(metadata.get('visual'))
         self.check_visual_original(metadata.get('visual'),metadata['id'])
+        self.check_files_original(metadata.get('files'),metadata['id'])
         if (not isinstance(data, bytes) or not 0 < len(data) <= 20*1024*1024
                 or any(not isinstance(metadata[k], str) or not re.fullmatch('[a-f0-9]{64}', metadata[k]) for k in ('binding', 'audio_sha256'))
                 or metadata['mime'] not in ('audio/webm', 'audio/webm;codecs=opus', 'audio/ogg', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/wav', 'audio/mpeg')
@@ -559,11 +1159,45 @@ class Provider:
             raise ProviderUnavailable('Voice recording storage unavailable')
         # Persist the newly created directory name before retaining any clip/capture.
         sync_directory(directory.parent)
+        retention = getattr(self, 'media_retention', None)
+        selected = None
+        if retention:
+            current = self.presentation('input list 0 before')
+            if current['binding'] != metadata['binding']:
+                raise ProviderUnavailable('Original conversation binding changed')
+            selected = {'id':metadata['id'], 'entry_binding':current['entry_binding']}
+        # The existing receiver store is bounded independently of the archive.
+        # Complete and sync the exact original before any canonical admission.
         self.retain_voice_capture(directory, metadata['id'], data, metadata['audio_sha256'])
+        archive_pending = False
+        if retention:
+            # Older native writers delete after ASR. Do not defer a selected
+            # archive handoff unless the actual writer can persist its hold.
+            protected = retention.selected(selected)
+            if protected:
+                capabilities = self.presentation('input voice capabilities')
+                if capabilities.get('binding') != metadata['binding']:
+                    raise ProviderUnavailable('Original conversation binding changed')
+                held = capabilities.get('voice_original_hold') == 'v1'
+                # An earlier capture may already have an ASR worker holding
+                # its old cleanup policy. Capability is not proof of a hold.
+                with closing(readonly(self.receiver['db_path'])) as db:
+                    previous = db.execute('SELECT doc FROM conversation_inputs WHERE id=?', (metadata['id'],)).fetchone()
+                if previous is not None:
+                    held = held and json.loads(previous[0]).get('voice', {}).get('preserve_original') is True
+                if held:metadata = {**metadata, 'preserve_original':True}
+            else:held = False
+            try:retention.retain(selected, 'human', metadata['mime'], data)
+            except RetentionUnavailable:
+                if not held:raise
+                archive_pending = True
         # The controller reserves original order/authority before asynchronous ASR.
         # A retry names the same clip and only inspects existing capture state.
         value = self.decorate_input(self.presentation('input voice submit '+json.dumps(metadata)))
         self.retire_voice_capture(value)
+        if archive_pending:
+            value['media_retention'] = {'state':'pending', 'original_retained':True,
+                'message':'Original audio saved; archive handoff is pending. The protected receiver store remains bounded.'}
         return value
 
     @staticmethod
@@ -607,7 +1241,7 @@ class Provider:
                         used += info.st_size
                         inodes.add(key)
                     if entries >= 128 or used + len(data) > budget:
-                        raise ProviderUnavailable('Voice recording storage full; use text')
+                        raise VoiceStorageFull('Audio storage is full; existing originals are preserved. This recording was not submitted. Keep the local recording until storage is restored.')
                 temporary = directory / ('.'+secrets.token_hex(16))
                 try:
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -627,10 +1261,44 @@ class Provider:
             raise ValueError('Invalid native request identity')
         return ident
 
+    def internal_pending(self, after=0):
+        if type(after) is not int or not 0 <= after <= 2**63-1:
+            raise ValueError('Invalid internal pending cursor')
+        return self.presentation(f'requests internal list {after}')
+
     def conversation_requests(self, after=0):
         if type(after) is not int or not 0 <= after <= 2**63 - 1:
             raise ValueError('Invalid native request cursor')
         return self.presentation(f'requests list {after}')
+
+    def conversation_tasks(self, after=0):
+        if type(after) is not int or not 0<=after<=2**63-1:
+            raise ValueError('Invalid task cursor')
+        return self.presentation(f'requests tasks list {after}')
+
+    def conversation_task_dismiss(self, ident, body, internal=False):
+        import re
+        self.request_id(ident)
+        if (not isinstance(body, dict) or set(body) != {'binding','revision','action'}
+                or body.get('action') != 'dismiss'
+                or any(not isinstance(body.get(key), str) or not re.fullmatch('[a-f0-9]{64}', body[key])
+                       for key in ('binding','revision'))):
+            raise ValueError('Select the current action to dismiss')
+        return self.presentation(('requests internal dismiss ' if internal else 'requests tasks dismiss ')+json.dumps({
+            'id':ident,'binding':body['binding'],'revision':body['revision']},separators=(',',':')))
+
+    def conversation_task_detail(self, ident, offset=0, revision=None, internal=False):
+        import re
+        self.request_id(ident)
+        if type(offset) is not int or not 0<=offset<=10**9:
+            raise ValueError('Invalid task text offset')
+        if revision is not None and (not isinstance(revision,str) or not re.fullmatch('[a-f0-9]{64}',revision)):
+            raise ValueError('Invalid task revision')
+        if offset and revision is None:
+            raise ValueError('Select the task revision before continuing')
+        suffix=' '+revision if revision is not None else ''
+        command='requests internal task' if internal else 'requests tasks detail'
+        return self.presentation(f'{command} {ident} {offset}{suffix}')
 
     def goal_controls(self, before=0):
         if type(before) is not int or not 0 <= before <= 2**63 - 1:
@@ -646,7 +1314,7 @@ class Provider:
             raise ValueError('Invalid goal-control identity') from None
         return self.presentation(f'presentation goals detail {ident}')
 
-    def conversation_request_detail(self, ident, offset=0, revision=None):
+    def conversation_request_detail(self, ident, offset=0, revision=None, internal=False):
         import re
         self.request_id(ident)
         if type(offset) is not int or not 0 <= offset <= 10**9:
@@ -656,16 +1324,18 @@ class Provider:
         if offset and revision is None:
             raise ValueError('Select the request revision before continuing')
         suffix = ' ' + revision if revision is not None else ''
-        return self.presentation(f'requests detail {ident} {offset}{suffix}')
+        command='requests internal request' if internal else 'requests detail'
+        return self.presentation(f'{command} {ident} {offset}{suffix}')
 
-    def conversation_decision_receipt(self, ident, revision):
+    def conversation_decision_receipt(self, ident, revision, internal=False):
         import re
         self.request_id(ident)
         if not isinstance(revision, str) or not re.fullmatch('[a-f0-9]{64}', revision):
             raise ValueError('Invalid decision revision')
-        return self.presentation(f'requests receipt {ident} {revision}')
+        command='requests internal receipt' if internal else 'requests receipt'
+        return self.presentation(f'{command} {ident} {revision}')
 
-    def conversation_request_decide(self, ident, body):
+    def conversation_request_decide(self, ident, body, internal=False):
         import re
         self.request_id(ident)
         if not isinstance(body, dict) or set(body) != {'binding', 'revision', 'action'}:
@@ -687,7 +1357,7 @@ class Provider:
             or kind == 'cancel' and set(action) == {'kind'})
         if not valid:
             raise ValueError('Invalid request action')
-        return self.presentation('requests decide ' + json.dumps({**body, 'id':ident}, ensure_ascii=False))
+        return self.presentation(('requests internal decide ' if internal else 'requests decide ') + json.dumps({**body, 'id':ident}, ensure_ascii=False))
 
     @staticmethod
     def identity(row):
@@ -716,6 +1386,8 @@ class Provider:
             started = time.monotonic()
             self.refresh_started = started
             sessions = []
+            with closing(readonly(self.receiver['db_path'])) as backend:
+                recoveries = {row['id']: goal_recovery_state(backend, self.human, row['chat_id'], row['thread_id'], row['codex_thread_id']) for row in rows}
             native_db = readonly(self.native_home / 'state_5.sqlite')
             try:
                 if self.native is None:
@@ -727,6 +1399,7 @@ class Provider:
                 node = {'id': self.identity(row), 'title': row['session_title'] or 'Untitled session',
                         'status': 'unknown', 'bridge_busy': bool(row['busy']), 'goal_state': 'unavailable',
                         'children': [], 'children_state': 'unavailable', 'elapsed_seconds': None}
+                node['goal_recovery'] = recoveries.get(row['id'])
                 if row['chat_id'] == self.human and row['thread_id'] > 0:
                     username = self.config.get('bot_username')
                     if username:

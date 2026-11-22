@@ -1,5 +1,5 @@
 use crate::{
-    config::SearchMode,
+    config::{SearchMode, SessionModelProfile},
     limits::{LimitsSnapshot, default_codex_home},
     models::{SessionRecord, TurnRequest},
     user_input::{NativeRequestId, UserInputDecision, UserInputRequest},
@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt, stream::FuturesUnordered};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     fs,
@@ -31,11 +32,12 @@ use tokio_tungstenite::{
     },
 };
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 mod goals;
 pub use goals::{
-    GoalActivation, GoalControl, GoalControlScope, GoalMetadataControl, GoalStopSnapshot,
-    NativeGoal, NativeGoalSnapshot,
+    GoalActivation, GoalControl, GoalControlScope, GoalMetadataControl, GoalMutationOrigin,
+    GoalStopSnapshot, NativeGoal, NativeGoalSnapshot,
 };
 
 /// The provider observed cancellation before it attempted the initial native
@@ -49,6 +51,15 @@ impl std::fmt::Display for NativeInputNotSubmitted {
 }
 impl std::error::Error for NativeInputNotSubmitted {}
 
+#[derive(Debug)]
+pub struct NativeFreshExecutionRequired;
+impl std::fmt::Display for NativeFreshExecutionRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("input retained for a fresh execution")
+    }
+}
+impl std::error::Error for NativeFreshExecutionRequired {}
+
 #[derive(Clone)]
 pub struct CodexRunner {
     binary: PathBuf,
@@ -56,7 +67,100 @@ pub struct CodexRunner {
     bounded_turn: Option<BoundedTurn>,
     goal_activation: Option<GoalActivation>,
     client_message_id: Option<String>,
+    tool_output: Option<NativeToolOutput>,
+    idle_only: bool,
+    rollout_reads: Arc<tokio::sync::Semaphore>,
     dynamic_tools: Vec<Value>,
+    session_profiles: Vec<SessionModelProfile>,
+}
+
+/// Only model routing is taken from the existing native profile. Bridge-owned
+/// instructions, tools, approvals and sandbox remain authoritative.
+struct NativeModelProfile {
+    model: String,
+    provider: String,
+    effort: Option<String>,
+    config: serde_json::Map<String, Value>,
+}
+
+impl NativeModelProfile {
+    fn load(home: &Path, selected: &SessionModelProfile) -> Result<Self> {
+        selected.validate()?;
+        let path = home.join(format!("{}.config.toml", selected.profile));
+        let raw = fs::read_to_string(path).context("Selected native model profile unavailable")?;
+        let parsed: toml::Value = toml::from_str(&raw)
+            .map_err(|_| anyhow!("Selected native model profile could not be parsed"))?;
+        let model = parsed
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .context("Native model profile requires a model")?
+            .to_owned();
+        let provider = parsed
+            .get("model_provider")
+            .and_then(toml::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .context("Native model profile requires a provider")?
+            .to_owned();
+        let effort = selected.reasoning_effort.clone().or_else(|| {
+            parsed
+                .get("model_reasoning_effort")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        });
+        let mut config = serde_json::Map::new();
+        for key in ["model_providers", "model_catalog_json"] {
+            if let Some(value) = parsed.get(key) {
+                let mut value = serde_json::to_value(value)?;
+                if key == "model_catalog_json" {
+                    let catalog = Path::new(
+                        value
+                            .as_str()
+                            .context("Native model catalog must be a path")?,
+                    );
+                    if catalog.is_relative() {
+                        value = json!(home.join(catalog));
+                    }
+                }
+                config.insert(key.into(), value);
+            }
+        }
+        config.insert("model_provider".into(), json!(provider));
+        config.insert("model".into(), json!(model));
+        if let Some(effort) = &effort {
+            config.insert("model_reasoning_effort".into(), json!(effort));
+        }
+        Ok(Self {
+            model,
+            provider,
+            effort,
+            config,
+        })
+    }
+
+    fn apply(&self, params: &mut Value) {
+        params["model"] = json!(self.model);
+        params["modelProvider"] = json!(self.provider);
+        params["config"]
+            .as_object_mut()
+            .expect("native thread configuration object")
+            .extend(self.config.clone());
+    }
+
+    fn verify(&self, response: &Value) -> Result<()> {
+        if response["model"].as_str() != Some(&self.model)
+            || response["modelProvider"].as_str() != Some(&self.provider)
+            || self
+                .effort
+                .as_deref()
+                .is_some_and(|e| response["reasoningEffort"].as_str() != Some(e))
+        {
+            bail!(
+                "Native thread has not adopted the selected model profile; no input was submitted. An active or subscribed thread may retain its current settings."
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -76,10 +180,14 @@ pub enum QuoteTextLookup {
     Incomplete,
 }
 
+#[cfg(test)]
+mod goal_failure_tests;
+
 pub struct RunSummary {
     pub codex_thread_id: Option<String>,
     pub assistant_text: String,
     pub stderr_text: String,
+    pub(crate) draft_item: Option<(String, String, String)>,
 }
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct AvailableModel {
@@ -97,6 +205,15 @@ pub enum CodexEvent {
     AssistantText(String),
     CommentaryCompleted(String),
     FinalAnswerCompleted(String),
+    /// Revisable display only; never a canonical answer or a publication receipt.
+    NativeMessageDraft {
+        started: bool,
+        completed: bool,
+        thread_id: String,
+        turn_id: String,
+        item_id: String,
+        text: String,
+    },
     /// Canonical native identity, before the legacy text-only presentation event.
     NativeMessageCompleted {
         thread_id: String,
@@ -104,19 +221,54 @@ pub enum CodexEvent {
         item_id: String,
         phase: Option<String>,
         text: String,
+        /// Native async questions are ordinary conversational input, never RPC responders.
+        async_questions: Option<Value>,
     },
     ThreadStarted(String),
+    NativeModelConfigured {
+        thread_id: String,
+        model: String,
+        provider: String,
+        effort: Option<String>,
+    },
     NativeTurnStarted(String),
+    /// Completed physical turn; the native goal itself remains untouched.
+    NativeGoalIdle,
     NativeInputAccepted(String),
+    /// Native accepted an internal return into a different physical turn; the
+    /// current collector must not pretend to own that execution or replay it.
+    NativeInternalReturnDetached {
+        client_id: String,
+        turn_id: String,
+    },
     NativeSteerAccepted {
         client_id: String,
         turn_id: String,
     },
     NativeInputRejected,
+    /// Atomic idle admission confirmed capacity contention without submission.
+    NativeInputDeferred,
     NativeTurnSubmitting,
+    /// Host accounting only, never a model tool or human question. The selected
+    /// owner must reserve the exact attempt durably before returning true.
+    NativeProviderAttemptReservation(NativeProviderAttemptReservation),
+    NativeProviderAttemptUsage(NativeProviderAttemptUsage),
+    /// Transactional ownership handover before any new packet joins a writer.
+    NativeExternalInputSubmitting,
     NativeTurnTerminal {
         id: String,
         status: String,
+    },
+    /// Authoritative goal notification with its optional causal native turn.
+    NativeGoalBlocked {
+        turn_id: String,
+        goal: NativeGoal,
+    },
+    /// A terminal native failure, preserving structured provider classification.
+    NativeTurnFailure {
+        thread_id: String,
+        id: String,
+        error: Value,
     },
     ApprovalRequest(CodexApprovalRequest),
     UserInputRequest {
@@ -168,9 +320,94 @@ pub enum CodexApprovalDecision {
     Cancel,
 }
 
+/// A reservation already conserved by the owning journal, never a new grant.
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeInferenceAllowance {
+    pub max_provider_attempts: u32,
+    pub max_request_bytes: u32,
+    pub deadline_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProviderAttemptReservation {
+    pub thread_id: String,
+    pub cycle_id: String,
+    pub attempt_id: String,
+    pub ordinal: u32,
+    pub max_request_bytes: u32,
+    pub deadline_unix_ms: i64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeProviderAttemptUsage {
+    pub thread_id: String,
+    pub cycle_id: String,
+    pub attempt_id: String,
+    pub ordinal: u32,
+    pub response_id: String,
+    pub model: Option<String>,
+    pub token_usage: Option<Value>,
+    pub usage_metadata: Option<Value>,
+}
+
+impl NativeProviderAttemptReservation {
+    fn matches(&self, thread: &str, cycle: &str, allowance: &NativeInferenceAllowance) -> bool {
+        let canonical =
+            |value: &str| Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value);
+        self.thread_id == thread
+            && self.cycle_id == cycle
+            && canonical(&self.cycle_id)
+            && canonical(&self.attempt_id)
+            && self.ordinal > 0
+            && self.ordinal <= allowance.max_provider_attempts
+            && self.max_request_bytes == allowance.max_request_bytes
+            && self.deadline_unix_ms == allowance.deadline_unix_ms
+    }
+}
+impl NativeInferenceAllowance {
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.max_provider_attempts > 0
+                && (1..=64 * 1024 * 1024).contains(&self.max_request_bytes),
+            "Invalid reserved native inference limits"
+        );
+        let remaining = self
+            .deadline_unix_ms
+            .checked_sub(chrono::Utc::now().timestamp_millis());
+        anyhow::ensure!(
+            remaining.is_some_and(|remaining| (1..=600_000).contains(&remaining)),
+            "Reserved native inference deadline expired or exceeds600seconds"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub enum CodexEventOutcome {
     None,
+    /// Release only this completed collector for retained canonical attention.
+    YieldGoalCollector,
+    InferenceAllowance(NativeInferenceAllowance),
+    /// Private host ceilings also apply to ordinary attempt-bounded work.
+    /// This selects no financial owner, output price or spending allocation.
+    RestrictedInferenceAllowance {
+        allowance: NativeInferenceAllowance,
+        host_restrictions: crate::interaction::NativeHostRestrictions,
+    },
+    /// Explicit owner selection for an already authorized journal cycle.
+    /// Ordinary attempt-only heartbeat allocations keep their existing path.
+    FundedInferenceAllowance {
+        allowance: NativeInferenceAllowance,
+        cycle_id: String,
+        max_output_tokens: u32,
+        host_restrictions: Option<crate::interaction::NativeHostRestrictions>,
+    },
+    /// Only a trusted host callback may supply this result. No UI/model route.
+    ProviderAttemptReserved(bool),
+    ProviderUsageRecorded(bool),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
     DynamicTool(oneshot::Receiver<Value>),
@@ -180,13 +417,53 @@ pub enum CodexEventOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CodexSteerError {
     Rejected(String),
+    FreshExecutionRequired,
     Undetermined(String),
+}
+
+/// A local write-boundary refusal proves no control/input bytes were sent.
+fn reject_unsubmitted_steer(steer: CodexSteerRequest, error: anyhow::Error) -> Result<()> {
+    let conditional = match steer.goal.as_ref() {
+        Some(GoalControl::ConditionalMetadata(control)) => Some(control.as_ref()),
+        Some(GoalControl::Activate(activation)) => activation.conditional.as_deref(),
+        _ => None,
+    };
+    if let Some(control) = conditional {
+        let receipt = json!({"error":"Selected writer refused before native submission","automatic_retry":false});
+        *control.receipt.lock().expect("goal receipt mutex poisoned") =
+            Some(("known_unsent".into(), receipt.clone()));
+        if let Some(settled) = &control.settled {
+            settled("known_unsent", &receipt)?;
+        }
+    }
+    let rejected = if error.is::<NativeFreshExecutionRequired>() {
+        CodexSteerError::FreshExecutionRequired
+    } else {
+        CodexSteerError::Rejected(error.to_string())
+    };
+    let _ = steer.response.send(Err(rejected));
+    Ok(())
 }
 
 pub type CodexSteerResponse = std::result::Result<Option<String>, CodexSteerError>;
 
 /// Plain-text input waiting to be appended to an active Codex turn.
 pub type SteerAdmissionCheck = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+
+/// The same native write-boundary check may need a bounded authority query.
+/// Keep synchronous goal controls unchanged; only input steering awaits this.
+pub enum SteerInputAdmission {
+    Sync(SteerAdmissionCheck),
+    Async(Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<()>> + Send + Sync>),
+}
+impl SteerInputAdmission {
+    async fn check(&self) -> Result<()> {
+        match self {
+            Self::Sync(check) => check(),
+            Self::Async(check) => check().await,
+        }
+    }
+}
 
 pub struct NativeTerminalObservation {
     pub turn_id: String,
@@ -195,12 +472,21 @@ pub struct NativeTerminalObservation {
     pub assistant_text: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NativeToolOutput {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub output: String,
+    pub retain: bool,
+}
+
 pub struct CodexSteerRequest {
+    pub tool_output: Option<NativeToolOutput>,
     pub observation: Option<NativeTerminalObservation>,
     pub images: Vec<std::path::PathBuf>,
     /// Revalidate captured admission at the native write boundary, after any
     /// preparation or metadata wait. This callback is local, never wire input.
-    pub admission_check: Option<SteerAdmissionCheck>,
+    pub admission_check: Option<SteerInputAdmission>,
     /// User text to append to the in-flight turn.
     pub text: String,
     pub client_message_id: Option<String>,
@@ -210,6 +496,7 @@ pub struct CodexSteerRequest {
 }
 
 struct PendingSteer {
+    tool_output: bool,
     client_id: Option<String>,
     expected_turn_id: String,
     response: oneshot::Sender<CodexSteerResponse>,
@@ -222,6 +509,7 @@ pub struct CommandSpec {
     pub current_dir: Option<PathBuf>,
 }
 struct AppServerProcess {
+    bounded_idle_turn: bool,
     child: Child,
     transport: AppServerTransport,
     stderr_buffer: Arc<Mutex<String>>,
@@ -293,6 +581,16 @@ struct RpcError {
     message: String,
     #[serde(default)]
     data: Option<Value>,
+}
+fn idle_capacity_rejection(error: &RpcError) -> bool {
+    error.code == Some(-32600)
+        && error.data.as_ref().is_some_and(|data| {
+            data["submitted"] == false
+                && matches!(
+                    data["reason"].as_str(),
+                    Some("notIdle" | "pendingTriggerTurn")
+                )
+        })
 }
 impl std::fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -369,6 +667,15 @@ impl CodexRunner {
     pub async fn live_native_turn(&self, thread: &str) -> Result<Option<String>> {
         tokio::time::timeout(Duration::from_secs(8),async {
             let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;process.initialize().await?;
+            // An idle thread can have more historical turns than the bounded
+            // search below. Absence from that window is not an idle receipt;
+            // use the owner's current status instead of scanning its archive.
+            let id=process.send_request("thread/read",json!({"threadId":thread,"includeTurns":false})).await?;
+            let state=process.await_response(id).await?;
+            if state["thread"]["id"]!=thread {bail!("Native activity binding mismatch");}
+            if state["thread"]["status"]["type"]=="idle" {
+                process.shutdown().await?;return Ok(None);
+            }
             let mut cursor=None::<String>;let mut seen=std::collections::HashSet::new();
             for _ in 0..6 {
                 let id=process.send_request("thread/turns/list",json!({"threadId":thread,"limit":20,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor})).await?;
@@ -428,7 +735,7 @@ impl CodexRunner {
         client_id: &str,
     ) -> Result<Option<(String, String)>> {
         Ok(self
-            .admitted_turn_observation(thread, expected, client_id)
+            .admitted_turn_observation(thread, expected, client_id, "full")
             .await?
             .map(|(id, status, _)| (id, status)))
     }
@@ -439,7 +746,20 @@ impl CodexRunner {
         turn: &str,
     ) -> Result<Option<(String, String)>> {
         Ok(self
-            .admitted_turn_observation(thread, Some(turn), "")
+            .admitted_turn_observation(thread, Some(turn), "", "full")
+            .await?
+            .map(|(_, status, reply)| (status, reply)))
+    }
+
+    /// Native summary retains the actual final agent item, without tool-history
+    /// hydration. Use only for an exact already admitted terminal reply lookup.
+    pub async fn selected_turn_summary_reply(
+        &self,
+        thread: &str,
+        turn: &str,
+    ) -> Result<Option<(String, String)>> {
+        Ok(self
+            .admitted_turn_observation(thread, Some(turn), "", "summary")
             .await?
             .map(|(_, status, reply)| (status, reply)))
     }
@@ -449,13 +769,14 @@ impl CodexRunner {
         thread: &str,
         expected: Option<&str>,
         client_id: &str,
+        items_view: &str,
     ) -> Result<Option<(String, String, String)>> {
         tokio::time::timeout(Duration::from_secs(10),async {
             let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
             process.initialize().await?;
             let mut cursor:Option<String>=None;
             for _ in 0..10 {
-                let id=process.send_request("thread/turns/list",json!({"threadId":thread,"limit":100,"sortDirection":"desc","cursor":cursor,"itemsView":"full"})).await?;
+                let id=process.send_request("thread/turns/list",json!({"threadId":thread,"limit":100,"sortDirection":"desc","cursor":cursor,"itemsView":items_view})).await?;
                 let page=process.await_response(id).await?;
                 for turn in page["data"].as_array().context("native turn page malformed")? {
                     let id=turn["id"].as_str().context("native turn ID missing")?;
@@ -476,6 +797,83 @@ impl CodexRunner {
         }).await.context("selected native reconciliation unavailable")?
     }
     /// Read only through an exact prior native boundary. Absence never authorizes replay.
+    pub async fn workflow_return_history(&self, native: &str, physical: &str) -> Result<Value> {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
+            let result=async {
+                process.initialize().await?;
+                let mut cursor=None::<String>;
+                let mut bytes=0;
+                for _ in 0..6 {
+                    let id=process.send_request("thread/turns/list",json!({"threadId":native,"limit":20,"sortDirection":"desc","itemsView":"full","cursor":cursor})).await?;
+                    match process.await_response(id).await {
+                        Ok(page)=>{
+                            bytes+=serde_json::to_vec(&page)?.len();
+                            if bytes>8*1024*1024 {bail!("Exact native observation exceeds bounded read");}
+                            let turns=page["data"].as_array().context("Exact native observation page missing")?;
+                            if let Some(turn)=turns.iter().find(|t|t["id"]==physical) {return Ok(turn.clone());}
+                            cursor=page["nextCursor"].as_str().map(str::to_owned);
+                            if cursor.is_none(){break;}
+                        }
+                        Err(error) if error.downcast_ref::<RpcError>().is_some_and(|e|e.code==Some(-32601))=>{
+                            let id=process.send_request("thread/read",json!({"threadId":native,"includeTurns":false})).await?;
+                            let metadata=process.await_response(id).await?;
+                            if metadata["thread"]["id"]!=native {bail!("Owned native metadata identity changed");}
+                            let path=PathBuf::from(metadata["thread"]["path"].as_str().context("Owned native rollout path unavailable")?);
+                            let permit=self.rollout_reads.clone().try_acquire_owned().context("Owned rollout reader busy; observation retained")?;
+                            let native=native.to_owned();let physical=physical.to_owned();
+                            // The permit stays inside a blocked filesystem read even
+                            // after this await times out. Later ticks cannot accumulate
+                            // unbounded background reads under host I/O pressure.
+                            return tokio::task::spawn_blocking(move || {
+                                let _permit=permit;
+                                crate::codex_history::read_owned_turn(&path,&native,&physical)
+                            }).await.context("Owned rollout observation failed")?;
+                        }
+                        Err(error)=>return Err(error),
+                    }
+                }
+                bail!("Exact acknowledged native turn unavailable; no replay authorized")
+            }.await;
+            process.shutdown().await?;
+            result
+        }).await.context("Exact native return observation timed out")?
+    }
+
+    /// Read only through an exact prior native boundary. Absence never authorizes replay.
+    /// Exact lifecycle metadata only. Missing output stays in ordinary recovery;
+    /// it must not keep a completed physical writer artificially busy.
+    pub async fn terminal_observation(
+        &self,
+        native: &str,
+        physical: &str,
+    ) -> Result<Option<NativeTerminalObservation>> {
+        tokio::time::timeout(Duration::from_secs(8),async {
+            let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
+            let result=async {
+                process.initialize().await?;
+                let mut cursor=None::<String>;let mut seen=HashSet::new();
+                for _ in 0..6 {
+                    let id=process.send_request("thread/turns/list",json!({"threadId":native,"limit":20,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor})).await?;
+                    let page=process.await_response(id).await?;
+                    for turn in page["data"].as_array().context("Native lifecycle page malformed")? {
+                        if turn["id"]!=physical {continue;}
+                        let status=turn["status"].as_str().context("Native lifecycle status missing")?;
+                        if !matches!(status,"completed"|"failed"|"interrupted") {return Ok(None);}
+                        let status=status.to_string();
+                        let id=process.send_request("thread/goal/get",json!({"threadId":native})).await?;
+                        let goal=goals::parse_goal(&process.await_response(id).await?,native)?;
+                        return Ok(Some(NativeTerminalObservation{turn_id:physical.to_string(),status,goal_active:goal.is_some_and(|g|g.status=="active"),assistant_text:None}));
+                    }
+                    cursor=page["nextCursor"].as_str().map(str::to_string);
+                    if cursor.is_none() || !seen.insert(cursor.clone()) {return Ok(None);}
+                }
+                Ok(None)
+            }.await;
+            process.shutdown().await?;result
+        }).await.context("Native lifecycle observation timed out")?
+    }
+
     pub async fn recovery_history(
         &self,
         native: &str,
@@ -528,13 +926,174 @@ impl CodexRunner {
             bounded_turn: None,
             goal_activation: None,
             client_message_id: None,
+            tool_output: None,
+            idle_only: false,
+            rollout_reads: Arc::new(tokio::sync::Semaphore::new(1)),
             dynamic_tools: vec![],
+            session_profiles: vec![],
         }
     }
     pub fn with_shared_app_server(mut self, shared: bool) -> Self {
         self.shared_app_server = shared;
         self
     }
+    pub fn with_session_profiles(mut self, profiles: Vec<SessionModelProfile>) -> Self {
+        self.session_profiles = profiles;
+        self
+    }
+    fn session_profile(&self, key: crate::models::SessionKey) -> Option<&SessionModelProfile> {
+        self.session_profiles
+            .iter()
+            .find(|profile| profile.key() == key)
+    }
+
+    /// Read current serving support and the selected existing native thread.
+    /// No resume, admission probe, input, reservation or provider call is sent.
+    pub async fn bounded_idle_readiness(&self, session: &SessionRecord) -> Result<&'static str> {
+        if !self.shared_app_server || session.force_fresh_thread {
+            return Ok("native_binding_unavailable");
+        }
+        let Some(native) = session.codex_thread_id.as_deref() else {
+            return Ok("native_binding_unavailable");
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut process = AppServerProcess::spawn(&self.binary, true).await?;
+            let result = async {
+                process.initialize().await?;
+                if !process.bounded_idle_turn {
+                    return Ok("native_support_unavailable");
+                }
+                let id = process
+                    .send_request(
+                        "thread/read",
+                        json!({"threadId":native,"includeTurns":false}),
+                    )
+                    .await?;
+                let response = process.await_response(id).await?;
+                let thread = &response["thread"];
+                anyhow::ensure!(
+                    thread["id"] == native,
+                    "Native observation identity changed"
+                );
+                if let Some(selected) = self.session_profile(session.key) {
+                    NativeModelProfile::load(&default_codex_home(), selected)?.verify(thread)?;
+                } else {
+                    anyhow::ensure!(
+                        thread["model"].as_str().is_some_and(|s| !s.is_empty())
+                            && thread["modelProvider"]
+                                .as_str()
+                                .is_some_and(|s| !s.is_empty()),
+                        "Native model route unavailable"
+                    );
+                    anyhow::ensure!(
+                        session
+                            .model
+                            .as_deref()
+                            .is_none_or(|m| thread["model"] == m)
+                            && session
+                                .reasoning_effort
+                                .as_deref()
+                                .is_none_or(|e| thread["reasoningEffort"] == e),
+                        "Native model selection changed"
+                    );
+                }
+                // An evicted idle thread has no loaded admission capability.
+                // The existing bounded-work path may resume it when work arrives;
+                // null isn't an explicit refusal and doesn't require a repair.
+                if thread["status"]["type"] == "notLoaded"
+                    && (thread["canAcceptDirectInput"].is_null()
+                        || thread["canAcceptDirectInput"] == true)
+                {
+                    return Ok("native_idle_unloaded");
+                }
+                if thread["canAcceptDirectInput"] != true {
+                    return Ok("native_admission_unavailable");
+                }
+                Ok(match thread["status"]["type"].as_str() {
+                    Some("idle") => "ready",
+                    Some("active") => "native_busy",
+                    _ => "native_binding_unavailable",
+                })
+            }
+            .await;
+            process.shutdown().await?;
+            result
+        })
+        .await
+        .context("Native readiness observation timed out")?
+    }
+
+    /// Apply a configured model to an existing idle native cache entry without
+    /// submitting input. Native resume preserves active/subscribed threads;
+    /// verify the returned settings instead of claiming ignored overrides worked.
+    pub async fn apply_session_profile(
+        &self,
+        session: &SessionRecord,
+    ) -> Result<Option<(String, String, Option<String>)>> {
+        let Some(selected) = self.session_profile(session.key) else {
+            return Ok(None);
+        };
+        if session.codex_thread_id.is_none() || session.force_fresh_thread {
+            return Ok(None);
+        }
+        let profile = NativeModelProfile::load(&default_codex_home(), selected)?;
+        let mut selected_session = session.clone();
+        selected_session.model = Some(profile.model.clone());
+        selected_session.reasoning_effort = profile.effort.clone();
+        let mut process = AppServerProcess::spawn(&self.binary, self.shared_app_server).await?;
+        process.initialize().await?;
+        let result = process
+            .start_or_resume_thread(&selected_session, false, &[], Some(&profile))
+            .await;
+        process.shutdown().await?;
+        let (native, _) = result?;
+        if session.codex_thread_id.as_deref() != Some(native.as_str()) {
+            bail!("Native profile adoption returned another conversation");
+        }
+        Ok(Some((native, profile.model, profile.effort)))
+    }
+    /// Initialize a configured fresh conversation with metadata only. The
+    /// durable owner claim runs after transport setup, immediately before the
+    /// single thread/start. No turn/start, prompt or inference is submitted.
+    pub async fn initialize_voice_context<F>(
+        &self,
+        session: &SessionRecord,
+        dynamic_tools: &[Value],
+        claim: F,
+    ) -> Result<String>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        anyhow::ensure!(
+            self.shared_app_server && session.codex_thread_id.is_none() && !session.busy,
+            "Select a fresh idle shared native entry"
+        );
+        let profile = self
+            .session_profile(session.key)
+            .map(|p| NativeModelProfile::load(&default_codex_home(), p))
+            .transpose()?;
+        let mut selected = session.clone();
+        if let Some(p) = &profile {
+            selected.model = Some(p.model.clone());
+            selected.reasoning_effort = p.effort.clone();
+        }
+        let mut process = AppServerProcess::spawn(&self.binary, true).await?;
+        let outcome = async {
+            process.initialize().await?;
+            claim()?;
+            let (native, _) = tokio::time::timeout(
+                Duration::from_secs(15),
+                process.start_or_resume_thread(&selected, false, dynamic_tools, profile.as_ref()),
+            )
+            .await
+            .context("Native voice initialization response is unconfirmed")??;
+            Ok(native)
+        }
+        .await;
+        process.shutdown().await?;
+        outcome
+    }
+
     pub fn with_dynamic_tools(mut self, tools: Vec<Value>) -> Self {
         self.dynamic_tools = tools;
         self
@@ -781,8 +1340,9 @@ impl CodexRunner {
                             texts.push(format!("{role}: {text}"));
                         }
                     }
-                    let entry=format!("[Native source turn {turn_id}; native status {}; {}]\n{}",turn["status"].as_str().unwrap_or("unknown"),if completed{"completed"}else{"provisional statements, not completed decisions or effects"},texts.join("\n"));
-                    if entry.len()>budget {bounded=true;break;}
+                    let header=format!("[Native source turn {turn_id}; native status {}; {}]",turn["status"].as_str().unwrap_or("unknown"),if completed{"completed"}else{"provisional statements, not completed decisions or effects"});
+                    let Some((entry,clipped))=bounded_handoff_entry(&header,&texts,budget.min(32_000)) else {bounded=true;break;};
+                    bounded |= clipped; text_truncated |= clipped;
                     if completed && boundary.is_none(){boundary=Some(turn_id.to_string());}
                     turn_ids.push(turn_id.to_string());
                     budget-=entry.len();if completed{entries.push(entry);}else{provisional.push(entry);}
@@ -922,6 +1482,18 @@ impl CodexRunner {
         runner.client_message_id = id;
         runner
     }
+    /// No fallback to start-or-steer: an older server must reject this request
+    /// before accepting context into a possibly human-owned physical turn.
+    pub fn with_idle_only(&self, idle_only: bool) -> Self {
+        let mut runner = self.clone();
+        runner.idle_only = idle_only;
+        runner
+    }
+    pub fn with_tool_output(&self, output: NativeToolOutput) -> Self {
+        let mut runner = self.clone();
+        runner.tool_output = Some(output);
+        runner
+    }
     pub fn with_goal_activation(&self, goal: GoalActivation) -> Self {
         let mut runner = self.clone();
         runner.goal_activation = Some(goal);
@@ -939,6 +1511,32 @@ impl CodexRunner {
         F: FnMut(CodexEvent) -> Fut,
         Fut: std::future::Future<Output = Result<CodexEventOutcome>>,
     {
+        // Collecting an already-running turn must retain its actual model.
+        // The selected profile applies at the next new-turn boundary.
+        let profile = if self
+            .goal_activation
+            .as_ref()
+            .is_some_and(|a| a.attach_turn.is_some())
+        {
+            None
+        } else {
+            self.session_profile(session.key)
+                .map(|p| NativeModelProfile::load(&default_codex_home(), p))
+                .transpose()
+                .map_err(|e| e.context(NativeInputNotSubmitted))?
+        };
+        let mut selected_session = session.clone();
+        if let Some(profile) = &profile {
+            selected_session.model = Some(profile.model.clone());
+            selected_session.reasoning_effort = profile.effort.clone();
+            if request.review_mode.is_some() {
+                return Err(anyhow!(
+                    "Native profile selection requires the App Server conversation path"
+                )
+                .context(NativeInputNotSubmitted));
+            }
+        }
+        let session = &selected_session;
         if let Some(spec) = self.build_review_command(session, request) {
             if self.bounded_turn.is_some() {
                 bail!("bounded Tribu turns do not run a separate review process");
@@ -951,7 +1549,10 @@ impl CodexRunner {
             self.bounded_turn.as_ref(),
             self.goal_activation.as_ref(),
             self.client_message_id.as_deref(),
+            self.tool_output.as_ref(),
+            self.idle_only,
             &self.dynamic_tools,
+            profile.as_ref(),
             session,
             request,
             cancel,
@@ -1037,6 +1638,20 @@ impl CodexDeviceAuthSession {
     }
 }
 
+// Native idle checkpoints intentionally defer automatic goal continuation. Keep
+// the original transport grace beyond that actual per-thread policy, not inside it.
+fn goal_continuation_collection_wait(config: &Value, thread: &str) -> Duration {
+    let checkpoint = config
+        .get("config")
+        .and_then(|c| c.get("goals"))
+        .and_then(|g| g.get("continuation_idle_seconds"))
+        .and_then(|m| m.get(thread))
+        .and_then(Value::as_u64)
+        .filter(|seconds| *seconds <= 300)
+        .unwrap_or(0);
+    Duration::from_secs(checkpoint + 30)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_app_server_turn<F, Fut>(
     binary: &Path,
@@ -1044,7 +1659,10 @@ async fn run_app_server_turn<F, Fut>(
     bounded: Option<&BoundedTurn>,
     goal_activation: Option<&GoalActivation>,
     client_message_id: Option<&str>,
+    tool_output: Option<&NativeToolOutput>,
+    idle_only: bool,
     dynamic_tools: &[Value],
+    profile: Option<&NativeModelProfile>,
     session: &SessionRecord,
     request: &TurnRequest,
     cancel: CancellationToken,
@@ -1055,6 +1673,10 @@ where
     F: FnMut(CodexEvent) -> Fut,
     Fut: std::future::Future<Output = Result<CodexEventOutcome>>,
 {
+    anyhow::ensure!(
+        !idle_only || (tool_output.is_some() && goal_activation.is_none() && bounded.is_none()),
+        "Idle-only heartbeat cannot activate goals or bounded human input"
+    );
     let mut initial_write_possible = false;
     let mut collecting_existing = goal_activation.is_some_and(|a| a.attach_turn.is_some());
     let result: Result<RunSummary> = async {
@@ -1107,13 +1729,26 @@ where
         "native turn preparation"
     );
     let (thread_id, native_model) = process
-        .start_or_resume_thread(session, request, bounded.is_some(), dynamic_tools)
+        .start_or_resume_thread(session, bounded.is_some(), dynamic_tools, profile)
         .await?;
     tracing::debug!(
         stage = "thread_bound",
         elapsed_ms = preparation_started.elapsed().as_millis(),
         "native turn preparation"
     );
+    let goal_collection_wait = if shared_app_server && bounded.is_none() && !idle_only {
+        let read = async {
+            let id = process.send_request("config/read", json!({"includeLayers":false})).await?;
+            process.await_response(id).await
+        };
+        match tokio::time::timeout(Duration::from_secs(5), read).await {
+            Ok(Ok(config)) => goal_continuation_collection_wait(&config, &thread_id),
+            _ => {
+                tracing::warn!("Native checkpoint metadata unavailable; retaining legacy collector grace");
+                Duration::from_secs(30)
+            }
+        }
+    } else { Duration::from_secs(30) };
     let mut effective_session = session.clone();
     effective_session.model = session.model.clone().or(native_model);
     if session.collaboration_mode.is_some() && effective_session.model.is_none() {
@@ -1123,8 +1758,15 @@ where
         codex_thread_id: Some(thread_id.clone()),
         assistant_text: String::new(),
         stderr_text: String::new(),
+            draft_item: None,
     };
     let _ = on_event(CodexEvent::ThreadStarted(thread_id.clone())).await?;
+    if let Some(profile) = profile {
+        let _ = on_event(CodexEvent::NativeModelConfigured {
+            thread_id: thread_id.clone(), model: profile.model.clone(),
+            provider: profile.provider.clone(), effort: profile.effort.clone(),
+        }).await?;
+    }
     if cancel.is_cancelled() {
         bail!("cancelled before native submission");
     }
@@ -1137,7 +1779,9 @@ where
             bail!("Conditional goal activation binding changed before submission");
         }
         let params = build_turn_start_params(&thread_id, &effective_session, request);
-        let _ = on_event(CodexEvent::NativeTurnSubmitting).await?;
+        if !matches!(on_event(CodexEvent::NativeTurnSubmitting).await?, CodexEventOutcome::None) {
+            bail!("Reserved inference requires bounded idle admission; no conditional continuation submitted");
+        }
         initial_write_possible = true;
         let (active, turn) = goals::conditional_continuation(&mut process, &thread_id, activation.conditional.as_ref().expect("selected conditional activation"), params, None).await?;
         goal_active = active;
@@ -1217,7 +1861,7 @@ where
                 .context("native goal was not staged")?;
             staged_goal = true;
         }
-    } else if bounded.is_none() {
+    } else if bounded.is_none() && !idle_only {
         goal_snapshot_request_id = Some(
             process
                 .send_request("thread/goal/get", json!({"threadId":thread_id}))
@@ -1227,7 +1871,11 @@ where
         // or unresponsive goal APIs leave ordinary conversations usable.
     }
     let mut params = build_turn_start_params(&thread_id, &effective_session, request);
-    if let Some(id) = client_message_id {
+    if let Some(output)=tool_output {
+        if !request.prompt.is_empty() || !request.attachments.is_empty() || goal_activation.is_some() || bounded.is_some() {bail!("Internal tool output cannot be mixed with human input or goal control");}
+        params["input"]=json!([]);
+        params["toolOutput"]=serde_json::to_value(output)?;
+    } else if let Some(id) = client_message_id {
         params["clientUserMessageId"] = json!(id);
     }
     if let Some(bound) = bounded {
@@ -1245,7 +1893,33 @@ where
         params["additionalContext"]["telecodex.tribu.deadline"] =
             json!({"kind":"application","value":awareness});
     }
-    let _ = on_event(CodexEvent::NativeTurnSubmitting).await?;
+    let admission = on_event(CodexEvent::NativeTurnSubmitting).await?;
+    let (inference_allowance, provider_cycle, provider_output_limit, host_restrictions) = match admission {
+        CodexEventOutcome::InferenceAllowance(allowance) if idle_only => {
+            allowance.validate()?;
+            (Some(allowance), None, None, None)
+        }
+        CodexEventOutcome::RestrictedInferenceAllowance { allowance, host_restrictions } if idle_only => {
+            allowance.validate()?;
+            host_restrictions.validate()?;
+            (Some(allowance), None, None, Some(host_restrictions))
+        }
+        CodexEventOutcome::FundedInferenceAllowance { allowance, cycle_id, max_output_tokens, host_restrictions } if idle_only => {
+            allowance.validate()?;
+            anyhow::ensure!(Uuid::parse_str(&cycle_id).is_ok_and(|id|id.to_string()==cycle_id), "Canonical funding cycle UUID required");
+            anyhow::ensure!(max_output_tokens > 0, "Positive signed owner output ceiling required");
+            if let Some(restrictions)=&host_restrictions {restrictions.validate()?;}
+            (Some(allowance), Some(cycle_id), Some(max_output_tokens), host_restrictions)
+        }
+        CodexEventOutcome::None if !idle_only => (None, None, None, None),
+        _ => bail!("Fresh heartbeat requires its exact retained inference reservation"),
+    };
+    // Capture once: no incoming RPC may renew the original reservation horizon.
+    let provider_deadline = inference_allowance.as_ref().map(|allowance| {
+        Instant::now() + Duration::from_millis(
+            allowance.deadline_unix_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).max(0) as u64
+        )
+    });
     // Inputs already queued during preparation belong in the initial packet,
     // before a fast model can finish the earlier request without seeing them.
     let mut initial_steers = Vec::new();
@@ -1258,14 +1932,18 @@ where
             }
 
             if let Some(check) = &steer.admission_check
-                && let Err(error) = check()
+                && let Err(error) = check.check().await
             {
                 let _ = steer
                     .response
                     .send(Err(CodexSteerError::Rejected(error.to_string())));
                 continue;
             }
-            if steer.goal.is_none() {
+            if steer.goal.is_none() && steer.tool_output.is_none() && tool_output.is_none() {
+                if let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
+                    reject_unsubmitted_steer(steer,error)?;
+                    continue;
+                }
                 let text = match &steer.client_message_id {
                     Some(id) => format!("Additional admitted input {id}:\n{}", steer.text),
                     None => steer.text.clone(),
@@ -1285,6 +1963,10 @@ where
     }
     if cancel.is_cancelled() {
         if adopted_turn.is_none() {
+            steer_rx.close();
+            queued_steers.extend(initial_steers);
+            while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
+            reject_outstanding_steers(queued_steers,HashMap::new());
             return Err(anyhow::Error::new(NativeInputNotSubmitted));
         }
         bail!("cancelled before native collection");
@@ -1292,8 +1974,22 @@ where
     let turn_request_id = if adopted_turn.is_some() {
         None
     } else {
+        let (method, params) = if let Some(allowance) = inference_allowance.as_ref() {
+            // Mandatory method: old servers must reject before inference. No fallback.
+            allowance.validate()?;
+            let mut bounded_params = json!({"turn":params,"allowance":allowance});
+            if let Some(restrictions)=host_restrictions.as_ref() {
+                bounded_params["hostRestrictions"]=serde_json::to_value(restrictions)?;
+            }
+            if let Some(cycle) = provider_cycle.as_ref() {
+                bounded_params["providerReservationCycleId"] = json!(cycle);
+                bounded_params["providerUsageObservations"] = json!(true);
+                bounded_params["providerMaxOutputTokens"] = json!(provider_output_limit);
+            }
+            ("turn/startBoundedIfIdle", bounded_params)
+        } else { ("turn/start",params) };
         initial_write_possible = true;
-        Some(process.send_request("turn/start", params).await?)
+        Some(process.send_request(method, params).await?)
     };
     let mut goal_activation_id = None;
     let mut goal_activation_pending = false;
@@ -1304,7 +2000,9 @@ where
     }
     let mut active_turn_id: Option<String> = adopted_turn;
     let mut interrupt_request_id: Option<u64> = None;
-    let mut pending_steers = HashMap::new();
+    let mut pending_steers: HashMap<u64, PendingSteer> = HashMap::new();
+    let mut detached_returns = HashSet::<String>::new();
+    let mut internal_ack_deadline: Option<Instant> = None;
     let mut steering_open = true;
     let mut cancel_deadline: Option<Instant> = None;
     let mut turn_error: Option<String> = None;
@@ -1338,11 +2036,36 @@ where
     let mut open_tools = HashMap::<NativeRequestId, (String, CancellationToken)>::new();
     let mut seen_tool_requests = HashSet::new();
     let mut seen_tool_calls = HashSet::new();
+    let mut seen_provider_attempts = HashSet::new();
+    let mut seen_provider_ordinals = HashSet::new();
+    let mut seen_provider_requests = HashSet::new();
+    let mut authorized_provider_attempts = HashMap::<String,u32>::new();
+    let mut seen_provider_usage = HashMap::<String,(NativeProviderAttemptUsage,bool)>::new();
+    let mut provider_owner_fenced = false;
     loop {
+        // A heartbeat allowance owns one physical execution. An unrelated active
+        // ordinary goal must not keep its completed collector open for the next
+        // automatic continuation. This releases collection only, never the goal.
+        if idle_only && turn_completed {
+            goal_active = false;
+            goal_snapshot_request_id = None;
+            goal_gap = None;
+        }
         if turn_completed && goal_snapshot_request_id.is_some() {
             goal_snapshot_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
         }
+        // A terminal event may precede the ACK for an already-written internal
+        // return. Observe that exact ACK before closing this transport, so its
+        // successor physical turn remains recoverable without another submission.
+        let internal_ack_pending = pending_steers.values().any(|p| p.tool_output);
+        if turn_completed && internal_ack_pending && !goal_active && !goal_activation_pending
+            && goal_snapshot_request_id.is_none() && !cancelled && turn_error.is_none() {
+            internal_ack_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
+        } else {
+            internal_ack_deadline = None;
+        }
         if turn_completed
+            && (!internal_ack_pending || cancelled || turn_error.is_some())
             && ((!goal_active && !goal_activation_pending && goal_snapshot_request_id.is_none())
                 || turn_error.is_some()
                 || cancelled)
@@ -1350,12 +2073,15 @@ where
             break;
         }
         tokio::select! {
+          _=async{if let Some(deadline)=internal_ack_deadline{sleep_until(deadline).await;}}, if internal_ack_deadline.is_some() && turn_completed && internal_ack_pending => {
+              break; // Existing unconfirmed outcomes stay uncertain; never replay.
+          }
           _=async{if let Some(deadline)=goal_snapshot_deadline{sleep_until(deadline).await;}}, if goal_snapshot_deadline.is_some() && goal_snapshot_request_id.is_some() => {
               goal_snapshot_request_id=None;
               goal_snapshot_deadline=None;
           }
           _=async{if let Some(deadline)=goal_gap{sleep_until(deadline).await;}}, if goal_gap.is_some() => {
-              turn_error=Some("Native goal is active but no continuation arrived within 30 seconds. Inspect /goal before resuming; no input was replayed.".to_string());
+              turn_error=Some(format!("Native goal is active but no continuation arrived within {} seconds (configured checkpoint plus transport grace). Inspect /goal before resuming; no input was replayed.",goal_collection_wait.as_secs()));
               break;
           }
           _=async{if let Some(bound)=bounded{sleep_until(bound.deadline).await;}}, if bounded.is_some() && !cancel.is_cancelled() => { cancel.cancel(); }
@@ -1408,12 +2134,25 @@ where
                         goal_active=observed.goal_active;
                         if let Some(text)=observed.assistant_text {summary.assistant_text=text;}
                         if observed.status!="completed" {turn_error=Some(format!("Native turn {} (history observation)",observed.status));}
-                        if goal_active {goal_gap=Some(Instant::now()+Duration::from_secs(30));}
+                        if goal_active {
+                            goal_gap=Some(Instant::now()+goal_collection_wait);
+                            if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                                goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                            }
+                        }
                         let _=steer.response.send(Ok(None));
                         continue;
                     }
+                    if turn_completed && active_turn_id.is_none() {
+                        reject_unsubmitted_steer(steer,anyhow!("Native writer completed before this input was submitted"))?;
+                        continue;
+                    }
                     if cancel.is_cancelled() {
-                        let _=steer.response.send(Err(CodexSteerError::Rejected("native interruption pending".to_string())));
+                        reject_unsubmitted_steer(steer,anyhow!("native interruption pending"))?;
+                        continue;
+                    }
+                    if steer.goal.is_some() && let Err(error)=on_event(CodexEvent::NativeExternalInputSubmitting).await {
+                        reject_unsubmitted_steer(steer,error)?;
                         continue;
                     }
                     if let Some(GoalControl::Activate(activation))=steer.goal.as_ref()
@@ -1445,7 +2184,7 @@ where
                         continue;
                     }
                     if let Some(GoalControl::ConditionalMetadata(control))=steer.goal.as_ref() {
-                        let result=goals::conditional_metadata(&mut process,&thread_id,&control.plan,&control.admission).await;
+                        let result=goals::conditional_metadata(&mut process,&thread_id,&control.plan,&control.admission,control.origin).await;
                         if result.0=="acknowledged" {
                             if matches!(control.plan.action,crate::store::GoalAction::Pause|crate::store::GoalAction::Clear) {staged_goal=false;}
                             goal_snapshot_request_id=None;
@@ -1467,7 +2206,7 @@ where
                         continue;
                     }
                     if let Some(turn_id)=active_turn_id.as_deref() {
-                        send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers).await?;
+                        send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers,on_event).await?;
                     } else {
                         queued_steers.push_back(steer);
                     }
@@ -1477,6 +2216,8 @@ where
           }
           next_message=process.next_message()=>{
             let Some(message)=next_message? else {break;};
+            if let RpcMessage::Notification{params,..}|RpcMessage::ServerRequest{params,..}=&message
+                && native_event_turn(params).is_some_and(|turn|detached_returns.contains(turn)) {continue;}
             match message{
               RpcMessage::Response{id,result,error}=>{
                 if goal_snapshot_request_id==Some(id) {
@@ -1486,7 +2227,12 @@ where
                     }
                 } else if Some(id)==turn_request_id{
                     if let Some(error)=error{
-                        if matches!(error.code,Some(-32602..=-32600)) { let _=on_event(CodexEvent::NativeInputRejected).await?; }
+                        if idle_only && idle_capacity_rejection(&error) {
+                            initial_write_possible=false;
+                            let _=on_event(CodexEvent::NativeInputDeferred).await?;
+                        } else if matches!(error.code,Some(-32602..=-32600)) {
+                            let _=on_event(CodexEvent::NativeInputRejected).await?;
+                        }
                         for steer in initial_steers.drain(..) {
                             let _=steer.response.send(steer_response("",None,Some(&error)));
                         }
@@ -1509,7 +2255,17 @@ where
                     goal_active=goal.status=="active";
                     let _=on_event(CodexEvent::Progress(format!("Goal {}", goal.status))).await?;
                 } else if let Some(pending)=pending_steers.remove(&id) {
-                    let response=steer_response(&pending.expected_turn_id,result.as_ref(),error.as_ref());
+                    if pending.tool_output && error.is_none()
+                        && let Some(turn)=result.as_ref().and_then(|v|v.pointer("/turn/id")).and_then(Value::as_str)
+                        && turn!=pending.expected_turn_id
+                        && let Some(client_id)=pending.client_id.clone() {
+                        let _=on_event(CodexEvent::NativeInternalReturnDetached{client_id,turn_id:turn.into()}).await?;
+                        if detached_returns.len()>=32 {bail!("Detached return observation bound exhausted; exact ACK retained");}
+                        detached_returns.insert(turn.to_owned());
+                    }
+                    let response=if pending.tool_output {
+                        tool_output_response(&pending.expected_turn_id,result.as_ref(),error.as_ref())
+                    } else {steer_response(&pending.expected_turn_id,result.as_ref(),error.as_ref())};
                     if let (Some(client_id),Ok(Some(turn_id)))=(&pending.client_id,&response) {
                         let _=on_event(CodexEvent::NativeSteerAccepted {client_id:client_id.clone(),turn_id:turn_id.clone()}).await?;
                     }
@@ -1523,9 +2279,20 @@ where
               }
               RpcMessage::Notification{method,params}=>{
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
+                // Native idle precedes turn/completed on current Core. Owned
+                // heartbeat work needs that exact terminal receipt; the legacy
+                // idle fallback would close collection and strand ownership.
+                if idle_only && method == "thread/status/changed" && params["status"]["type"]=="idle" {
+                    continue;
+                }
                 if method == "thread/goal/updated" {
                     goal_snapshot_request_id=None;
-                    if let Some(goal)=goals::parse_goal(&params,&thread_id)? { goal_active=goal.status=="active"; }
+                    if let Some(goal)=goals::parse_goal(&params,&thread_id)? {
+                        goal_active=goal.status=="active";
+                        if let Some(event)=blocked_goal_observation(&params,goal) {
+                            let _=on_event(event).await?;
+                        }
+                    }
                 } else if method == "thread/goal/cleared" { goal_snapshot_request_id=None; goal_active=false;
                 } else if method == "serverRequest/resolved" {
                     if let Some(id) = params.get("requestId") {
@@ -1554,6 +2321,71 @@ where
                 }
               }
               RpcMessage::ServerRequest{id,method,params}=>{
+                if method == "turn/providerAttempt/usage" {
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str()) {continue;}
+                    let mut recorded=false;
+                    if let (Some(cycle),Some(deadline),Ok(usage))=(provider_cycle.as_deref(),provider_deadline,
+                        serde_json::from_value::<NativeProviderAttemptUsage>(params.clone()))
+                        && usage.cycle_id==cycle && authorized_provider_attempts.get(&usage.attempt_id)==Some(&usage.ordinal)
+                        && !usage.response_id.is_empty() && usage.response_id.len()<=200
+                        && usage.model.as_ref().is_none_or(|m|!m.is_empty() && m.len()<=200)
+                        && serde_json::to_vec(&params).is_ok_and(|bytes|bytes.len()<=32*1024)
+                    {
+                        if let Some((previous,ack))=seen_provider_usage.get(&usage.attempt_id) {
+                            recorded=previous==&usage && *ack;
+                        } else {
+                            let identity=usage.attempt_id.clone();
+                            let result=tokio::select! {
+                                biased;
+                                _=cancel.cancelled()=>None,
+                                _=sleep_until(deadline)=>None,
+                                result=on_event(CodexEvent::NativeProviderAttemptUsage(usage.clone()))=>Some(result),
+                            };
+                            recorded=matches!(result,Some(Ok(CodexEventOutcome::ProviderUsageRecorded(true))));
+                            seen_provider_usage.insert(identity,(usage,recorded));
+                        }
+                    }
+                    process.send_result(&id,json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
+                        "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"recorded":recorded})).await?;
+                    continue;
+                }
+                if method == "turn/providerAttempt/reserve" {
+                    // This request can precede the start ACK and deliberately
+                    // has no turnId. Match the owner-selected cycle/thread before
+                    // the ordinary event filter, never a source-chosen account.
+                    if params.get("threadId").and_then(Value::as_str) != Some(thread_id.as_str()) { continue; }
+                    if seen_provider_requests.contains(&id) { continue; }
+                    let mut authorized = false;
+                    if let (Some(cycle), Some(allowance), Some(deadline), Ok(attempt)) = (
+                        provider_cycle.as_deref(), inference_allowance.as_ref(), provider_deadline,
+                        serde_json::from_value::<NativeProviderAttemptReservation>(params.clone()),
+                    ) && !provider_owner_fenced && !cancelled && !cancel.is_cancelled() && !turn_completed
+                        && Instant::now() < deadline && attempt.matches(&thread_id, cycle, allowance)
+                        && seen_provider_attempts.len() < allowance.max_provider_attempts as usize
+                        && !seen_provider_attempts.contains(&attempt.attempt_id)
+                        && !seen_provider_ordinals.contains(&attempt.ordinal)
+                    {
+                        seen_provider_attempts.insert(attempt.attempt_id.clone());
+                        seen_provider_ordinals.insert(attempt.ordinal);
+                        seen_provider_requests.insert(id.clone());
+                        let result = tokio::select! {
+                            _=cancel.cancelled()=>None,
+                            _=sleep_until(deadline)=>{cancel.cancel();None},
+                            result=on_event(CodexEvent::NativeProviderAttemptReservation(attempt))=>Some(result),
+                        };
+                        authorized = matches!(result, Some(Ok(CodexEventOutcome::ProviderAttemptReserved(true))));
+                        if Instant::now() >= deadline || cancel.is_cancelled() { continue; }
+                    }
+                    if !authorized && params.get("cycleId").and_then(Value::as_str) == provider_cycle.as_deref() {
+                        provider_owner_fenced = true;
+                    }
+                    if authorized && let Ok(attempt)=serde_json::from_value::<NativeProviderAttemptReservation>(params.clone()) {
+                        authorized_provider_attempts.insert(attempt.attempt_id,attempt.ordinal);
+                    }
+                    process.send_result(&id, json!({"cycleId":params.get("cycleId").and_then(Value::as_str).unwrap_or(""),
+                        "attemptId":params.get("attemptId").and_then(Value::as_str).unwrap_or(""),"authorized":authorized})).await?;
+                    continue;
+                }
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
                 if method == "item/tool/call" {
                     // A duplicate server request must not repeat a controller
@@ -1617,12 +2449,17 @@ where
             }
             if active_turn_id.is_some() { turn_completed=false; goal_gap=None; }
             else if turn_completed && goal_active && goal_gap.is_none() {
-                goal_gap=Some(Instant::now()+Duration::from_secs(30));
+                goal_gap=Some(Instant::now()+goal_collection_wait);
                 let _=on_event(CodexEvent::Progress("Waiting for native goal continuation".to_string())).await?;
+                if matches!(on_event(CodexEvent::NativeGoalIdle).await?,CodexEventOutcome::YieldGoalCollector) {
+                    // Local collection ends at an acknowledged physical terminal;
+                    // no native goal state, input or continuation is changed.
+                    goal_active=false;goal_gap=None;goal_snapshot_request_id=None;
+                }
             }
             if let Some(turn_id)=active_turn_id.as_deref() {
                 while let Some(steer)=queued_steers.pop_front() {
-                    send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers).await?;
+                    send_steer_request(&mut process,&thread_id,turn_id,steer,&mut pending_steers,on_event).await?;
                 }
             }
           }
@@ -1640,6 +2477,8 @@ where
     for (_, closed) in open_tools.into_values() {
         closed.cancel();
     }
+    steer_rx.close();
+    while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
     reject_outstanding_steers(queued_steers, pending_steers);
     for (_,closed) in open_inputs.into_values() {
         closed.cancel();
@@ -1696,50 +2535,81 @@ fn event_matches_run(
     if method.starts_with("thread/goal/") {
         return true;
     }
-    let event_turn = params.get("turnId").and_then(Value::as_str).or_else(|| {
-        params
-            .get("turn")
-            .and_then(|turn| turn.get("id"))
-            .and_then(Value::as_str)
-    });
+    let event_turn = native_event_turn(params);
     match (event_turn, active_turn_id) {
         (Some(id), Some(active)) => id == active,
         (Some(_), None) => method == "turn/started",
         (None, _) => !require_scope || !method.starts_with("turn/") && !method.starts_with("item/"),
     }
 }
+fn native_event_turn(params: &Value) -> Option<&str> {
+    params.get("turnId").and_then(Value::as_str).or_else(|| {
+        params
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+    })
+}
 
 /// Sends one queued steering request and tracks its app-server response by request id.
-async fn send_steer_request(
+async fn send_steer_request<F, Fut>(
     process: &mut AppServerProcess,
     thread_id: &str,
     turn_id: &str,
     steer: CodexSteerRequest,
     pending_steers: &mut HashMap<u64, PendingSteer>,
-) -> Result<()> {
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(CodexEvent) -> Fut,
+    Fut: std::future::Future<Output = Result<CodexEventOutcome>>,
+{
     if let Some(check) = &steer.admission_check
-        && let Err(error) = check()
+        && let Err(error) = check.check().await
     {
         let _ = steer
             .response
             .send(Err(CodexSteerError::Rejected(error.to_string())));
         return Ok(());
     }
-    let request_id = process
-        .send_request(
-            "turn/steer",
-            build_turn_steer_params(
-                thread_id,
-                turn_id,
-                &steer.text,
-                &steer.images,
-                steer.client_message_id.as_deref(),
-            ),
-        )
-        .await?;
+    if steer.tool_output.is_some()
+        && (!steer.text.is_empty() || !steer.images.is_empty() || steer.goal.is_some())
+    {
+        bail!("Mixed internal and human steering");
+    }
+    if let Err(error) = on_event(CodexEvent::NativeExternalInputSubmitting).await {
+        reject_unsubmitted_steer(steer, error)?;
+        return Ok(());
+    }
+    let internal = steer.tool_output.is_some();
+    let request_id = if let Some(output) = &steer.tool_output {
+        if !steer.text.is_empty() || !steer.images.is_empty() || steer.goal.is_some() {
+            bail!("Mixed internal and human steering");
+        }
+        process
+            .send_request(
+                "turn/start",
+                json!({"threadId":thread_id,"input":[],"toolOutput":output}),
+            )
+            .await?
+    } else {
+        process
+            .send_request(
+                "turn/steer",
+                build_turn_steer_params(
+                    thread_id,
+                    turn_id,
+                    &steer.text,
+                    &steer.images,
+                    steer.client_message_id.as_deref(),
+                ),
+            )
+            .await?
+    };
     pending_steers.insert(
         request_id,
         PendingSteer {
+            tool_output: internal,
             client_id: steer.client_message_id,
             expected_turn_id: turn_id.to_string(),
             response: steer.response,
@@ -1773,6 +2643,28 @@ fn build_turn_steer_params(
     params
 }
 
+// An internal turn/start can queue into the current regular writer. Its ACK
+// remains an acceptance observation, never incorporation or publication.
+fn tool_output_response(
+    expected: &str,
+    result: Option<&Value>,
+    error: Option<&RpcError>,
+) -> CodexSteerResponse {
+    if error.is_some() {
+        return steer_response(expected, None, error);
+    }
+    let turn = result
+        .and_then(|v| v.pointer("/turn/id"))
+        .and_then(Value::as_str);
+    if turn == Some(expected) {
+        Ok(Some(expected.into()))
+    } else {
+        Err(CodexSteerError::Undetermined(
+            "Internal return acknowledgment targeted another or unknown native turn".into(),
+        ))
+    }
+}
+
 /// Validates that Codex accepted the steering request for the expected active turn.
 fn steer_response(
     expected_turn_id: &str,
@@ -1801,6 +2693,16 @@ fn steer_response(
     }
 }
 
+/// Preserve only the goal notification's own causal turn, never the collector's
+/// current turn or an unrelated terminal event inferred by proximity.
+fn blocked_goal_observation(params: &Value, goal: NativeGoal) -> Option<CodexEvent> {
+    let turn = params["turnId"].as_str().filter(|s| !s.is_empty())?;
+    (goal.status == "blocked").then(|| CodexEvent::NativeGoalBlocked {
+        turn_id: turn.into(),
+        goal,
+    })
+}
+
 /// Distinguishes never-sent input from input whose native acceptance is unknown.
 fn reject_outstanding_steers(
     queued_steers: VecDeque<CodexSteerRequest>,
@@ -1808,9 +2710,9 @@ fn reject_outstanding_steers(
 ) {
     let reason = "active turn finished before turn/steer was accepted";
     for steer in queued_steers {
-        let _ = steer
-            .response
-            .send(Err(CodexSteerError::Rejected(reason.to_string())));
+        if reject_unsubmitted_steer(steer, anyhow!(reason)).is_err() {
+            tracing::warn!("Unsubmitted goal-control receipt was not retained");
+        }
     }
     for pending in pending_steers.into_values() {
         let _ = pending
@@ -1852,6 +2754,7 @@ where
                 .and_then(Value::as_str)
             {
                 *active_turn_id = Some(turn_id.to_string());
+                summary.draft_item = None;
                 let _ = on_event(CodexEvent::NativeTurnStarted(turn_id.to_string())).await?;
                 *assistant_message_completed = false;
             }
@@ -1862,6 +2765,22 @@ where
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("completed");
+                if status == "failed"
+                    && let (Some(thread), Some(id), Some(error)) = (
+                        params["threadId"]
+                            .as_str()
+                            .or(summary.codex_thread_id.as_deref()),
+                        turn["id"].as_str(),
+                        turn.get("error").filter(|v| v.is_object()),
+                    )
+                {
+                    let _ = on_event(CodexEvent::NativeTurnFailure {
+                        thread_id: thread.into(),
+                        id: id.into(),
+                        error: error.clone(),
+                    })
+                    .await?;
+                }
                 if let Some(id) = turn.get("id").and_then(Value::as_str) {
                     let _ = on_event(CodexEvent::NativeTurnTerminal {
                         id: id.to_string(),
@@ -1900,7 +2819,34 @@ where
         }
         "item/agentMessage/delta" => {
             if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                let identity = (
+                    params["threadId"].as_str(),
+                    params["turnId"].as_str(),
+                    params["itemId"].as_str(),
+                );
+                if let (Some(thread), Some(turn), Some(item)) = identity
+                    && let Some((active_thread, active_turn, active_item)) = &summary.draft_item
+                    && (thread != active_thread || turn != active_turn || item != active_item)
+                {
+                    return Ok(());
+                }
                 summary.assistant_text.push_str(delta);
+                if let (Some(thread), Some(turn), Some(item)) = (
+                    params["threadId"].as_str(),
+                    params["turnId"].as_str(),
+                    params["itemId"].as_str(),
+                ) && summary.draft_item.is_some()
+                {
+                    let _ = on_event(CodexEvent::NativeMessageDraft {
+                        started: false,
+                        completed: false,
+                        thread_id: thread.into(),
+                        turn_id: turn.into(),
+                        item_id: item.into(),
+                        text: summary.assistant_text.clone(),
+                    })
+                    .await?;
+                }
                 let _ = on_event(CodexEvent::AssistantText(summary.assistant_text.clone())).await?;
             }
         }
@@ -1908,7 +2854,24 @@ where
             if let Some(item) = params.get("item") {
                 if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
                     summary.assistant_text.clear();
+                    summary.draft_item = None;
                     *assistant_message_completed = false;
+                    if let (Some(thread), Some(turn), Some(id)) = (
+                        params["threadId"].as_str(),
+                        params["turnId"].as_str(),
+                        item["id"].as_str(),
+                    ) {
+                        summary.draft_item = Some((thread.into(), turn.into(), id.into()));
+                        let _ = on_event(CodexEvent::NativeMessageDraft {
+                            started: true,
+                            completed: false,
+                            thread_id: thread.into(),
+                            turn_id: turn.into(),
+                            item_id: id.into(),
+                            text: String::new(),
+                        })
+                        .await?;
+                    }
                 }
                 if item.get("type").and_then(Value::as_str) == Some("commandExecution") {
                     let command = item
@@ -1929,7 +2892,22 @@ where
                             .unwrap_or_default()
                             .to_string();
                         if text.trim().is_empty() {
-                            // A blank item cannot qualify assistant output or idle completion.
+                            // Retire an exact provisional item without creating a blank answer.
+                            if let (Some(thread), Some(turn), Some(id)) = (
+                                params["threadId"].as_str(),
+                                params["turnId"].as_str(),
+                                item["id"].as_str(),
+                            ) {
+                                let _ = on_event(CodexEvent::NativeMessageDraft {
+                                    started: false,
+                                    completed: true,
+                                    thread_id: thread.into(),
+                                    turn_id: turn.into(),
+                                    item_id: id.into(),
+                                    text: String::new(),
+                                })
+                                .await?;
+                            }
                             return Ok(());
                         }
                         if let (Some(thread), Some(turn), Some(id)) = (
@@ -1943,6 +2921,9 @@ where
                                 item_id: id.to_owned(),
                                 phase: item.get("phase").and_then(Value::as_str).map(str::to_owned),
                                 text: text.clone(),
+                                async_questions: (item["delivery"] == "async")
+                                    .then(|| item.get("questions").cloned())
+                                    .flatten(),
                             })
                             .await?;
                         }
@@ -2062,11 +3043,12 @@ where
         codex_thread_id: None,
         assistant_text: String::new(),
         stderr_text: String::new(),
+        draft_item: None,
     };
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -2159,6 +3141,83 @@ fn quote_occurrences(text: &str, needle: &str) -> usize {
     if text[next..].contains(needle) { 2 } else { 1 }
 }
 
+/// Bound a source turn by recent statements, rather than dropping the whole
+/// turn when a long-running conversation exceeds the source window. Keep role,
+/// native turn/status and explicit omissions, including at UTF-8 boundaries.
+fn bounded_handoff_entry(header: &str, texts: &[String], limit: usize) -> Option<(String, bool)> {
+    let full = format!("{header}\n{}", texts.join("\n"));
+    if full.len() <= limit {
+        return Some((full, false));
+    }
+    let marker =
+        "[Earlier statements in this source turn omitted to fit the bounded history window.]";
+    let mut remaining = limit.checked_sub(header.len() + marker.len() + 2)?;
+    if remaining < 64 {
+        return None;
+    }
+    let mut recent = Vec::new();
+    for text in texts.iter().rev() {
+        if text.len() < remaining {
+            remaining -= text.len() + 1;
+            recent.push(text.clone());
+        } else {
+            if recent.is_empty() {
+                let (role, body) = text.split_once(": ").unwrap_or(("source", text));
+                let prefix = format!("{role}: [Beginning of this message omitted] ");
+                let keep = remaining.checked_sub(prefix.len())?;
+                let mut start = body.len().saturating_sub(keep);
+                while !body.is_char_boundary(start) {
+                    start += 1;
+                }
+                recent.push(format!("{prefix}{}", &body[start..]));
+            }
+            break;
+        }
+    }
+    if recent.is_empty() {
+        return None;
+    }
+    recent.reverse();
+    Some((format!("{header}\n{marker}\n{}", recent.join("\n")), true))
+}
+
+#[cfg(test)]
+mod bounded_source_tests {
+    use super::bounded_handoff_entry;
+    #[test]
+    fn short_turn_is_unchanged() {
+        assert_eq!(
+            bounded_handoff_entry("turn", &["user: hello".into()], 100),
+            Some(("turn\nuser: hello".into(), false))
+        );
+    }
+    #[test]
+    fn oversized_turn_keeps_recent_corrections_and_provenance() {
+        let texts = (0..91)
+            .map(|i| format!("user: correction-{i:02} {}", "é".repeat(700)))
+            .collect::<Vec<_>>();
+        let (entry, clipped) = bounded_handoff_entry(
+            "[Native source turn original; native status inProgress; provisional]",
+            &texts,
+            32_000,
+        )
+        .unwrap();
+        assert!(clipped && entry.len() <= 32_000);
+        assert!(entry.contains("native status inProgress; provisional"));
+        assert!(entry.contains("Earlier statements") && entry.contains("correction-90"));
+        assert!(!entry.contains("correction-00"));
+    }
+    #[test]
+    fn one_large_message_has_explicit_utf8_safe_tail() {
+        let text = format!("assistant: {} latest correction", "🌀".repeat(20_000));
+        let (entry, clipped) = bounded_handoff_entry("turn", &[text], 1024).unwrap();
+        assert!(clipped && entry.len() <= 1024);
+        assert!(entry.contains("assistant: [Beginning of this message omitted]"));
+        assert!(entry.ends_with("latest correction"));
+        assert!(bounded_handoff_entry("turn", &["user: long".repeat(100)], 32).is_none());
+    }
+}
+
 fn native_handoff_text(item: &Value) -> Option<(&'static str, String)> {
     match item.get("type")?.as_str()? {
         "userMessage" => Some((
@@ -2226,12 +3285,47 @@ fn build_turn_start_params(
     let collaboration = session.collaboration_mode.map(|mode| json!({
         "mode":mode.as_str(), "settings":{"model":session.model,"reasoning_effort":session.reasoning_effort,"developer_instructions":Value::Null}
     }));
-    let additional_context = request.runtime_instructions.as_deref().map(|instructions| {
-        json!({
-            "telecodex.runtime": {"kind":"application", "value":instructions}
-        })
-    });
+    let additional_context = request.runtime_instructions.as_deref().map(runtime_context);
     json!({"threadId":thread_id,"input":input,"additionalContext":additional_context,"cwd":sanitize_arg_path(&session.cwd),"approvalPolicy":session.approval_policy,"sandboxPolicy":build_sandbox_policy(session),"model":session.model,"effort":session.reasoning_effort,"summary":Value::Null,"serviceTier":service_tier,"outputSchema":Value::Null,"personality":Value::Null,"collaborationMode":collaboration,"config":build_config_overrides(effective_search_mode)})
+}
+
+/// Native additional-context values are middle-truncated at 1,000 approximate
+/// tokens (4,000 UTF-8 bytes). Keep ordered application fragments below that
+/// limit; never move runtime control into the human's original input.
+fn runtime_context(instructions: &str) -> Value {
+    const MAX_FRAGMENT_BYTES: usize = 3_000;
+    let mut context = serde_json::Map::new();
+    let mut remaining = instructions;
+    let mut index = 0;
+    loop {
+        let mut end = remaining.len().min(MAX_FRAGMENT_BYTES);
+        while !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        let key = if index == 0 {
+            "telecodex.runtime".to_owned()
+        } else {
+            format!("telecodex.runtime.{index:08}")
+        };
+        context.insert(key, json!({"kind":"application","value":&remaining[..end]}));
+        remaining = &remaining[end..];
+        if remaining.is_empty() {
+            break;
+        }
+        index += 1;
+    }
+    // The native store emits only changed values on subsequent turns. Identify
+    // the current set explicitly, including when a shorter context retires old
+    // continuation keys that still exist in conversation history.
+    let revision = format!("{:x}", Sha256::digest(instructions.as_bytes()));
+    context.insert(
+        "telecodex.context".into(),
+        json!({"kind":"application","value":format!(
+            "Current Telecodex runtime context revision {revision}: {} ordered fragments, starting at telecodex.runtime then telecodex.runtime.00000001 and subsequent zero-padded indices. Read their values as one continuous instruction in key order, even across wrapper boundaries. Unchanged fragments retain their latest value. This set supersedes previous runtime revisions; higher continuation indices from older revisions are no longer current.",
+            context.len()
+        )}),
+    );
+    Value::Object(context)
 }
 
 fn build_sandbox_policy(session: &SessionRecord) -> Value {
@@ -2672,6 +3766,7 @@ impl AppServerProcess {
             }
         };
         Ok(Self {
+            bounded_idle_turn: false,
             child,
             transport,
             stderr_buffer,
@@ -2682,20 +3777,25 @@ impl AppServerProcess {
     }
     async fn initialize(&mut self) -> Result<()> {
         let request_id=self.send_request("initialize",json!({"clientInfo":{"name":"telecodex","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
-            .await
-            .context("Codex App Server initialize timed out")??;
+        let response =
+            tokio::time::timeout(Duration::from_secs(15), self.await_response(request_id))
+                .await
+                .context("Codex App Server initialize timed out")??;
+        self.bounded_idle_turn = response["boundedIdleTurn"] == true;
         self.send_notification("initialized").await?;
         Ok(())
     }
     async fn start_or_resume_thread(
         &mut self,
         session: &SessionRecord,
-        _request: &TurnRequest,
         bounded: bool,
         dynamic_tools: &[Value],
+        profile: Option<&NativeModelProfile>,
     ) -> Result<(String, Option<String>)> {
         let (method, mut params) = build_thread_request(session);
+        if let Some(profile) = profile {
+            profile.apply(&mut params);
+        }
         // Tools are declared only for a new thread. Native rollout metadata
         // restores them on resume; existing bindings are never replaced here.
         if method == "thread/start" && !dynamic_tools.is_empty() {
@@ -2707,6 +3807,9 @@ impl AppServerProcess {
         }
         let request_id = self.send_request(method, params).await?;
         let response = self.await_response(request_id).await?;
+        if let Some(profile) = profile {
+            profile.verify(&response)?;
+        }
         let thread_id = response
             .get("thread")
             .and_then(|thread| thread.get("id"))
@@ -3168,6 +4271,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"approval-thread"},"model":"synthetic-model"})
@@ -3247,6 +4351,7 @@ mod tests {
         let (response, received) = oneshot::channel();
         steer
             .send(CodexSteerRequest {
+                tool_output: None,
                 observation: None,
                 images: vec![],
                 admission_check: None,
@@ -3281,6 +4386,474 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn heartbeat_idle_only_refuses_unsupported_native_without_start_or_steer_fallback() {
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+            }),
+            true,
+            None,
+            false,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn heartbeat_idle_capacity_refusal_is_known_unsent_without_fallback() {
+        for reason in ["notIdle", "pendingTriggerTurn"] {
+            heartbeat_inference_fixture(
+                Some(NativeInferenceAllowance {
+                    max_provider_attempts: 2,
+                    max_request_bytes: 1024,
+                    deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+                }),
+                true,
+                Some(reason),
+                false,
+            )
+            .await;
+        }
+    }
+
+    #[test]
+    fn heartbeat_capacity_requires_exact_native_no_submission_evidence() {
+        for (code, data, expected) in [
+            (
+                Some(-32600),
+                json!({"reason":"notIdle","submitted":false}),
+                true,
+            ),
+            (
+                Some(-32600),
+                json!({"reason":"pendingTriggerTurn","submitted":false}),
+                true,
+            ),
+            (
+                Some(-32600),
+                json!({"reason":"notIdle","submitted":true}),
+                false,
+            ),
+            (Some(-32600), json!({"reason":"notIdle"}), false),
+            (
+                Some(-32600),
+                json!({"reason":"planMode","submitted":false}),
+                false,
+            ),
+            (
+                Some(-32601),
+                json!({"reason":"notIdle","submitted":false}),
+                false,
+            ),
+            (None, Value::Null, false),
+        ] {
+            assert_eq!(
+                idle_capacity_rejection(&RpcError {
+                    code,
+                    message: "busy-looking text cannot select recovery".into(),
+                    data: Some(data)
+                }),
+                expected
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn heartbeat_idle_only_requires_reservation_before_native_write() {
+        heartbeat_inference_fixture(None, false, None, false).await;
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: 1,
+            }),
+            false,
+            None,
+            false,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn heartbeat_owned_waits_for_terminal_after_native_idle() {
+        heartbeat_inference_fixture(
+            Some(NativeInferenceAllowance {
+                max_provider_attempts: 2,
+                max_request_bytes: 1024,
+                deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30_000,
+            }),
+            true,
+            None,
+            true,
+        )
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_idle_readiness_is_read_only_and_checks_actual_native_metadata() {
+        for (support, status, returned_id, model, accepts, expected) in [
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some(true),
+                Some("ready"),
+            ),
+            (
+                true,
+                "active",
+                "selected-native",
+                "gpt-5.4",
+                Some(true),
+                Some("native_busy"),
+            ),
+            (
+                false,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some(true),
+                Some("native_support_unavailable"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                Some(true),
+                Some("native_idle_unloaded"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                None,
+                Some("native_idle_unloaded"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "gpt-5.4",
+                Some(false),
+                Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                Some(false),
+                Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "gpt-5.4",
+                None,
+                Some("native_admission_unavailable"),
+            ),
+            (true, "idle", "another-native", "gpt-5.4", Some(true), None),
+            (
+                true,
+                "idle",
+                "selected-native",
+                "another-model",
+                Some(true),
+                None,
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut reads = 0;
+                while let Some(Ok(message)) = socket.next().await {
+                    if message.is_close() {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({"boundedIdleTurn":support}),
+                        Some("initialized") => continue,
+                        Some("thread/read") => {
+                            assert!(support);
+                            reads += 1;
+                            assert_eq!(
+                                request["params"],
+                                json!({"threadId":"selected-native","includeTurns":false})
+                            );
+                            json!({"thread":{"id":returned_id,"model":model,"modelProvider":"openai","canAcceptDirectInput":accepts,"status":{"type":status}}})
+                        }
+                        other => panic!(
+                            "Readiness must never resume, admit, mutate or call a provider: {other:?}"
+                        ),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":request["id"],"result":result})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(reads, usize::from(support));
+            });
+            let mut session = session_with_sandbox("read-only");
+            session.codex_thread_id = Some("selected-native".into());
+            let actual = CodexRunner::new(binary)
+                .with_shared_app_server(true)
+                .bounded_idle_readiness(&session)
+                .await;
+            match expected {
+                Some(reason) => assert_eq!(actual.unwrap(), reason),
+                None => assert!(actual.is_err()),
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    async fn heartbeat_inference_fixture(
+        allowance: Option<NativeInferenceAllowance>,
+        expected_send: bool,
+        capacity_reason: Option<&'static str>,
+        accepted: bool,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut requests = 0;
+            while let Some(message) = socket.next().await {
+                let message = match message {
+                    Ok(message)=>message,
+                    Err(tokio_tungstenite::tungstenite::Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) if requests==usize::from(expected_send)=>break,
+                    Err(error)=>panic!("Unexpected native fixture close: {error}"),
+                };
+                if message.is_close() {
+                    break;
+                }
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                match request["method"].as_str() {
+                    Some("initialize")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{}}).to_string().into())).await.unwrap(),
+                    Some("initialized")=>{},
+                    Some("thread/start")=>socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"thread":{"id":"idle-only-thread"},"model":"synthetic-model"}}).to_string().into())).await.unwrap(),
+                    Some("turn/startBoundedIfIdle")=>{
+                        requests+=1;
+                        assert_eq!(request["params"]["turn"]["input"],json!([]));assert_eq!(request["params"]["turn"]["toolOutput"]["name"],"heartbeat_attention");
+                        assert_eq!(request["params"]["allowance"]["maxProviderAttempts"],2);
+                        assert_eq!(request["params"]["allowance"]["maxRequestBytes"],1024);
+                        if accepted {
+                            socket.send(WsMessage::Text(json!({"method":"thread/goal/updated","params":{"threadId":"idle-only-thread","goal":{"threadId":"idle-only-thread","objective":"Existing ordinary work","status":"active","tokenBudget":null,"tokensUsed":17,"timeUsedSeconds":9,"createdAt":1,"updatedAt":2}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"exact-owned-turn"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"idle-only-thread","turnId":"exact-owned-turn","item":{"type":"agentMessage","id":"exact-final","phase":"final_answer","text":"Owned result"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"thread/status/changed","params":{"threadId":"idle-only-thread","status":{"type":"idle"}}}).to_string().into())).await.unwrap();
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            let _=socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"idle-only-thread","turn":{"id":"exact-owned-turn","status":"completed"}}}).to_string().into())).await;
+                            continue;
+                        }
+                        let error = match capacity_reason {
+                            Some(reason) => json!({"code":-32600,"message":"idle-only turn was not submitted","data":{"reason":reason,"submitted":false}}),
+                            None => json!({"code":-32601,"message":"Unsupported method"}),
+                        };
+                        socket.send(WsMessage::Text(json!({"id":request["id"],"error":error}).to_string().into())).await.unwrap();
+                    }
+                    other=>panic!("No start-or-steer fallback or goal activation allowed: {other:?}"),
+                }
+            }
+            assert_eq!(requests, usize::from(expected_send));
+        });
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "Attributed internal evidence".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = rejected.clone();
+        let deferred = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deferred_observation = deferred.clone();
+        let terminal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let terminal_observation = terminal.clone();
+        let started = Instant::now();
+        let result = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                CancellationToken::new(),
+                receiver,
+                move |event| {
+                    if matches!(&event, CodexEvent::NativeTurnTerminal {id,status} if id=="exact-owned-turn" && status=="completed") {
+                        terminal_observation.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if matches!(event, CodexEvent::NativeInputRejected) {
+                        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if matches!(event, CodexEvent::NativeInputDeferred) {
+                        deferred_observation.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let allocation = allowance.clone();
+                    async move {
+                        Ok(if matches!(event, CodexEvent::NativeTurnSubmitting) {
+                            allocation
+                                .map(CodexEventOutcome::InferenceAllowance)
+                                .unwrap_or(CodexEventOutcome::None)
+                        } else {
+                            CodexEventOutcome::None
+                        })
+                    }
+                },
+            )
+            .await;
+        if accepted {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "Completed heartbeat must not await the ordinary goal checkpoint"
+            );
+            assert_eq!(result.as_ref().unwrap().assistant_text, "Owned result");
+        }
+        assert_eq!(result.is_ok(), accepted, "{:?}", result.as_ref().err());
+        assert_eq!(terminal.load(std::sync::atomic::Ordering::SeqCst), accepted);
+        assert_eq!(
+            rejected.load(std::sync::atomic::Ordering::SeqCst),
+            expected_send && capacity_reason.is_none() && !accepted
+        );
+        assert_eq!(
+            deferred.load(std::sync::atomic::Ordering::SeqCst),
+            capacity_reason.is_some()
+        );
+        if !expected_send || capacity_reason.is_some() {
+            assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        }
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ownership_refusal_rejects_prepared_and_active_steers_before_provider_write() {
+        for prepared in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+            let (finish, finished) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(message) = socket.next().await {
+                    let message = message.unwrap();
+                    if message.is_close() {
+                        break;
+                    }
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("initialize") => json!({}),
+                        Some("config/read") => json!({"config":{}}),
+                        Some("initialized") => continue,
+                        Some("thread/start") => {
+                            json!({"thread":{"id":"owned-thread"},"model":"synthetic-model"})
+                        }
+                        Some("thread/goal/get") => json!({"goal":null}),
+                        Some("turn/start") => {
+                            assert_eq!(request["params"]["input"].as_array().unwrap().len(), 1);
+                            socket.send(WsMessage::Text(json!({"id":request["id"],"result":{"turn":{"id":"owned-turn"}}}).to_string().into())).await.unwrap();
+                            finished.await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"item/completed","params":{"threadId":"owned-thread","turnId":"owned-turn","item":{"type":"agentMessage","id":"answer","phase":"final_answer","text":"Original work preserved"}}}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"owned-thread","turn":{"id":"owned-turn","status":"completed"}}}).to_string().into())).await.unwrap();
+                            break;
+                        }
+                        other => panic!("Unexpected provider write: {other:?}"),
+                    };
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":request["id"],"result":result})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            });
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let (reply, received) = oneshot::channel();
+            let mut packet = Some(CodexSteerRequest {
+                tool_output: None,
+                observation: None,
+                images: vec![],
+                admission_check: None,
+                text: "Human followup".into(),
+                client_message_id: Some("human-followup".into()),
+                goal: None,
+                response: reply,
+            });
+            if prepared {
+                sender.send(packet.take().unwrap()).unwrap();
+            }
+            let runner = CodexRunner::new(binary).with_shared_app_server(true);
+            let mut request = review_request();
+            request.review_mode = None;
+            let run = tokio::spawn(async move {
+                runner
+                    .run_turn(
+                        &session_with_sandbox("read-only"),
+                        &request,
+                        CancellationToken::new(),
+                        receiver,
+                        move |event| {
+                            if matches!(event, CodexEvent::NativeTurnStarted(_))
+                                && let Some(packet) = packet.take()
+                            {
+                                sender.send(packet).unwrap();
+                            }
+                            let refuse = matches!(event, CodexEvent::NativeExternalInputSubmitting);
+                            async move {
+                                if refuse {
+                                    bail!("Exact heartbeat owner is stopping");
+                                }
+                                Ok(CodexEventOutcome::None)
+                            }
+                        },
+                    )
+                    .await
+            });
+            let reply = tokio::time::timeout(Duration::from_secs(10), received)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(reply, Err(CodexSteerError::Rejected(_))));
+            finish.send(()).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.assistant_text, "Original work preserved");
+            server.await.unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn prepared_correction_is_in_initial_packet_and_recorded_before_output() {
         let root = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3297,6 +4870,7 @@ mod tests {
                 let id = &request["id"];
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"prepared-thread"},"model":"synthetic-model"})
@@ -3336,6 +4910,7 @@ mod tests {
         let (response, received) = oneshot::channel();
         steer
             .send(CodexSteerRequest {
+                tool_output: None,
                 observation: None,
                 images: vec![],
                 admission_check: None,
@@ -3397,6 +4972,7 @@ mod tests {
                 let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
                 let result = match request["method"].as_str() {
                     Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
                     Some("initialized") => continue,
                     Some("thread/start") => {
                         json!({"thread":{"id":"cancel-before-write"},"model":"synthetic"})
@@ -3438,6 +5014,627 @@ mod tests {
                 .is::<NativeInputNotSubmitted>()
         );
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_financial_refusal_settles_conditional_control_without_native_write() {
+        for activation in [false, true] {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            let callbacks = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = callbacks.clone();
+            let control = GoalMetadataControl {
+                origin: GoalMutationOrigin::Automatic,
+                plan: crate::store::GoalPlan {
+                    action: crate::store::GoalAction::Pause,
+                    expected: NativeGoalSnapshot {
+                        goal: None,
+                        revision: "retained-revision".into(),
+                    },
+                    objective: None,
+                    token_budget: None,
+                    followup: None,
+                },
+                admission: Arc::new(|| panic!("Refused control must not reach native admission")),
+                receipt: slot.clone(),
+                context: None,
+                scope: None,
+                settled: Some(Arc::new(move |phase, receipt| {
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push((phase.to_owned(), receipt.clone()));
+                    Ok(())
+                })),
+            };
+            let goal = if activation {
+                GoalControl::Activate(Box::new(goals::GoalActivation {
+                    intent: "retained-restore".into(),
+                    native_thread: Some("thread".into()),
+                    expected: None,
+                    objective: None,
+                    replace: false,
+                    attach_turn: None,
+                    conditional: Some(Box::new(control)),
+                }))
+            } else {
+                GoalControl::ConditionalMetadata(Box::new(control))
+            };
+            let (response, ack) = oneshot::channel();
+            reject_unsubmitted_steer(
+                CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: String::new(),
+                    goal: Some(goal),
+                    response,
+                },
+                anyhow::Error::new(NativeFreshExecutionRequired),
+            )
+            .unwrap();
+            assert_eq!(
+                ack.await.unwrap(),
+                Err(CodexSteerError::FreshExecutionRequired)
+            );
+            assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+            let records = callbacks.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].0, "known_unsent");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_financial_preparation_rejects_inputs_and_settles_queued_restore() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let message: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match message["method"].as_str() {
+                    Some("initialized") => continue,
+                    Some("initialize") => json!({}),
+                    Some("config/read") => json!({"config":{}}),
+                    Some("thread/start") => {
+                        json!({"thread":{"id":"unstarted"},"model":"synthetic-model"})
+                    }
+                    Some("thread/goal/get") => json!({"goal":null}),
+                    other => panic!("No input, goal mutation or inference may be sent: {other:?}"),
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({"id":message["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        });
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = settled.clone();
+        let control = GoalMetadataControl {
+            origin: GoalMutationOrigin::Automatic,
+            plan: crate::store::GoalPlan {
+                action: crate::store::GoalAction::Resume,
+                expected: NativeGoalSnapshot {
+                    goal: None,
+                    revision: "retained".into(),
+                },
+                objective: None,
+                token_budget: None,
+                followup: None,
+            },
+            admission: Arc::new(|| panic!("No independent restore allowed")),
+            receipt: slot.clone(),
+            context: None,
+            scope: None,
+            settled: Some(Arc::new(move |phase, _| {
+                assert_eq!(phase, "known_unsent");
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })),
+        };
+        let restore = GoalControl::Activate(Box::new(goals::GoalActivation {
+            intent: "restore".into(),
+            native_thread: Some("unstarted".into()),
+            expected: None,
+            objective: None,
+            replace: false,
+            attach_turn: None,
+            conditional: Some(Box::new(control)),
+        }));
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let (human, ack_human) = oneshot::channel();
+        let (response, ack_restore) = oneshot::channel();
+        for (goal, response) in [(None, human), (Some(restore), response)] {
+            sender
+                .send(CodexSteerRequest {
+                    tool_output: None,
+                    observation: None,
+                    images: vec![],
+                    admission_check: None,
+                    client_message_id: None,
+                    text: "retained original".into(),
+                    goal,
+                    response,
+                })
+                .unwrap();
+        }
+        let cancel = CancellationToken::new();
+        let cancelling = cancel.clone();
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "original".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let result = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                cancel,
+                receiver,
+                move |event| {
+                    let cancelling = cancelling.clone();
+                    async move {
+                        Ok(if matches!(event, CodexEvent::NativeTurnSubmitting) {
+                            cancelling.cancel();
+                            CodexEventOutcome::FundedInferenceAllowance {
+                                cycle_id: "caa11c1d-b05b-4f56-99ab-167878e86126".into(),
+                                max_output_tokens: 200,
+                                host_restrictions: None,
+                                allowance: NativeInferenceAllowance {
+                                    max_provider_attempts: 2,
+                                    max_request_bytes: 1024,
+                                    deadline_unix_ms: chrono::Utc::now().timestamp_millis() + 30000,
+                                },
+                            }
+                        } else {
+                            CodexEventOutcome::None
+                        })
+                    }
+                },
+            )
+            .await;
+        assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        assert!(matches!(
+            ack_human.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert!(matches!(
+            ack_restore.await.unwrap(),
+            Err(CodexSteerError::Rejected(_))
+        ));
+        assert_eq!(slot.lock().unwrap().as_ref().unwrap().0, "known_unsent");
+        assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1);
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    async fn provider_owner_fixture(mode: &'static str) {
+        const CYCLE: &str = "caa11c1d-b05b-4f56-99ab-167878e86126";
+        const ATTEMPT: &str = "050c786c-cf2b-40da-b3e4-dd1e5e560d7c";
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let cancel = CancellationToken::new();
+        let owner_cancel = cancel.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut starts = 0;
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match request["method"].as_str() {
+                    Some("initialize") => json!({}),
+                    Some("initialized") => continue,
+                    Some("thread/start") => {
+                        json!({"thread":{"id":"funded-native"},"model":"synthetic-model"})
+                    }
+                    Some("turn/startBoundedIfIdle") => {
+                        starts += 1;
+                        assert_eq!(
+                            request["params"]["providerReservationCycleId"],
+                            if matches!(mode, "unfunded" | "unfunded-restricted") {
+                                Value::Null
+                            } else {
+                                json!(CYCLE)
+                            }
+                        );
+                        if matches!(mode, "unfunded" | "unfunded-restricted") {
+                            assert!(request["params"].get("providerUsageObservations").is_none());
+                            assert!(request["params"].get("providerMaxOutputTokens").is_none());
+                        }
+                        assert_eq!(
+                            request["params"]["turn"]["toolOutput"]["name"],
+                            "heartbeat_attention"
+                        );
+                        if matches!(mode, "allow" | "unfunded-restricted") {
+                            assert_eq!(
+                                request["params"]["hostRestrictions"],
+                                json!({
+                                    "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                    "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
+                                    "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                })
+                            );
+                        } else {
+                            assert!(request["params"].get("hostRestrictions").is_none());
+                        }
+                        let mut params = json!({"threadId":"funded-native","cycleId":CYCLE,"attemptId":ATTEMPT,
+                            "ordinal":1,"maxRequestBytes":1024,"deadlineUnixMs":request["params"]["allowance"]["deadlineUnixMs"]});
+                        if mode == "changed-ceiling" {
+                            params["maxRequestBytes"] = json!(1);
+                        }
+                        // Accounting arrives before the native start response and
+                        // without turnId. This must not enter generic UI filtering.
+                        socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                        if matches!(mode, "pending" | "deadline" | "late-owner") {
+                            let next = socket.next().await;
+                            assert!(
+                                !matches!(next, Some(Ok(WsMessage::Text(_)))),
+                                "Cancellation must not emit an authorization or new work"
+                            );
+                            break;
+                        }
+                        let ack: Value = serde_json::from_str(
+                            socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                        )
+                        .unwrap();
+                        assert_eq!(ack["id"], 500);
+                        assert_eq!(
+                            ack["result"],
+                            json!({"cycleId":CYCLE,"attemptId":ATTEMPT,"authorized":matches!(mode,"allow"|"two-then-exhausted"|"repeated-ordinal"|"started-cancel")})
+                        );
+                        if mode == "allow" {
+                            assert_eq!(request["params"]["providerUsageObservations"], true);
+                            let usage = json!({"threadId":"funded-native","cycleId":CYCLE,
+                                "attemptId":ATTEMPT,"ordinal":1,"responseId":"exact-response",
+                                "model":null,"tokenUsage":null,"usageMetadata":null});
+                            let mut changed = usage.clone();
+                            changed["responseId"] = json!("changed-response");
+                            let mut unknown = usage.clone();
+                            unknown["attemptId"] = json!("450c786c-cf2b-40da-b3e4-dd1e5e560d7c");
+                            for (index, (packet, recorded)) in [
+                                (usage.clone(), true),
+                                (usage, true),
+                                (changed, false),
+                                (unknown, false),
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                socket
+                                    .send(WsMessage::Text(
+                                        json!({"id":600+index,
+                                    "method":"turn/providerAttempt/usage","params":packet})
+                                        .to_string()
+                                        .into(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                                let ack: Value = serde_json::from_str(
+                                    socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(ack["id"], 600 + index);
+                                assert_eq!(
+                                    ack["result"],
+                                    json!({"cycleId":CYCLE,"attemptId":packet["attemptId"],"recorded":recorded})
+                                );
+                            }
+                        }
+                        if mode == "allow" {
+                            socket.send(WsMessage::Text(json!({"id":500,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                            socket.send(WsMessage::Text(json!({"id":501,"method":"turn/providerAttempt/reserve","params":params}).to_string().into())).await.unwrap();
+                            let duplicate: Value = serde_json::from_str(
+                                socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(duplicate["id"], 501);
+                            assert_eq!(duplicate["result"]["authorized"], false);
+                        }
+                        if matches!(
+                            mode,
+                            "two-then-exhausted"
+                                | "repeated-ordinal"
+                                | "owner-denied"
+                                | "owner-error"
+                        ) {
+                            for (index, next_attempt) in [
+                                "450c786c-cf2b-40da-b3e4-dd1e5e560d7c",
+                                "850c786c-cf2b-40da-b3e4-dd1e5e560d7c",
+                            ]
+                            .iter()
+                            .enumerate()
+                            {
+                                let mut next = params.clone();
+                                next["attemptId"] = json!(next_attempt);
+                                next["ordinal"] = json!(if mode == "repeated-ordinal" {
+                                    index + 1
+                                } else {
+                                    index + 2
+                                });
+                                socket.send(WsMessage::Text(json!({"id":501+index,"method":"turn/providerAttempt/reserve","params":next}).to_string().into())).await.unwrap();
+                                let ack: Value = serde_json::from_str(
+                                    socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                                )
+                                .unwrap();
+                                assert_eq!(ack["id"], 501 + index);
+                                assert_eq!(
+                                    ack["result"]["authorized"],
+                                    mode == "two-then-exhausted" && index == 0
+                                );
+                            }
+                        }
+                        socket
+                            .send(WsMessage::Text(
+                                json!({"id":request["id"],"result":{"turn":{"id":"funded-turn"}}})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .unwrap();
+                        if mode == "started-cancel" {
+                            continue;
+                        }
+                        socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"completed"}}}).to_string().into())).await.unwrap();
+                        continue;
+                    }
+                    Some("turn/interrupt") if mode == "started-cancel" => {
+                        assert_eq!(
+                            request["params"],
+                            json!({"threadId":"funded-native","turnId":"funded-turn"})
+                        );
+                        socket
+                            .send(WsMessage::Text(
+                                json!({"id":request["id"],"result":{}}).to_string().into(),
+                            ))
+                            .await
+                            .unwrap();
+                        socket.send(WsMessage::Text(json!({"method":"turn/completed","params":{"threadId":"funded-native","turn":{"id":"funded-turn","status":"interrupted"}}}).to_string().into())).await.unwrap();
+                        break;
+                    }
+                    other => {
+                        panic!("No fallback, human prompt or extra native submission: {other:?}")
+                    }
+                };
+                socket
+                    .send(WsMessage::Text(
+                        json!({"id":request["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(starts, 1);
+        });
+        let runner = CodexRunner::new(binary)
+            .with_shared_app_server(true)
+            .with_idle_only(true)
+            .with_tool_output(NativeToolOutput {
+                name: "heartbeat_attention".into(),
+                namespace: None,
+                output: "Attributed internal evidence".into(),
+                retain: true,
+            });
+        let mut request = review_request();
+        request.review_mode = None;
+        request.prompt.clear();
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = callbacks.clone();
+        let usage_callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let usage_observed = usage_callbacks.clone();
+        let late_owner = Arc::new(std::sync::Mutex::new(None));
+        let late_work = late_owner.clone();
+        let run = runner
+            .run_turn(
+                &session_with_sandbox("read-only"),
+                &request,
+                cancel,
+                receiver,
+                move |event| {
+                    let cancel = owner_cancel.clone();
+                    let observed = observed.clone();
+                    let late_work = late_work.clone();
+                    let usage_observed = usage_observed.clone();
+                    async move {
+                        match event {
+                            CodexEvent::NativeTurnSubmitting => {
+                                let allowance = NativeInferenceAllowance {
+                                    max_provider_attempts: 2,
+                                    max_request_bytes: 1024,
+                                    deadline_unix_ms: chrono::Utc::now().timestamp_millis()
+                                        + if matches!(mode, "deadline" | "late-owner") {
+                                            2000
+                                        } else {
+                                            30_000
+                                        },
+                                };
+                                Ok(if matches!(mode, "unfunded" | "unfunded-restricted") {
+                                    if mode == "unfunded-restricted" {
+                                        CodexEventOutcome::RestrictedInferenceAllowance {
+                                            allowance,
+                                            host_restrictions: serde_json::from_value(json!({
+                                                "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                                "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
+                                                "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                            })).unwrap(),
+                                        }
+                                    } else {
+                                        CodexEventOutcome::InferenceAllowance(allowance)
+                                    }
+                                } else {
+                                    CodexEventOutcome::FundedInferenceAllowance {
+                                        allowance,
+                                        cycle_id: CYCLE.into(),
+                                        max_output_tokens: 200,
+                                        host_restrictions: if mode=="allow" {Some(serde_json::from_value(json!({
+                                            "permissions":":read-only","tools":[],"environment":{"PATH":"/usr/bin:/bin"},
+                                            "processLimits":{"memoryBytes":536870912,"cpuPercent":50,"tasks":128},
+                                            "codeModeLimits":{"maxHeapSizeBytes":33554432,"maxYieldTimeMs":1000}
+                                        })).unwrap())}else{None},
+                                    }
+                                })
+                            }
+                            CodexEvent::NativeTurnStarted(_) if mode == "started-cancel" => {
+                                // The App bind helper yields here with its token
+                                // cancelled; native must target the active turn.
+                                cancel.cancel();
+                                Ok(CodexEventOutcome::None)
+                            }
+                            CodexEvent::NativeProviderAttemptUsage(usage) => {
+                                assert_eq!(mode, "allow");
+                                assert_eq!(usage.attempt_id, ATTEMPT);
+                                assert_eq!(usage.response_id, "exact-response");
+                                assert!(usage.token_usage.is_none());
+                                usage_observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                Ok(CodexEventOutcome::ProviderUsageRecorded(true))
+                            }
+                            CodexEvent::NativeProviderAttemptReservation(attempt) => {
+                                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                assert_eq!(attempt.cycle_id, CYCLE);
+                                assert!(matches!(
+                                    attempt.attempt_id.as_str(),
+                                    ATTEMPT | "450c786c-cf2b-40da-b3e4-dd1e5e560d7c"
+                                ));
+                                if mode == "pending" {
+                                    cancel.cancel();
+                                    return std::future::pending().await;
+                                }
+                                if mode == "deadline" {
+                                    return std::future::pending().await;
+                                }
+                                if mode == "late-owner" {
+                                    let (send, receive) = oneshot::channel();
+                                    *late_work.lock().unwrap() = Some(tokio::spawn(async move {
+                                        tokio::time::sleep(Duration::from_secs(3)).await;
+                                        send.send(true).is_err()
+                                    }));
+                                    return Ok(CodexEventOutcome::ProviderAttemptReserved(
+                                        receive.await.unwrap(),
+                                    ));
+                                }
+                                if mode == "owner-error" {
+                                    bail!("Synthetic journal unavailable; no approval");
+                                }
+                                Ok(CodexEventOutcome::ProviderAttemptReserved(
+                                    mode != "owner-denied",
+                                ))
+                            }
+                            CodexEvent::UserInputRequest { .. }
+                            | CodexEvent::DynamicToolRequest { .. }
+                            | CodexEvent::ApprovalRequest(_) => {
+                                panic!("Accounting must not become human/model interaction")
+                            }
+                            _ => Ok(CodexEventOutcome::None),
+                        }
+                    }
+                },
+            )
+            .await;
+        assert_eq!(
+            run.is_ok(),
+            !matches!(
+                mode,
+                "pending" | "deadline" | "late-owner" | "started-cancel"
+            ),
+            "{:?}",
+            run.err()
+        );
+        assert_eq!(
+            callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            if mode == "two-then-exhausted" {
+                2
+            } else {
+                usize::from(!matches!(
+                    mode,
+                    "unfunded" | "unfunded-restricted" | "changed-ceiling"
+                ))
+            }
+        );
+        assert_eq!(
+            usage_callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(mode == "allow")
+        );
+        let late = late_owner.lock().unwrap().take();
+        if let Some(late) = late {
+            assert!(
+                late.await.unwrap(),
+                "Late owner result must have no waiting authorization consumer"
+            );
+        }
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_before_ack_is_exact_and_nonreplayable() {
+        provider_owner_fixture("allow").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_started_owner_cancellation_interrupts_exact_turn() {
+        provider_owner_fixture("started-cancel").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_declines_mismatch_or_unselected_owner() {
+        for mode in ["unfunded", "unfunded-restricted", "changed-ceiling"] {
+            provider_owner_fixture(mode).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_owner_wait_is_cancellable() {
+        provider_owner_fixture("pending").await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_deadline_and_late_owner_never_authorize() {
+        for mode in ["deadline", "late-owner"] {
+            tokio::time::timeout(Duration::from_secs(5), provider_owner_fixture(mode))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_provider_reservation_fuel_ordinals_and_refusal_are_conserved() {
+        for mode in [
+            "two-then-exhausted",
+            "repeated-ordinal",
+            "owner-denied",
+            "owner-error",
+        ] {
+            provider_owner_fixture(mode).await;
+        }
     }
 
     #[cfg(unix)]
@@ -3691,6 +5888,157 @@ while True:
         }
     }
 
+    fn model_profile_selector() -> SessionModelProfile {
+        SessionModelProfile {
+            chat_id: 1,
+            topic_id: 2,
+            profile: "fixture".into(),
+            reasoning_effort: Some("high".into()),
+        }
+    }
+
+    #[test]
+    fn native_model_profile_is_scoped_and_preserves_bridge_policy() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("fixture.config.toml"),
+            r#"
+model = "fixture-model"
+model_provider = "fixture-provider"
+model_reasoning_effort = "xhigh"
+model_catalog_json = "catalog.json"
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+[model_providers.fixture-provider]
+wire_api = "responses"
+[model_providers.fixture-provider.auth]
+file = "retained-key-reference"
+[tui]
+model = "ignored-tui-field"
+"#,
+        )
+        .unwrap();
+        let selector = model_profile_selector();
+        let profile = NativeModelProfile::load(root.path(), &selector).unwrap();
+        let runner =
+            CodexRunner::new(PathBuf::from("unused")).with_session_profiles(vec![selector]);
+        let mut session = session_with_sandbox("workspace-write");
+        session.codex_thread_id = Some("same-history".into());
+        for key in [
+            session.key,
+            crate::models::SessionKey::new(1, Some(3)),
+            crate::models::SessionKey::new(9, Some(2)),
+        ] {
+            let mut candidate = session.clone();
+            candidate.key = key;
+            let (_, mut params) = build_thread_request(&candidate);
+            if runner.session_profile(key).is_some() {
+                profile.apply(&mut params);
+            }
+            assert_eq!(params["threadId"], "same-history");
+            assert_eq!(params["approvalPolicy"], "never");
+            assert_eq!(params["sandbox"], "workspace-write");
+            if key == session.key {
+                assert_eq!(params["modelProvider"], "fixture-provider");
+                assert_eq!(params["config"]["model_reasoning_effort"], "high");
+                assert_eq!(
+                    params["config"]["model_catalog_json"],
+                    json!(root.path().join("catalog.json"))
+                );
+                assert!(params["config"].get("tui").is_none());
+                assert!(params["config"].get("approval_policy").is_none());
+                assert!(params["config"].get("sandbox_mode").is_none());
+            } else {
+                assert_eq!(params["model"], "gpt-5.4");
+                assert!(params.get("modelProvider").is_none());
+                assert!(params["config"].get("model_providers").is_none());
+            }
+        }
+        assert_eq!(session.model.as_deref(), Some("gpt-5.4"));
+        let mut invalid = model_profile_selector();
+        invalid.profile = "../other".into();
+        assert!(invalid.validate().is_err());
+        profile.verify(&json!({"model":"fixture-model","modelProvider":"fixture-provider","reasoningEffort":"high"})).unwrap();
+        assert!(profile.verify(&json!({"model":"fixture-model","modelProvider":"openai","reasoningEffort":"high"})).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ignored_warm_profile_never_submits_input() {
+        let root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let binary = proxy_fixture(root.path(), listener.local_addr().unwrap().port());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+            while let Some(Ok(frame)) = socket.next().await {
+                if !frame.is_text() {
+                    continue;
+                }
+                let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                let method = value["method"].as_str().unwrap_or("").to_owned();
+                methods.push(method.clone());
+                assert_ne!(
+                    method, "turn/start",
+                    "A mismatched native provider must not receive the input"
+                );
+                let result = match method.as_str() {
+                    "initialize" => Some(json!({})),
+                    "thread/resume" => {
+                        assert_eq!(value["params"]["threadId"], "same-history");
+                        assert_eq!(value["params"]["modelProvider"], "fixture-provider");
+                        Some(
+                            json!({"thread":{"id":"same-history"},"model":"gpt-5.4","modelProvider":"openai","reasoningEffort":"medium"}),
+                        )
+                    }
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    socket
+                        .send(WsMessage::Text(
+                            json!({"id":value["id"],"result":result}).to_string().into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            }
+            methods
+        });
+        let profile = NativeModelProfile {
+            model: "fixture-model".into(),
+            provider: "fixture-provider".into(),
+            effort: Some("high".into()),
+            config: serde_json::Map::new(),
+        };
+        let mut session = session_with_sandbox("read-only");
+        session.codex_thread_id = Some("same-history".into());
+        let mut request = review_request();
+        request.review_mode = None;
+        let (_, rx) = mpsc::unbounded_channel();
+        let mut on_event = |_| async { Ok(CodexEventOutcome::None) };
+        let result = run_app_server_turn(
+            &binary,
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            &[],
+            Some(&profile),
+            &session,
+            &request,
+            CancellationToken::new(),
+            rx,
+            &mut on_event,
+        )
+        .await;
+        assert!(result.err().unwrap().is::<NativeInputNotSubmitted>());
+        let methods = server.await.unwrap();
+        assert!(methods.iter().any(|m| m == "thread/resume"));
+    }
+
     fn review_request() -> TurnRequest {
         TurnRequest {
             session_key: crate::models::SessionKey {
@@ -3818,6 +6166,53 @@ while True:
     }
 
     #[test]
+    fn runtime_context_preserves_long_multilingual_control_without_native_truncation() {
+        for original in [
+            String::new(),
+            "short policy".to_owned(),
+            "Nicolás 🎸 日本語\n".repeat(1200),
+        ] {
+            let context = runtime_context(&original);
+            let mut restored = String::new();
+            assert_eq!(context["telecodex.context"]["kind"], "application");
+            for (_, fragment) in context
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with("telecodex.runtime"))
+            {
+                assert_eq!(fragment["kind"], "application");
+                let value = fragment["value"].as_str().unwrap();
+                assert!(value.len() <= 3000);
+                restored.push_str(value);
+            }
+            assert_eq!(restored, original);
+        }
+    }
+
+    #[test]
+    fn runtime_context_manifest_changes_when_continuations_are_replaced_or_retired() {
+        let long = "a".repeat(9000);
+        let original = runtime_context(&long);
+        let changed = runtime_context(&format!("{}changed{}", &long[..4000], &long[4007..]));
+        assert_ne!(original["telecodex.context"], changed["telecodex.context"]);
+        assert_eq!(original["telecodex.runtime"], changed["telecodex.runtime"]);
+        assert_ne!(
+            original["telecodex.runtime.00000001"],
+            changed["telecodex.runtime.00000001"]
+        );
+        let shorter = runtime_context("new short context");
+        assert!(shorter.get("telecodex.runtime.00000001").is_none());
+        assert!(
+            shorter["telecodex.context"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("1 ordered fragments")
+        );
+        assert_ne!(original["telecodex.context"], shorter["telecodex.context"]);
+    }
+
+    #[test]
     fn builds_turn_steer_params_for_the_active_turn() {
         assert_eq!(
             build_turn_steer_params("thread-1", "turn-7", "change direction", &[], None),
@@ -3849,6 +6244,7 @@ while True:
             codex_thread_id: Some("thread".into()),
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active = Some("turn".into());
         let mut error = None;
@@ -3869,11 +6265,138 @@ while True:
             matches!(&events[0], CodexEvent::NativeMessageCompleted { thread_id, turn_id, item_id, text, .. } if thread_id == "thread" && turn_id == "turn" && item_id == "A" && text == "Answer A")
         );
         assert!(matches!(&events[1], CodexEvent::FinalAnswerCompleted(text) if text == "Answer A"));
+        assert!(matches!(
+            &events[0],
+            CodexEvent::NativeMessageCompleted {
+                async_questions: None,
+                ..
+            }
+        ));
         assert!(
             matches!(&events[2], CodexEvent::NativeMessageCompleted { item_id, .. } if item_id == "B")
         );
         assert!(matches!(&events[3], CodexEvent::FinalAnswerCompleted(text) if text == "Answer B"));
         assert!(!terminal);
+    }
+
+    #[tokio::test]
+    async fn async_question_metadata_stays_native_without_a_response_channel() {
+        let mut summary = RunSummary {
+            codex_thread_id: Some("thread".into()),
+            assistant_text: String::new(),
+            stderr_text: String::new(),
+            draft_item: None,
+        };
+        let mut active = Some("turn".into());
+        let mut error = None;
+        let mut terminal = false;
+        let mut completed = false;
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = observed.clone();
+        let mut callback = move |event| {
+            capture.lock().unwrap().push(event);
+            async { Ok(CodexEventOutcome::None) }
+        };
+        let questions = json!([{"title":"Choose","options":["Luna","Estrella"]}]);
+        handle_notification("item/completed",&json!({"threadId":"thread","turnId":"turn","item":{"id":"question","type":"agentMessage","delivery":"async","phase":"final_answer","text":"Choose","questions":questions}}),&mut summary,&mut active,&mut error,&mut terminal,&mut completed,&mut callback).await.unwrap();
+        let events = observed.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0],CodexEvent::NativeMessageCompleted{async_questions:Some(value),..} if value==&questions)
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CodexEvent::UserInputRequest { .. }))
+        );
+        assert!(!terminal);
+    }
+
+    #[tokio::test]
+    async fn draft_lifecycle_keeps_whitespace_and_rejects_other_item_before_accumulation() {
+        let mut summary = RunSummary {
+            codex_thread_id: Some("thread".into()),
+            assistant_text: String::new(),
+            stderr_text: String::new(),
+            draft_item: None,
+        };
+        let mut active = Some("turn".into());
+        let mut error = None;
+        let mut terminal = false;
+        let mut completed = false;
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = observed.clone();
+        let mut callback = move |event| {
+            capture.lock().unwrap().push(event);
+            async { Ok(CodexEventOutcome::None) }
+        };
+        for (method, mut params) in [
+            (
+                "item/started",
+                json!({"item":{"id":"A","type":"agentMessage"}}),
+            ),
+            ("item/agentMessage/delta", json!({"itemId":"A","delta":" "})),
+            (
+                "item/agentMessage/delta",
+                json!({"itemId":"A","delta":"Useful A"}),
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"A","type":"agentMessage","text":""}}),
+            ),
+            (
+                "item/started",
+                json!({"item":{"id":"B","type":"agentMessage"}}),
+            ),
+            (
+                "item/agentMessage/delta",
+                json!({"itemId":"A","delta":"STALE"}),
+            ),
+            (
+                "item/agentMessage/delta",
+                json!({"itemId":"B","delta":"Useful B"}),
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"B","type":"agentMessage","phase":"final_answer","text":"Confirmed B"}}),
+            ),
+        ] {
+            params["threadId"] = json!("thread");
+            params["turnId"] = json!("turn");
+            handle_notification(
+                method,
+                &params,
+                &mut summary,
+                &mut active,
+                &mut error,
+                &mut terminal,
+                &mut completed,
+                &mut callback,
+            )
+            .await
+            .unwrap();
+        }
+        let events = observed.lock().unwrap();
+        let deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                CodexEvent::NativeMessageDraft {
+                    started: false,
+                    completed: false,
+                    item_id,
+                    text,
+                    ..
+                } => Some((item_id.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![("A", " "), ("A", " Useful A"), ("B", "Useful B")]
+        );
+        assert_eq!(events.iter().filter(|event|matches!(event,CodexEvent::NativeMessageDraft{completed:true,item_id,..} if item_id=="A")).count(),1);
+        assert!(events.iter().any(|event|matches!(event,CodexEvent::NativeMessageCompleted{item_id,text,..} if item_id=="B" && text=="Confirmed B")));
+        assert_eq!(summary.assistant_text, "Confirmed B");
     }
 
     #[test]
@@ -3892,6 +6415,49 @@ while True:
 
         assert!(matches!(steer_response("turn-7", Some(&result), None),
             Err(CodexSteerError::Undetermined(message)) if message.contains("turn-8")));
+    }
+
+    #[test]
+    fn internal_return_ack_keeps_native_turn_identity() {
+        assert_eq!(
+            tool_output_response("active", Some(&json!({"turn":{"id":"active"}})), None),
+            Ok(Some("active".into()))
+        );
+        for response in [
+            json!({"turn":{"id":"different"}}),
+            json!({"turnId":"active"}),
+            json!({}),
+        ] {
+            assert!(matches!(
+                tool_output_response("active", Some(&response), None),
+                Err(CodexSteerError::Undetermined(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn collector_grace_follows_only_selected_native_checkpoint() {
+        let config =
+            json!({"config":{"goals":{"continuation_idle_seconds":{"selected":45,"other":300}}}});
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "selected"),
+            Duration::from_secs(75)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "other"),
+            Duration::from_secs(330)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(&config, "absent"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            goal_continuation_collection_wait(
+                &json!({"config":{"goals":{"continuation_idle_seconds":{"selected":301}}}}),
+                "selected"
+            ),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
@@ -3958,6 +6524,7 @@ while True:
             codex_thread_id: None,
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_error = None;
@@ -4015,6 +6582,7 @@ while True:
             codex_thread_id: None,
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_error = None;
@@ -4049,6 +6617,7 @@ while True:
             codex_thread_id: None,
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_error = None;
@@ -4088,6 +6657,7 @@ while True:
             codex_thread_id: None,
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_error = None;
@@ -4146,6 +6716,7 @@ while True:
             codex_thread_id: None,
             assistant_text: String::new(),
             stderr_text: String::new(),
+            draft_item: None,
         };
         let mut active_turn_id = Some("turn-1".to_string());
         let mut turn_error = None;

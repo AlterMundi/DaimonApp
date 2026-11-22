@@ -38,6 +38,27 @@ It does not delete history, compact the conversation or replay failed input.
 A future history view or delivery-recovery lookup must request the needed turns
 explicitly, preferably through native pagination.
 
+## Recovering a retained model route
+
+A saved provider alias and a selected `codex.session_profiles` file can retain a
+transport override after the owner default changes. Inspect both the current
+owner definition and the selected `<profile>.config.toml`: the profile supplies
+its own provider definitions on subsequent resumes. Correct the selected profile
+as well as the owner definition when they describe the same authorized route.
+Keep the account, model, reasoning effort, conversation identity and goal intact.
+An exhausted weekly allowance does not establish that additional Codex credits
+are unavailable; inspect the actual account and credit balance separately.
+
+Native resume admission, first provider response and app presentation are distinct
+checks. A loaded idle conversation can ignore configuration overrides while
+another client subscribes. Use the supported scoped recovery after inspecting
+its actual work and descendants; never restart the shared engine or archive active
+work merely to refresh configuration. Preserve failed turns and original inputs.
+After an accepted recovery input, attach its existing collector to that exact
+physical turn and verify the resulting answer in presentation; do not replay
+pending human inputs to test delivery. A `Bad Request` response alone identifies
+neither an account mismatch nor a credit shortage.
+
 The option was verified against the installed Codex 0.160.0 native schema and
 proxy: a long existing thread returned 2,149 bytes with zero returned turns,
 while its persisted rollout remained unchanged. HTTP/WebSocket/SQLite journeys

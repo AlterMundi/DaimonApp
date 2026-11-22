@@ -15,26 +15,27 @@ window.RequestControls = (() => {
         unknown:"Earlier response remains unconfirmed.", cancelled:"Cancellation requested.",
         expired:"This request is closed.", source_changed:"This request is no longer current."})[value.state]
       || "This request has no live response channel.";
-  function mount({api, getBinding, setCsrf, unauthorized, onReply, onListen, getCanListen=()=>false, getCanDecide=()=>true,onSource=()=>{}}) {
-    const cards = new Map(), section = $("#conversation-requests"), container = $("#conversation-request-cards");
-    const state = $("#conversation-request-state"), more = $("#conversation-requests-more");
-    let generation = 0, observation = 0, cursor = 0, reading = false, probeCursor = 0;
+  function mount({api, getBinding, setCsrf, unauthorized, onReply, onListen, getCanListen=()=>false, getCanDecide=()=>true,onSource=()=>{},makeCopy,prefix="conversation",allowCancel=true,maxCards=200}) {
+    const canCancel=()=>typeof allowCancel==="function"?allowCancel()===true:allowCancel===true;
+    const cards = new Map(), section = $(`#${prefix}-requests`), container = $(`#${prefix}-request-cards`);
+    const state = $(`#${prefix}-request-state`), more = $(`#${prefix}-requests-more`);
+    let generation = 0, observation = 0, cursor = 0, reading = false, probeCursor = 0, refreshTask;
     const owns = (card, owned) => generation === owned && cards.get(card.id) === card;
     function reset() {
-      generation++; cards.clear(); container.replaceChildren(); section.hidden = true;
-      cursor = 0; probeCursor = 0; reading = false; more.hidden = true; state.textContent = "";
+      generation++; for(const card of cards.values())card.box.remove(); cards.clear(); container.replaceChildren(); section.hidden = true;
+      cursor = 0; probeCursor = 0; reading = false; refreshTask=undefined; more.hidden = true; state.textContent = "";
     }
     function updateControls(card) {
       const allowed = card.view?.actionable && !terminal(card.view) && card.complete
         && !card.reviewRequired && !card.closed && !card.busy && !card.loading && !card.pending && !card.unavailable && card.view.binding === getBinding();
-      const mayDecide=allowed && getCanDecide();
+      const mayDecide=allowed && getCanDecide(card.view||card.meta);
       for (const button of card.choices.children) button.disabled = !mayDecide;
       card.reply.disabled = !allowed;
       card.listen.hidden = card.view?.kind!=="question" || typeof onListen!=="function" || !getCanListen();
       card.listen.disabled = !card.view?.actionable || card.closed || card.busy || card.loading || !!card.pending || card.unavailable || card.view?.binding!==getBinding();
       card.text.disabled = !mayDecide;
       card.submit.disabled = !mayDecide;
-      card.cancel.disabled = !mayDecide;
+      card.cancel.disabled = !mayDecide || !canCancel();
       card.read.disabled = card.busy || card.loading;
       card.retry.hidden = !card.pending;
       card.retry.disabled = card.busy;
@@ -84,16 +85,16 @@ window.RequestControls = (() => {
           card.note.textContent = "Earlier choice unconfirmed; this request changed. Review the current request before choosing again.";
         }
       }
-      card.meta = value;
+      card.unavailable=false;card.meta = value;
       card.title.textContent = `${value.label || "Conversation"} · ${value.title || (value.kind === "approval" ? "Approval" : "Question")}`;
-      card.status.textContent = statusText(value) + (!getCanDecide() && value.state==='pending' ? value.kind==='approval' ? ' Open Sessions to review this approval.' : ' Reply through the conversation to answer.' : '');
+      card.status.textContent = statusText(value) + (!getCanDecide(card.view||card.meta) && value.state==='pending' ? value.kind==='approval' ? ' Open Sessions to review this approval.' : ' Reply through the conversation to answer.' : '');
       updateControls(card);
       const source=audioSource(value);if(source)onSource(source);
       return true;
     }
     function audioSource(value) {
       if(value?.kind!=="question" || value.state!=="pending" || !value.actionable)return;
-      return {id:`request:${value.id}`,revision:value.revision,kind:"native_question",label:`${value.label || "Conversation"} · ${value.title || "Question"}`};
+      return {id:`request:${value.id}`,revision:value.revision,kind:"native_question",target:value.target,audio_track:value.audio_track,label:`${value.label || "Conversation"} · ${value.title || "Question"}`};
     }
     function create(value) {
       const box = node("article", undefined, "reply request-card");
@@ -103,7 +104,7 @@ window.RequestControls = (() => {
       const read = node("button", "Read request"); read.type = "button";
       const choices = node("div", undefined, "reply-actions");
       const form = node("form"), label = node("label", "Your answer"), text = node("textarea");
-      text.rows = 3; text.id = `answer-${value.id}`; label.setAttribute("for", text.id);
+      text.rows = 3; text.id = `${prefix}-answer-${value.id}`; label.setAttribute("for", text.id);
       const submit = node("button", "Send answer"); submit.type = "submit";
       form.append(label, text, submit); form.hidden = true;
       const reply = node("button", "Answer in conversation"); reply.type = "button"; reply.hidden = true;
@@ -120,6 +121,20 @@ window.RequestControls = (() => {
       const card = {id:value.id,box,title,status,preview,body,read,choices,form,text,submit,reply,listen,cancel,check,retry,dismiss,note,saved,
         observed:0,readVersion:0,complete:false,expanded:false,busy:false,loading:false,closed:false};
       cards.set(value.id,card);
+      if(typeof makeCopy==="function"){
+        let copySelection;
+        actions.append(makeCopy(async offset=>{
+          if(offset===0)copySelection={revision:(card.meta||card.view)?.revision,binding:getBinding(),generation};
+          const frozen=copySelection;
+          if(!frozen?.revision || !owns(card,frozen.generation) || getBinding()!==frozen.binding || (card.meta||card.view)?.revision!==frozen.revision)throw Error("Request changed. Try again.");
+          const query=new URLSearchParams({offset:String(offset),revision:frozen.revision});
+          const value=await api(`interaction/requests/${card.id}?${query}`);
+          if(!owns(card,frozen.generation)||getBinding()!==frozen.binding||(card.meta||card.view)?.revision!==frozen.revision)throw Error("Request changed. Try again.");
+          selected(value,card,frozen.revision);
+          return {text:value.body,offset:value.offset,next_offset:value.next_offset};
+        }));
+      }
+
       read.addEventListener("click", () => readRequest(card,false,true));
       check.addEventListener("click", () => checkDecision(card));
       retry.addEventListener("click", () => card.pending && sendDecision(card,card.pending));
@@ -133,7 +148,7 @@ window.RequestControls = (() => {
       listen.addEventListener("click", () => {
         const view=card.view;
         if(typeof onListen!=="function" || !getCanListen() || view?.kind!=="question" || !view.actionable || card.closed || card.busy || card.loading || card.pending || card.unavailable || view.binding!==getBinding())return;
-        return onListen({id:`request:${card.id}`,revision:view.revision,kind:"native_question",label:`${view.label || "Conversation"} · ${view.title || "Question"}`});
+        return onListen({id:`request:${card.id}`,revision:view.revision,kind:"native_question",target:view.target,audio_track:view.audio_track,label:`${view.label || "Conversation"} · ${view.title || "Question"}`});
       });
       text.addEventListener("input", () => {card.answerRevision = card.view?.revision;});
       dismiss.addEventListener("click", () => {
@@ -161,10 +176,10 @@ window.RequestControls = (() => {
         const button = node("button",choice.label); button.type = "button";
         button.addEventListener("click", () => choose(card,choice.action,value.revision)); card.choices.append(button);
       }
-      card.form.hidden = !value.allows_text || !getCanDecide();
+      card.form.hidden = !value.allows_text || !getCanDecide(card.view||card.meta);
       card.reply.hidden = value.kind!=="question" || !value.allows_text || typeof onReply!=="function";
-      card.cancel.hidden = !value.can_cancel || !getCanDecide();
-      card.choices.hidden = !getCanDecide();
+      card.cancel.hidden = !value.can_cancel || !canCancel() || !getCanDecide(card.view||card.meta);
+      card.choices.hidden = !getCanDecide(card.view||card.meta);
     }
     async function readRequest(card, force = false, userGesture = false) {
       if (card.loading || card.busy) return;
@@ -193,7 +208,8 @@ window.RequestControls = (() => {
       }
     }
     function choose(card, action, expectedRevision) {
-      if (!getCanDecide() || !expectedRevision || card.view?.revision !== expectedRevision || card.reviewRequired || !card.complete || !card.view?.actionable || card.view.binding !== getBinding() || card.pending || card.busy || card.loading || card.unavailable || card.closed) return;
+      if (action.kind==="cancel" && !canCancel())return;
+      if (!getCanDecide(card.view||card.meta) || !expectedRevision || card.view?.revision !== expectedRevision || card.reviewRequired || !card.complete || !card.view?.actionable || card.view.binding !== getBinding() || card.pending || card.busy || card.loading || card.unavailable || card.closed) return;
       if (action.kind === "answer" && (!action.text.trim() || action.text.includes("\0") || new TextEncoder().encode(action.text).length > 32768)) {
         card.note.textContent = "Write an answer of at most 32 KiB."; return;
       }
@@ -202,7 +218,7 @@ window.RequestControls = (() => {
       return sendDecision(card,frozen);
     }
     async function sendDecision(card, frozen) {
-      if (!getCanDecide() || card.busy || frozen !== card.pending) return;
+      if (!getCanDecide(card.view||card.meta) || card.busy || frozen !== card.pending) return;
       const owned = generation;
       card.busy = true; card.note.textContent = "Sending your decision…"; updateControls(card);
       try {
@@ -239,28 +255,33 @@ window.RequestControls = (() => {
       }
       if (owns(card,owned)) await readRequest(card,true);
     }
-    async function refresh(after = 0) {
-      if (reading || !getBinding()) return;
-      const owned = generation, observed = ++observation;
+    function refresh(after = 0) {
+      if(refreshTask)return refreshTask;
+      const task=refreshCurrent(after).finally(()=>{if(refreshTask===task)refreshTask=undefined;});
+      refreshTask=task;return task;
+    }
+    async function refreshCurrent(after = 0) {
+      if (reading || !getBinding()) return false;
+      const owned = generation, observed = ++observation;let current=true;
       reading = true; more.disabled = true;
       try {
         const page = await api(`interaction/requests?after=${after}`);
-        if (owned !== generation) return;
-        const seen = new Set();
+        if (owned !== generation) return false;
+        const seen = new Set();let limited=false;
         const apply = value => {
           if (value.binding !== getBinding()) throw new Error("Conversation changed. Refresh before responding.");
           setCsrf(value.csrf);
-          for (const item of value.items) {seen.add(item.id); metadata(cards.get(item.id) || create(item),item,observed);}
-          cursor = Math.max(cursor,value.cursor);
+          for (const item of value.items) {seen.add(item.id); if(!cards.has(item.id)&&cards.size>=maxCards){limited=true;continue;} metadata(cards.get(item.id) || create(item),item,observed);}
+          if(!limited)cursor = Math.max(cursor,value.cursor);
           return value;
         };
         let last = apply(page);
-        if (after === 0 && cursor > page.cursor) {
+        if (!limited && after === 0 && cursor > page.cursor) {
           const tail = await api(`interaction/requests?after=${cursor}`);
-          if (owned !== generation) return;
+          if (owned !== generation) return false;
           last = apply(tail);
         }
-        more.hidden = !last.more;
+        more.hidden = !last.more && !limited;
         // Recheck loaded requests absent from these pages, including ones that
         // another surface answered or the native source retired meanwhile.
         const candidates = [...cards.values()].filter(card => !seen.has(card.id) && !terminal(card.meta) && !card.loading && !card.busy);
@@ -276,22 +297,26 @@ window.RequestControls = (() => {
             if (card.expanded) {showDetail(card,value,false,0); updateControls(card);}
           } catch(e) {
             if (!owns(card,owned) || version !== card.readVersion || observed < card.observed) return;
-            card.unavailable = true; updateControls(card);
+            // An absent old request is not a failure of the current registry.
+            // Keep its unknown card, but never offer its stale audio/context.
+            if(e.status!==404)current=false;card.unavailable = true; updateControls(card);
             card.note.textContent = "Request unavailable. Check its current state before responding.";
             if (e.status === 401 || e.status === 403) unauthorized(e);
           }
         }));
-        if (owned !== generation) return;
+        if (owned !== generation) return false;
         section.hidden = !cards.size;
-        state.textContent = last.more ? "More requests are available." : "You can keep writing while sessions wait for a response.";
+        state.textContent = limited ? `Showing up to ${maxCards} loaded requests. Dismiss closed cards to load more, or open Sessions for other pending items.` : last.more ? "More requests are available." : "You can keep writing while sessions wait for a response.";
+        return current;
       } catch(e) {
-        if (owned !== generation) return;
+        if (owned !== generation) return false;
         section.hidden = false; state.textContent = "Requests unavailable. Refresh to reconnect.";
         if (e.status === 401 || e.status === 403) unauthorized(e);
+        return false;
       } finally {if (owned === generation) {reading = false; more.disabled = false;}}
     }
     more.addEventListener("click", () => refresh(cursor));
-    return {refresh,reset,audioSources:()=>[...cards.values()].map(c=>audioSource(c.meta)).filter(Boolean)};
+    return {attentionItems:()=>[...cards.values()].filter(c=>c.meta&&!terminal(c.meta)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
   }
   return {mount};
 })();
@@ -310,7 +335,7 @@ window.GoalControls = (() => {
     const message=document.querySelector("#conversation-goal-state");
     const cards=new Map();let generation=0,cursor=0,reading=false,probe=0;
     const owns=(card,owned)=>generation===owned && cards.get(card.id)===card;
-    function reset(){generation++;cards.clear();list.replaceChildren();section.hidden=true;cursor=0;reading=false;more.hidden=true;message.textContent="";}
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();section.hidden=true;cursor=0;reading=false;more.hidden=true;message.textContent="";}
     function render(card,view){
       card.view=view;card.title.textContent=`${({start:"Start",resume:"Resume",pause:"Pause",clear:"Clear",edit:"Edit",replace:"Replace"})[view.action]||"Review"} · ${view.label}`;
       card.state.textContent=status(view);card.dismiss.hidden=!closed(view.phase);
@@ -373,7 +398,137 @@ window.GoalControls = (() => {
       try{const page=await api(`interaction/goals?before=${cursor}`);if(owned===generation)await observe(page);}
       catch(_){if(owned===generation)message.textContent="Older controls unavailable. Nothing changed; refresh to reconnect.";}
       finally{if(owned===generation){reading=false;more.disabled=false;}}});
-    return {observe,reset};
+    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
+  }
+  return {mount};
+})();
+
+// Durable actions share the request ledger, not native question responders.
+// Reply only drafts ordinary human text; Send remains the admission boundary.
+window.HumanTaskControls = (() => {
+  function mount({api,getBinding,setCsrf=()=>{},unauthorized=()=>{},onReply,canReply=()=>true,makeCopy,prefix="conversation",maxCards=200}) {
+    const section=document.querySelector(`#${prefix}-tasks`),container=document.querySelector(`#${prefix}-task-cards`);
+    const state=document.querySelector(`#${prefix}-task-state`),more=document.querySelector(`#${prefix}-tasks-more`);
+    if(!section||!container||!state||!more)return;
+    const cards=new Map(),feedback=new Map();let generation=0,reading=false,cursor=0,probe=0;
+    const terminal=v=>['answered','completed','cancelled','withdrawn','expired'].includes(v?.state);
+    const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+    const owns=(card,token)=>token===generation&&cards.get(card.id)===card;
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();feedback.clear();container.replaceChildren();section.hidden=true;cursor=probe=0;reading=false;more.hidden=true;state.textContent='';}
+    function controls(card){card.dismiss.hidden=!terminal(card.view)&&!(canReply()&&card.view?.can_dismiss===true);card.dismiss.disabled=card.loading||card.unavailable;card.read.disabled=card.loading;card.reply.hidden=!canReply()||typeof onReply!=="function";card.reply.disabled=card.unavailable||card.loading||!card.complete||card.view?.state!=='pending'||card.view.binding!==getBinding();}
+    const feedbackText=card=>{
+      if(card.view?.state!=='pending')return;
+      const input=feedback.get(`${card.id}:${card.view.revision}`);
+      if(!input)return;
+      return ({accepted:'Your reply reached the conversation; this action awaits reassessment.',routed:'Your reply is routed; this action awaits reassessment.',queued:'Your reply is saved and waiting to send.',retained:'Your reply is saved and waiting to send.',retained_unsent:'Your reply is saved; it has not been sent.',uncertain:'Your reply is saved; delivery is unconfirmed. Check its routing path.',preparing:'Your voice reply is being transcribed.',preparation_unconfirmed:'Your voice reply has no confirmed transcript yet.'})[input.phase];
+    };
+    function remove(card){cards.delete(card.id);card.box.remove();section.hidden=!cards.size;}
+    function observeInput(input){
+      const match=/^task:([a-f0-9]{32})$/.exec(input.reply?.source||'');
+      if(!match||input.binding!==getBinding()||input.reply.context_only!==true||!input.phase)return;
+      feedback.set(`${match[1]}:${input.reply.revision}`,input);
+      if(feedback.size>128)feedback.delete(feedback.keys().next().value);
+      const card=cards.get(match[1]);if(card&&feedbackText(card))card.status.textContent=feedbackText(card);
+    }
+    async function dismissTask(card){
+      if(terminal(card.view)){remove(card);return;}
+      if(!canReply()||card.loading||card.unavailable||card.view?.can_dismiss!==true)return;
+      const token=generation,selected={binding:getBinding(),revision:card.view.revision,action:'dismiss'};
+      card.loading=true;controls(card);
+      try{
+        const receipt=await api(`interaction/tasks/${card.id}`,selected);
+        if(!owns(card,token))return;
+        if(receipt.id!==card.id||receipt.binding!==selected.binding||receipt.revision!==selected.revision||receipt.dismissed!==true)throw Error('Dismissal receipt changed');
+        remove(card);
+      }catch(error){
+        if(!owns(card,token))return;
+        try{
+          const current=await api(`interaction/tasks/${card.id}?offset=0`);
+          if(!owns(card,token))return;
+          metadata(card,current);
+          if(terminal(card.view)){remove(card);return;}
+          card.note.textContent='Dismissal is unconfirmed. Read the current action before trying again.';
+        }catch{if(owns(card,token))card.note.textContent='Dismissal is unconfirmed. Reconnect to check the current action.';}
+        if([401,403].includes(error.status))unauthorized(error);
+      }finally{if(owns(card,token)){card.loading=false;controls(card);}}
+    }
+    function metadata(card,v){
+      if(v.binding!==getBinding())throw Error('Conversation changed; refresh current actions.');
+      if(terminal(card.view)&&!terminal(v))return;
+      if(card.view?.revision!==v.revision){card.complete=false;card.body.textContent='';card.body.hidden=true;card.links.hidden=true;card.box.dataset.expanded='false';card.preview.hidden=false;card.read.textContent='Read action';card.offset=undefined;card.links.replaceChildren();}
+      card.unavailable=false;card.view=v;card.title.textContent=`${v.label} · ${v.title}`;
+      card.preview.textContent=v.preview||'';card.status.textContent=({pending:'An action for you.',answering:'Feedback receipt is unconfirmed.',unknown:'Earlier feedback is unconfirmed.',answered:'Feedback recorded.',completed:'Marked done by you.',withdrawn:'No longer needed.',cancelled:'Cancelled.',expired:'This action is closed.'})[v.state]||'Current action unavailable.';
+      if(feedbackText(card))card.status.textContent=feedbackText(card);
+      if(v.native_question){
+        card.reply.textContent='Answer in conversation';
+        if(!card.complete)card.read.textContent='Read question';
+        if(v.state==='pending'&&!feedbackText(card))card.status.textContent='A question for you.';
+      }
+      controls(card);
+    }
+    async function detail(card,continueReading=false){
+      if(card.loading)return;const token=generation;card.loading=true;controls(card);
+      const selectedRevision=card.view?.revision;
+      const offset=continueReading?card.offset||0:0,revision=continueReading?card.view.revision:undefined;
+      try{
+        const query=new URLSearchParams({offset:String(offset)});if(revision)query.set('revision',revision);
+        const v=await api(`interaction/tasks/${card.id}?${query}`);
+        if(!owns(card,token))return;
+        if(card.view?.revision!==selectedRevision&&v.revision!==card.view?.revision || terminal(card.view)&&!terminal(v))return;
+        if(v.id!==card.id||revision&&v.revision!==revision||v.offset!==offset)throw Error('Task changed; read its current action.');
+        const previous=card.body.textContent;metadata(card,v);
+        card.body.textContent=(offset?previous:'')+v.body;card.offset=v.next_offset;card.complete=v.next_offset===null;
+        card.preview.hidden=true;card.box.dataset.expanded='true';card.body.hidden=card.links.hidden=false;card.read.textContent=card.complete?'Collapse action':'Continue reading';
+        card.links.replaceChildren();for(const link of v.links||[]){
+          try{const url=new URL(link.url);if(!['http:','https:'].includes(url.protocol))continue;
+            const a=el('a',link.label);a.href=url.href;a.target='_blank';a.rel='noopener noreferrer';card.links.append(a);
+          }catch{}
+        }
+        card.note.textContent='';
+      }catch(e){if(owns(card,token)){card.complete=false;card.note.textContent='Action unavailable. Refresh before replying.';if([401,403].includes(e.status))unauthorized(e);}}
+      finally{if(owns(card,token)){card.loading=false;controls(card);}}
+    }
+    function create(v){
+      const box=el('article');box.className='reply task-card';box.dataset.expanded='false';const title=el('h3'),status=el('p'),preview=el('p'),body=el('div'),links=el('div'),note=el('p');
+      status.className='reply-status';body.className='reply-text';body.hidden=links.hidden=true;links.className='reply-actions';note.setAttribute('role','status');
+      const read=el('button','Read action'),reply=el('button','Reply in conversation'),dismiss=el('button','Dismiss');read.type=reply.type=dismiss.type='button';
+      box.append(title,status,preview,body,links,read,reply,dismiss,note);container.append(box);
+      const card={id:v.id,box,title,status,preview,body,links,note,read,reply,dismiss,complete:false,loading:false};cards.set(v.id,card);
+      if(typeof makeCopy==='function'){
+        let copySelection;
+        box.append(makeCopy(async offset=>{
+          if(offset===0)copySelection={revision:card.view?.revision,binding:getBinding(),generation};
+          const frozen=copySelection;
+          if(!frozen?.revision || !owns(card,frozen.generation)||getBinding()!==frozen.binding||card.view?.revision!==frozen.revision)throw Error('Action changed. Try again.');
+          const query=new URLSearchParams({offset:String(offset),revision:frozen.revision});
+          const value=await api(`interaction/tasks/${card.id}?${query}`);
+          if(!owns(card,frozen.generation)||getBinding()!==frozen.binding||value.binding!==frozen.binding||value.id!==card.id||value.revision!==frozen.revision||card.view?.revision!==frozen.revision)throw Error('Action changed. Try again.');
+          return {text:value.body,offset:value.offset,next_offset:value.next_offset};
+        }));
+      }
+
+      read.addEventListener('click',()=>{if(card.complete&&box.dataset.expanded==='true'){box.dataset.expanded='false';body.hidden=links.hidden=true;preview.hidden=false;read.textContent='Read action';return;}return detail(card,card.offset!==undefined&&card.offset!==null);});
+      dismiss.addEventListener('click',()=>dismissTask(card));
+      reply.addEventListener('click',()=>{
+        if(!canReply()||!card.complete||card.loading||card.view.state!=='pending'||card.view.binding!==getBinding())return;
+        if(onReply?.(card.view)!==true)card.note.textContent='Your draft is kept. Send or clear it before preparing this reply.';
+      });return card;
+    }
+    async function refresh(after=0){
+      if(reading||!getBinding())return;reading=true;more.disabled=true;const token=generation;
+      try{
+        const page=await api(`interaction/tasks?after=${after}`);if(token!==generation)return;
+        if(page.binding!==getBinding())throw Error('Conversation changed');setCsrf(page.csrf);
+        const seen=new Set();let limited=false;for(const v of page.items){seen.add(v.id);if(!cards.has(v.id)&&cards.size>=maxCards){limited=true;continue;}metadata(cards.get(v.id)||create(v),v);}
+        if(!limited)cursor=Math.max(cursor,page.cursor);more.hidden=!page.more&&!limited;
+        const absent=[...cards.values()].filter(c=>!seen.has(c.id)&&!terminal(c.view));
+        const selected=absent.length?Array.from({length:Math.min(8,absent.length)},(_,n)=>absent[(probe+n)%absent.length]):[];probe+=selected.length;
+        await Promise.all(selected.map(c=>detail(c)));if(token!==generation)return;
+        section.hidden=!cards.size;state.textContent=limited?`Showing up to ${maxCards} loaded actions. Dismiss closed cards to load more, or open Sessions for other pending items.`:'You can respond here while sessions keep working.';
+      }catch(e){if(token===generation){for(const card of cards.values()){card.unavailable=true;controls(card);}section.hidden=false;state.textContent='Human actions unavailable. Refresh to reconnect.';if([401,403].includes(e.status))unauthorized(e);}}
+      finally{if(token===generation){reading=false;more.disabled=false;}}
+    }
+    more.addEventListener('click',()=>refresh(cursor));return {refresh,reset,observeInput,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!terminal(c.view)).map(c=>({id:`task:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:c.view.title,box:c.box,open:()=>detail(c)}))};
   }
   return {mount};
 })();

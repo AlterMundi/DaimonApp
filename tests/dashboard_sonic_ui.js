@@ -11,7 +11,7 @@ class Param{constructor(value=0){this.value=value;}cancelScheduledValues(){}setV
 class Node{constructor(kind){this.kind=kind;this.gain=new Param();this.frequency=new Param();this.connections=[];this.stopped=false;}connect(n){this.connections.push(n);}disconnect(){this.connections=[];}start(){this.started=true;}stop(){this.stopped=true;}}
 class Audio{
   static instances=[];static delay=false;
-  constructor(){this.sampleRate=48000;this.currentTime=0;this.state='suspended';this.nodes=[];this.destination={};Audio.instances.push(this);}
+  constructor(options){this.options=options;this.sampleRate=48000;this.currentTime=0;this.state='suspended';this.nodes=[];this.destination={};Audio.instances.push(this);}
   createGain(){const n=new Node('gain');this.nodes.push(n);return n;}
   createOscillator(){const n=new Node('osc');this.nodes.push(n);return n;}
   async resume(){if(Audio.delay)await new Promise(resolve=>{this.release=resolve;});this.state='running';this.onstatechange?.();}
@@ -19,51 +19,117 @@ class Audio{
 }
 const nodes=new Map(),events=new Map();
 const element=()=>({value:'0.3',children:[],handlers:{},textContent:'',setAttribute(k,v){this[k]=v;},replaceChildren(...v){this.children=v;},addEventListener(k,f){this.handlers[k]=f;}});
-for(const name of ['toggle','status','score','volume','vocabulary'])nodes.set('#conversation-sound-'+name,element());
+for(const name of ['toggle','status','score','volume','vocabulary','feedback','controls'])nodes.set('#conversation-sound-'+name,element());
 const document={hidden:false,querySelector:s=>nodes.get(s),createElement:element,addEventListener(name,fn){events.set(name,fn);}};
 const scope=vm.createContext({window:{AudioContext:Audio,addEventListener(name,fn){events.set(name,fn);}},document,crypto,TextEncoder,performance:{now:()=>0},setTimeout:timeout,clearTimeout:cancel});
 vm.runInContext(fs.readFileSync('dashboard/web/sonic.js','utf8'),scope);
 const sound=scope.window.ConversationSound;
-const source=(n,extra={})=>({id:`100:${n}`,session:n,label:`Session ${n}`,fresh:true,observed_at:1000,execution:'working',goal_state:'active',waiting_for_human:false,...extra});
+const source=(n,extra={})=>({id:`100:${n}`,session:n,label:`Session ${n}`,fresh:true,observed_at:1000,execution:'working',goal_state:'active',waiting_for_human:false,tools_running:false,error:false,pending:false,...extra});
 const frame=(sources)=>({schema:'telecodex.sonic-state/v1',observed_at:1000,configured:true,connected:true,sources,...descriptor});
 (async()=>{
   assert(sound.validate(vocabulary));assert(!sound.validate({...vocabulary,max_sessions:33}));
+  assert(!sound.validate({...vocabulary,partials:[[1,.8],[2,.8]]}));
+  assert(!sound.validate({...vocabulary,partials:[[1,.5],[1,.5]]}));
+  assert(!sound.validate({...vocabulary,texture_depth:.5}));
+  assert(!sound.validate({...vocabulary,texture_hz:Infinity}));
   assert.equal(sound.state(source(1,{waiting_for_human:true}),1000000),'waiting');
   assert.equal(sound.state(source(1,{execution:'idle',goal_state:'blocked'}),1000000),'blocked');
   assert.equal(sound.state(source(1,{execution:'idle'}),1000000),'goal_idle');
   assert.equal(sound.state(source(1,{execution:'idle',goal_state:'paused'}),1000000),'passive');
   for(const extra of [{fresh:false},{waiting_for_human:null},{goal_state:'unknown'},{observed_at:1030}])assert.equal(sound.state(source(1,extra),1000000),'unknown');
   assert.equal(sound.state(source(1),1000000,21000),'unknown');
+  const quota={...frame([]),weekly_quota:{state:'observed',available_percent:42.5,observed_at:1000,resets_at:1000+2*86400+3600}};
+  assert(sound.weeklyQuota(quota).includes('43% available · renews in 2d 1h 0m'));
+  assert.equal(sound.weeklyQuota(quota,21000),'Weekly quota unavailable.');
+  assert.equal(sound.weeklyQuota({...quota,weekly_quota:{...quota.weekly_quota,available_percent:101}}),'Weekly quota unavailable.');
+  const status=sound.sessionStatus(frame([source(1,{work_started_at:875})]),0);
+  assert(status[0].text.includes("2m 5s"));
+  assert(sound.sessionStatus(frame([source(1,{work_started_at:875})]),1000)[0].text.includes("2m 6s"));
+  assert(!sound.sessionStatus(frame([source(1,{work_started_at:875})]),21000)[0].text.includes("2m"),'Stale observations cannot advance a work counter');
+  assert(!sound.sessionStatus(frame([source(1,{execution:"idle",work_started_at:875})]))[0].text.includes("2m"),'Idle cannot inherit a previous running duration');
   const many=frame(Array.from({length:20},(_,n)=>source(n+1)));
   assert.equal(sound.plan(many,vocabulary).voices.length,20);
   const bounded=sound.plan(many,{...vocabulary,max_sessions:8});assert.equal(bounded.voices.length,8);assert.equal(bounded.omitted,12);
-  const unknown=sound.plan({...many,connected:false},vocabulary);assert.equal(unknown.unconfirmed,20);assert(unknown.voices.every(v=>v.state==='unknown'));
-  const engine=sound.renderer({Context:Audio});await engine.start();const context=Audio.instances.at(-1);
-  const audible=sound.plan(frame([source(1,{waiting_for_human:true}),source(2,{execution:'idle',goal_state:'blocked'})]),vocabulary);
+  const priority=sound.plan(frame([...Array.from({length:24},(_,n)=>source(n+1,{execution:'idle',goal_state:'absent'})),source(99,{execution:'idle',goal_state:'absent',pending:true})]),vocabulary);
+  assert.equal(priority.voices[0].id,'100:99','A pending idle session was omitted behind passive voices');
+  const unknown=sound.plan({...many,connected:false},vocabulary);assert.equal(unknown.unconfirmed,20);assert.equal(unknown.voices.length,0,'Unknown evidence must not create a pitch');
+  const layered=source(1,{tools_running:true,pending:true,error:true});
+  assert.equal(sound.plan(frame([source(1,{observed_at:995})]),vocabulary,1000).valid_for_ms,14000);
+  assert.equal(sound.plan(frame([source(1)]),vocabulary,21000).valid_for_ms,0);
+  const nativeOwners=[],native={beacon:true,openBeacon(callbacks){
+    let resolve,reject;const ready=new Promise((yes,no)=>{resolve=yes;reject=no;});
+    const owner={ready,frames:[],levels:[],close(){this.closed=true;reject(Error('closed'));},frame(value){this.frames.push(value);},level(...value){this.levels.push(value);},resolve,reject,callbacks};
+    nativeOwners.push(owner);return owner;
+  }};
+  const beforeNative=Audio.instances.length,nativeEngine=sound.renderer({Native:native});
+  const starting=nativeEngine.start(),nativeOwner=nativeOwners.at(-1);nativeOwner.resolve();assert(await starting);
+  const nativePlan=sound.plan(frame([layered,source(2,{execution:'idle',goal_state:'absent'})]),vocabulary,1000);
+  const nativePlayed=nativeEngine.render(nativePlan,vocabulary),nativeFrame=nativeOwner.frames.at(-1);
+  assert.equal(nativePlayed.voices.length,2);assert.equal(nativeFrame.valid_for_ms,19000);
+  assert.deepEqual(Array.from(nativeFrame.frequencies),[1,2,3,4,7,11].map(n=>n*40.4));
+  assert(Math.abs(nativeFrame.weights.reduce((a,b)=>a+b,0)-1)<1e-9);
+  assert(Math.abs(nativeFrame.weights[0]-(.5+.5/6))<1e-9,'Native mix keeps equal session contribution');
+  nativeEngine.setDucking(0);assert.deepEqual(nativeOwner.levels.at(-1),[0,180]);
+  nativeEngine.setDucking(1);assert.equal(nativeOwner.levels.at(-1)[1],600);
+  assert.equal(nativeOwner.frames.length,1,'Volume/ducking cannot emit a fresh observation');
+  nativeEngine.stop();assert(nativeOwner.closed);
+  const lateStart=nativeEngine.start(),lateOwner=nativeOwners.at(-1);nativeEngine.stop();lateOwner.resolve();await assert.rejects(lateStart,/closed/);
+  const retryStart=nativeEngine.start(),retryOwner=nativeOwners.at(-1);retryOwner.resolve();await retryStart;
+  nativeOwner.callbacks.onUnavailable();assert(nativeEngine.render(nativePlan,vocabulary).running,'Old owner cannot disable the replacement');
+  retryOwner.callbacks.onUnavailable();assert(!nativeEngine.render(nativePlan,vocabulary).running);
+  assert.equal(Audio.instances.length,beforeNative,'Native selection must never create browser audio or silently fall back');
+  assert.deepEqual(Array.from(sound.components(layered,1000000)),['idle','active','tools','goal','pending','blocked']);
+  assert.deepEqual(Array.from(sound.components(source(1,{execution:'idle',goal_state:'absent'}),1000000)),['idle']);
+  const engine=sound.renderer({Context:Audio});await engine.start();const context=Audio.instances.at(-1);assert.equal(context.options.latencyHint,'playback');
+  const audible=sound.plan(frame([source(1,{waiting_for_human:true,pending:true,tools_running:true}),source(2,{execution:'idle',goal_state:'blocked'})]),vocabulary);
   engine.render(audible,vocabulary);
-  assert(context.nodes.some(n=>n.frequency.value===455));assert(context.nodes.some(n=>n.frequency.value===715));
-  const count=context.nodes.length;engine.render(audible,vocabulary);assert.equal(context.nodes.length,count,'Metadata refresh restarted unchanged voices');
-  const master=context.nodes[0];engine.setQuiet(true);assert.equal(master.gain.value,0);engine.render(audible,vocabulary);assert.equal(master.gain.value,0);
+  const pitched=context.nodes.filter(n=>n.kind==='osc' && n.frequency.value>=20);
+  assert.deepEqual(pitched.map(n=>n.frequency.value).sort((a,b)=>a-b),[1,2,3,4,7,11].map(n=>40.4*n));
+  assert(pitched.every(n=>n.type==='sine'));
+  const pulses=context.nodes.filter(n=>n.kind==='osc' && n.frequency.value>0 && n.frequency.value<20).map(n=>n.frequency.value).sort((a,b)=>a-b),expectedPulses=[1,2,3,4,7,11].map(n=>n*.25);
+  assert.equal(pulses.length,expectedPulses.length);pulses.forEach((hz,n)=>assert(Math.abs(hz-expectedPulses[n])<1e-9,'Each harmonic must have its proportional four-second-base pulse'));
+  assert(context.nodes.length<40,'Identical frequencies must share carriers, not create a large per-session graph');
+  const count=context.nodes.length;engine.render(audible,vocabulary);assert.equal(context.nodes.length,count,'Metadata refresh restarted unchanged carriers');
+  context.currentTime=.2;
+  const modified=sound.plan(frame([source(1,{tools_running:true}),source(2,{execution:'idle',goal_state:'absent'})]),vocabulary);
+  engine.render(modified,vocabulary);
+  for(const carrier of pitched.filter(n=>[40.4,80.8,121.2,161.6].includes(n.frequency.value)))assert(!carrier.stopped,'Unchanged frequencies must stay phase-continuous');
+  const master=context.nodes[0];engine.setQuiet(true);assert.equal(master.gain.value,0);engine.render(modified,vocabulary);assert.equal(master.gain.value,0);
   engine.setVolume(0);engine.setQuiet(false);assert.equal(master.gain.value,0);
-  engine.setVolume(1);assert.equal(master.gain.value,vocabulary.peak_gain/2);
-  const alternate={...vocabulary,id:'geometric-pulse',label:'Geometric pulse',author:'An independent author',fundamental_hz:40.4,wave:'triangle',intervals:{...vocabulary.intervals,waiting:[2,3]}};
-  engine.render(audible,alternate);assert(context.nodes.some(n=>n.sessionIdentity==='100:1' && Math.abs(n.frequency.value-60.6)<1e-8 && n.type==='triangle'));
-  engine.stop();assert.equal(context.state,'closed');assert(context.nodes.filter(n=>n.kind==='osc').every(n=>n.stopped));assert.equal(timers.size,0);
+  engine.setVolume(1);assert.equal(master.gain.value,vocabulary.peak_gain);
+  assert(vocabulary.peak_gain>=.5,'Maximum volume must have useful headroom, rather than the old .04 ceiling');
+  const alternate={...vocabulary,id:'another-being',label:'Another sine vocabulary',author:'Independent author',fundamental_hz:50};
+  engine.render(audible,alternate);assert(context.nodes.some(n=>n.kind==='osc' && n.frequency.value===350));
+  engine.stop();
+  const firstCleanup=[...timers.entries()].find(([,t])=>Math.abs(t.ms-370)<.01);assert(firstCleanup);
+  timers.delete(firstCleanup[0]);firstCleanup[1].fn();
+  assert.equal(context.state,'running','Wall time alone must not close a still-fading audio clock');
+  for(const [id,t] of [...timers])if(Math.abs(t.ms-370)<.01){timers.delete(id);for(const c of Audio.instances)c.currentTime+=1;t.fn();}assert.equal(context.state,'closed');assert(context.nodes.filter(n=>n.kind==='osc').every(n=>n.stopped));assert.equal(timers.size,0);
   // A late resume belongs to its old context and cannot close the newer one.
   Audio.delay=true;const delayed=sound.renderer({Context:Audio});const oldStart=delayed.start(),old=Audio.instances.at(-1);delayed.stop();
-  Audio.delay=false;await delayed.start();const newer=Audio.instances.at(-1);old.release();assert.equal(await oldStart,false);assert.equal(newer.state,'running');delayed.stop();
+  Audio.delay=false;await delayed.start();const newer=Audio.instances.at(-1);old.release();assert.equal(await oldStart,false);assert.equal(newer.state,'running');delayed.stop();for(const [id,t] of [...timers])if(Math.abs(t.ms-370)<.01){timers.delete(id);for(const c of Audio.instances)c.currentTime+=1;t.fn();}
   let now=0,calls=0,selected=frame([source(7)]);
   const client=sound.mount({api:async route=>{assert.equal(route,'interaction/sonic');calls++;return selected;},now:()=>now});
   assert.equal(calls,0,'Mount requested state before explicit listening');
   await nodes.get('#conversation-sound-toggle').handlers.click();assert.equal(calls,1);
+  assert.match(nodes.get('#conversation-sound-feedback').textContent,/Beacon · 1 session voice/);
+  assert.equal(nodes.get('#conversation-sound-feedback').hidden,false);
   const live=Audio.instances.at(-1),liveMaster=live.nodes[0];assert(liveMaster.gain.value>0);
   client.update({capture:'recording'});assert.equal(liveMaster.gain.value,0);
+  assert.match(nodes.get('#conversation-sound-feedback').textContent,/quiet while/);
   client.update({capture:'idle'});assert(liveMaster.gain.value>0);
-  client.update({playback:'playing'});assert.equal(liveMaster.gain.value,0);
+  const fullGain=liveMaster.gain.value;client.update({playback:'playing'});assert(Math.abs(liveMaster.gain.value-fullGain*0.18)<1e-9);assert.match(nodes.get('#conversation-sound-feedback').textContent,/softly under/);
   client.update({playback:undefined});assert(liveMaster.gain.value>0);
   now=21000;const expiry=[...timers.entries()].find(([,t])=>t.ms===20001);assert(expiry);timers.delete(expiry[0]);expiry[1].fn();assert.match(nodes.get('#conversation-sound-status').textContent,/1 unconfirmed/);
-  assert(live.nodes.some(n=>n.frequency.value===845),'Stale state was not represented by the authored unknown interval');
-  document.hidden=true;events.get('visibilitychange')();assert.equal(live.state,'closed');assert.equal(nodes.get('#conversation-sound-status').textContent,'Off');assert.equal(timers.size,0);
+  assert(!live.nodes.some(n=>n.frequency.value===845),'Stale evidence invented a pitch');
+  const carriers=live.nodes.filter(n=>n.kind==='osc' && n.frequency.value>=20);
+  assert(carriers.every(n=>!n.stopped),'A stale state must fade its carriers without a wall-clock cutoff');
+  assert(![...timers.values()].some(t=>t.ms===vocabulary.release_ms+20),'Carrier retirement must not race the audio clock');
+  document.hidden=true;events.get('visibilitychange')();for(const [id,t] of [...timers])if(Math.abs(t.ms-370)<.01){timers.delete(id);for(const c of Audio.instances)c.currentTime+=1;t.fn();}assert.equal(live.state,'closed');assert.equal(nodes.get('#conversation-sound-status').textContent,'Off');assert.equal(timers.size,0);assert.equal(nodes.get('#conversation-sound-feedback').hidden,true);
   await client.refresh();assert.equal(calls,1,'Hidden/reset client restarted metadata or playback');
-  console.log('Sonic mapping/graph: 20-session bounded mix, authored ratios, unknown/stale distinction, independent vocabulary, no refresh replay, mute/capture/speech ownership, late resume and hidden teardown passed; simulated audio device, zero models.');
+  document.hidden=false;const beforeMetadata=Audio.instances.length;let observedMetadata=0;
+  const metadataView=sound.mount({api:async()=>frame([source(1)]),onState:()=>observedMetadata++});
+  await metadataView.refresh({observeOnly:true});assert.equal(observedMetadata,1);assert.equal(Audio.instances.length,beforeMetadata,'Avatar metadata must not open an audio device');
+  console.log('Sonic mapping/graph: 40.4Hz additive sine components, 20-session bounded mix, unknown/stale silence, independent vocabulary, no refresh replay, mute/capture/speech ownership, late resume and hidden teardown passed; simulated audio device, zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+

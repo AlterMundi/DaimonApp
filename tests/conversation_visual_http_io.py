@@ -14,9 +14,9 @@ from conversation_cold_entry_http_io import ColdEntry,Browser
 from conversation_voice_http_io import audio
 
 
-def png(width=160,height=96,flip=False):
+def png(width=160,height=96,flip=False,variant=0):
     def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data))
-    pixels=b''.join(b'\0'+b''.join(bytes((30,80,230) if (x<width//2)^flip else (230,45,50)) for x in range(width)) for _ in range(height))
+    pixels=b''.join(b'\0'+b''.join(bytes((30+variant,80,230) if (x<width//2)^flip else (230,45,50)) for x in range(width)) for _ in range(height))
     return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',width,height,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(pixels))+chunk(b'IEND',b'')
 
 
@@ -44,7 +44,7 @@ def qualify(binary):
         assert b.client.get('/api/state',headers=b.device_headers).status_code==403
         assert r.json()['work_admitted']is False and not j.packets
         assert j.row('SELECT count(*) FROM conversation_inputs')==[(0,)]
-        for bad in ({**ref,'point':None},{**ref,'point':{'x':160,'y':0}},
+        for bad in ({**ref,'point':{'x':True,'y':0}},{**ref,'point':{'x':160,'y':0}},
                     {**ref,'selected_revision':'b'*64},{**ref,'state':'disconnected'},
                     {**ref,'state':'ambiguous'},{**ref,'width':159},{**ref,'state':'view_changed'},
                     {**ref,'image_sha256':'0'*64,'selected_revision':'0'*64}):
@@ -52,20 +52,26 @@ def qualify(binary):
             assert r.json().get('code')=='visual_reselection'and r.json().get('submission_attempted')is False
             assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(ident,))==[(0,)]
         stale=copy.deepcopy(ref);stale['selected_at']=stale['captured_at']=(datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat()
-        assert submit('That one.',stale)[1].status_code==400
+        assert submit('That one.',{**stale,'source_kind':'application_selection'})[1].status_code==400
         stale_frame={**ref,'source_kind':'camera_frame','captured_at':(datetime.now(timezone.utc)-timedelta(seconds=10)).isoformat()}
         assert submit('That one.',stale_frame)[1].status_code==400
+        # An attached still remains the exact historical selection, even after
+        # composing/uploading for longer than the live-view freshness window.
+        ref=stale
         j.hold_new_native=True
         original,r=submit('Describe this selected object in Alpha.',ref);assert r.status_code==200,r.text
         assert j.new_native_seen.wait(timeout=5),'Synthetic initial binding was not observed'
         during=png(flip=True);assert upload(during).status_code==200
-        prepared,r=submit('Discuss this independent newer view.',reference(during));assert r.status_code==200,r.text
+        whole={**reference(during),'point':None}
+        prepared,r=submit('Discuss this independent newer view.',whole);assert r.status_code==200,r.text
         j.hold_new_native=False;j.new_native_release.set()
         j.wait(lambda:b.status(original)['phase']=='accepted'and b.status(prepared)['phase']=='accepted')
         path=j.root/'state.sqlite.visual'/sha
         def selected_image(packet,expected=path):return any(v.get('type')=='localImage'and v.get('path')==str(expected)for v in packet['input'])
         assert selected_image(j.packets[-1][1]) and original in str(j.packets[-1])
         assert selected_image(j.packets[-1][1],j.root/'state.sqlite.visual'/hashlib.sha256(during).hexdigest()),'Preparation coalescing lost the later image'
+        assert b.status(prepared)['visual']==whole
+        assert 'the whole captured image' in str(j.packets[-1])
         assert path.read_bytes()==data and path.stat().st_mode&0o077==0
         got=b.client.get('/api/interaction/inputs/'+original+'/image',headers=b.device_headers)
         assert got.status_code==200 and got.content==data
@@ -92,14 +98,14 @@ def qualify(binary):
         assert selected_image(j.worker_packets['native-topic-7'][-1])
         # Hold ASR while a newer image arrives; voice keeps its original image cut.
         (j.root/'hold-asr').touch();clip=audio();spoken=str(uuid.uuid4())
-        h={**b.headers,'content-type':'audio/wav','x-input-id':spoken,'x-input-binding':b.binding,'x-audio-sha256':hashlib.sha256(clip).hexdigest(),'x-visual-reference':json.dumps(ref)}
+        h={**b.headers,'content-type':'audio/wav','x-input-id':spoken,'x-input-binding':b.binding,'x-audio-sha256':hashlib.sha256(clip).hexdigest(),'x-visual-reference':json.dumps({**ref,'point':None})}
         r=b.client.post('/api/interaction/voice',content=clip,headers=h);assert r.status_code==200,r.text
         assert b.status(spoken)['phase']=='preparing'
         newer=png(flip=True);assert upload(newer).status_code==200
         latest,r=submit('Discuss the newer captured view.',reference(newer));assert r.status_code==200,r.text
         j.wait(lambda:b.status(latest)['phase']=='accepted')
         (j.root/'release-asr').touch();j.wait(lambda:b.status(spoken)['phase']=='accepted')
-        assert b.status(spoken)['visual']==ref
+        assert b.status(spoken)['visual']=={**ref,'point':None}
         j.call('route-visual-voice','dispatch',{'input_ref':spoken,'destinations':[{'selector':'Alpha','relation':'amends','requests':requests}]})
         j.wait(lambda:len(j.instructions(7))==3 and j.instructions(7)[-1][1]=='accepted')
         assert selected_image(j.worker_packets['native-topic-7'][-1])
@@ -118,6 +124,60 @@ def qualify(binary):
         answer=next(v for v in j.native_answers if v['id']=='canonical-visual-question')['result']['answers']['object']['answers'][0]
         assert 'This selected object.'in answer and '[Selected captured visual reference]'in answer and str(path)in answer
         assert '"x":25'in answer and path.read_bytes()==data
+        # One ordered original carries every image through text, routing and voice.
+        pair=[reference(data,25,20),{**reference(during),'point':None}]
+        paired,r=submit('Compare these two captured images in Alpha.',pair);assert r.status_code==200,r.text
+        j.wait(lambda:b.status(paired)['phase']=='accepted')
+        assert b.status(paired)['visual']==pair
+        for index,expected in enumerate((data,during)):
+            got=b.client.get(f'/api/interaction/inputs/{paired}/image?index={index}',headers=b.device_headers)
+            assert got.status_code==200 and got.content==expected
+        assert b.client.get(f'/api/interaction/inputs/{paired}/image?index=2',headers=b.device_headers).status_code==409
+        assert b.client.get(f'/api/interaction/inputs/{paired}/image?index=-1',headers=b.device_headers).status_code==409
+        before=len(j.packets)
+        assert submit('Compare these two captured images in Alpha.',pair,paired)[1].status_code==200
+        assert len(j.packets)==before,'Confirmed multi-image original was replayed'
+        assert submit('Compare these two captured images in Alpha.',list(reversed(pair)),paired)[1].status_code==503,'Original order must be immutable'
+        j.call('route-ordered-images','dispatch',{'input_ref':paired,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
+        j.wait(lambda:len(j.instructions(7))==4 and j.instructions(7)[-1][1]=='accepted')
+        packet=j.worker_packets['native-topic-7'][-1]
+        paths=[v['path'] for v in packet['input'] if v.get('type')=='localImage']
+        assert paths==[str(path),str(j.root/'state.sqlite.visual'/pair[1]['image_sha256'])],paths
+        assert '[Attached image 1 of 2]' in str(packet) and 'the whole captured image' in str(packet)
+        for bad in ([],[pair[0],pair[0]],[pair[0],{**pair[1],'image_sha256':'0'*64,'selected_revision':'0'*64}],
+                    [{**pair[0],'source_id':str(uuid.uuid4())} for _ in range(9)]):
+            invalid,r=submit('Do not drop an intended image.',bad);assert r.status_code==400,r.text
+            assert r.json().get('code')=='visual_reselection' and r.json().get('submission_attempted')is False
+            assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(invalid,))==[(0,)]
+        # ASR must retain both images in original order, not a later visible selection.
+        spoken_pair=str(uuid.uuid4());(j.root/'release-asr').unlink(missing_ok=True);(j.root/'hold-asr').touch()
+        h={**b.headers,'content-type':'audio/wav','x-input-id':spoken_pair,'x-input-binding':b.binding,'x-audio-sha256':hashlib.sha256(clip).hexdigest(),'x-visual-reference':json.dumps(pair)}
+        r=b.client.post('/api/interaction/voice',content=clip,headers=h);assert r.status_code==200,r.text
+        assert b.status(spoken_pair)['phase']=='preparing'
+        later,r=submit('This later photo must not replace the recording images.',reference(during));assert r.status_code==200,r.text
+        j.wait(lambda:b.status(later)['phase']=='accepted')
+        (j.root/'release-asr').touch();j.wait(lambda:b.status(spoken_pair)['phase']=='accepted')
+        assert b.status(spoken_pair)['visual']==pair
+        j.call('route-ordered-voice-images','dispatch',{'input_ref':spoken_pair,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
+        j.wait(lambda:len(j.instructions(7))==5 and j.instructions(7)[-1][1]=='accepted')
+        assert [v['path'] for v in j.worker_packets['native-topic-7'][-1]['input'] if v.get('type')=='localImage']==paths
+        # Six distinct old phone photos cross the actual upload, admission,
+        # SQLite and native image boundary without refreshing their timestamps.
+        old_time=(datetime.now(timezone.utc)-timedelta(minutes=20)).isoformat()
+        six=[]
+        for index in range(6):
+            photo=png(variant=index)
+            assert upload(photo).status_code==200
+            selected=reference(photo)
+            selected['captured_at']=selected['selected_at']=old_time
+            six.append(selected)
+        six_id,r=submit('Compare these six retained photographs.',six)
+        assert r.status_code==200,r.text
+        j.wait(lambda:b.status(six_id)['phase']=='accepted')
+        assert b.status(six_id)['visual']==six
+        expected=[str(j.root/'state.sqlite.visual'/ref['image_sha256']) for ref in six]
+        assert len(set(expected))==6
+        assert [v['path'] for v in j.packets[-1][1]['input'] if v.get('type')=='localImage']==expected
         # Missing bytes cannot be replaced by a newer view already in the same entry.
         held,r=submit('Use this exact old image in Beta.',reference(data));assert r.status_code==200,r.text
         j.wait(lambda:b.status(held)['phase']=='accepted');path.unlink()
@@ -128,8 +188,10 @@ def qualify(binary):
         assert upload(data).status_code==200
         b.client.close();b=None;j.stop();j.start();j.wait_control_socket(j.socket);b=Browser(j)
         assert b.status(original)['visual']==ref
-        assert len(j.instructions(7))==3,'Restart replayed a visual instruction'
-        print('PASS actual HTTP/native/SQLite image selection, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
+        assert len(j.instructions(7))==5,'Restart replayed a visual instruction'
+        assert b.status(paired)['visual']==pair and b.status(spoken_pair)['visual']==pair
+        assert b.status(six_id)['visual']==six
+        print('PASS actual HTTP/native/SQLite six distinct old attached images, front and busy worker native images, exact coordinates/provenance, ASR frozen image, immutable retries, private image read, stale live-view/missing/changed/ambiguous/disconnected rejection and restart; zero models/sensors.')
     finally:
         if b:b.client.close()
         j.close()

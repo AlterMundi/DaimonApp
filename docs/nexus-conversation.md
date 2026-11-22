@@ -1,5 +1,32 @@
 # Nexus Mini App conversation adapter
 
+## Narrated visual context negotiation — 2026-11-01
+
+The Nexus #95 review extension preserves a contribution's original report
+revision, source checksum/time and acknowledged rendered scene. The native
+adapter validates the versioned bounded envelope and its anchor/source identity
+before preparing native input, then includes the complete original contribution
+in the existing evidence-only prompt. Legacy contributions without context keep
+their prior behavior; unacknowledged, unsupported, oversized or drifting context
+is rejected. Reflection still authorizes neither actions nor audio deletion.
+
+On explicit association, the adapter queries the existing private operator's
+`capabilities` operation with `{}`. The reply uses
+`schema: nexus.native-capabilities/v1` and `review_context_schemas`. It advertises
+`supported_review_contexts: ["narrated_visual:v1"]` in the binding only when the
+installed backend reports that schema. An older helper/backend falls back to
+the previous binding contract, without an unknown field or assumed support.
+The query is owner-local and adds no service, login, capture, ASR or provider.
+
+Adopt compatible Nexus source and operator before enabling new-context bindings.
+Preserve exact existing actors/targets and binding revision checks; do not
+reconnect participants, withdraw pending exchanges or replay earlier reactions
+as an incidental deployment step. Receiver selection, actual native return and
+human continued-listening acceptance remain separate evidence. The actual
+operator contract is qualified against both the current deployed old backend
+and the Nexus source candidate with synthetic contributions/receipts. Rust prompt
+tests and receiving adoption must be recorded before claiming native support.
+
 Owning issue: [Telecodex #30](https://github.com/AlterMundi/telecodex/issues/30).
 This opt-in, owner-local adapter connects selected retained human contributions
 to an **existing** private Telegram topic and its existing native Codex thread.
@@ -237,3 +264,82 @@ a private conversation binding, and another human's access does not enroll their
 daimon. Real response/continued-listening and physical hearing acceptance remain
 separate from source tests and service readiness. Exact receiving identifiers,
 configuration and receipts stay in the private owning runbook.
+
+
+## Pinned static artifact reflection
+
+The paired backend advertises interactive_3d:v1 only when it implements immutable
+model review editions and the current model permission check. A compatible native
+receiver negotiates artifact_reflection alongside that schema. Static reactions
+carry an artifact anchor, null clock/time, original verified actor and the exact
+acknowledged camera/selection/model pin. Reflection prompts retain the original
+contribution and edition; they explicitly distinguish renderer metadata from
+actually inspected geometry and never authorize execution or audio deletion.
+
+The existing validation path calls the owner-local review-admission operation
+after a static input is dispatched and again at native submission/steering.
+The existing dispatch operation checks access for still-queued input itself. This
+rechecks the exact retained actor, table membership, binding, dispatch identity,
+full context and live model permission, including after a queue delay. The existing input admission hook now also accepts
+a bounded asynchronous check at the native write boundary; synchronous voice,
+workflow and conversation checks retain their previous behavior. Goal admission
+controls keep their existing synchronous contract. Missing
+or unavailable authority fails closed. This operation is read-only: it cannot
+create a dispatch, receipt, grant or native turn, cancel admitted work or replay
+an uncertain request. Admitted/uncertain requests keep their original identities.
+
+The controlled static_context process fixture checks exact native prompt delivery
+and permission loss after dispatch but before submission, with no additional
+native turn for the rejected reaction. Its identity, model/operator and native
+endpoint are synthetic; actual backend policy is qualified separately. Source
+support is not a production deployment or participant acceptance claim. Preserve
+existing bindings/uncertain work during adoption; do not reconnect as an upgrade
+shortcut. The receiving operator must observe the exact executable before
+advertising its schemas.
+
+### Video reflection — source candidate, not deployed
+
+PR494 extends this same artifact-reflection and admission path to video:v1.
+Each supported schema is negotiated independently against backend discovery;
+unknown schemas are never advertised and video support is not inferred from3D.
+The8KiB closed video context retains an immutable source checksum/revision,
+clip-relative playhead and compositor timestamp, explicit original-program clock/
+offset and matching acknowledgement. A missing frame remains explicitly missing.
+Prompts distinguish that metadata from actual image/audio inspection and preserve
+ASR uncertainty, reflection-only scope and separate source-audio deletion consent.
+
+The owner helper reads bounded retained transcript evidence from the independently
+granted source table. It queries clip-relative time, never the original-program
+offset against a short excerpt. Optional evidence failure after dispatch retains
+the committed dispatch identity; it cannot authorize replay. Fresh source access
+still gates actual native submission and the async steering write boundary.
+
+The helper process needs the same NEXUS_HOME_ORIGIN and NEXUS_HOME_GRANTS_FILE
+selection as the paired Nexus web service for video source decisions. Configure
+those existing non-credential selectors in its owning service environment; web
+service environment does not automatically propagate to a separate native unit.
+Reuse the actual existing grant file and permissions, never copy grants or add a
+second identity/authorization store. Missing selection fails closed.
+
+Controlled native process checks exercise narrated, static and video delivery,
+with post-dispatch and steering-boundary revocation. The actual backend/operator
+check separately verifies original clip clock/version, bounded excerpts and
+independent source-grant loss while preserving the uncertain dispatch. These use
+synthetic identity/operator/native peers or ASR as stated; they do not establish
+actual publisher playback, a model response or participant acceptance. Full exact
+CI and receiving qualification remain separate before any scoped adoption. Keep
+current native associations/goals and uncertain requests intact; no reconnect,
+provider input, capture or global Stop is implied by this source checkpoint.
+
+## Selected peer audience
+
+The existing peer handoff accepts `whole-tribe` and `selected-being` disclosure.
+Group requests retain the whole-Tribe instruction. A directed request requires
+a valid pinned being reference and instructs the same native conversation to
+use Matrix's existing structured being destination, without a group fallback.
+Both remain visible in the Nexus table and selected human projection; directed
+delivery is not secrecy. Unknown audiences/invalid direct recipients fail before
+submission. Tokens, bindings, journals, finite admission and original retry
+identities are unchanged. Reconnect or a new request never reauthors an uncertain
+old group request. The paired Nexus route/preview/adapter must also support the
+same selected audience before claiming the end-to-end workflow.

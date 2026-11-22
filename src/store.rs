@@ -21,20 +21,71 @@ mod conversation_requests;
 pub use conversation_requests::ConversationRequest;
 mod creation;
 mod dialogue;
+mod goal_alerts;
 mod goal_controls;
+mod scoped_maintenance;
+pub(crate) use scoped_maintenance::MaintenancePlan;
+mod goal_delegations;
+mod goal_recovery;
+mod goal_retries;
+pub use goal_retries::GoalRecoveryPolicy;
+pub(crate) use goal_retries::GoalRetry;
+mod heartbeat;
+#[cfg(test)]
+pub use heartbeat::HeartbeatReportSource;
+pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
+pub use heartbeat::{
+    HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
+    HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
+};
 mod interaction;
 mod interactions;
+mod live_context;
 mod live_tasks;
 pub use goal_controls::{GoalAction, GoalPlan};
+pub use goal_delegations::GoalDelegationUpdate;
+pub(crate) use live_context::{
+    LiveContextCommand, invalid_native_command as invalid_live_context_command,
+    rejection as live_context_rejection,
+};
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
-pub use matrix::{MatrixAuthor, MatrixReturn, MatrixSubmission};
+pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
+pub(crate) use matrix::publication::{
+    PublicationCompletion, PublicationConfig, PublicationRequest,
+};
+pub(crate) use matrix::response::Command as MatrixResponseCommand;
+pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routing;
 mod session_requests;
+mod workflows;
+pub(crate) use workflows::{
+    ReturnDispatch, WORKFLOW_CAPACITY_ERROR, rejection as workflow_rejection,
+};
+pub use workflows::{WorkflowPlan, WorkflowStep};
+fn record_turn_started_on(
+    conn: &Connection,
+    session: i64,
+    request: &TurnRequest,
+    root: Option<&str>,
+) -> Result<i64> {
+    conn.execute("INSERT INTO turns(session_id,from_user_id,prompt,review_json,status,started_at,completed_at,assistant_text) VALUES(?1,?2,?3,?4,'running',?5,NULL,NULL)",params![session,request.from_user_id,request.prompt,serde_json::to_string(&request.review_mode)?,now_string()])?;
+    let id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+        params![
+            format!("execution_root:{id}"),
+            serde_json::to_string(&root)?
+        ],
+    )?;
+    Ok(id)
+}
 mod stopping;
 mod voice;
-pub use conversation_inputs::{ConversationInput, ConversationInputEvent, ConversationVoice};
+pub use conversation_inputs::{
+    ConversationInput, ConversationInputEvent, ConversationPlayback, ConversationVoice,
+};
 pub use stopping::{StopOperation, StopTarget};
 mod native_recovery;
 mod nexus;
@@ -42,6 +93,7 @@ mod observer;
 mod observer_cards;
 mod observer_freshness;
 mod presentation;
+pub use observer::SessionObservation;
 pub use observer_cards::{ObserverCard, ObserverPreparation};
 pub use observer_freshness::ObserverFreshness;
 pub(crate) mod topic_publications;
@@ -127,19 +179,31 @@ impl Store {
         store.init_interaction_creation()?;
         store.init_routing()?;
         store.init_session_requests()?;
+        store.init_workflows()?;
+        store.init_workflow_returns()?;
+        store.init_delivery_audiences()?;
         store.init_nexus()?;
         store.init_merging()?;
         store.init_stopping()?;
         store.init_conversation_inputs()?;
         store.init_conversation_entry()?;
+        store.init_live_context()?;
+        store.init_native_foreground_returns()?;
         store.init_conversation_requests()?;
+        store.init_native_routed_returns()?;
         store.init_matrix()?;
+        store.init_matrix_publications()?;
+        store.init_goal_delegations()?;
+        store.init_goal_retries()?;
         store.init_goal_controls()?;
+        store.reconcile_goal_retries()?;
+        store.init_goal_recovery()?;
+        store.init_goal_alerts()?;
         store.init_observer_cards()?;
         store.init_observer_freshness()?;
         // A restarted process cannot continue a previous command's activity lease.
         store.conn.lock().expect("store mutex poisoned").execute(
-            "DELETE FROM bot_state WHERE key LIKE 'command_activity:%'",
+            "DELETE FROM bot_state WHERE key LIKE 'command_activity:%' OR key LIKE 'interaction-response-draft:%'",
             [],
         )?;
         // A restart does not authorize replaying a partially dispatched turn.
@@ -297,8 +361,8 @@ impl Store {
             params![update.update_id, payload, self.instance_id, now_string()],
         )?;
         tx.execute(
-            "INSERT INTO original_ingress_order(channel,event_id) VALUES('telegram',?1)",
-            [update.update_id.to_string()],
+            "INSERT INTO original_ingress_order(channel,event_id,captured_at) VALUES('telegram',?1,?2)",
+            params![update.update_id.to_string(), now_string()],
         )?;
         // Capture ownership epoch with journal admission, before attachment/network work.
         tx.execute("INSERT INTO bot_state(key,value) SELECT ?,COALESCE(b.value,'initial') FROM (SELECT COALESCE((SELECT creator_user_id FROM sessions WHERE chat_id=COALESCE(json_extract(?,'$.message.chat.id'),json_extract(?,'$.callback_query.message.chat.id')) AND thread_id=COALESCE(json_extract(?,'$.message.message_thread_id'),json_extract(?,'$.callback_query.message.message_thread_id'),0)),COALESCE(json_extract(?,'$.message.from.id'),json_extract(?,'$.callback_query.from.id'))) AS human) s LEFT JOIN bot_state b ON b.key='stop_admission_epoch:'||s.human",params![format!("stop_input_epoch:{}",update.update_id),payload,payload,payload,payload,payload,payload])?;
@@ -877,6 +941,36 @@ impl Store {
         )
     }
 
+    pub fn record_native_model(
+        &self,
+        key: SessionKey,
+        human: i64,
+        native: &str,
+        model: &str,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE sessions SET model=?5, reasoning_effort=?6, updated_at=?7
+             WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3
+             AND codex_thread_id=?4 AND force_fresh_thread=0
+             AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?3 AND allowed=1)",
+            params![
+                key.chat_id,
+                key.thread_id,
+                human,
+                native,
+                model,
+                effort,
+                now_string()
+            ],
+        )?;
+        if changed != 1 {
+            anyhow::bail!("Native model observation no longer matches the owned session");
+        }
+        Ok(())
+    }
+
     pub fn set_session_reasoning_effort(
         &self,
         key: SessionKey,
@@ -1120,8 +1214,14 @@ impl Store {
         if updated != 1 {
             anyhow::bail!("Collector execution or owner binding changed");
         }
+        let human_publication =
+            workflows::native_transfer_collection_on(&tx, local, human, key, native, physical)?;
+        let mut receipt = serde_json::json!({"native_thread":native,"native_turn":physical,"observed_at":now_string()});
+        if let Some(human) = human_publication {
+            receipt["native_return_human"] = serde_json::json!(human);
+        }
         tx.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![format!("collector_attachment:{local}"),serde_json::to_string(&serde_json::json!({"native_thread":native,"native_turn":physical,"observed_at":now_string()}))?])?;
+            params![format!("collector_attachment:{local}"),serde_json::to_string(&receipt)?])?;
         tx.commit()?;
         Ok(())
     }
@@ -1131,23 +1231,9 @@ impl Store {
         request: &TurnRequest,
         root: Option<&str>,
     ) -> Result<i64> {
-        let review_json = serde_json::to_string(&request.review_mode)?;
-        let now = now_string();
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT INTO turns(session_id, from_user_id, prompt, review_json, status, started_at, completed_at, assistant_text)
-             VALUES (?1, ?2, ?3, ?4, 'running', ?5, NULL, NULL)",
-            params![session_id, request.from_user_id, request.prompt, review_json, now],
-        )?;
-        let id = tx.last_insert_rowid();
-        tx.execute(
-            "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
-            params![
-                format!("execution_root:{id}"),
-                serde_json::to_string(&root)?
-            ],
-        )?;
+        let id = record_turn_started_on(&tx, session_id, request, root)?;
         tx.commit()?;
         Ok(id)
     }
@@ -1378,6 +1464,7 @@ impl Store {
             ",
         )?;
         add_column_if_missing(&conn, "turns", "native_thread_id", "TEXT")?;
+        add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "reasoning_effort", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "service_tier", "TEXT")?;
@@ -1684,6 +1771,50 @@ mod tests {
                 .as_deref(),
             Some("Keep context")
         );
+    }
+
+    #[test]
+    fn native_model_observation_is_atomic_and_binding_scoped() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let selected = SessionKey::new(100, Some(7));
+        let other = SessionKey::new(100, Some(8));
+        for (key, native) in [(selected, "selected-native"), (other, "other-native")] {
+            store.ensure_session(key, 100, &defaults()).unwrap();
+            store.set_session_codex_thread(key, native).unwrap();
+        }
+        assert!(
+            store
+                .record_native_model(selected, 100, "stale-native", "fixture-model", Some("high"))
+                .is_err()
+        );
+        assert!(
+            store
+                .record_native_model(
+                    selected,
+                    999,
+                    "selected-native",
+                    "fixture-model",
+                    Some("high")
+                )
+                .is_err()
+        );
+        store
+            .record_native_model(
+                selected,
+                100,
+                "selected-native",
+                "fixture-model",
+                Some("high"),
+            )
+            .unwrap();
+        let actual = store.get_session(selected).unwrap().unwrap();
+        assert_eq!(actual.model.as_deref(), Some("fixture-model"));
+        assert_eq!(actual.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(actual.codex_thread_id.as_deref(), Some("selected-native"));
+        let untouched = store.get_session(other).unwrap().unwrap();
+        assert_eq!(untouched.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(untouched.reasoning_effort.as_deref(), Some("medium"));
     }
 
     #[test]

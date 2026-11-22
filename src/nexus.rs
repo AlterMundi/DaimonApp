@@ -105,7 +105,9 @@ impl NexusConfig {
     pub async fn call(&self, operation: &str, input: &Value) -> Result<Value> {
         if !matches!(
             operation,
-            "binding"
+            "capabilities"
+                | "review-admission"
+                | "binding"
                 | "configure"
                 | "pending"
                 | "inspect"

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """First browser text/voice needs no Telegram seed or paid bootstrap model."""
 import hashlib,json,sqlite3,sys,uuid
+import time
+from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
@@ -18,10 +20,11 @@ class ColdEntry(Requests):
         self.stop()
         with sqlite3.connect(self.root/'state.sqlite') as db:
             db.row_factory=sqlite3.Row
-            assert not db.execute('SELECT 1 FROM sessions WHERE thread_id=1').fetchone()
-            original=dict(db.execute('SELECT * FROM sessions WHERE thread_id=7').fetchone())
-            original.pop('id');original.update(thread_id=1,codex_thread_id=None,force_fresh_thread=1,busy=0,last_assistant_text=None,session_title='Cold conversation',session_prompt='Discuss with the human while work sessions continue. Use interaction_controller for original input and attributed routing.')
-            db.execute('INSERT INTO sessions('+','.join(original)+') VALUES('+','.join('?' for _ in original)+')',list(original.values()))
+            entry=db.execute('SELECT * FROM sessions WHERE thread_id=1').fetchone()
+            assert entry is not None and entry['codex_thread_id'] is None and entry['busy']==0
+            # Bootstrap creates owned metadata, not a native thread or model turn.
+            db.execute('UPDATE sessions SET force_fresh_thread=1,session_title=?,session_prompt=? WHERE thread_id=1',
+                ('Cold conversation','Discuss with the human while work sessions continue. Use interaction_controller for original input and attributed routing.'))
         script=self.root/'asr.py'
         script.write_text('''import hashlib,json,pathlib,sys,time
 root=pathlib.Path(sys.argv[1]);digest=hashlib.sha256(pathlib.Path(sys.argv[-1]).read_bytes()).hexdigest()
@@ -50,8 +53,10 @@ if sys.argv[1:]!=['app-server','proxy']: sys.exit(7)"""))
         self.messages.clear();self.telegram_methods.clear()
 
 class Browser:
-    def __init__(self,j,companion=False):
+    def __init__(self,j,companion=False,speech=None,streaming=None):
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
+        if speech is not None:config['speech']=speech
+        if streaming is not None:config['streaming_transcription']=streaming
         if companion:config['companion']={'enabled':True,'grants_dir':str(j.root/'companion-grants')}
         self.provider=Provider(config)
         self.client=TestClient(create_app(config,self.provider,lambda raw,bot:int(raw)),base_url=config['origin'])
@@ -66,17 +71,19 @@ class Browser:
         self.headers['authorization']='Bearer '+r.json()['session_token']
         r=self.client.get('/api/interaction/inputs',headers=self.headers);assert r.status_code==200,r.text
         self.binding=r.json()['binding'];self.headers['x-dashboard-csrf']=r.json()['csrf']
-    def text(self,text,reply=None):
+    def text(self,text,reply=None,playback=None):
         body={'id':str(uuid.uuid4()),'binding':self.binding,'text':text}
         if reply:body['reply']=reply
+        if playback:body['playback']=playback
         r=self.client.post('/api/interaction/inputs',json=body,headers=self.headers);assert r.status_code==200,r.text
         return body['id'],r.json()
     def status(self,ident):
         r=self.client.get('/api/interaction/inputs/'+ident,headers=self.headers);assert r.status_code==200,r.text;return r.json()
-    def voice(self,reply=None):
+    def voice(self,reply=None,playback=None):
         clip=audio();ident=str(uuid.uuid4())
         h={**self.headers,'content-type':'audio/wav','x-input-id':ident,'x-input-binding':self.binding,'x-audio-sha256':hashlib.sha256(clip).hexdigest()}
         if reply:h.update({'x-reply-source':('context:' if reply.get('context_only') else '')+reply['source'],'x-reply-revision':reply['revision']})
+        if playback:h['x-playback-context']=json.dumps(playback)
         r=self.client.post('/api/interaction/voice',content=clip,headers=h);assert r.status_code==200,r.text
         return ident,r.json()
     def get(self,path):
@@ -85,7 +92,10 @@ class Browser:
 def first_text(binary):
     j=ColdEntry(binary);b=None
     try:
-        j.prepare();b=Browser(j);binding=b.binding
+        j.prepare()
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute("INSERT INTO bot_state(key,value) VALUES('session_title_owner:100:1','Cold conversation')")
+        b=Browser(j);binding=b.binding
         initial=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1');assert initial==[(None,)]
         assert b.get('/api/interaction')['binding']==binding and not j.packets
         original,_=b.text('#Alpha Start requirement13 without waking the front conversation.')
@@ -104,6 +114,8 @@ def first_text(binary):
         correction,_=b.text('A later written correction must reach this first turn.')
         j.new_native_release.set()
         j.wait(lambda:b.status(front)['phase']=='accepted' and b.status(correction)['phase']=='accepted')
+        native=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')[0][0]
+        j.wait(lambda:any(r.get('method')=='thread/name/set' and r.get('params')=={'threadId':native,'name':'Cold conversation'} for r in j.rpc))
         assert len(j.packets)==1 and 'later written correction' in str(j.packets[0])
         assert b.get('/api/interaction')['binding']==binding
         assert b.status(clip)['phase']=='preparing' and not b.status(clip)['retired']
@@ -254,5 +266,45 @@ def known_unsent_recovery(binary):
         if b:b.client.close()
         j.close()
 
+def web_only_first_text(binary):
+    j=Requests(str(Path(binary).resolve()));client=None
+    try:
+        config=j.config.read_text().replace('[telegram]','[telegram]\nenabled=false')
+        config='\n'.join(line for line in config.splitlines() if not line.startswith('bot_token_file='))+'\n'
+        j.config.write_text(config);(j.root/'bot.token').unlink()
+        j.start();j.wait_control_socket(j.socket)
+        entry=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')
+        assert entry==[(None,)],'Web-only bootstrap started native reasoning'
+        c={'receiver_config':str(j.config),'state_dir':str(j.root/'web-only'),
+           'origin':'https://child.example.test','prefix':'/interaction',
+           'application_id':str(uuid.uuid4()),
+           'shared_auth':{'enabled':True,'home_origin':'https://child.example.test',
+                          'human_ref':'human:telegram:100'}}
+        provider=Provider(c);assert provider.authorized(100)
+        client=TestClient(create_app(c,provider),base_url=c['origin'])
+        headers={'Host':'child.example.test','Origin':c['origin'],'Cookie':'__Host-home='+'h'*43}
+        identity={'contract':'dm.home-session/v1','origin':c['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':c['shared_auth']['human_ref']}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=client.get('/api/interaction/access',headers=headers);assert access.status_code==200,access.text
+            listing=client.get('/api/interaction/inputs',headers=headers);assert listing.status_code==200,listing.text
+            original={'id':str(uuid.uuid4()),'binding':listing.json()['binding'],
+                      'text':'Synthetic child web-only first original; no Telegram account.'}
+            submitted=client.post('/api/interaction/inputs',json=original,
+                headers={**headers,'X-Dashboard-CSRF':access.json()['csrf']})
+            assert submitted.status_code==200,submitted.text
+            j.wait(lambda:bool(j.packets))
+            assert len(j.packets)==1
+            status=provider.conversation_input_status(original['id'])
+            assert status['text']==original['text'] and status['id']==original['id']
+            assert j.row('SELECT count(*) FROM incoming_updates')==[(0,)]
+            assert not j.telegram_methods and not j.messages
+            assert not (j.root/'bot.token').exists()
+        print('PASS actual token-free native bootstrap and first shared-login HTTP original; exact original/native handoff, no Telegram I/O, zero models. Shared identity response is synthetic, not real child acceptance.')
+    finally:
+        if client:client.close()
+        j.close()
+
 if __name__=='__main__':
-    binary=str(Path(sys.argv[1]).resolve());first_text(binary);first_voice(binary);temporary_review(binary);sonic_registry(binary);known_unsent_recovery(binary)
+    binary=str(Path(sys.argv[1]).resolve());first_text(binary);first_voice(binary);temporary_review(binary);sonic_registry(binary);known_unsent_recovery(binary);web_only_first_text(binary)

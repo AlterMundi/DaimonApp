@@ -1,0 +1,10 @@
+<!doctype html><title>Non-application origin path</title>
+<script>
+(async()=>{
+ const result=JSON.parse(sessionStorage.getItem('qualification')||'{}');
+ if(window.NativeSpeechAudio||window.DaimonAudio)Object.assign(result,{state:'failed',message:'Native bridge leaked outside app path'});
+ else if(result.state==='native_bridge_passed')Object.assign(result,{state:'passed',outside_bridge:'absent'});
+ else Object.assign(result,{state:'failed',message:'Missing retained first-page receipt'});
+ await fetch('/result',{method:'POST',body:JSON.stringify(result)});
+})();
+</script>

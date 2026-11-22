@@ -7,15 +7,26 @@ from goals_io import Goals
 
 OPERATOR = '''import argparse,json,pathlib,sqlite3,sys
 p=argparse.ArgumentParser();p.add_argument('--workspace');p.add_argument('--state');p.add_argument('op');a=p.parse_args();v=json.load(sys.stdin)
+marker=pathlib.Path(a.state)/'fail-before-dispatch'
+if a.op=='dispatch' and marker.exists():
+ mode=marker.read_text();calls=pathlib.Path(a.state)/'failed-dispatch-calls';calls.write_text(calls.read_text()+'x' if calls.exists() else 'x')
+ if mode in ('once','stop_once'):marker.unlink()
+ if mode=='stop_once':
+  with sqlite3.connect(pathlib.Path(a.workspace)/'state.sqlite') as bridge:bridge.execute("INSERT OR REPLACE INTO bot_state(key,value) VALUES('stop_admission_epoch:100','later-human-stop')")
+ sys.exit(1)
 db=sqlite3.connect(pathlib.Path(a.state)/'operator.sqlite',timeout=5);db.row_factory=sqlite3.Row;db.execute('BEGIN IMMEDIATE')
 root_binding=json.loads(db.execute("SELECT doc FROM binding").fetchone()[0])
 selected=v.get('table_id')
-if a.op in ('inspect','dispatch'):
+if a.op in ('inspect','dispatch','review-admission'):
  selected=json.loads(db.execute('SELECT doc FROM requests WHERE id=?',(v['request_id'],)).fetchone()[0])['request']['table_id']
 b=root_binding.get('extra',{}).get(selected,root_binding)
 def read(id):
  r=db.execute('SELECT doc,status,dispatch,native,reply FROM requests WHERE id=?',(id,)).fetchone();doc=json.loads(r['doc']);doc['request'].update(status=r['status'],native_turn_id=r['native'],reply=r['reply']);doc['dispatch_id']=r['dispatch'];return doc
-if a.op=='binding':
+if a.op=='capabilities':
+ if not (pathlib.Path(a.state)/'review-capabilities').exists():raise ValueError('old helper has no capabilities')
+ out={'schema':'nexus.native-capabilities/v1','review_context_schemas':['narrated_visual:v1']}
+ if (pathlib.Path(a.state)/'review-capabilities').read_text()=='video':out['review_context_schemas']+=['interactive_3d:v1','video:v1']
+elif a.op=='binding':
  # Simulate the maintenance operator acquiring the hold during this async lookup.
  marker=pathlib.Path(a.state)/'hold-during-binding'
  if marker.exists():
@@ -35,6 +46,16 @@ elif a.op in ('inspect','dispatch'):
    out['dispatch']=True;out['dispatch_id']='dispatch-'+v['request_id'];db.execute("UPDATE requests SET status='handed_off',dispatch=? WHERE id=?",(out['dispatch_id'],v['request_id']))
   else:out={'dispatch':False,'request_id':v['request_id'],'status':out['request']['status']}
  else:out['dispatch']=False
+elif a.op=='review-admission':
+ out=read(v['request_id']);assert out['target']['listener_id']==v['listener_id'] and out['dispatch_id']==v['dispatch_id']
+ c=out['request']['contribution']
+ assert c['review_context']['adapter'] in ('interactive_3d','video')
+ if out['dispatch_id'] and (pathlib.Path(a.state)/'deny-at-submission').exists():
+  count=pathlib.Path(a.state)/'admission-count';n=int(count.read_text())+1 if count.exists() else 1;count.write_text(str(n))
+  limit=(pathlib.Path(a.state)/'deny-at-submission').read_text();limit=int(limit) if limit.isdigit() else 2
+  if n>=limit:raise ValueError('model revoked after dispatch, before submission')
+ out={'schema':'nexus.review-admission/v1','allowed':True,'request_id':v['request_id'],'dispatch_id':v['dispatch_id'],
+      'artifact_anchor':c['artifact_anchor'],'review_context':c['review_context'],'review_actor_ref':c['review_actor_ref']}
 elif a.op=='receipt':
  out=read(v['request_id']);assert out['dispatch_id']==v['dispatch_id'] and out['target']['native_thread_id']==v['native_thread_id']
  old=out['request'];status=v['status'];native=v.get('native_turn_id');reply=v.get('reply')
@@ -157,6 +178,118 @@ def delivered(binary):
     finally:j.close()
 
 
+def visual_context(binary):
+    j = Nexus(binary)
+    (j.state/'review-capabilities').write_text('enabled')
+    try:
+        j.prepare()
+        starts = j.native_turns
+        anchor = dict(report_id='report', report_revision='v1', chapter_id='scene',
+                      session_id='fixture-review', source_time_ms=2456)
+        review = dict(schema_version=1, adapter='narrated_visual', adapter_version=1,
+            capture_version=1, capture_status='acknowledged', review_id='report',
+            review_revision='v1', chapter_id='scene', session_id='fixture-review',
+            source_time_ms=2456, clock_source_id='source',
+            source=dict(source_id='source', revision='asr-v1', sha256='a'*64),
+            snapshot=dict(scene_id='scene', visual='comparison', media_assets=[],
+                art_expanded=True, art_scroll_left=20, art_scroll_top=0,
+                synthesis_open=False, viewport_width=1280, viewport_height=720))
+        contribution = dict(contribution_id='visual-contribution', text='Fixture reaction about this scene',
+            anchors=[dict(source_id='source', transcript_version='asr-v1', start_ms=2456, end_ms=2457)],
+            report_anchor=anchor, review_context=review,
+            report_context=dict(report_id='report', revision='v1', chapter_id='scene',
+                source_id='source', transcript_version='asr-v1', narration='Fixture authored narration'))
+        with sqlite3.connect(j.state/'operator.sqlite') as db:
+            binding = json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+            assert binding['supported_review_contexts'] == ['narrated_visual:v1']
+            request = dict(request_id='visual', table_id='table', author_ref='human:test',
+                binding_id=binding['binding_id'], binding_revision=binding['revision'],
+                responder_ref=binding['responder_ref'], contribution=contribution,
+                response_mode='report_reflection', return_context=dict(playback_ms=2456))
+            db.execute("INSERT INTO requests VALUES(?,?,'queued',NULL,NULL,NULL)",
+                       ('visual', json.dumps(dict(target=binding['target'], request=request))))
+        j.wait(lambda: j.state_of('visual')[0] == 'completed')
+        j.idle()
+        assert j.native_turns == starts+1
+        submitted = [x for x in j.rpc if x.get('method') == 'turn/start'][-1]
+        prompt = submitted['params']['input'][0]['text']
+        assert 'reflection only' in prompt and 'separate explicit human approval' in prompt
+        selected = json.loads(prompt.split('\n', 1)[1])
+        assert selected['contribution'] == contribution
+        assert j.row('SELECT id,codex_thread_id,session_title,cwd FROM sessions WHERE thread_id=7') == j.before
+        time.sleep(1.2)
+        assert j.native_turns == starts+1
+        result=dict(status='passed',profile='synthetic operator/native/model peers',
+            capability_negotiated=True,full_scene_context_preserved=True,native_turns_added=1,
+            exact_receipt=j.state_of('visual'),original_audio_touched=False,actual_model_or_human_acceptance=False)
+        print('PASS exact narrated visual context through capability negotiation, existing native thread and one matched final receipt')
+        return result
+    finally:
+        j.close()
+
+
+
+def static_context(binary, kind='interactive_3d'):
+    j=Nexus(binary)
+    if kind=='video':(j.state/'review-capabilities').write_text('video')
+    try:
+        j.prepare();j.idle()
+        source=dict(resource='a'*32,publicationVersion='b'*64,id='model',version='c'*64)
+        anchor=dict(kind='artifact_review',review_id='review',review_revision='v1',session_id='room',clock_source_id=None,source_time_ms=None)
+        context=dict(schema_version=1,adapter='interactive_3d',adapter_version=1,capture_version=1,
+            capture_status='acknowledged',review_id='review',review_revision='v1',session_id='room',clock_source_id=None,source_time_ms=None,
+            source=source,snapshot=dict(schema='dm.review-3d-state/v1',model=source,camera=dict(azimuth=1,elevation=.4,zoom=2),
+                visiblePartIds=['part'],selectedPartIds=['part']),
+            acknowledgment=dict(schema='dm.review-capture-ack/v1',model=source,renderStateConfirmed=True,decodedFrameTimeMs=None))
+        if kind=='video':
+            source=dict(source_id='clip',revision='v1',sha256='a'*64,clock_source_id='program',original_offset_ms=45000)
+            anchor.update(clock_source_id='program',source_time_ms=47000.25)
+            context.update(adapter='video',clock_source_id='program',source_time_ms=47000.25,source=source,
+                snapshot=dict(schema='dm.review-video-state/v1',source=source,media_time_ms=2000.25,duration_ms=30000.0,playback_rate=.75,
+                    frame_status='compositor_submission',frame=dict(method='requestVideoFrameCallback',media_time_ms=1960.0,presented_frames=49,width=320,height=180)),
+                acknowledgment=dict(schema='dm.review-video-ack/v1',source_time_ms=47000.25,frame_source_time_ms=46960.0))
+            with sqlite3.connect(j.state/'operator.sqlite') as db:
+                binding=json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+                assert binding['supported_review_contexts']==['narrated_visual:v1','interactive_3d:v1','video:v1']
+        def enqueue(id):
+            with sqlite3.connect(j.state/'operator.sqlite') as db:
+                binding=json.loads(db.execute('SELECT doc FROM binding').fetchone()[0])
+                request=dict(request_id=id,table_id='table',author_ref='human:test',binding_id=binding['binding_id'],
+                    binding_revision=binding['revision'],responder_ref=binding['responder_ref'],response_mode='artifact_reflection',
+                    contribution=dict(text='Observe this selected part',anchors=[],artifact_anchor=anchor,review_context=context,review_actor_ref='human:verified'),
+                    artifact_context=dict(adapter=kind,review_id='review',revision='v1',source=source,**(dict(duration_ms=30000,source_table_id='source-evidence') if kind=='video' else {})),return_context=None)
+                db.execute("INSERT INTO requests VALUES(?,?,'queued',NULL,NULL,NULL)",(id,json.dumps(dict(target=binding['target'],request=request))))
+        starts=j.native_turns
+        enqueue('static');j.wait(lambda:j.state_of('static')[0]=='completed');j.idle()
+        assert j.native_turns==starts+1
+        submitted=[x for x in j.rpc if x.get('method')=='turn/start'][-1]['params']['input'][0]['text']
+        if kind=='video':
+            assert 'not the video image or sound' in submitted and '"source_time_ms":47000.25' in submitted
+        else:assert 'not proof you have visually inspected' in submitted and '"source_time_ms":null' in submitted
+        assert 'Observe this selected part' in submitted and 'separate explicit human approval' in submitted
+        (j.state/'deny-at-submission').write_text('controlled revocation')
+        enqueue('revoked');j.wait(lambda:j.state_of('revoked')[0]=='rejected');j.idle()
+        assert j.native_turns==starts+1
+        assert int((j.state/'admission-count').read_text())>=2
+        # The third post-dispatch check runs inside the actual native steering
+        # write boundary, after both claim and channel preparation succeeded.
+        (j.state/'deny-at-submission').write_text('3');(j.state/'admission-count').unlink()
+        j.mode='hold';j.admit('Hold the existing native turn for static review');j.wait(lambda:bool(j.holding))
+        enqueue('steer-revoked');j.wait(lambda:j.state_of('steer-revoked')[0]=='rejected')
+        assert int((j.state/'admission-count').read_text())==3
+        assert not any(x.get('method')=='turn/steer' and 'Observe this selected part' in json.dumps(x) for x in j.rpc)
+        print(f'PASS {kind} native context delivery and revocation at submission/steering write boundary')
+        return dict(profile='synthetic identity/model/operator; actual native process pipes',
+            static_context_delivered=kind=='interactive_3d',video_context_delivered=kind=='video',
+            source_clock='program' if kind=='video' else None,revoked_after_dispatch_rejected=True,
+            native_steering_boundary_revocation_rejected=True,new_review_native_turns=1)
+    finally:j.close()
+
+
+def video_context(binary):
+    return static_context(binary, 'video')
+
+
 def table_launches(binary):
     j=Nexus(binary)
     try:
@@ -200,7 +333,7 @@ def reviewed_iteration(binary):
 
 
 
-def peer_request(binary):
+def peer_request(binary, disclosure="whole-tribe"):
     j=Nexus(binary)
     try:
         j.prepare();starts=j.native_turns;j.stop();j.enqueue('peer-request')
@@ -209,7 +342,7 @@ def peer_request(binary):
             req=doc['request'];req.pop('contribution');req.pop('return_context')
             req.update(request_kind='peer',peer_request_id='selected-peer-request',peer_request={
                 'request_id':'selected-peer-request','recipient_label':'Fixture peer',
-                'recipient_ref':'dm:being:v1:fixture_peer','disclosure':'whole-tribe',
+                'recipient_ref':'dm:being:v1:fixture_peer','disclosure':disclosure,
                 'target':{'context_id':'research','version':'v2','kind':'relation','object_id':'exact-link'},
                 'shared_message':'Exactly the human-selected public-to-Tribe question.'})
             db.execute("UPDATE requests SET doc=? WHERE id='peer-request'",(json.dumps(doc),))
@@ -217,13 +350,19 @@ def peer_request(binary):
         assert j.native_turns==starts+1
         text=[x for x in j.rpc if x.get('method')=='turn/start'][-1]['params']['input'][0]['text']
         assert '"object_id":"exact-link"' in text and '"version":"v2"' in text
-        assert 'whole Tribe' in text and 'Your native reply is private' in text
+        assert 'Your native reply is private' in text
+        if disclosure == 'whole-tribe':assert 'whole Tribe' in text
+        else:assert 'destination {kind:being,being_ref:dm:being:v1:fixture_peer}' in text and 'Do not broadcast' in text and 'whole Tribe' not in text
         assert 'Exactly the human-selected public-to-Tribe question.' in text
         assert 'Selected human question' not in text
         j.stop();j.start();j.command('/nexus reconcile','Nexus: connected')
         assert j.native_turns==starts+1
         print('PASS explicit peer disclosure reaches existing native thread once; native fixture reply is not a signed peer response')
     finally:j.close()
+
+
+def directed_peer_request(binary):
+    peer_request(binary, "selected-being")
 
 
 def controls(binary):
@@ -273,6 +412,60 @@ def known_turn_recovery(binary):
         assert j.state_of()[1]==native and j.state_of()[2]=='Recovered literal final.' and j.native_turns==starts
         assert not j.row("SELECT reply FROM nexus_executions WHERE reply LIKE '%Unselected%'")
         print('PASS explicit accepted-turn reply recovery after restart, no native input and no other turn persistence')
+    finally:j.close()
+
+
+def undispatched_recovery(binary):
+    j=Nexus(binary)
+    try:
+        j.prepare();starts=j.native_turns
+        (j.state/'fail-before-dispatch').write_text('once');j.enqueue()
+        j.wait(lambda:j.state_of()[0]=='completed',seconds=25)
+        assert j.native_turns==starts+1
+        assert (j.state/'failed-dispatch-calls').read_text()=='x'
+        assert len(j.row("SELECT id FROM nexus_requests WHERE id='request'"))==1
+        print('PASS fresh queued/no-dispatch proof recovers the same request once without native replay')
+    finally:j.close()
+    j=Nexus(binary)
+    try:
+        j.prepare();starts=j.native_turns
+        (j.state/'fail-before-dispatch').write_text('permanent');j.enqueue()
+        j.wait(lambda:(j.state/'failed-dispatch-calls').exists() and (j.state/'failed-dispatch-calls').read_text()=='xx',seconds=25)
+        time.sleep(2.2)
+        assert (j.state/'failed-dispatch-calls').read_text()=='xx'
+        assert j.native_turns==starts and j.state_of()[0]=='queued'
+        print('PASS repeated uncommitted dispatch failure is bounded to one recovery and retains the request')
+    finally:j.close()
+    j=Nexus(binary)
+    try:
+        j.prepare();starts=j.native_turns
+        (j.state/'fail-before-dispatch').write_text('stop_once');j.enqueue()
+        j.wait(lambda:j.row("SELECT phase FROM nexus_requests WHERE id='request'")==[('undetermined',)])
+        time.sleep(2.2)
+        assert (j.state/'failed-dispatch-calls').read_text()=='x'
+        assert j.native_turns==starts and j.state_of()[0]=='queued'
+        print('PASS later human Stop epoch prevents recovery of an earlier undispatched request')
+    finally:j.close()
+
+
+def automatic_missing_terminal(binary):
+    j=Nexus(binary,'hold_after_connect')
+    try:
+        j.prepare();j.enqueue();j.wait(lambda:j.state_of()[0]=='accepted')
+        native=j.state_of()[1];starts=j.native_turns;j.stop()
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            local=db.execute("SELECT local_turn FROM nexus_requests WHERE id='request'").fetchone()[0]
+            db.execute("UPDATE turns SET status='completed' WHERE id=?",(local,))
+        # Only selected native metadata supplies the final and terminal evidence.
+        j.records[('native-topic-7',native)]={'id':native,'status':'completed','items':[{'type':'agentMessage','phase':'final_answer','text':'Automatically recovered selected final.'}]}
+        j.records[('native-topic-7','foreign-turn')]={'id':'foreign-turn','status':'completed','items':[{'type':'agentMessage','phase':'final_answer','text':'Do not select this other reply.'}]}
+        j.start();j.wait(lambda:j.state_of()[0]=='completed')
+        assert j.state_of()[1:]==(native,'Automatically recovered selected final.')
+        assert j.native_turns==starts
+        reads=[r for r in j.rpc if r.get('method')=='thread/turns/list']
+        assert reads and all(r['params'].get('itemsView')=='summary' for r in reads)
+        assert not j.row("SELECT reply FROM nexus_executions WHERE reply LIKE '%other reply%'")
+        print('PASS automatic exact-turn terminal recovery without human reconcile or native replay')
     finally:j.close()
 
 
@@ -363,6 +556,6 @@ def writer_hold_other_target(binary):
 
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
-    scenarios=(delivered,table_launches,reviewed_iteration,peer_request,controls,refusals,uncertainty,known_turn_recovery,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
+    scenarios=(delivered,visual_context,static_context,video_context,table_launches,reviewed_iteration,peer_request,directed_peer_request,controls,refusals,uncertainty,known_turn_recovery,undispatched_recovery,automatic_missing_terminal,connect_during_work,writer_hold,writer_hold_steer,writer_hold_race,writer_hold_other_target)
     for run in scenarios:
         if len(sys.argv)==2 or run.__name__ in sys.argv[2:]:run(binary)

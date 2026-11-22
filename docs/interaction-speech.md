@@ -1,7 +1,7 @@
 # Speech rendering component
 
 `scripts/speech_render.py` renders exact selected text to a private WAV using an
-owner-configured NVIDIA Magpie endpoint. This is a provider component for #118
+owner-configured NVIDIA Magpie, Qwen TTS or OpenAI Realtime endpoint. This is a provider component for #118
 and AlterMundi/daimon-matrix#313. The receiving presentation API below connects it
 to canonical results; device buttons and client playback remain separate work.
 The helper itself does not authenticate a human or authorize access to a conversation. Do not expose this CLI as a public
@@ -12,6 +12,12 @@ validate the human, source result, session, audience and current correction
 state, then derive an opaque receiving scope. Reuse that scope on reconnect.
 The scope separates caches; knowing it grants no authority. Rendering a result
 must never rerun worker work or delay the canonical text response.
+
+Native providers may omit the optional agent-message phase. The current owned
+integrating entry still presents those retained completed items through the same
+canonical read/part API; a missing phase must not hide text that Telegram already
+received. This compatibility does not enroll another work topic, invent request
+coverage, or regenerate a response. Explicit commentary keeps its progress kind.
 
 ## Owner-local configuration
 
@@ -36,6 +42,33 @@ override is owner configuration; HTTPS is required except for loopback fixtures.
 Redirects are disabled. No credential is accepted in CLI arguments, request JSON,
 query strings or the cache identity.
 
+For Qwen, select `provider: "qwen-tts"`, an explicit `model` such as
+`qwen-audio-3.0-tts-plus`, and its compatible `voice` (for example
+`longanlingxin`). Replace `env_file` with `credential_file`: the existing
+owner-only plain-token file used by the selected Codex Qwen profile. Do not copy
+the key into a new store. Set `endpoint` to that profile's provider base host plus
+`/api/v1/services/audio/tts/SpeechSynthesizer`, without `/compatible-mode/v1`.
+Keep Token Plan credentials paired with the Token Plan endpoint; this does not
+change the language model or other sessions' providers.
+
+Optional Qwen `instruction` (up to 500 characters), `rate` and `pitch` (0.5–2.0)
+control delivery. Model, instruction and tuning are part of render identity.
+Qwen returns a temporary object URL; HTTP URLs are upgraded to HTTPS on the same
+validated host. The helper downloads it without an
+Authorization header, accepts only Alibaba Cloud object hosts, disables redirects
+and applies the same audio bounds and private retention. The URL is not persisted.
+Qwen WAV is mono 16-bit PCM at 24,000 Hz; NVIDIA remains at 22,050 Hz.
+After a complete bounded HTTP transfer, the exact known Qwen streaming WAV length
+sentinels are replaced with actual lengths; ordinary truncated WAVs remain invalid.
+
+Custom voices are not local checkpoint imports. Voice Lab may create a selected
+reference recording; Qwen's cloud voice-enrollment API creates a model-bound voice
+ID from that sample, where supported by the account and region. Cloud voice design
+can alternatively use a description. Enrollment availability is separate from a
+successful Token Plan synthesis call. See the maintained
+[voice cloning guide](https://www.alibabacloud.com/help/en/model-studio/voice-cloning-user-guide)
+and [voice design guide](https://www.alibabacloud.com/help/en/model-studio/voice-design-user-guide).
+
 Run the helper with `--binding /absolute/private/route.json` and one JSON object
 on stdin:
 
@@ -56,7 +89,7 @@ work, another device or previously published text.
 The owner-only cache key includes receiving scope, exact text, provider endpoint,
 voice, language and format. A per-render lock prevents concurrent requests for
 the same identity. An intent is atomically persisted and fsynced before the
-external request. Complete mono 16-bit PCM WAV at 22,050 Hz is bounded to 8 MiB
+external request. Complete mono 16-bit PCM WAV at the provider's supported rate is bounded to 8 MiB
 and 120 seconds, validated before publication, then retained with a hash.
 
 A completed render is checked again on reuse, including after process restart.
@@ -257,17 +290,383 @@ interrupting a segment already playing. The question remains available in the
 visible request area; its contextual reply reference is advisory. Ordinary
 discussion does not become an answer merely because a question was spoken.
 
-Capture, stop, pause, hide, page leave, voice disable and source/generation change
-cancel the owned wait. Suspending for disconnection or hiding discards the queued
-audio and requires an explicit voice action to resume; reconnect does not replay
-history. Text and actual work continue independently. A failed TTS preparation
-can advance to the next independent queued reply after a gap, without repeating
-the failed source; authorization failure suspends playback. Old progress remains
-coalesced behind a current final result. No new audio retention or provider is
-introduced by this player behavior.
+Capture, stop, pause, page leave, voice disable and source/generation changes
+cancel the owned wait. In the standalone app, opted-in Voice intent survives
+transient network errors and hidden/background playback where the browser allows
+it. Explicit Pause/Voice off remains explicit; OS screen-lock continuation still
+requires actual receiving acceptance.
+
+Starting capture immediately pauses and mutes the current media element, keeping
+its source, position and bounded owned stream. It does not clear queued worker
+returns or cancel native jobs. Manual playback cannot start while capture is
+active. If no newer reply takes its place, Resume uses that same element and
+position without another synthesis. Useful new replies retain sequential priority;
+the interrupted source stays visible with its Resume audio action.
+
+Standalone clients retain at most24 binding-scoped source/revision/segment-offset
+cursors in local storage, with no transcript or raw audio. This is client-reported
+media progress, not proof of human hearing. A reload or replacement player resumes
+from the last segment boundary, conservatively repeating the interrupted segment;
+it does not invent word timing or transfer seconds onto a different render.
+Explicit Resume reuses the existing canonical source validation and synthesis
+identity. Changed/retired/correction-pending sources retire their cursor. No
+browser cursor approves a native question, selects a work destination or triggers
+automatic replay. Uncertain synthesis retains its existing non-retry behavior.
+The optional original-scoped playback report below can provide the integrating
+model with a frozen media position. Full semantic heard/remaining coordination
+and continuous foreground dialogue remain #304/#303.
+
+A failed TTS preparation can advance to the next independent queued reply after
+a gap, without repeating the failed source; authorization failure suspends
+playback. Old progress remains coalesced behind a current final result. No new
+audio retention or provider is introduced by this player behavior.
 
 `tests/conversation_ui.js` drives the shipped player with deterministic gap
 timers and synthetic media/network: chunk/reply/question spacing, priority,
 interruption during silence (including no active audio), stale source, TTS
 failure/next reply and offline/reconnect behavior. Real browser playback and
 subjective hearing remain distinct evidence classes in the v0.2 campaign.
+
+
+## Original-scoped device playback reports
+
+A native receiver advertising `can_report_playback` accepts optional `playback`
+metadata on text/voice originals. The browser snapshots it before microphone
+permission/capture or when submitting text: current source/revision, canonical
+`segment_offset`, media `position_millis`, optional `duration_millis` and
+`state` (`playing`, `paused`, `interrupted`). The same UUID retry and voice
+transcript recovery retain these exact values. Source IDs/revisions, offsets,
+times and states are bounded and validated before original retention; voice
+headers have an additional2KiB bound. Older receivers do not receive the field.
+
+This report is independent of explicit reply/question focus and visual context.
+It cannot select a work destination, answer or approve a native question,
+change hearing status, resume speech or cancel a job. A well-formed stale report
+does not block a new human topic. Native input rendering and routed provenance
+label it as untrusted device data, not human speech or proof of hearing. Only
+scoped conversation readers can retrieve actual source text; the report grants
+no additional access. Direct native question answers exclude this metadata.
+
+The existing original JSON journal retains the report without a separate writer
+or playback database. A changed report under an existing UUID is rejected rather
+than replaying work. Keep a compatible native writer after new originals exist:
+an older writer can ignore unknown optional JSON fields and lose them when
+rewriting retained documents. Roll back presentation/feature use while preserving
+that compatible native reader/writer and all original journals.
+
+
+## On-demand interrupted-source inspection
+
+The integrating controller's `playback_context` operation takes one retained
+original's `input_ref` and an optional canonical character `offset`. It reads
+that original's immutable device report, verifies the current entry/native
+ownership, then reuses the exact-revision presentation or native-question reader.
+It returns at most1600 canonical characters and `source_part.next_offset`; follow
+that cursor only when the human's actual message needs the remaining text. No
+source body is attached to every foreground turn, no extra model call is made,
+and no second playback/transcript journal is created.
+
+`availability` distinguishes `not_reported`, `current_source`,
+`source_not_current` and `source_unconfirmed`. A failed lookup is unconfirmed,
+not proof that a source disappeared. Changed, withdrawn, inaccessible or unknown
+sources supply no replacement text. An unrelated new human topic remains valid.
+Native-question offsets address the canonical question body, excluding the
+cosmetic spoken session label. Other unsupported presentation kinds remain
+unconfirmed rather than being resolved through a different audience.
+
+This supplies semantic source material for interruption handling; it does not
+establish a word-aligned heard/unsaid split. The report is a past client claim,
+not current playback or proof that preceding words were heard. Manual seeking,
+incomplete earlier playback and a smaller synthesized chunk are possible. Never
+infer heard text by multiplying characters by the media-time fraction. Reading
+selects no answer, destination, resumption or work cancellation. Full coordinated
+heard/remaining attention and foreground latency qualification remain #304/#303.
+
+## Markdown presentation and spoken projection
+
+Conversation replies render standard Markdown locally using the vendored MIT
+markdown-it browser bundle (version and upstream integrity in its SOURCE file).
+Raw HTML is escaped, image syntax displays its label without fetching external
+images, and links open with noopener/noreferrer. Formatting is a view: immutable
+original text, revisions, hashes and source offsets remain unchanged.
+
+Follow retains canonical source lengths and maps positions into rendered blocks;
+within-block movement is approximate media progress, never word alignment.
+Partial reads append canonical text before rerendering, so formatting does not
+change pagination, audio validation or resumed segment offsets.
+
+Both batch and streaming synthesis use the pinned Python Markdown parser to
+read visible labels and code rather than delimiters or link destinations. An
+unlabelled URL is spoken as “link” (or “enlace” for the selected Spanish route).
+Literal code remains literal. Provider render identity distinguishes changed
+spoken projections and original source hashes; returned canonical text digests
+still authenticate the original, not the spoken projection. Plain text and its
+edge whitespace retain the existing identity. Ordinary complete inline Markdown
+constructs are kept together when choosing incremental segment boundaries.
+The configured provider, voice, raw-media retention and native work are unchanged.
+
+Install the maintained scripts/requirements-speech.lock alongside the renderer;
+the dashboard lock includes it. No runtime CDN or extra model performs rendering.
+Tests cover unsafe markup/URL rejection, no image fetch, source preservation,
+batch/streaming provider payloads and immutable digests/cache behavior.
+
+
+## Explicit OpenAI-only comparison profile
+
+The optional `[speech_openai]` dashboard section uses the same `Speech` adapter,
+canonical part checks, media retention and two-slot synthesis semaphore as the
+ordinary `[speech]` route. Its private `binding` must select
+`provider: "openai-realtime"`, model `gpt-realtime-2.1-mini` or
+`gpt-realtime-2.1`, and an allowed Realtime voice (for example `cedar`). Use the
+existing approved `credential_file`, `language: "es-AR"`, bounded timeout and
+cache quotas; the same cache root shares accounting with the ordinary route.
+`instruction` can specify Argentine/Río de la Plata pronunciation. This profile
+returns a complete 24kHz mono PCM WAV; `streaming_output` and `word_timestamps`
+remain false. It does not claim certified alignment or physical hearing.
+
+The renderer opens one Realtime socket, verifies `session.updated`, and creates
+one out-of-band audio response with no tools, microphone input or conversation
+mutation. The existing render intent records response ID, completion, usage,
+first-PCM latency and generation/audio duration. Uncertain results never fall
+back to another vendor or automatically repeat the provider call. Cached reads
+are distinguishable from a new generation. Realtime instructions request exact
+reading; actual wording/pronunciation still needs hearing acceptance.
+
+The authenticated audio API accepts `speech_provider: "openai"` alongside the
+canonical source/revision/offset. Missing or unsupported profiles refuse. A
+client requires the matching `X-Speech-Provider` receipt. Under the hood exposes
+an explicit Conversation services choice only where both the speech route and
+native `voice.transcription_profiles.openai` are configured. The default remains
+the existing service. Selecting OpenAI also selects the existing GPT-Live +
+CompAII Avatar mode when available; native Codex retains identity, memory and
+work. This creates no peer API enrollment or provider/default switch.
+
+Each ordinary recording freezes its transcription profile before microphone
+permission. OpenAI recordings bypass legacy live previews and may use the separately configured
+OpenAI captions route described below. They use the explicit
+`/api/interaction/voice/openai` (or `/limited`) route for final interpretation.
+Native `[voice.transcription_profiles.openai]` chooses a named command and
+completed-only reader; the immutable original retains that name through
+recovery. Its `interaction_asr.py` binding selects `provider: "openai"`,
+`model: "gpt-transcribe"`, the approved absolute `key_file` and private
+`cache_root`. Do not add a legacy helper, route or streaming cache to this
+binding. It reuses Avatar's one-attempt OpenAI transcription/custody adapter,
+converts at most120seconds in memory, and retains text/outcome under the existing
+ASR quota. Original media, frozen destinations, replies and attachments stay on
+the ordinary native path. Completed-only reads never start ASR.
+
+Local recovery uses a v5 envelope for profiled recordings so older clients
+refuse it instead of resending through their default ASR route. Keep the new
+native reader/configuration when rolling back web assets: older strict native
+readers cannot parse profiled originals. Do not roll back or delete originals to
+clear that incompatibility.
+
+Comparison records separate cold/cached generation, first provider PCM, complete
+WAV delivery, browser playback and hearing. Realtime token usage is retained;
+provider captions are not word timestamps. Current official pricing is at
+<https://developers.openai.com/api/docs/pricing>; GPT-Live per-second sessions,
+file transcription and Realtime synthesis are separate charges. A configured
+route or fixture is not actual API access, organization credit attribution,
+latency, device or quality acceptance. Source qualification does not establish
+receiving deployment.
+
+
+An owner may explicitly set dashboard `voice_services_default = "openai"`.
+Then omitted audio API profile selects OpenAI, new clients initially select
+OpenAI Conversation and GPT-Live + CompAII Avatar, and explicit `current` keeps
+the previous speech route. Configure native `voice.default_transcription_profile
+= "openai"` for new Telegram recordings, plus named
+`previous` commands for the retained legacy route. New Conversation clients
+freeze their selected default explicitly. Classic unprofiled client captures keep
+the legacy route, including local recordings awaiting Send across an update;
+they must not start another ASR call for a completed legacy interpretation.
+Exact retries/recovery first retain an existing
+original's profile; historical originals without one keep the legacy completed
+reader. Changing a default never changes a captured original or repeats ASR.
+The prior profile uses `/api/interaction/voice/previous` and recovery v5 too.
+This explicit default selection requires owner receiving-profile requalification
+for existing device grants, Alerts/menu and Traffic; retain their state through
+the maintained same-human adoption route in interaction-companion.md. Receiver
+configuration without API access is not authorization to enable peer billing.
+
+The presentation capability flags describe the selected default engine. Explicit
+previous-provider flags retain its streaming/preview availability. A client must
+not infer progressive OpenAI WAV support from the previous engine configuration.
+
+
+## OpenAI live text during Conversation recording
+
+`gpt-live-transcribe` supplies text as microphone audio arrives. New prepared
+captures commit that same live session once and retain its completed text; no
+second file interpretation verifies or replaces it. This follows the official
+[Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription).
+Do not use committed-turn `gpt-transcribe` as a substitute for live captions.
+
+Configure a separate optional `[streaming_transcription_openai]` with
+`enabled=true`, `provider="openai"`, `mode="prepared"`, the existing approved
+absolute `credential_file`, existing private transcription `cache_root`, and
+`endpoint="wss://api.openai.com/v1/realtime?intent=transcription"`. Optional
+`transcription_options` contains bounded `languages`, `keywords`, and `delay`
+(`minimal`, `low`, `medium`, `high`, `xhigh`; default `low`). Use `es`, not an
+unsupported regional language code, for Argentine Spanish input. No alternate
+provider/fallback, native dialogue or turn detection is configured on this route.
+
+The authenticated `/api/interaction/voice/openai/live` socket reuses the existing
+Origin/actor/CSRF/binding checks, the exact interaction-only Home/device POST
+allowlist, fresh authorization, voice maintenance fence,
+two-capture capacity and120second audio/140second connection bounds. It streams
+only to a transcription session with no assistant response/tools. Existing mono
+16kHz preview PCM is deterministically resampled to24kHz across packet boundaries;
+the new capture retains that exact16kHz PCM as its canonical WAV original.
+Partials update the display only. Send commits the SAME transcription session;
+its completed receipt supplies canonical text without a file-ASR call. Cancel
+closes without work. Missing completion keeps audio held, without reconnect,
+audio replay or a provider fallback. Historical `mode="captions"` captures keep
+their frozen compressed/file route; never reinterpret old originals at rollout.
+
+`openai_can_stream_transcribe` advertises this configured route independently of
+previous-provider streaming. New clients freeze the selected route before
+microphone permission; unsupported/older servers retain completed-only ASR.
+Historical captions-only captures and their final file interpretation retained
+separate provider usage; new live-only profiles never make that second call.
+Include both when comparing historical costs. Software tests, model access and synthetic streaming
+measurements do not prove real microphone/accent/noise/hearing acceptance.
+
+
+### Single live recognition
+
+Configure `streaming_transcription_openai.mode="prepared"` and native profile
+`openai-live` together. The profile invokes `scripts/interaction_asr.py` with a
+private `telecodex.interaction-asr/v1` binding: `provider="live-result"`,
+`models=["gpt-live-transcribe"]`, absolute `streaming_cache_root` matching the
+WebSocket receipt store and a bounded `cache_root`. No key/helper/file recognizer
+is accepted by this binding. `previous-live` uses the same reader with the exact
+configured Qwen/Gemini model list and its existing prepared store. Keep existing
+`openai` and `previous` commands unchanged for historical/file-only originals.
+The four-profile limit is unchanged. Pin explicit transcriber labels; OpenAI's
+model is retained as `live_model` in the helper receipt, never mislabeled as
+Qwen/Gemini to fit an older native streaming-model enum.
+
+New browser captures freeze their live-only profile before permission and retain
+PCM WAV plus recovery v6 metadata. Complete/commit the existing stream once;
+read its source/binding/model-checked result unchanged. Missing completion stays
+held with audio preserved; completed-only recovery may read a later exact receipt
+but cannot start another recognition. Existing compressed/historical captures
+retain their selected route. Never reinterpret those originals during rollout.
+
+Synthetic qualification: `tests/single_live_voice_http_io.py NATIVE_BINARY`
+exercises the actual native profile reader with the base file recognizer disabled,
+exact text/provenance, retry identity and one immutable original. Browser and
+shared Home/device tests cover route freezing and scoped admission. These do not
+establish hearing or every public Avatar source-window path.
+
+Avatar `/voice/recover` selects the retained original's profile and its exact
+completed-only command. New unsubmitted native captures require the live reader.
+Missing results or profiles keep audio held; the base file recognizer cannot
+fill that gap. Historical completed results may be read without another provider
+call. A live-only reader must still bind `provider="live-result"`, without
+helper/key/file-provider settings.
+
+
+### Selected workshop voice in Conversation
+
+The actor's active saved workshop voice also selects OpenAI Conversation reading.
+Each new source-linked audio request snapshots that revision, including delivery;
+an in-flight reading and an existing Avatar connection keep their frozen choice.
+New Avatar chats and new readings use the current selection. Explicit previous-
+provider playback retains its selected provider; there is no automatic fallback.
+The existing OpenAI reader cache, two speech slots and original-audio retention
+are reused. Live read-aloud accepts the existing bounded canonical text (at most
+1800 characters), with a 120-second/8MiB ceiling. Studio auditions retain their
+40-word/30-second bounds. No browser-authored text or voice route is accepted.
+
+Header compaction on scroll is disabled by default during the interface redesign;
+the retained opt-in implementation is not selected by Conversation.
+
+Desktop wheel events over the surrounding page scroll the visible Conversation
+chat. Events inside the chat keep native scrolling; other scrollable panels,
+editors, open modal dialogs and modified zoom/horizontal gestures keep ownership.
+The relay is removed on Conversation teardown and never compacts the header.
+
+Live emits zero PCM even after a passage has finished. Both auditions and reading
+retain received chunks in order, but digital-silence frames do not reset the
+existing one-second quiet interval after the exact passage transcript matches.
+Final provider closure and usage are still required; there is no retry or audio
+regeneration to repair an unknown outcome.
+
+
+### Header audio feedback
+
+Conversation mounts the existing bounded SVG envelope behind its header content.
+Copper measures current input PCM; accent/cyan measures decoded output. Both use
+40 scalar history points per track and update at most10times per second. The
+ordinary live-caption path observes its existing PCM buffer synchronously; it
+opens no second microphone/recognizer and copies no audio. Plain MediaRecorder
+fallback without measured PCM does not invent an input waveform. Existing
+playback observation and public/native Avatar meters supply the other paths.
+Stop/quiet clears tracks immediately; hidden pages and reduced motion clear/hide
+the feedback. Optional rendering/observer failures cannot interrupt capture,
+original retention, captioning, playback, source identity or explicit Stop.
+The selected header background stays in place rather than changing with pose.
+
+
+## Bounded lookahead for saved Live reading voices
+
+Saved studio voices use the existing GPT-Live read-aloud route; the unselected
+Realtime reader is a different generation path. A voice ID alone is not a latency
+measurement. Keep the selected profile/delivery and source-bound render cache;
+do not silently substitute a faster model or replay an uncertain render.
+
+For finalized-WAV Live reading, use ordinary240-character canonical parts at all
+offsets (links/code retain their existing atomic boundary preference). The audio
+response can certify `X-Presentation-Lookahead-Offset` from the same canonical
+window. It is an exact later offset, not browser-selected text or a new grant.
+No second boundary is advertised for questions or progressive streaming.
+
+The Conversation player owns at most two future WAV preparations while one part
+plays. They share the existing two synthesis slots and cache/retention bounds;
+future memory is at most16MiB (two8MiB parts), plus the existing current audio.
+Promoting a prepared part transfers its exact already-owned successor and fills
+only the newly free slot. Stop, Skip, source replacement and ordinary teardown
+cancel both future preparations. Failed/unknown preparations are retained, not
+reissued automatically. Provisional live-prefix and progressive-player behavior
+keep their existing single-ahead contract and canonical continuity checks.
+
+Two preparations can hide near-playback-speed generation behind current playback;
+this is not a promise of zero gaps under provider/network delay. Compare startup,
+first PCM, generation and audio duration with the same synthetic passage before
+calling a particular voice slow. Real playback fluency, chosen delivery and human
+hearing are separate acceptance from source/HTTP/queue fixtures.
+
+## Editing a live dictation draft
+
+Touching or typing in an editable live-caption composer pauses its current PCM
+capture and visible countdown. **Continue listening** resumes the same recorder
+and recognition socket, puts the cursor at the end and appends subsequent words
+after the human-owned text. No second recognition or replacement call is opened.
+Pause alone leaves the ordinary original-audio submission unchanged.
+
+Once the human edits, Send uses the existing text-with-files input route: exact
+human text, frozen reply/image/file context, original recording and separately
+labeled automatic transcript (or explicitly unverified live preview). The audio
+is not also submitted as another instruction, and manual edits never become a
+claimed automatic transcript. Two existing file slots are reserved for these
+originals; editing is offered only with file access and sufficient reserved
+attachment capacity. An edited draft follows ordinary text-reply semantics; it
+never runs automatic audio-answer matching. Explicit reply context is preserved. Existing
+eight-file/20MiB-per-file/40MiB-total and32KiB text limits remain.
+
+The visible counter stops while editing; the original120second physical deadline
+still runs and ends in retained review, never automatic submission. Continue is
+foreground-only and never renews capture/provider limits. Worklet pause drops
+incoming samples while preserving and flushing all accepted pre-pause PCM; Stop
+can flush while paused without resuming the microphone. Explicit lifecycle close
+retains an edited original for review; physical browser/OS persistence is separate.
+
+Recovery envelope v7 freezes the edited draft, original/automatic text references,
+identities and hashes before network effects. Legacy readers must refuse v7;
+rollback must retain a compatible reader until those originals settle. Existing
+records are not migrated. Combined edited metadata is capped at256KiB alongside
+the existing shared20MiB acoustic/128-record bounds. Attachment failures, changed
+binding and unknown input results retain the same original; Check delivery is a
+read and does not assert acceptance or replay an uncertain submission.

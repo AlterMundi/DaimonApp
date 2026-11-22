@@ -1,5 +1,21 @@
 # Original conversation input
 
+## Recording while reading another browser tab
+
+An ordinary voice message that the human has already started keeps its recorder
+and original upload when `visibilitychange` hides this page. Switching back does
+not open another microphone, send the recording or replay an upload. The human
+can return and press Send. The existing120second capture and20MiB byte limits
+remain. A permission result arriving after the tab becomes hidden is cancelled.
+
+This does not enable background Avatar conversation. Direct voice, native app
+background events, page navigation/closure and explicit teardown retain their
+existing suspension behavior. A browser or mobile OS can suspend a background
+page independently; source/Node qualification does not establish phone capture
+or a platform background entitlement. Keep the recording page foreground on a
+phone until actual device acceptance establishes its supported behavior.
+
+
 The owner-local controller accepts non-Telegram text into the configured native
 integrating entry. It reuses the existing queue, native writer and active steer;
 there is no second model session or fabricated Telegram update. The selected entry can be empty. Its first ordinary human message creates the
@@ -417,3 +433,34 @@ excerpts are bounded; complete replies remain in the conversation's reply view.
 Unrouted originals and unavailable target responses remain explicit. The monitor
 uses the existing authenticated owner surface; interaction-only device grants
 do not gain this inspection endpoint.
+
+
+### TV and older browser compatibility
+
+The standalone page retains a solid dark background plus readable muted/border
+colors when color-mix is unsupported. The recording control uses an inline SVG
+rather than a CSS mask or device font glyph; the same icon survives microphone
+state resets. Capture failures distinguish denied permission, no accessible
+device, device-open failure, unsupported recording and browser security refusal
+using fixed messages, without exposing raw platform error text. Permission alone
+does not prove that a TV remote microphone is accessible to a web page.
+
+Samsung remote configuration research is separate from this client behavior.
+Actual TV playback delayed until a tab switch remains an unresolved receiving
+report under [#326](https://github.com/AlterMundi/telecodex/issues/326), not a
+confirmed autoplay diagnosis or an unsupported-browser conclusion.
+
+## Reply to an exact integrator message
+
+Canonical integrator answer/progress cards expose Reply to this message. It
+freezes the existing source ID and revision as a context-only ConversationReply,
+using the same text/voice composer and exact-original retry path. The earlier
+answer body is not copied. Native references are canonical positive i64 IDs and
+cannot select a worker destination. The integrator can request a relevant bounded
+part with its existing conversation_part reader; a missing exact revision is
+uncertainty, never permission to substitute another message.
+
+Worker Reply to this session retains its existing explicit destination and request
+correlation. The selected source/revision remains in the original input and in
+the worker relay's selection provenance. Neither action copies the complete
+quoted message. Device context does not grant approval or prove hearing.

@@ -9,17 +9,20 @@ import tempfile
 import uuid
 import concurrent.futures
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import time
+import tomllib
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
+from dashboard.speech import speech_part, speech_request
 from dashboard.app import create_app
 from dashboard.companion import Grants, authority
-from dashboard.provider import Provider, ProviderUnavailable
+from dashboard.provider import Provider, ProviderUnavailable, receiving_authority
 from dashboard.private_state import read_json, write_json
 from presentation_io import Receiver
 import speech_render as speech_fixture
@@ -60,11 +63,168 @@ class Companion(unittest.TestCase):
     def audio(self):
         return self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
 
+    def web_only(self):
+        self.config.pop('bot_id')
+        self.config['application_id']='fa34f9ac-3ee0-435f-87be-d91dded19b52'
+        self.provider.receiver={'telegram':{'enabled':False}}
+        self.config['shared_auth']={'enabled':True,'home_origin':self.config['origin'],
+                                    'human_ref':'human:telegram:100'}
+        self.client.close();self.client=self.client_for()
+
+    def test_web_only_shared_identity_has_no_telegram_exchange_or_fake_bot(self):
+        self.web_only()
+        self.provider.conversation_inputs=lambda before,direction:{'items':[],'more':False}
+        calls=[]
+        self.provider.conversation_input_submit=lambda body:calls.append(body) or {'phase':'queued'}
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
+        headers={'Host':'example.test','Origin':self.config['origin'],'Cookie':'__Host-home='+'h'*43}
+        # A prior device grant from a bot-scoped app never gains the web scope.
+        self.assertEqual(self.client.get('/api/interaction/access',headers=self.headers).status_code,401)
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=self.client.get('/api/interaction/access',headers=headers)
+            self.assertEqual(access.status_code,200,access.text)
+            self.assertEqual(self.client.get('/api/interaction/inputs',headers=headers).status_code,200)
+            payload={'id':str(uuid.uuid4()),'text':'Synthetic web-only original'}
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=headers).status_code,403)
+            write={**headers,'X-Dashboard-CSRF':access.json()['csrf']}
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers={**write,'Origin':'https://other.test'}).status_code,403)
+            self.assertEqual(calls,[])
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=write).status_code,200)
+            self.assertEqual(calls,[payload])
+            identity['actor']['ref']='human:telegram:101'
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
+        for route in ['/api/session','/api/alerts/attention']:
+            self.assertEqual(self.client.post(route,json={'init_data':'100'},headers=headers).status_code,403)
+
+    def test_web_only_configuration_requires_explicit_scope_and_native_transport_off(self):
+        self.web_only()
+        candidates=[]
+        for key,value in [('bot_id',123),('bot_username','not_a_real_bot'),('miniapp_short_name','App')]:
+            item=copy.deepcopy(self.config);item[key]=value;candidates.append(item)
+        for name in ['alerts','traffic']:
+            item=copy.deepcopy(self.config);item[name]={'enabled':True};candidates.append(item)
+        for config in candidates:
+            with self.assertRaises(ValueError):create_app(config,self.provider)
+        self.provider.receiver={'telegram':{'enabled':True}}
+        with self.assertRaises(ValueError):self.client_for()
+        self.provider.receiver={'telegram':{'enabled':False}}
+        del self.config['shared_auth']['human_ref']
+        with self.assertRaises(ValueError):self.client_for()
+
+    def test_web_only_scope_change_invalidates_device_and_csrf_without_changing_legacy_scope(self):
+        legacy=authority(self.config,self.provider)
+        expected=hashlib.sha256(json.dumps([123,self.config['origin'],'/sessions',
+                self.provider.binding_bytes.hex()],separators=(',',':')).encode()).hexdigest()
+        self.assertEqual(legacy,expected)
+        self.web_only()
+        from dashboard.home_auth import HomeAuth
+        before=HomeAuth(self.config,self.provider).binding
+        prior=authority(self.config,self.provider)
+        self.config['application_id']=str(uuid.uuid4())
+        self.assertNotEqual(prior,authority(self.config,self.provider))
+        self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
+        prior=authority(self.config,self.provider)
+        before=HomeAuth(self.config,self.provider).binding
+        self.config['shared_auth']['human_ref']='human:telegram:101'
+        self.assertNotEqual(prior,authority(self.config,self.provider))
+        self.assertNotEqual(before,HomeAuth(self.config,self.provider).binding)
+
+    def test_web_only_post_start_telegram_enable_refuses_existing_access(self):
+        self.web_only()
+        receiver_path=self.root/'web-only-receiver.toml'
+        database_path=self.root/'web-only-users.sqlite'
+        with sqlite3.connect(database_path) as db:
+            db.execute('CREATE TABLE users(tg_user_id INTEGER,allowed INTEGER)')
+            db.execute('INSERT INTO users VALUES(100,1)')
+        db.close()
+        receiver_path.write_text('db_path='+json.dumps(str(database_path))+
+            '\n[session_control]\nhuman_id=100\n[telegram]\nenabled=false\n')
+        receiving=Provider({'receiver_config':str(receiver_path)})
+        self.provider.receiver=receiving.receiver
+        self.provider.binding_bytes=receiving.binding_bytes
+        self.provider.assert_binding=receiving.assert_binding
+        self.provider.authorized=receiving.authorized
+        self.client.close();self.client=self.client_for()
+        grants=Grants(self.config,self.provider)
+        output=self.root/'web-only-device.json'
+        grants.enroll('Web-only fixture',output,3600)
+        device=read_json(output)
+        headers={'Host':'example.test','Origin':self.config['origin'],
+                 'Cookie':'__Host-home='+'h'*43}
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,200)
+            self.assertIsNotNone(grants.authenticate(device['authorization'].split(' ',1)[1]))
+            receiver_path.write_text(receiver_path.read_text().replace('enabled=false','enabled=true'))
+            with self.assertRaises(ProviderUnavailable):receiving.assert_binding()
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,503)
+            self.assertIsNone(grants.authenticate(device['authorization'].split(' ',1)[1]))
+            receiving.receiver=tomllib.loads(receiver_path.read_text())
+            with self.assertRaises(ValueError):create_app(self.config,receiving)
+
+    def test_enabled_legacy_receiving_authority_keeps_its_original_bytes(self):
+        receiver={'session_control':{'human_id':100},'telegram':{'api_base':'https://example.test'}}
+        expected=json.dumps({'db_path':None,'session_control':receiver['session_control'],
+            'interaction':None,'voice':None,'telegram':{'api_base':'https://example.test',
+            'bot_token':None,'bot_token_file':None},'native_binary':'codex'},
+            sort_keys=True,separators=(',',':')).encode()
+        self.assertEqual(receiving_authority(receiver),expected)
+        receiver['telegram']['enabled']=True
+        self.assertEqual(receiving_authority(receiver),expected)
+        receiver['telegram']['enabled']=False
+        self.assertNotEqual(receiving_authority(receiver),expected)
+
+    def test_native_physical_policy_preserves_dashboard_access_identity(self):
+        receiver={'db_path':'owned.sqlite','session_control':{'human_id':100},
+            'telegram':{'api_base':'https://example.test','bot_token_file':'owned-token'},
+            'interaction':{'matrix_transport':{'command':['owned-writer'],
+                'source':{'kind':'body','being_ref':'owned-being'},
+                'native_funding_binding':{'account_id':'owned-account'}}}}
+        original=copy.deepcopy(receiver)
+        before=receiving_authority(receiver)
+        policy={'permissions':'bounded-work','tools':[{'name':'exec_command'}],
+            'environment':{'PATH':'/usr/bin:/bin'},
+            'processLimits':{'memoryBytes':1073741824,'cpuPercent':100,'tasks':128}}
+        receiver['interaction']['matrix_transport']['native_host_restrictions']=policy
+        self.assertEqual(receiving_authority(receiver),before)
+        self.assertEqual(receiver['interaction']['matrix_transport']['native_host_restrictions'],policy)
+        policy['processLimits']['cpuPercent']=50
+        self.assertEqual(receiving_authority(receiver),before)
+        # Every existing actor/data/route/account dependency remains fenced.
+        for section,key,value in [('session_control','human_id',101),
+                ('telegram','bot_token_file','foreign-token'),('receiver','db_path','foreign.sqlite'),
+                ('transport','command',['foreign-writer']),
+                ('transport','source',{'kind':'body','being_ref':'foreign-being'}),
+                ('transport','native_funding_binding',{'account_id':'foreign-account'})]:
+            changed=copy.deepcopy(receiver)
+            target=(changed if section=='receiver' else changed['interaction']['matrix_transport']
+                    if section=='transport' else changed[section])
+            target[key]=value
+            with self.subTest(section=section,key=key):
+                self.assertNotEqual(receiving_authority(changed),before)
+        self.assertNotIn('native_host_restrictions',original['interaction']['matrix_transport'])
+
+    def test_malformed_identity_response_is_unavailable_not_expired(self):
+        from dashboard.home_auth import identity_response
+        for body in (b'{', b'\xff'):
+            with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
+                response=connection.return_value.getresponse.return_value
+                response.status=200;response.read.return_value=body
+                with self.assertRaises(OSError):
+                    identity_response('https://home.example.test','h'*43)
+                connection.return_value.close.assert_called_once()
+
     def test_shared_home_session_is_fileless_scoped_and_revalidated(self):
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
         self.config['additional_origins']=['https://home.example.test']
         self.client.close();self.client=self.client_for()
         self.provider.conversation_inputs=lambda before,direction: {'items':[], 'more':False}
+        self.provider.conversation_telegram_inputs=lambda before,direction: {'items':[], 'read_only':True}
+        self.provider.conversation_input_trace=lambda ident: {'id':ident,'read_only':True}
         submitted=[]
         self.provider.conversation_input_submit=lambda body: submitted.append(body) or {'phase':'queued'}
         token='h'*43
@@ -78,6 +238,8 @@ class Companion(unittest.TestCase):
             self.assertNotIn(token,access.text)
             self.assertEqual(self.client.get('/api/interaction',headers=headers).status_code,200)
             self.assertEqual(self.client.get('/api/interaction/inputs',headers=headers).status_code,200)
+            self.assertEqual(self.client.get('/api/interaction/telegram-inputs',headers=headers).status_code,200)
+            self.assertEqual(self.client.get('/api/interaction/inputs/telegram:123/trace',headers=headers).status_code,200)
             payload={'id':str(uuid.uuid4()),'text':'Shared session text'}
             for csrf in ('', 'wrong'):
                 denied=self.client.post('/api/interaction/inputs',json=payload,headers={**headers,'X-Dashboard-CSRF':csrf})
@@ -96,6 +258,8 @@ class Companion(unittest.TestCase):
             changed={**identity,'actor':{**identity['actor'],'ref':'human:telegram:200'}}
             current.return_value=changed
             self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
+            current.return_value={'actor':None}
+            self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,503)
             current.side_effect=ValueError('revoked')
             self.assertEqual(self.client.get('/api/interaction',headers=headers).status_code,401)
         redirect=self.client.get('/?view=conversation&client=standalone',follow_redirects=False)
@@ -111,6 +275,109 @@ class Companion(unittest.TestCase):
         self.assertEqual(clean.headers['location'],'https://home.example.test/interaction/?view=conversation&client=standalone')
         shorthand=self.client.get('/?view=conversation',headers={'Host':'home.example.test'},follow_redirects=False)
         self.assertEqual(shorthand.status_code,307)
+
+    def test_explicit_home_native_decisions_keep_device_and_admin_boundaries(self):
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        self.client.close();self.client=self.client_for()
+        identity={'contract':'dm.home-session/v1','origin':'https://home.example.test',
+                  'expires':int(time.time())+3600,'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'}}
+        headers={'Host':'home.example.test','Cookie':'__Host-home='+'h'*43,'Origin':'https://home.example.test'}
+        ident='b'*32;binding='a'*64;revision='c'*64;calls=[]
+        original=self.provider.presentation
+        self.provider.request_id=Provider.request_id
+        def presentation(command):
+            if command.startswith(('requests decide ','requests internal decide ')):
+                calls.append(command);return {'id':ident,'binding':binding,'revision':revision,'recorded':True}
+            return original(command)
+        self.provider.presentation=presentation
+        self.provider.conversation_request_decide=lambda ident,body,internal=False:Provider.conversation_request_decide(self.provider,ident,body,internal)
+        body={'binding':binding,'revision':revision,'action':{'kind':'approval','choice':'a'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=self.client.get('/api/interaction/access',headers=headers).json()
+            headers['x-dashboard-csrf']=access['csrf']
+            self.assertFalse(self.client.get('/api/interaction?can_decide_requests=true',headers=headers).json()['can_decide_requests'])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                self.assertEqual(self.client.post(path,json=body,headers=headers).status_code,403)
+            self.assertEqual(calls,[])
+            self.config['shared_auth']['native_decision_access']=True
+            self.client.close();self.client=self.client_for()
+            self.assertTrue(self.client.get('/api/interaction',headers=headers).json()['can_decide_requests'])
+            path='/api/interaction/requests/'+ident
+            self.assertEqual(self.client.post(path,json=body,headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
+            self.assertEqual(calls,[])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                result=self.client.post(path,json=body,headers=headers)
+                self.assertEqual(result.status_code,200,result.text)
+                self.assertEqual(json.loads(calls[-1].split('decide ',1)[1]),{**body,'id':ident})
+            count=len(calls)
+            limited={**headers,**self.headers}
+            self.assertFalse(self.client.get('/api/interaction',headers=limited).json()['can_decide_requests'])
+            for path in ('/api/interaction/requests/'+ident,'/api/interaction/internal/requests/'+ident):
+                self.assertEqual(self.client.post(path,json=body,headers=limited).status_code,403)
+            for path in ('/api/stop','/api/resume'):
+                self.assertEqual(self.client.post(path,json={},headers=headers).status_code,403)
+            self.assertEqual(self.client.get('/api/state',headers=headers).status_code,403)
+            self.assertEqual(len(calls),count)
+            identity['actor']['ref']='human:telegram:101'
+            self.assertEqual(self.client.post('/api/interaction/internal/requests/'+ident,json=body,headers=headers).status_code,403)
+            self.assertEqual(len(calls),count)
+
+    def test_home_native_decision_policy_requires_an_explicit_boolean(self):
+        from dashboard.home_auth import HomeAuth
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test','native_decision_access':'true'}
+        with self.assertRaises(ValueError):HomeAuth(self.config,self.provider)
+
+    def test_shared_alert_read_is_explicit_and_does_not_widen_device_or_control_grants(self):
+        class Alerts:
+            binding='fixture-alert-scope'
+            calls=0
+            revoke=None
+            def assert_binding(self): pass
+            def start(self): pass
+            def close(self): pass
+            def snapshot(self):
+                self.calls+=1
+                if self.revoke: self.revoke()
+                return {'state':'available','observer_state':'healthy','incidents':[
+                    {'projection':{'producer_id':'fixture','incident_id':'case','severity':'error',
+                                   'processing_state':'open','summary':'Safe operational summary'},
+                     'acknowledgments':[]}], 'resolved_incidents':[]}
+        alerts=Alerts()
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        def reopen():
+            self.client.close()
+            self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw),alerts=alerts),base_url=self.config['origin'])
+        reopen()
+        headers={'Host':'home.example.test','Cookie':'__Host-home='+'h'*43,'Origin':'https://home.example.test'}
+        identity={'contract':'dm.home-session/v1','origin':'https://home.example.test','expires':int(time.time())+3600,
+                  'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            self.assertEqual(self.client.get('/api/interaction/alerts',headers=headers).status_code,403)
+            self.assertEqual(alerts.calls,0,'A default conversation grant must not read operational incidents')
+            self.config['shared_auth']['alerts_access']=True
+            reopen()
+            response=self.client.get('/api/interaction/alerts',headers=headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['attention']['level'],'error')
+            self.assertEqual(response.json()['attention']['count'],1)
+            self.assertIs(response.json()['read_only'],True)
+            for path in ('/api/alerts','/api/state','/api/traffic'):
+                self.assertEqual(self.client.get(path,headers=headers).status_code,403,path)
+            self.assertEqual(self.client.post('/api/alerts/acknowledge',json={},headers=headers).status_code,403)
+            self.assertEqual(self.client.post('/api/stop',json={},headers=headers).status_code,403)
+            before=alerts.calls
+            self.assertEqual(self.client.get('/api/interaction/alerts',headers=self.headers).status_code,403,
+                             'Existing companion files do not inherit the separate shared-browser grant')
+            self.assertEqual(alerts.calls,before)
+            identity['actor']['ref']='human:telegram:999'
+            self.assertEqual(self.client.get('/api/interaction/alerts',headers=headers).status_code,403)
+            identity['actor']['ref']='human:telegram:100'
+            alerts.revoke=lambda:setattr(self.provider,'authorized',lambda human:False)
+            denied=self.client.get('/api/interaction/alerts',headers=headers)
+            self.assertEqual(denied.status_code,403,denied.text)
+            self.assertNotIn('Safe operational summary',denied.text,'Post-read revocation must fence the retained snapshot')
 
     def test_delayed_shared_identity_does_not_block_unrelated_dashboard_io(self):
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
@@ -134,6 +401,71 @@ class Companion(unittest.TestCase):
         with patch('dashboard.home_auth.identity_response',side_effect=delayed) as lookup:
             asyncio.run(scenario())
         self.assertEqual(lookup.call_count,2,'Revalidate after I/O without a cross-request identity cache')
+
+    def test_live_speech_requires_selected_configuration(self):
+        self.provider.source['kind']='integrator_live'
+        rejected=self.audio()
+        self.assertEqual(rejected.status_code,409)
+        self.assertEqual(len(self.speech.calls),0)
+        self.config['speech']['live_response']=True
+        self.client.close();self.client=self.client_for()
+        result=self.audio()
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(len(self.speech.calls),1)
+
+    def test_incremental_parts_preserve_full_unicode_text_and_question_contract(self):
+        text=('A sentence with a technical command git status and 🙂. '*70)
+        offset=0;parts=[]
+        while offset<len(text):
+            canonical={**self.provider.source,'text':text[offset:offset+1600],'offset':offset,
+                       'next_offset':offset+1600 if offset+1600<len(text) else None}
+            selected=speech_part(canonical);parts.append(selected['text'])
+            self.assertEqual(selected['text'],text[offset:offset+len(selected['text'])])
+            end=offset+len(selected['text']);self.assertGreater(end,offset)
+            self.assertLessEqual(len(selected['text']),240 if offset==0 else 640)
+            self.assertEqual(selected['next_offset'],end if end<len(text) else None)
+            offset=end
+        self.assertEqual(''.join(parts),text)
+        question={**self.provider.source,'kind':'native_question','text':text[:1500]}
+        self.assertIs(speech_part(question),question,'Synthetic question labels retain their established offsets')
+
+    def test_incremental_part_does_not_cut_link_label_or_destination(self):
+        text='A sentence explaining the result. '*6+'[the official documentation](https://example.org/'+'path/'*80+'). Continue.'
+        part={'text':text,'offset':0,'next_offset':None,'kind':'integrator_answer'}
+        segments=[]
+        while part['text']:
+            chosen=speech_part(part);segments.append(chosen['text'])
+            self.assertEqual(chosen['text'].count('['),chosen['text'].count(']'))
+            used=len(chosen['text']);self.assertGreater(used,0)
+            part={**part,'text':part['text'][used:],'offset':part['offset']+used}
+        self.assertEqual(''.join(segments),text)
+
+    def test_worker_voice_introduction_is_natural_and_does_not_change_source(self):
+        source={'entry_binding':'fixture','id':'worker:1','kind':'worker_progress',
+                'label':'#Realtime','offset':0,'text':'**A useful update.**'}
+        original=copy.deepcopy(source)
+        self.assertEqual(speech_request(source,'es-US')['text'],'Novedades desde Realtime\n\n**A useful update.**')
+        self.assertEqual(speech_request(source,'en-US')['text'],'Update from Realtime\n\n**A useful update.**')
+        self.assertEqual(speech_request({**source,'offset':100},'es-US')['text'],source['text'])
+        self.assertEqual(speech_request({**source,'label':'#Realtime.'},'es-US')['text'],'Novedades desde Realtime\n\n**A useful update.**')
+        self.assertEqual(source,original,'Canonical source and offsets remain unchanged')
+
+    def test_incremental_audio_is_an_exact_canonical_prefix(self):
+        self.config['speech']['incremental_segments']=True
+        self.provider.source['text']=('A complete sentence with Unicode 🙂 and a command git status. '*30)
+        self.client.close();self.client=self.client_for()
+        response=self.audio();self.assertEqual(response.status_code,200,response.text)
+        end=int(response.headers['x-presentation-end-offset'])
+        self.assertGreaterEqual(end,60);self.assertLessEqual(end,240)
+        prefix=self.provider.source['text'][:end]
+        self.assertEqual(response.headers['x-presentation-next-offset'],str(end))
+        self.assertEqual(response.headers['x-presentation-text-sha256'],hashlib.sha256(prefix.encode()).hexdigest())
+        self.assertEqual(response.headers['x-presentation-prefetch'],'true')
+        spoken=self.speech.calls[0][2]
+        self.assertIn(prefix.encode(),spoken)
+        self.assertNotIn(self.provider.source['text'].encode(),spoken)
+        self.assertEqual(self.audio().content,response.content)
+        self.assertEqual(len(self.speech.calls),1,'Exact prefix replay reads its retained synthesis')
 
     def test_private_enrollment_and_actual_selected_audio_reuse_after_restart(self):
         self.assertEqual(self.output.stat().st_mode & 0o777,0o600)
@@ -198,8 +530,23 @@ class Companion(unittest.TestCase):
         for route in (path,path+'/original',path+'/'+str(uuid.uuid4())):
             self.assertTrue(permitted('GET',route))
             self.assertFalse(permitted('POST',route))
-        for route in ('/api/interaction/telegram-inputs','/api/interaction/inputs/telegram:123/trace','/api/stop','/api/state'):
+        self.provider.conversation_telegram_inputs=lambda before,direction: {'items':[], 'read_only':True}
+        for route in ('/api/interaction/telegram-inputs','/api/interaction/inputs/telegram:123/trace'):
+            self.assertEqual(self.client.get(route,headers=self.headers).status_code,200)
+            for method in ('POST','PUT','DELETE'):
+                self.assertFalse(permitted(method,route))
+        for route in ('/api/stop','/api/state'):
             self.assertEqual(self.client.get(route,headers=self.headers).status_code,403)
+
+    def test_original_files_are_scoped_to_the_conversation_grant(self):
+        from dashboard.companion import permitted
+        path='/api/interaction/inputs/'+str(uuid.uuid4())+'/files/0'
+        self.assertTrue(permitted('POST','/api/interaction/files'))
+        self.assertTrue(permitted('GET',path))
+        self.assertFalse(permitted('POST',path))
+        self.assertFalse(permitted('GET',path.replace('/files/0','/files/8')))
+        self.assertFalse(permitted('POST','/api/interaction/files','monitor_readonly'))
+        self.assertFalse(permitted('GET',path,'monitor_readonly'))
 
     def test_monitor_grant_is_read_only_and_never_inherits_ambient_owner(self):
         from dashboard.companion import permitted
@@ -238,8 +585,8 @@ class Companion(unittest.TestCase):
             if selected!='/api/interaction/inputs':
                 self.assertEqual(self.client.get(selected,headers=headers).status_code,403,selected)
             self.assertEqual(self.client.post(selected,json={},headers=headers).status_code,403,selected)
-        # Existing interaction credentials do not silently gain monitor access.
-        self.assertEqual(self.client.get(path,headers=self.headers).status_code,403)
+        # Both clients observe the same retained human originals without writes.
+        self.assertEqual(self.client.get(path,headers=self.headers).status_code,200)
         self.grants.revoke(receipt['grant_id'])
         self.assertEqual(self.client.get(path,headers=headers).status_code,401)
         self.assertEqual(len(self.speech.calls),0)
@@ -265,6 +612,93 @@ class Companion(unittest.TestCase):
         self.assertEqual(self.client.post('/api/interaction/audio',json=self.body,headers={**self.headers,'x-dashboard-csrf':'wrong'}).status_code,403)
         self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'text':'unowned words'},headers=self.headers).status_code,409)
         self.assertEqual(len(self.speech.calls),0)
+
+    def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
+        from unittest.mock import AsyncMock
+        from dashboard.speech import Speech
+        selected={**self.body,'speech_provider':'openai'}
+        self.assertEqual(self.client.post('/api/interaction/audio',json=selected,headers=self.headers).status_code,409)
+        self.assertEqual(self.speech.calls,[])
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
+        self.client.close();self.client=self.client_for()
+        engines=[]
+        async def render(engine,source):
+            engines.append(engine)
+            return b'qualified synthetic audio',{'audio_sha256':'c'*64}
+        with patch.object(Speech,'render',render):
+            response=self.client.post('/api/interaction/audio',json=selected,headers=self.headers)
+            self.assertEqual(response.status_code,200);self.assertEqual(response.headers['x-speech-provider'],'openai')
+            self.assertEqual(engines[-1].binding,binding)
+            self.assertEqual(self.client.post('/api/interaction/audio',json=self.body,headers=self.headers).status_code,200)
+            self.assertIs(engines[0].capacity,engines[1].capacity)
+            self.assertEqual(engines[1].binding,self.speech.binding)
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'speech_provider':'missing'},headers=self.headers).status_code,409)
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**selected,'stream':True},headers=self.headers).status_code,409)
+        self.assertEqual(len(engines),2)
+        self.config['voice_services_default']='openai'
+        self.config['speech']['streaming_output']=True
+        self.client.close();self.client=self.client_for()
+        caps=self.client.get('/api/interaction',headers=self.headers).json()
+        self.assertEqual(caps['voice_services_default'],'openai')
+        self.assertFalse(caps['can_stream_speech'])
+        self.assertTrue(caps['previous_can_stream_speech'])
+        with patch.object(Speech,'render',render):
+            default=self.client.post('/api/interaction/audio',json=self.body,headers=self.headers)
+            self.assertEqual(default.status_code,200);self.assertEqual(default.headers['x-speech-provider'],'openai')
+            self.assertEqual(engines[-1].binding,binding)
+            previous=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'current'},headers=self.headers)
+            self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
+        self.assertEqual(self.speech.calls,[])
+
+    def test_conversation_reading_uses_own_saved_studio_voice(self):
+        from dashboard.speech import Speech
+        from dashboard.avatar_workshop import AvatarWorkshop
+        binding=self.root/'openai-route.json'
+        binding.write_text(json.dumps({'schema':renderer.SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
+            'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
+        binding.chmod(0o600)
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True}
+        self.client.close();self.client=self.client_for()
+        self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
+        profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
+        store=AvatarWorkshop(self.config['state_dir']);ident=str(uuid.uuid4())
+        store.voice_save(100,ident,profile,'Calm.',None,0);store.voice_select(100,ident,1,[profile])
+        engines=[]
+        self.provider.source['text']='A complete sentence with Unicode 🙂. '*50
+        rendered_parts=[]
+        async def render(engine,source):
+            engines.append(engine);rendered_parts.append(source);return b'synthetic audio',{'audio_sha256':'c'*64}
+        with patch('dashboard.voice_studio.configured_profiles',return_value=[profile]),patch.object(Speech,'render',render):
+            response=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai'},headers=self.headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
+            self.assertIn('Calm.',engines[-1].receiving_route()['instruction'])
+            self.assertLessEqual(len(rendered_parts[-1]['text']),240)
+            first_end=int(response.headers['x-presentation-next-offset'])
+            second_end=int(response.headers['x-presentation-lookahead-offset'])
+            self.assertGreater(second_end,first_end)
+            self.assertLessEqual(second_end-first_end,240)
+            self.assertEqual(self.provider.source['text'][:first_end],rendered_parts[-1]['text'])
+            canonical={**self.provider.source,'offset':first_end,'text':self.provider.source['text'][first_end:]}
+            self.assertEqual(second_end,speech_part(canonical,240)['next_offset'])
+            self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','text':'forged'},headers=self.headers).status_code,409)
+            # A live prefix has already reserved its full range in LiveSpeech.
+            # Do not shorten it behind that cursor or pre-admit a later gap.
+            live={**self.provider.source,'kind':'integrator_live','offset':320,
+                  'text':('A complete frozen provisional sentence. '*25),'next_offset':None}
+            with patch.object(self.provider,'presentation_part',return_value=live):
+                provisional=self.client.post('/api/interaction/audio',json={**self.body,'offset':320,'speech_provider':'openai'},headers=self.headers)
+            self.assertEqual(provisional.status_code,200,provisional.text)
+            self.assertGreater(len(rendered_parts[-1]['text']),240)
+            self.assertLessEqual(len(rendered_parts[-1]['text']),640)
+            self.assertEqual(provisional.headers['x-presentation-lookahead-offset'],'')
+        self.assertEqual(len(engines),2)
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True
@@ -411,6 +845,70 @@ class Companion(unittest.TestCase):
         self.grants.revoke(self.receipt['grant_id'])
         with self.assertRaises(FileNotFoundError):self.grants.reauthorize(self.receipt['grant_id'],previous)
         self.assertFalse(self.record.exists())
+
+
+    def test_source_bound_streamed_audio_and_cache(self):
+        self.speech.qwen_route();self.speech.content_type='text/event-stream';self.speech.data=self.speech.stream_data()
+        self.config['speech']['streaming_output']=True
+        self.client.close();self.client=self.client_for()
+        result=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers=self.headers)
+        self.assertEqual(result.status_code,200,result.text)
+        frames=[json.loads(line) for line in result.text.splitlines()]
+        self.assertEqual([f['type'] for f in frames],['audio','end'])
+        self.assertEqual(result.headers['x-audio-encoding'],'mp3')
+        self.assertEqual(result.headers['x-presentation-source'],self.body['source'])
+        self.assertEqual(result.headers['x-presentation-offset'],'0')
+        self.assertNotIn('synthetic-qwen-key',result.text)
+        again=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers=self.headers)
+        self.assertEqual(again.text,result.text);self.assertEqual(len(self.speech.calls),1)
+        denied=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers={**self.headers,'x-dashboard-csrf':'wrong'})
+        self.assertEqual(denied.status_code,403);self.assertEqual(len(self.speech.calls),1)
+
+    def test_actual_http_stream_delivers_before_provider_completion(self):
+        import socket
+        import uvicorn
+        self.speech.qwen_route();self.speech.content_type='text/event-stream';self.speech.data=self.speech.stream_data();self.speech.stream_hold=True
+        self.config['speech']['streaming_output']=True
+        app=create_app(self.config,self.provider,lambda raw,bot:int(raw))
+        sock=socket.socket();sock.bind(('127.0.0.1',0));sock.listen(128)
+        server=uvicorn.Server(uvicorn.Config(app,log_level='critical',lifespan='off'))
+        thread=threading.Thread(target=server.run,kwargs={'sockets':[sock]},daemon=True);thread.start()
+        try:
+            for _ in range(100):
+                if server.started:break
+                time.sleep(.01)
+            self.assertTrue(server.started)
+            with httpx.Client() as client,client.stream('POST',f'http://127.0.0.1:{sock.getsockname()[1]}/api/interaction/audio',
+                    json={**self.body,'stream':True},headers=self.headers,timeout=5) as response:
+                self.assertEqual(response.status_code,200)
+                lines=response.iter_lines();first=json.loads(next(lines));self.assertEqual(first['type'],'audio')
+                self.assertFalse(self.speech.release.is_set(),'First frame arrived while provider completion was held')
+                self.speech.release.set();last=json.loads(next(lines));self.assertEqual(last['type'],'end')
+            self.assertEqual(len(self.speech.calls),1)
+        finally:
+            self.speech.release.set();server.should_exit=True;thread.join(timeout=5);sock.close()
+            self.assertFalse(thread.is_alive())
+
+    def test_stream_revocation_or_source_change_stops_late_frames(self):
+        self.config['speech']['streaming_output']=True
+        self.client.close();self.client=self.client_for()
+        original_grant=read_json(self.record)
+        for failure in ('revoked','source_changed'):
+            calls=[]
+            async def changed(_speech,_source):
+                yield {'type':'audio','sequence':0,'data':'eA==','sha256':hashlib.sha256(b'x').hexdigest()}
+                if failure=='revoked':
+                    self.grants.revoke(self.receipt['grant_id'])
+                else:
+                    self.provider.source['revision']='e'*64
+                calls.append('late');yield {'type':'audio','sequence':1,'data':'eQ==','sha256':hashlib.sha256(b'y').hexdigest()}
+            with patch('dashboard.speech.Speech.stream',changed):
+                result=self.client.post('/api/interaction/audio',json={**self.body,'stream':True},headers=self.headers)
+            frames=[json.loads(line) for line in result.text.splitlines()]
+            self.assertEqual([f['type'] for f in frames],['audio','error'])
+            if failure=='revoked':
+                write_json(self.record,original_grant)
+            self.assertEqual(len(self.speech.calls),0)
 
 
 class CaptureRetention(unittest.TestCase):

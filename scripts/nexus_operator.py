@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', type=Path, required=True)
     parser.add_argument('--state', type=Path, required=True)
-    parser.add_argument('operation', choices=['binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits'])
+    parser.add_argument('operation', choices=['capabilities', 'binding', 'configure', 'pending', 'inspect', 'dispatch', 'receipt', 'capture-input', 'current-visits', 'review-admission'])
     args = parser.parse_args()
     os.umask(0o077)
     directory = args.state.lstat()
@@ -32,7 +32,13 @@ def main():
     from backend.evidence import context
     store = Store(database)
     bridge = ConversationStore(store)
-    if args.operation == 'binding':
+    if args.operation == 'capabilities':
+        if body:
+            raise ValueError('capabilities_accepts_no_scope_or_writes')
+        import backend.conversation as conversation
+        result = {'schema': 'nexus.native-capabilities/v1',
+                  'review_context_schemas': list(getattr(conversation, 'SUPPORTED_REVIEW_CONTEXTS', ()))}
+    elif args.operation == 'binding':
         if set(body) != {'table_id', 'author_ref'}:
             raise ValueError('binding_scope_required')
         result = bridge.binding(body['table_id'], body['author_ref'])
@@ -42,6 +48,10 @@ def main():
         if set(body) != {'listener_id'}:
             raise ValueError('listener_scope_required')
         result = bridge.pending(body['listener_id'])
+    elif args.operation == 'review-admission':
+        if set(body) != {'listener_id', 'request_id', 'dispatch_id'}:
+            raise ValueError('exact_review_admission_scope_required')
+        result = bridge.review_admission(body['request_id'], body['listener_id'], body['dispatch_id'])
     elif args.operation in {'dispatch', 'inspect'}:
         if set(body) != {'listener_id', 'request_id'}:
             raise ValueError('request_scope_required')
@@ -50,9 +60,24 @@ def main():
         request = result.get('request')
         if request and request.get('contribution') and args.operation == 'dispatch' and result.get('dispatch'):
             excerpts, remaining = [], 24000
-            for anchor in request['contribution']['anchors']:
+            selections = [(request['table_id'], anchor) for anchor in request['contribution']['anchors']]
+            video = request['contribution'].get('review_context', {}).get('adapter') == 'video'
+            if video:
+                import math
+                edition = request['artifact_context']
+                snapshot = request['contribution']['review_context']['snapshot']
+                # The retained clip time is distinct from the original-program
+                # offset. Never query a short excerpt using a full-video clock.
+                duration = edition['duration_ms']
+                position = min(duration-1, math.floor(snapshot['media_time_ms']))
+                selections.append((edition['source_table_id'], {
+                    'source_id': edition['source']['source_id'], 'transcript_version': edition['source']['revision'],
+                    'start_ms': max(0, position-5000), 'end_ms': min(duration, position+5001)}))
+            for source_table, anchor in selections:
                 try:
-                    selected = store.evidence_sources(request['table_id'], anchor['source_id'], anchor['transcript_version'])
+                    if video:
+                        bridge.artifacts.require_native_access(request['table_id'], request['contribution'])
+                    selected = store.evidence_sources(source_table, anchor['source_id'], anchor['transcript_version'])
                     end = min(anchor['end_ms'], anchor['start_ms'] + 300000)
                     passage = context(selected[0], anchor['start_ms'], end, 0) if selected else None
                 except Exception:

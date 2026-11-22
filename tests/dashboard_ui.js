@@ -6,7 +6,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync("dashboard/web/app.js", "utf8");
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async () => ({state:"not_configured", csrf:"fixture-csrf"})}), mode=false, shared=false) {
+function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async () => ({state:"not_configured", csrf:"fixture-csrf",attention:{schema:"telecodex.alert-attention/v1",level:"unknown",count:0,symbol:"⚪"}})}), mode=false, shared=false) {
   const monitor=mode===true, standalone=mode==='conversation', device=monitor||standalone;
   const nodes = new Map(), requests = [], timers = new Map();
   let nextTimer = 0, monitorHeaders, signIns=0, unauthorized;
@@ -31,7 +31,7 @@ function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async
   };
   const context = vm.createContext({
     document,
-    window: { Telegram: { WebApp: { initData: standalone ? undefined : "synthetic", ready() {} } },
+    window: { addEventListener() {}, InteractionLive:{mount(){return {start(){},stop(){}};}}, Telegram: { WebApp: { initData: standalone ? undefined : "synthetic", ready() {} } },
       DaimonHomeAccess:{createClient(){return {async signIn(){signIns++;return {status:'redirecting'};}};}},
       ...(device?{Conversation:{mount(options){monitorHeaders=options.headers;unauthorized=options.onUnauthorized;options.modeChanged(true,true);return {authenticated(){},refresh:async()=>{}};}}}:{}) },
     sessionStorage:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},
@@ -43,6 +43,8 @@ function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async
       requests.push({ route, options });
       if (route === "api/traffic") return Promise.resolve({ok:true,json:async () => ({state:"not_configured"})});
       if (route === "api/alerts") return alertsImpl(route, options);
+      if (route === "api/interaction/alerts") return shared ? alertsImpl(route,options)
+        : Promise.resolve({ok:false,status:403,json:async()=>({detail:"No alert read grant"})});
       return fetchImpl(route, options);
     },
     setTimeout(callback, milliseconds) {
@@ -51,7 +53,10 @@ function boot(fetchImpl, alertsImpl = () => Promise.resolve({ok:true, json:async
       return id;
     },
     clearTimeout(id) { timers.delete(id); },
-    setInterval() { throw new Error("Hidden WebView must not poll"); },
+    setInterval(callback, milliseconds) {
+      if(!standalone)throw new Error("Hidden Sessions/monitor must not poll");
+      const id=++nextTimer;timers.set(id,{callback,milliseconds});return id;
+    },
     clearInterval() {},
   });
   vm.runInContext(source, context);
@@ -68,11 +73,91 @@ const hung = (options) => new Promise((resolve, reject) => {
 });
 
 (async () => {
+  // Exercise the shipped API reader: cut immutable JSON may retry once;
+  // writes/auth failures must preserve once-only outcomes and HTTP status.
+  const apiSource=source.slice(source.indexOf("async function api("),source.indexOf("\nfunction metric("));
+  async function requestCase(route,body,responses){
+    const calls=[],deadlines=[];
+    const context=vm.createContext({AbortController,setTimeout:(fn,ms)=>{deadlines.push(ms);return setTimeout(fn,ms);},clearTimeout,
+      csrf:"fixture",monitorOnly:false,deviceMode:false,sharedConversationConnected:false,authorizationHeaders:()=>({}),
+      fetch:async (url,options)=>{calls.push({url,options});return responses.shift();}});
+    vm.runInContext(apiSource,context);context.route=route;context.body=body;
+    try{return {calls,deadlines,value:await vm.runInContext("api(route,body)",context)};}
+    catch(error){return {calls,deadlines,error};}
+  }
+  const cut=(status=200)=>({ok:status===200,status,json:async()=>{throw new SyntaxError("Unexpected end of JSON input");}});
+  const complete={ok:true,status:200,json:async()=>({text:"Exact saved text",offset:0,next_offset:null})};
+  const audition=await requestCase("interaction/avatars/voice/previews",{action:"render"},[cut(),complete]);
+  assert.deepEqual(audition.deadlines,[45000],"The thirty-second preview plus owned close must fit the finite HTTP deadline");
+  assert.equal(audition.calls.length,1,"A cut audition response is not permission to generate again");
+  for(const action of ["prepare","cancel","retire"]){
+    const control=await requestCase("interaction/avatars/voice/previews",{action},[complete]);
+    assert.deepEqual(control.deadlines,[20000],"Metadata and stop controls keep the ordinary deadline");
+  }
+  const immutableRoute="interaction/part?source=native%3A1&revision=exact-r&offset=0";
+  const recovered=await requestCase(immutableRoute,undefined,[cut(),complete]);
+  assert.equal(recovered.value.text,"Exact saved text");assert.equal(recovered.calls.length,2);
+  assert.equal(recovered.calls[0].url,recovered.calls[1].url);assert.equal(recovered.calls[1].options.method,"GET");
+  assert.equal(recovered.calls[0].options.signal,recovered.calls[1].options.signal,"One original deadline bounds both reads");
+  const exhausted=await requestCase(immutableRoute,undefined,[cut(),cut()]);
+  assert.equal(exhausted.calls.length,2);assert.match(exhausted.error.message,/Saved text.*nothing was resent/);
+  const denied=await requestCase(immutableRoute,undefined,[cut(401)]);
+  assert.equal(denied.calls.length,1);assert.equal(denied.error.status,401);
+  const write=await requestCase("interaction/inputs",{text:"Do not replay"},[cut(),complete]);
+  assert.equal(write.calls.length,1);assert.match(write.error.message,/Check current state/);
+  const ordinary=await requestCase("state",undefined,[cut(),complete]);assert.equal(ordinary.calls.length,1);
+  const alertAccess=()=>Promise.resolve({ok:true,json:async()=>({csrf:'shared-csrf',label:'Human'})});
+  const conversationIncident={projection:{producer_id:'fixture',incident_id:'case',phase:'pending',summary:'A safe incident',action:'Inspect the retained attempt',processing_state:'open',severity:'error'},acknowledgments:[],deliveries:[],freshness:'fresh'};
+  let alertSnapshot={state:'available',observer_state:'healthy',incidents:[conversationIncident],resolved_incidents:[],
+    attention:{schema:'telecodex.alert-attention/v1',level:'error',count:1,symbol:'🔴'}};
+  let alertFailure;
+  const alertView=boot(alertAccess,()=>alertFailure ? Promise.resolve({ok:false,status:alertFailure,json:async()=>({detail:'Unavailable'})})
+    : Promise.resolve({ok:true,json:async()=>alertSnapshot}),'conversation',true);
+  await settle();await settle();
+  const badge=alertView.nodes.get('#conversation-alerts-toggle'),panel=alertView.nodes.get('#operations');
+  assert.equal(badge.hidden,false);assert.equal(badge.textContent,'🔴');assert.equal(badge.dataset.level,'error');
+  assert.notEqual(panel.open,true,'An incident notification must not open a layer without human navigation');
+  const texts=node=>[node.textContent,...(node.children||[]).flatMap(texts)];
+  assert(!texts(alertView.nodes.get('#incidents')).includes('Acknowledge'),'Conversation list grants no acknowledgment control');
+  badge.handlers.click();await settle();
+  assert.equal(panel.open,true);assert.equal(panel.dataset.conversationOverlay,'true');assert.equal(badge['aria-expanded'],'true');
+  alertView.nodes.get('#conversation-alerts-close').handlers.click();assert.equal(panel.open,false);
+  const draft=alertView.context.document.querySelector('#conversation-message');draft.value='Unsent correction';
+  alertFailure=503;await vm.runInContext('refreshConversationAlerts()',alertView.context);
+  assert.equal(badge.dataset.level,'unknown');assert.equal(draft.value,'Unsent correction');
+  assert.equal(vm.runInContext('authenticated',alertView.context),true,'Optional observation failures preserve the conversation');
+  alertFailure=403;await vm.runInContext('refreshConversationAlerts()',alertView.context);
+  assert.equal(badge.hidden,true);assert.equal(alertView.nodes.get('#incidents').children.length,0);
+  const deniedCalls=alertView.requests.length;await vm.runInContext('refreshConversationAlerts()',alertView.context);
+  assert.equal(alertView.requests.length,deniedCalls,'A known missing optional grant must not create a request loop');
+  assert.equal(draft.value,'Unsent correction');assert.equal(vm.runInContext('authenticated',alertView.context),true);
+  let finishOld;
+  let staleAccessDenied=false;
+  const staleAlert=boot(()=>staleAccessDenied?Promise.resolve({ok:false,status:401,json:async()=>({})}):alertAccess(),()=>new Promise(resolve=>finishOld=resolve),'conversation',true);
+  await settle();staleAccessDenied=true;staleAlert.expire();
+  finishOld({ok:true,json:async()=>alertSnapshot});await settle();await settle();
+  assert.equal(staleAlert.nodes.get('#conversation-alerts-toggle').hidden,true,'A delayed response cannot restore a cleared alert view after sign-in expiry');
+  assert.equal(staleAlert.nodes.get('#incidents').children.length,0);
+  // A previously authorized Sessions action cannot repaint the Conversation list.
+  let finishAck;
+  const lateAck=boot((route)=>route==='api/session'?ok():route==='api/alerts/acknowledge'
+    ?new Promise(resolve=>finishAck=resolve):unavailable(),()=>Promise.resolve({ok:true,json:async()=>alertSnapshot}));
+  await settle();await settle();
+  const ackCard=lateAck.nodes.get('#incidents').children.find(n=>n.dataset.processingState==='open');
+  const pendingAck=ackCard.children.at(-1).handlers.click();
+  vm.runInContext('conversationMode=true;clearConversationAlerts()',lateAck.context);
+  finishAck({ok:true,json:async()=>({request_id:'accepted-before-mode-change'})});await pendingAck;
+  assert.equal(lateAck.nodes.get('#incidents').children.length,0,'Late Sessions completion cannot restore a cleared list');
+  vm.runInContext('alerts('+JSON.stringify(alertSnapshot)+')',lateAck.context);
+  assert(!texts(lateAck.nodes.get('#incidents')).includes('Acknowledge'),'Conversation remains read-only even for an unrestricted old snapshot');
   const shared=boot(()=>Promise.resolve({ok:true,json:async()=>({csrf:'shared-csrf',label:'Human'})}),undefined,'conversation',true);
   await settle();
   assert.equal(shared.requests[0].route,'api/interaction/access');
   assert.equal(shared.requests[0].options.credentials,'same-origin');
-  assert.equal(shared.nodes.get('#feedback').children[0].textContent,'Connected · Human');
+  assert.equal(shared.nodes.get('#feedback').children.length,0);
+  assert.deepEqual(shared.nodes.get('#conversation-account').children.map(c=>c.textContent),['human: ','Human']);
+  assert.equal(shared.nodes.get('#conversation-account').children[1].className,'human-name');
+  assert.equal(shared.nodes.get('#conversation-account').hidden,false);
   assert.equal(shared.saved.size,0,'Shared auth must not copy its session into JS storage');
   assert.equal(shared.signIns(),0,'A remembered session reconnects without another login');
   assert.equal(shared.headers().Authorization,undefined);
@@ -215,6 +300,20 @@ const hung = (options) => new Promise((resolve, reject) => {
   assert.equal(article.children[1].textContent,"fixture · index");
   assert.equal(article.children[2].textContent,"Reported by: fixture · Resource: Unspecified");
   assert.equal(article.children[3].textContent,incident.projection.summary);
+  assert.equal(article.children[5].children[0].textContent,"Issue date unavailable");
+  const dated = {...incident, accepted_at:1793470000, observed_at:1793470000,
+    projection:{...incident.projection,source_at:1792000000,updated_at:1793000000}};
+  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[dated]})+')',independent.context);
+  const dates = activeArticle().children[5];
+  assert.equal(dates.children[0].textContent,"Issued: ");
+  assert.equal(dates.children[1].datetime,new Date(dated.projection.source_at*1000).toISOString());
+  assert.equal(dates.children[2].textContent," · Updated: ");
+  assert.equal(dates.children[3].datetime,new Date(dated.projection.updated_at*1000).toISOString());
+  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[],resolved_incidents:[{...dated,
+    projection:{...dated.projection,processing_state:"resolved"}}]})+')',independent.context);
+  const datedHistory = independent.nodes.get("#incidents").children.find(n=>n.className==="incident-history");
+  assert.equal(datedHistory.open,false);
+  assert.equal(datedHistory.children[1].children[5].children[2].textContent," · Updated: ");
   // Current and legacy memory producers identify DMK without hiding exact provenance.
   for (const producer of ["hmk-compaii", "dmk-oliva", "other-reporter"]) {
     const attributed = {...incident, projection:{...incident.projection,producer_id:producer,
@@ -278,5 +377,14 @@ const hung = (options) => new Promise((resolve, reject) => {
   vm.runInContext('traffic({state:"unavailable"})', independent.context);
   assert.equal(independent.nodes.get("#traffic-topics").children.length,0);
   assert.match(independent.nodes.get("#traffic-status").textContent,/cannot be confirmed/);
+  assert.match(vm.runInContext('recoveryLabel({enabled:true,state:"waiting",next_attempt_at:Math.floor(Date.now()/1000)+120})', independent.context), /Goal recovery.*Waiting to retry.*next check/);
+  assert.match(vm.runInContext('recoveryLabel({state:"uncertain"})', independent.context), /automatic replay held/);
+  assert.equal(vm.runInContext('recoveryLabel({state:"untrusted provider text"})', independent.context), "");
+  const disabledRecovery=vm.runInContext('recoveryLabel({enabled:false,state:"waiting",next_attempt_at:1})', independent.context);
+  assert.match(disabledRecovery,/Disabled/);assert.doesNotMatch(disabledRecovery,/next check/);
+  await require("./dashboard_health_ui.js")();
   console.log("dashboard UI: hidden launch, retry, HTTP deadlines and uncertain Stop passed");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
+
+// Run appearance recovery through the existing dashboard CI entrypoint.
+require("./dashboard_homemaker_ui.js");

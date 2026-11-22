@@ -1,0 +1,816 @@
+# Conversation turn-taking: candidate CPU analyzer
+
+Owner: [#301](https://github.com/AlterMundi/telecodex/issues/301),
+[architecture #302](https://github.com/AlterMundi/telecodex/issues/302), and
+[duplex/attention #304](https://github.com/AlterMundi/telecodex/issues/304).
+The [full roadmap](interaction-roadmap.md) remains the delivery objective.
+
+## Current boundary
+
+`scripts/turn_end.py` provides optional Smart Turn v3.2 CPU scoring.
+The application now has an opt-in capture-analysis bridge and an avatar-entered
+fullscreen voice trial. Default/manual interaction remains unchanged. This is
+source implementation, not evidence of receiving activation or full duplex.
+Sol6.1 / openai / medium, Gemini prepared streaming recognition and Qwen TTS
+remain selected. No new foreground model is selected.
+
+The voice view uses the same PCM, final-flush confirmation, UUID/hash, prepared
+transcript and one-original upload/recovery path. It does not inherit a worker
+reply selection, selected image or attached draft files. Leaving or hiding it
+keeps captured audio for explicit review; it never retries an uncertain upload.
+In continuous mode, hiding the page stops capture but retains the open voice view
+and its Conversation-only audio mix, so the current and later replies can keep
+playing through the existing player and media controls. Returning never reopens
+the microphone automatically. Explicit exit, page navigation, lost authorization
+and the existing five-minute view limit still close the view and restore the
+prior audio choice. Browser or OS suspension can still delay playback; these
+client transitions do not establish physical mobile background acceptance.
+The temporary mix also silences Beacon without overwriting the ordinary mix.
+Keyboard exit and the prior avatar/draft are preserved.
+
+Silero establishes speech before Smart Turn scores a pause. A current endpoint
+and nonempty recognition can finalize only the explicitly selected trial.
+Client sample offsets fence verdicts if newer acoustic activity arrives. This
+energy hint rejects stale decisions; it is not the speech classifier. With continuous ambient energy and analysis arriving one network chunk behind,
+a moving local-energy fence could indefinitely starve an already confirmed
+endpoint. The foreground owner now freezes the acoustic watermark observed with
+the endpoint and, separately, with its first usable captions. Same-generation
+analysis must cover both watermarks. Renewed classified speech still invalidates
+the endpoint; words alone never establish a speech turn. This admits the same
+complete flushed original through existing confirmation and recovery, without a
+silence timeout or a second ASR request. A retained actual CPU synthetic-speech/
+noise trace with100ms simulated network lag reproduces the old stall and reaches
+one commit with the correction. This is a proven starvation case, not a diagnosis
+of the individual phone failure or physical echo/noise acceptance. Detection
+or stream failure returns the original to review rather than automatic admission.
+
+With `continuous` absent or false, the initial trial alternates capture, durable
+input and spoken response. That fallback is **not full duplex**. The opt-in
+continuous owner described below keeps capture armed during playback.
+Foreground response latency, real echo/noise/device acceptance and meaningful
+internal-result/question offers remain required by the full roadmap.
+
+## Continuous capture source under construction
+
+`StreamingVoice.openCapture(media)` separates the foreground PCM graph from an
+individual ASR socket. An explicitly owned source can feed successive recorders
+through `captureSource`; the previous provider may finish while the next recorder
+already receives PCM. Ordinary recording still owns and closes its own graph.
+The foreground owner below mounts this primitive only with explicit continuous
+avatar configuration.
+
+Worklet boundary acknowledgments flush complete PCM samples without resetting
+the resampler or disconnecting the microphone. Each recorder accepts samples
+only between its exact begin/end acknowledgments and translates absolute activity
+offsets to its own original. Provider failure keeps the same local WAV fallback;
+closing a shared graph preserves each accumulated fragment as unconfirmed rather
+than pretending that its final flush succeeded. Compressed-original captions do
+not accept this splitting path.
+
+The source has no PCM history, at most three consumers, and a five-minute wall
+and sample limit. The foreground coordinator remains subscribed across utterance boundaries, owns
+the bounded pre-speech ring and unresolved originals, and closes the source on
+exit/hidden/auth loss. The primitive alone does **not** prove continuous listening,
+automatic barge-in, echo rejection or device acceptance. The default alternating
+avatar trial remains available until continuous mode is explicitly selected.
+
+## Continuous foreground owner in development
+
+`voice-session.js` now owns one explicitly selected microphone/PCM graph and
+one warm activity connection across utterances. It requests browser echo
+cancellation, retains an eight-second gap ring, and creates at most two unresolved
+originals. Confirmed speech onset acquires the conversational floor and invokes
+the existing playback-interruption callback; simply arming the microphone does
+not pause output. Native work is outside this controller's authority.
+
+A current semantic endpoint plus recognized words can select one original for
+commit. Its final PCM acknowledgment starts the next recorder while the prior
+ASR finishes. The recorder takes any samples between boundaries from the gap
+ring, preserving exact WAV continuity. Final ASR results can arrive out of order;
+commit waits for the earliest original. An uncertain predecessor blocks later
+automatic dispatch. Missing recognition, unconfirmed flush, capacity, view exit,
+hidden state and binding/analysis loss retain originals for review. No provider
+or native request is replayed. Retention and commit are injected from the owning
+ordinary voice path, not a second input endpoint.
+
+A complete worklet flush now supplies the same immutable WAV to local recovery
+before waiting for ASR confirmation. The existing IndexedDB transaction must
+finish before confirmed automatic dispatch; a late final receipt reuses that
+original rather than writing another capture. On view exit, review becomes
+available once local retention finishes even if the provider has not finalized.
+Reload preserves the exact UUID, audio hash and frozen question context; absent
+confirmation remains review-only. A real Chromium/IndexedDB synthetic fixture
+verified that boundary across reload without a provider final event or any
+native submission. Physical phone acceptance and unfinished active PCM before
+a complete flush remain separate limitations.
+
+The existing Under the hood recording timings also expose the latest foreground
+handoff gate: detected speech, semantic endpoint, analysis watermark coverage,
+transcript, finalization, original confirmation or review. Captured/analyzed/fence
+positions are relative milliseconds for that original, with a caption-present
+boolean; no transcript, PCM, credentials or provider event is retained here.
+Only one latest snapshot per each of the existing eight page-local recording
+records is kept. Captured progress updates at most once per second, while gate
+transitions are immediate. Review retains the preceding gate and later analysis
+cannot erase that terminal observation. Clear/conversation replacement/page exit
+retain the existing timing-reader lifecycle; no new persistence, request, timer
+or polling path is installed. This exposes a stalled stage; it does not classify
+its cause or authorize sending/replaying an original. Older clients simply ignore
+the new optional timing event.
+
+The fullscreen avatar also displays these local detector gates as a visible
+status badge, distinct from Gemini captions: waiting for voice detection, voice
+detected, waiting for phrase end, checking captured sound, phrase end detected,
+sending and sent. The latest end marker survives immediate recorder rearming
+until the next confirmed speech onset, so a fast transition cannot hide it.
+Late confirmation of an older original cannot replace the current detector state.
+A capture/analysis gap exceeding2seconds shows Voice analysis delayed. Caption
+text alone never asserts voice/endpoint detection. The badge is informational,
+uses the existing metadata callback and neither admits nor retries a recording.
+
+The fullscreen status line shows the current original's remaining120-second
+recording budget, including silence already captured for that original. It
+updates only when the remaining whole second changes and uses the existing
+warning color at fifteen seconds. A new recorder resets that budget. This is
+derived from PCM positions, not a second capture timer; the original duration
+limit and explicit review/truncation behavior are unchanged.
+
+The avatar mounts this owner only when the existing optional turn-detection
+configuration also selects `continuous: true`. That selection defaults off. The
+ordinary voice writer retains/submits each exact original; there is no second
+input endpoint. Its existing recovery key can contain two originals, together
+at most20MiB, ordered by capture start. One matching receipt/discard removes only
+that original and exposes the next. A two-item `telecodex.voice-recovery/v2`
+envelope needs this reader; older clients retain it without overwriting, but
+cannot expose both recordings. Use a compatible client for recovery. Ordinary
+one-item storage keeps its prior shape. This is source implementation, not
+receiving activation or real continuous-voice acceptance.
+
+The authenticated `/api/interaction/voice/activity` connection loads the existing
+pinned CPU worker once for one foreground session. It reuses voice origin,
+credential/CSRF, actor and binding checks; monitor-only grants remain excluded.
+Actor authorization is rechecked on every message/output, and the Conversation
+binding every fifteen seconds and after startup. It neither transcribes nor
+retains media/transcripts nor admits work. At most one analyzer per actor and
+two globally, 300seconds PCM/305seconds handler lifetime, 150CPU seconds,
+90turn scores, an eight-second tail and two recent boundary receipts are allowed.
+Only exact emitted endpoint boundaries can retire the scored prefix; later PCM
+and recurrent VAD state stay intact. Each new speech generation must establish
+its own three positive frames; earlier speech cannot promote later brief noise.
+
+The ordinary ASR pool remains bounded to two streams globally. Distinct UUIDs
+from the same actor can now overlap finalization; duplicate active UUIDs are
+rejected. Normal capture analysis keeps its existing15second startup bound.
+Continuous analysis has one bounded30second preparation (client35seconds), before
+microphone acquisition. One first readiness attempt returned unavailable after
+17.1seconds; the failed receipt is retained. A later fixture initially chose the
+wrong local speech-generator executable, which is a verifier error. The corrected
+actual handler/worker session became ready in2.917seconds and processed two
+synthetic Spanish phrases, each with a speech onset, endpoint and exact boundary
+acknowledgment through that same connection. No ASR, TTS, microphone, original
+admission or native model ran. These are protocol/load observations, not human
+endpoint accuracy, barge-in silence, useful-response latency or phone acceptance.
+
+Two completed ASR streams can now race when retaining their transcript receipts.
+A paired-finalization test exposed contention on the existing nonblocking cache
+lock. One bounded writer slot now serializes those writes; queue admission waits
+at most2seconds and the client awaits at most3seconds. The slot remains held until
+the actual filesystem job finishes even if the HTTP/WebSocket waiter leaves.
+Another process's held cache lock remains a controlled unavailable outcome. No
+recognition, receipt identity or native input is replayed to resolve contention.
+The browser preserves the original and requires review on uncertainty.
+
+The browser worklet also enforces its five-minute sample ceiling on the audio
+thread; a frozen main-thread timer cannot accumulate unlimited PCM messages.
+A mounted Chromium journey exercised the shipped HTML, worklet, sockets,
+ordinary original writer, IndexedDB and real audio element with synthetic
+ASR/activity/TTS transports. One microphone/analyzer handled two phrases and two
+exact WAV receipts in order. The second phrase paused an already-playing
+response. Exit stopped the track, restored the avatar/draft and retained the
+unfinished fragment; reload exposed it without recapture or another input.
+These browser observations do not qualify actual providers or physical echo/noise.
+A separate warm source-handler journey with actual configured Gemini recognition
+and pinned CPU models produced partials, one semantic endpoint and boundary
+acknowledgment plus an exact prepared WAV receipt, without native admission.
+Warm readiness was24.53s and final-flush-to-prepared4.96s under current host load.
+The endpoint followed the synthetic active samples; neither that marker nor file
+end proves final intended human speech. Temporary media/receipts were removed.
+That confirmation approached the former five-second browser wait. Finalized PCM
+now waits at most ten seconds for the same provider receipt, then keeps ordinary
+review; it never retranscribes, sends an original or repeats a provider attempt.
+Continuous originals also feed the existing bounded page-local timing view;
+endpoint/Stop time is not independently measured final intended speech.
+
+The full stages2/3/required4 roadmap and real-device/provider acceptance remain
+required. Configure no continuous activation from these source fixtures alone.
+
+## Why combine speech activity with turn analysis
+
+[Pipecat Smart Turn](https://github.com/pipecat-ai/smart-turn) analyzes audio
+phrasing rather than using silence alone. Its documented language set includes
+Spanish; the CPU model uses quantized ONNX weights and the last eight seconds of
+16 kHz mono audio, left-padded for shorter turns. Their recommended architecture
+pairs it with speech-activity detection such as Silero. Published speed figures
+are not our host's measured latency or phone acceptance.
+
+Selected implementation reference:
+[`4786657e`](https://github.com/pipecat-ai/smart-turn/tree/4786657e242dfe77dd138699ac564ee074a2a543).
+The sample `inference.py` still names a v3.1 model file; do not silently substitute
+that sample filename for the selected v3.2 CPU artifact.
+
+Selected [weights](https://huggingface.co/pipecat-ai/smart-turn-v3):
+
+- Revision: `f766f81d3cfdf7737ac64aad813d91bbfd56bf93`.
+- File: `smart-turn-v3.2-cpu.onnx`, 8,679,182 bytes.
+- SHA256: `2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f`.
+- The source/model declare BSD-2-Clause. Obtain the artifact separately; no
+  runtime download or inference-provider entitlement is assumed.
+
+## Measured evidence — 28 October 2026
+
+One CPU-only shared host, one inference thread, NumPy2.5.4, ONNX Runtime1.31.1,
+Transformers5.21.0 and Python3.13.5. Conditions included concurrent host load.
+No microphone, paid speech inference or native conversation was used.
+
+The first experiment deliberately used espeak Spanish, three executions of ten
+fixed cases. Preparation plus inference had median178.3ms and maximum269.6ms;
+model setup was88.9ms, imports plus setup2.784s, and process peak RSS143.6MiB.
+These are CPU scoring times, not utterance-to-response latency.
+
+All four intended-open synthetic phrases were classified complete at the
+upstream0.5 threshold. This includes a two-second pause before a continuation.
+Espeak's prosody does not establish human behavior, so these are not four
+independent human errors or a population accuracy estimate. They do establish
+that this synthetic set cannot qualify automatic Send. Silence also scored
+complete without a speech gate, reinforcing the documented need for VAD.
+
+A separate, frozen sample used the first up-to-six rows per endpoint label
+marked `language=spa, synthetic=false` in the first500rows of the authors'
+[test dataset](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.2-test).
+Five rows met that selection. Dataset revision observed before and after:
+`dfc179241fee65b0efe81ca37786f41ce26f38ec`. The threshold remained0.5;
+selection was not based on scores.
+
+| Dataset row | Author label | Completion probability | Classification | Preparation + inference |
+| --- | --- | --- | --- | --- |
+| 18 | Open | 0.0103 | Open | 464.3ms |
+| 88 | Open | 0.0125 | Open | 212.6ms |
+| 220 | Complete | 0.9042 | Complete | 170.8ms |
+| 489 | Complete | 0.9830 | Complete | 227.0ms |
+| 498 | Open | 0.0099 | Open | 154.2ms |
+
+This is five matches to the authors' labels, not independent collection,
+statistical validation, live conversation, Argentine-Spanish/noise/echo acceptance
+or evidence of the user's final intended word. The public viewer's filtered
+query returnedHTTP500; bounded row paging provided the selected source records.
+No cause for that API failure was established.
+
+Synthetic files were retired after scoring. Held-out clips were decoded in
+memory and not retained; source IDs, PCM/encoded hashes, scores and dataset
+revision were retained. Expiring asset URLs were removed from the selection
+record. Keep one pinned candidate model and its optional dependency environment
+for integration, rather than accumulating model variants or raw recordings.
+
+## Runner and bounds
+
+The optional dependency closure in `scripts/requirements-turn.lock` records the
+Linux/Python3.13 qualification environment. It is separate from dashboard defaults.
+Use the existing development environment; do not install it into a content-addressed
+runtime ad hoc. The runner verifies and loads the same model bytes, limits CPU
+intra/inter-op parallelism to one, and imports no optional ML package until an
+operator explicitly creates the analyzer.
+
+The file reader accepts canonical mono PCM16/16kHz WAV only, at most20MiB and
+120seconds, and reads only the last eight seconds. Scoring accepts at most256kB
+and requires an explicit boolean speech observation. Missing speech returns no
+candidate without inference. The score cannot create, answer or cancel work.
+
+A single analyzer rejects concurrent calls immediately without a queue. Each
+call owns an ONNX `RunOptions` and a0.75s deadline (operator-bound range0.01–2s).
+The deadline requests cooperative termination and rejects late results, including
+late success; it is not a claim of hard OS preemption. Exceptions, invalid scores
+and busy/deadline outcomes keep explicit Send. See the
+[ONNX run-options contract](https://onnxruntime.ai/docs/api/python/api_summary.html).
+
+```sh
+.venv/bin/python scripts/turn_end.py \
+  --model /selected/data/path/smart-turn-v3.2-cpu.onnx \
+  --audio /selected/canonical-16khz.wav --speech-present
+```
+
+The CLI's speech flag asserts an already established segment for this analysis;
+it is not itself a VAD or a human admission grant. The module does not infer that
+silence, an ASR partial, a timeout or a high score is permission to Send.
+
+## Required integration
+
+1. The person explicitly selects continuous conversation. Preserve push-to-talk
+   and manual Send. Limit that session and stop capture on hidden view, auth loss,
+   binding change, explicit exit or its resource limit; do not persist mic opt-in.
+2. Real speech-activity onset interrupts local playback while retaining the heard
+   position and native work. Preserve pre-speech samples so onset detection does
+   not eat the beginning of an utterance. Qualify speaker echo and noise.
+3. After a VAD pause, score the current turn's bounded tail. Discard a verdict if
+   speech/capture generation changes while it is running. Analyzer failure must
+   leave the recording recoverable, not silently cut, send or discard it.
+4. Only the explicitly selected conversational mode may use a current decision
+   to finalize a turn. Preserve the existing confirmed final PCM flush, exact
+   capture UUID/hash and one-original commit. Unconfirmed flush requires the
+   existing fragment review; no automatic uncertain retry.
+5. Foreground audio is Conversation only. Internal progress/results/questions
+   remain visible and native jobs continue. Explicit Listen remains available.
+6. Qualify these mechanics with delayed speech, pauses, corrections and late
+   worker returns, then actual device/hearing. Keep end-of-turn delay, ASR final,
+   useful native response, TTS/playback and acoustic silence separate. The
+   responsive foreground/background work in#303 remains required.
+
+## Optional receiving configuration and limits
+
+`streaming_transcription.turn_detection` is disabled unless explicitly configured:
+
+```json
+{
+  "enabled": true,
+  "continuous": true,
+  "command": [
+    "/selected/voice-environment/bin/python",
+    "/selected/release/scripts/capture_turn.py",
+    "--vad-model", "/selected/models/silero_vad_16k_op15.onnx",
+    "--turn-model", "/selected/models/smart-turn-v3.2-cpu.onnx"
+  ]
+}
+```
+
+Omit `continuous` (or set it false) to keep the earlier alternating trial.
+The new flag only selects the explicitly opened avatar mode; it never starts
+capture on load or persists microphone opt-in. Remove this field before selecting
+an older strict configuration parser.
+
+Use prepared streaming ASR mode and a separately qualified ML interpreter with
+`scripts/requirements-turn.lock`; never add ML dependencies to another owning
+application's web environment. There is no runtime model download. Silero's
+MIT license is retained at `docs/silero-vad-LICENSE.txt`; selected upstream
+revision is `066409f3d9db45a30d21dfcbf9147826ffdd7052`, model size1,289,603bytes,
+SHA256 `7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49`.
+Both models load only their verified bytes and use one CPU inference thread.
+
+The authenticated existing capture socket explicitly requests analysis; normal
+captures do not create an analysis process. At most two actor-scoped captures
+are active, each120seconds, at most30turn scores, an eight-second PCM tail and
+one pending PCM frame. The child has60CPU seconds/145wall seconds and closes
+with the capture. Its pipe input/output, startup and write waits are bounded. Analysis startup runs
+beside ASR; it never gates recognition readiness, captions or final preparation.
+The analyzer's startup wait is bounded to15seconds alongside ASR. A late first
+join uses only the original's current eight-second tail, without discarding any
+original samples. Worker offsets are translated back to absolute original byte
+positions before reaching the client. Startup frames establish VAD history, but
+scoring is deferred until the current tail, so an old buffered pause cannot create
+an endpoint. Later backlog overflow or worker failure disables analysis while
+keeping ASR and the original available.
+Deploy the bridge and analysis worker from the same source revision: startup
+backfill uses the worker's optional `defer` command. A mismatched older worker
+fails analysis without switching or restarting the existing ASR capture.
+No ML inference, model weights or raw audio are retained in the web process.
+Fullscreen microphone opt-in expires after five minutes and is not persisted.
+
+### Extended native analysis budget — development prerequisite
+
+The analysis worker and its `Detector.open` adapter accept an explicit
+`session_seconds` only in continuous mode, from300through1800seconds. The
+adapter passes `--session-seconds` for durations above300 and requires that
+exact duration in the worker's ready acknowledgment before sending PCM. An
+older worker is rejected and reaped; a successful process start alone does not
+prove it supports the selected duration. Ordinary capture and the omitted
+continuous duration preserve their existing flags and ready payloads.
+
+For a selected duration S, cumulative input is bounded to S×32000bytes,
+semantic analyses to ceil(90×S/300), and CPU to ceil(S/2)seconds with a five-second
+hard-limit margin. Extended wall lifetime is S+50seconds, allowing bounded
+analysis/provider startup and closure. The omitted300second mode keeps its
+existing150CPU/305wall-second contract. Resident analysis remains an eight-second
+tail, one partial1024byte frame, two endpoint receipts and fixed recurrent state.
+No model/provider or microphone is opened by this API alone.
+
+The server option `streaming_transcription.native_session_seconds` now selects
+one finite300..1800second manual-activity session; omitted configuration remains
+300seconds. Automatic mode rejects this option. The browser requests its supported
+maximum, current Android PCM clients request300, and legacy clients omitting
+`session_seconds` retain300. The server takes the smaller client/operator bound
+before opening analysis or the provider, advertises it in `ready`, and the browser
+starts no microphone before validating that response. Extended time starts at
+readiness with five seconds of server cleanup reserve; worker startup has its
+separate bounded reserve. Existing default timeout behavior remains unchanged.
+
+The negotiated duration governs cumulative server input and both output counters,
+caption totals, browser timer/capture helper and AudioWorklet sample limit. An
+extended session retains at most1024capture IDs (default128); the existing four
+pending captures, three close-only reserve slots, one file writer/two owner slots,
+original-cache quotas, eight caption recovery admissions and120second ASR clips
+stay independent. Provider sockets retain their existing physical lifetime and
+checkpoint-seeded idle replacement; no source, admission, offer or generation
+counter resets with a successor.
+
+Resident acoustic/client PCM is independently bounded to300seconds. Only a
+completed original prefix retires on server handover; the browser retires that
+prefix after its matching canonical confirmation and local release. A quiet
+unassigned suffix or delayed integrator checkpoint can therefore end the session
+earlier. Extended input stops at the299second resident, seven-second unsent-span
+or119second phrase threshold, leaving one maximum1second captured-frame reserve
+within the hard300/8/120second bounds. Analysis backlog and speech waiting for an
+earlier provider confirmation are accounted separately; background noise alone
+does not become queued provider speech. Capacity close retains acoustic-owned
+unassigned bytes through the existing private original path, with no invented
+transcript or automatic delegation. Unread socket/inbox bytes remain outside
+that recovery guarantee.
+
+Reference capacity is also finite:32integrator admissions,128offered result
+revisions,65provider generations and the existing canonical context/cache limits.
+An extended tool path reaching admission/result-reference capacity closes visibly
+instead of merely returning a truncated result or resetting the lifetime fence.
+Other canonical failures retain their existing visible review path. No silent
+source eviction or automatic re-admission makes room.
+
+The first600second receiving pilot is selected on CompAII. Current source,
+configuration and rollback belong to the [maintained receiving record](https://github.com/compaii/shared-resources/blob/main/docs/services/interaction-receiving.md);
+physical hearing and useful-latency acceptance remain separate. Mounted
+synthetic600second PCM crosses two checkpointed provider successors, retains three
+originals and one pending work admission, then reads its one canonical return.
+Browser/helper/worklet, quiet resident/unsent-span close retention, legacy-client
+narrowing and incompatible-worker cleanup have separate bounded checks. This is
+logical audio-duration qualification, not ten minutes of actual provider wall
+time, physical hearing, latency or full product/device acceptance.
+
+The existing full-browser qualifier accepts `--session-seconds 600` to verify the actual shipped shell, shared-cookie
+bootstrap, three synthetic-source voice cycles and600second negotiation through
+the real capture helper. It also executes the shipped worklet in Chromium's
+OfflineAudioContext:6000packets/19,200,000PCM bytes, maximum3200bytes per packet,
+then `session_limit` and a closed offline context. No PCM history or physical
+capture/playback is retained. Use a new task-owned `--out` directory and the
+existing installed Playwright module; the qualifier owns its bounded server,
+browser, temporary state and closure receipts. This complements the mounted
+two-successor/worker-return check; it is not a real-provider ten-minute trial.
+Raw original recovery and existing ASR/TTS retention remain separately owned.
+
+One real pinned-model child qualified ready/PCM/close with a silent100ms chunk:
+startup4.346s and chunk plus close365ms under concurrent host load. These are
+not utterance-to-response measurements. Cold model startup per capture remains an analysis
+latency limitation even with the ASR-independent startup path; do not claim the sub-second product target from inference
+speed or activate ordinary captures to hide that cost. The real model emitted
+no speech/endpoint for silence, and the child exited0. Browser qualification at
+390/1040px covered actual portrait/fullscreen modules, Escape/keyboard exit,
+no overflow and draft/portrait preservation, with synthetic capture callbacks.
+It did not use a microphone, provider or native model.
+
+Configure only after the selected worker path/models and existing ASR have been
+qualified together. Disable the optional config to retain ordinary Push-to-talk
+and Send. After native update replies have been accepted, rollback must retain
+a reader supporting those compact native references; do not reinterpret or replay
+an original to make an older binary accept it.
+
+
+## Progressive decoder recovery — 2026-10-28
+
+An MSE/source-buffer or media-element decode failure can use the same completed,
+hash-verified MP3 as a normal Blob source. The existing stream retains at most
+8MiB of verified encoded media for its active source (plus the already bounded
+one-ahead preparation); no raw media is added to durable browser storage.
+Corrupt/incomplete transport has no fallback. Switching decoder preserves the
+media cursor, revalidates the same text/source and changes playback generation
+so an earlier play promise cannot stop the replacement. Stop, capture, access
+loss and explicit Pause retain ownership over late fallback completion. No new
+render request, provider call or automatic uncertain retry is permitted.
+
+This fixes an observed implementation gap: media-element errors previously had
+no queue-release/recovery handler. The reported Redmi failure's individual cause
+is still unconfirmed; successful Chromium decoding is not Android/hearing
+acceptance. See #409 for the retained investigation.
+
+
+## Cold analyzer join — 28 October 2026
+
+A single author-held-out natural Spanish clip was streamed through the actual
+Gemini preparation handler: captions and one exact-source prepared receipt
+completed, but analysis became unavailable. A separate exact CPU worker startup
+took9.227seconds under host load, beyond the previous8second ready deadline.
+That exposes a startup boundary mismatch; the first journey did not retain an
+individual worker error proving its precise cause. No native original was sent.
+
+The revised bounded first join was exercised with the same hashed public row220
+from the pinned Pipecat dataset, including a nine-second initial PCM history.
+Real Silero established speech and Smart Turn emitted probability0.9854 at the
+correct absolute original offset288000bytes. The worker closed and raw media
+was not retained. This CPU-only follow-up made no additional ASR request. The
+existing final transcript remains valid; this is not full-duplex, acoustic
+endpoint acceptance or a final-speech-to-audible-response latency result.
+
+## Integrating speech after interruption
+
+The conversation UI fixture exercises a late internal result during confirmed
+human speech: keep the integrated offer queued while the human owns the floor,
+then speak that Conversation source once when the floor is released. Internal
+worker audio stays muted, the interrupted old answer stays paused, and repeated
+observation cannot synthesize the offer again. Playback creates no native answer
+or cancellation. This is state-machine evidence; it does not certify provider
+latency, browser decoding or hearing.
+
+For browser qualification, await asynchronous status reads outside
+`waitForFunction` and assert the returned terminal fields explicitly. The selected
+Playwright implementation treats the predicate's Promise as truthy before its
+resolved boolean. Require the exact attributed response's digital playback and
+media completion before closing the view; an idle native worker or a received
+speech request cannot prove that playback. Retain partial evidence rather than
+repeating completed provider inputs to repair an early verifier exit.
+
+An exact analyzer endpoint can precede its streaming captions. Subsequent silence
+does not expire that endpoint: later unanalyzed acoustic activity or a changed
+VAD generation still fences it. An earlier eight-second endpoint-age check was
+removed after the1November phone report: the current original owns PCM through
+its actual worklet flush and the next recorder begins at that flush, not at the
+old endpoint. The eight-second handoff ring still independently bounds the gap
+between recorders. Do not confuse that bounded handoff with a caption deadline.
+Regression coverage includes captions more than eight seconds after the endpoint,
+exact full-original retention, the next recorder's separate gap, newer acoustic
+activity and generation changes.
+
+A current acoustic endpoint also releases the playback floor while ASR captions
+are still pending. The recording remains open and unsent: floor ownership is not
+input confirmation. A newer speech generation can interrupt again before those
+captions arrive, capturing the playback context of that interruption without
+widening the original's frozen question scope. Repeated old onsets and stale
+endpoints cannot reacquire/release the newer turn. The actual continuous
+coordinator connected to the mounted conversation player is covered: an integrated
+result waits during speech, plays after the endpoint with no ASR caption, and
+pauses on renewed speech. This is synthetic state-machine evidence, not physical
+echo/noise or provider acceptance.
+
+### Current-receiver provider observation —31 October2026
+
+A bounded current-stack avatar case used generated PCM, real Gemini prepared
+ASR, the CPU analyzer, Sol6.1/openai/medium and the selected Qwen voice. Two
+generated clips produced three distinct confirmed voice originals: the correction's
+machine transcript split into “Ahora no repitas lo anterior” and “Decime solamente cuánto es ocho
+menos tres.” The native history contains those originals and the answer “Cinco.”
+Two concurrent result/question packets were retained together in one physical
+native turn. Receipt of both packets did not mean they were incorporated: neither
+was marked reported while the later original explicitly requested only the
+arithmetic answer. This does not establish that pending evidence was lost.
+
+The scenario stopped before further planned clips to preserve its utterance
+budget. One distinct diagnostic text original in the same retained context later
+recovered and reported Alpha's exact result. Beta's synthetic question was expired
+during retained-fixture recovery; the agent reported the missing question text
+and did not answer it or start work. No accepted original or return packet was
+replayed. The task-owned native history was retained and its completed thread
+archived. The uninterrupted full voice journey and useful-sound distributions
+were **not qualified** by this case; physical echo/noise/hearing remain separate.
+
+Bound actual committed utterance originals and provider connections, not generated
+clip counts: endpointing may legitimately split a clip. Preserve source-matched
+browser checkpoints before teardown and independently of the final report's HTTP
+submission; a server shutdown can make that submission unavailable. Retain the
+failed operation and repair the verifier from existing evidence rather than
+repeating paid inputs to recover missing timestamps. A strict “only this answer”
+correction is not a sound assertion point for immediate unrelated spoken offers.
+
+
+## Useful internal-return speech
+
+The native return context asks for an exact source read before reporting its
+contents, followed by one concise attributed offer. Source lookup belongs
+in tool activity; a separate spoken lookup announcement or repeated offer adds
+no result and delays useful speech. A human correction arriving during that
+native turn is incorporated into the same answer. This is response guidance,
+not an extra model pass, content classifier, hearing receipt or new authority. Incorporation is reported only after the offer was
+actually provided. A useful offer may be commentary before that acknowledgment;
+its content is not repeated merely to create a final-phase item.
+
+When a retained human original steers a return turn, its final answer can be
+bound to that human original rather than carry `native_returns`. Qualify the
+canonical current answer, its accepted original/native turn and actual source
+read/report receipts together. Do not discard that valid answer merely because
+a return-only presentation annotation is absent. Keep digital playback completion
+separate from generating or requesting its audio.
+
+
+### Ambient energy after a continuous endpoint — 2026-11-01
+
+A local RMS energy hint can continue after a CPU-confirmed endpoint without
+being speech. The coordinator previously compared every later energy hint to
+that fixed endpoint forever, even when newer same-generation CPU analysis had
+already covered the sound and still reported quiet. A regression fixture
+reproduced the resulting stalled recorder before the correction. Keep the exact
+endpoint, but compare acoustic freshness against the newest same-generation
+analysis coverage. Unanalyzed sound still fences submission; renewed speech
+changes generation and invalidates the old endpoint. Caption readiness, original
+identity, ordered confirmation and explicit review on uncertainty remain intact.
+The fullscreen review view also retains and displays its first stop reason,
+rather than replacing that explanation with only generic recovery instructions.
+
+The reported phone attempts had completed source-bound Gemini receipts. That
+establishes successful recognition, not browser receipt adoption or the precise
+reason each attempt entered review. The ambient-energy regression is verified
+in the coordinator fixture; attribution to those physical attempts and successful
+device acceptance remain unresolved. Existing originals were not replayed.
+
+
+### Already queued canonical tail during interruption — 2026-11-01
+
+A fresh, bounded three-original browser case used current Gemini prepared ASR,
+pinned CPU analysis, Sol6.1/openai/medium and Qwen speech with synthetic capture
+and worker peers. The generated correction stopped the player after211ms, three
+unique originals were accepted, and a later explicit inquiry produced complete
+source-matched audio for both a worker result and its still-unanswered question.
+Both returned sources were reported; the other worker stayed active. All three
+native turns completed and the isolated native thread was archived.
+
+That delivery/completion evidence did not prove correct interruption. Retained
+media ranges show that the old answer's canonical continuation restarted after
+the human phrase ended, delaying the corrective answer behind roughly12seconds
+of old narration. The continuation had already been queued and prefetched while
+its live prefix played. Capture removed separately parked preparations but left
+that same-message queue row. Interrupt the whole native message, removing its
+queued canonical continuation as well. Preserve its existing paused media, saved
+cursor and explicit Resume path; a new correction can then precede old narration.
+The mounted player regression reproduces the restart before the correction and
+verifies the correction plays next afterward, with no provider rerun.
+
+The retained journey's first-positive-audio values were6.069/13.812/11.777seconds
+from generated final-energy proxies; the second includes the observed old-tail
+defect and the third includes real source inspection/reporting. These are
+observations, not a speedup or subsecond claim. A fourth passive idle stream was
+unconfirmed at bounded fixture shutdown; the browser profile is retained. This
+case does not qualify idle finalization/recovery, spontaneous idle offers,
+physical echo/hearing, phone acceptance or the full milestone. No existing
+original or paid call was replayed to repair the verifier or player regression.
+
+
+### Phone review at the old caption deadline — 2026-11-01
+
+The human's UI0000ea09cda2 screenshot shows the exact stop reason “Voice
+confirmation arrived too late”, establishing that the endpoint-age branch ran.
+This is not a measured provider finalization duration or proof that Gemini alone
+caused the wait. That branch required a nonempty caption and a currently valid
+quiet endpoint, then unnecessarily rejected it when the endpoint was over eight
+seconds old. The already open original still held all PCM, including later
+silence, under its existing120second bound. The next recording begins at the
+actual flushed worklet boundary; its prefix does not begin at the old endpoint.
+Remove that age rejection while retaining capture-duration, handoff-ring,
+freshness, generation, ordering and exact-prepared-original checks.
+
+The updated regression fails with the old rejection and passes with it removed:
+291200bytes remain in the first original after nine seconds of delayed captions,
+only a later32byte boundary gap belongs to the second, and exactly one original
+is confirmed. Renewed sound still fences the old endpoint. Existing failed phone
+recordings remain available for review; no retry or new transcription is implied.
+
+## Source-bound return announcements remain in the speech queue —1 November2026
+
+A new two-original selected-provider journey delivered both originals and
+spontaneously spoke Beta's pending question. Alpha's source-bound result was
+written and marked reported by the integrator but never requested for speech:
+the final answer removed the queued `integrator_progress` announcement. This is
+an observed client queue defect, not evidence that the return was never received.
+
+The queue now preserves progress messages carrying canonical `native_returns`
+when later progress/final answers coalesce. Routine progress still condenses;
+current/revision, stale-history, session mute, exact speech-source and human
+interruption fences remain. A mounted regression fails before the change and
+checks that the announcement and following decision speak in order, once.
+The retained provider journey is not replayed; physical hearing and a complete
+post-fix provider journey remain separate acceptance gaps.
+
+## Useful live prefixes exclude standalone list markers —1 November2026
+
+The retained selected-provider journey first requested the frozen live range0–3
+containing only `1. `. Markdown speech projection rejected it as empty, and its
+transport ended incomplete before the useful range3–158 could start. The live
+selector now skips standalone ordered/bullet list-marker boundaries without
+consuming source characters. The first useful sentence includes its original
+marker and retains the same exact-prefix hash/canonical handover contract.
+Numeric content and long whole-word prefixes remain supported. This removes an
+observed empty request; it is not a measured provider speedup or proof that the
+remaining model-to-audio delay meets the latency target.
+
+## Interruption covers the spoken native turn —1 November2026
+
+The next combined provider journey exposed a second stale-output path: the
+initial commentary was interrupted, but its different final message from the
+same native turn later played before the correction. The earlier observer only
+matched the interrupted native item, so it missed that restart. The journey
+remains partial; its completed result/question and exact local-recovery evidence
+are retained without replaying input or providers.
+
+The player now keeps a bounded128-entry automatic-speech fence for interrupted
+integrating native turns, scoped to the current conversation binding. It removes
+queued sibling messages and rejects later canonical/live siblings automatically.
+Native jobs and all text stay intact. A newly retained human original with the
+exact interrupted playback source/revision releases the turn fence so native
+steering can answer within the same physical turn; already observed old items
+remain skipped. A newly sourced internal return also remains eligible when the
+runtime steers it into that physical turn; the fence does not silence unrelated
+meaningful results/questions. Explicit Listen/Resume releases the spoken-turn fence; already prepared media for the interrupted item remains
+available for Resume, preserving the existing no-resynthesis behavior. Mounted
+regressions cover queued, late canonical and late live siblings, the corrective
+turn, explicit Listen and existing prepared-media Resume. This is a playback
+boundary, never native cancellation or question completion.
+
+
+### Shared-session activity backpressure
+
+The continuous activity WebSocket uses fresh shared-home authorization on input
+and output. A remote identity check on every100ms packet can fall behind capture
+while the independent ASR still displays captions. An observed coverage gap is
+not proof that the person was silent or that a specific identity call caused it.
+
+The activity route now collects already-arrived messages while authorization is
+in flight. Each fresh authorized batch contains at most10 original packets and
+32000 PCM bytes; packets are fed individually, preserving all detector decisions
+and onset/end events. Controls retain their exact ordered boundary and a separate
+fresh check. Worker outputs likewise retain every event in order, with a fresh
+check before each batch of at most10. There is no coalescing delay, identity cache,
+dropped audio/event, new admission or retry. Binding rechecks remain every15s.
+
+Pending input is limited to256000 PCM bytes (8s) and128 messages; pending output
+to128 already bounded worker events. Overflow fails visibly and closes the owned
+intake/worker rather than growing memory or silently skipping audio. Existing
+300s session, per-frame validation and original recovery remain. The independent
+live-ASR route does not perform these per-packet identity checks and is unchanged.
+Qualification must exercise the actual shared-home cookie route with delayed
+identity, revocation, ordered boundaries and overflow, beside existing companion
+grants. Synthetic delay proves the mechanism; phone latency/acceptance and the
+reported individual failure remain separate.
+
+
+### Completed-utterance recognition fallback
+
+A fresh explicit continuous session may upload its exact locally retained WAV
+once after a validated same-generation endpoint and complete audio flush, even
+when the streaming provider never confirms its final transcript. This uses the
+existing ordinary voice endpoint, UUID/hash/context, ordered drain, server
+original deduplication and configured final-file ASR. A matching completed stream
+receipt is still preferred by that same server path; partial captions never
+become a transcript. No provider reconnect or new automatic retry is introduced.
+
+Missing provider confirmation alone no longer forces manual Send for that
+already completed utterance. An unfinished/view-exit fragment, failed flush,
+recording limit, stale binding, local-retention failure or previously uncertain
+upload still requires the existing review/status path. Restoring a recording
+never invents the endpoint's automatic Send intent. The next utterance remains
+ordered behind the original's existing durable confirmation. A saved/preparing
+receipt proves server retention, not completed ASR, native delivery or hearing.
+
+
+### Server activity-stage diagnostic
+
+At the end of each admitted foreground analysis session, the existing web-unit
+journal receives one `voice_activity_closed` INFO summary. It keeps only session
+UUID, outcome/error class, elapsed time, scalar byte/event counts, queue high-water
+marks and count/total/max milliseconds for worker startup, input/output batch
+authorization, periodic binding checks, worker writes and output sends. No
+transcript, PCM, provider payload, headers, identity responses, credential or
+exception detail is logged. No new file, timer, request, inference or admission
+behavior is introduced; existing bounded service-journal retention applies.
+
+`received_pcm_bytes` counts valid frames accepted into the bounded intake, not
+all network bytes or rejected overflow. `fed_pcm_bytes` counts completed worker
+writes. `analyzed_pcm_bytes` is the latest bounded worker offset collected before
+output authorization; `delivered_pcm_bytes` is the latest offset sent onto the
+WebSocket, not a client acknowledgment or hearing receipt. Independent queue
+high-water marks and authorization durations distinguish intake pressure, slow
+worker consumption and delayed output checks without inferring absent speech
+from a missing onset. A normal close/disconnect, timeout or authorization refusal
+is retained separately. These observations locate a delayed stage; they do not
+by themselves establish the cause of a particular phone failure.
+
+### Useful speech before a long sentence finishes
+
+The live-prefix reader prefers complete sentences and paragraphs. When neither
+is available, it may select a clause ending with a colon or semicolon followed
+by whitespace, provided the selected clause contains at least60Unicode
+characters. Short lead-ins still wait. URL schemes and timestamps do not create
+these boundaries; existing unclosed code, link and parenthesis guards apply.
+If no such clause is available, the existing240-character first window and
+640-character later windows can still select a whole-word prefix.
+
+This reuses the exact frozen prefix, hash, source validation, question priority,
+interruption and canonical continuation. It adds no rewritten text, model call,
+timer or input admission. A deterministic Spanish example can begin its useful
+87-character clause while the rest of the sentence is still being written;
+the ordinary player continues from that exact offset after confirmation.
+This proves an earlier selection opportunity, not provider latency, physical
+hearing or resolution of the phone's automatic utterance-handoff failure.
+
+
+### Native foreground continuation after tool cancellation
+
+A provider tool cancellation must retire only that proposal. The mounted output
+reader keeps its own event deque across subsequent provider receives. Reusing
+that deque's variable for the cancelled task previously raised AttributeError
+on the next receive and disconnected the avatar. The regression now sends a
+separate later provider batch and verifies its transcript and turn completion
+through the same open socket, without restarting or replaying input or work.
+
+This reproduced defect is not retrospective proof of the cause of any particular
+phone disconnect. Generated captions may precede playback; interrupted output
+and playback byte positions do not establish physical hearing or word alignment.
+The reported delayed/partial speech still requires its own session evidence.

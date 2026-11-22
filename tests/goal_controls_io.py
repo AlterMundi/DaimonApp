@@ -11,11 +11,27 @@ from goal_inspection_io import Inspection
 
 
 class Controls(Inspection):
+    expected_origin = 'user'
     def __init__(self, binary):
         self.revisions = {}
         self.lose_receipt = False
         self.owning_metadata = 0
+        self.drop_control_notice = False
         super().__init__(binary)
+
+    def start(self):
+        if self.routed:
+            text = self.config.read_text()
+            if 'telegram_projection=true' not in text:
+                self.config.write_text(text.replace('[interaction]\n', '[interaction]\ntelegram_projection=true\n'))
+        return super().start()
+
+    def before_send_message_reply(self, payload):
+        if self.drop_control_notice and 'Integrator action' in payload['text'] and 'Outcome unknown' in payload['text']:
+            self.drop_control_notice = False
+            return False  # Delivery may have happened; do not resend this notice.
+        inherited = getattr(super(), 'before_send_message_reply', None)
+        return inherited(payload) if inherited else None
 
     def handle_extra_rpc(self, message, send):
         method = message.get('method')
@@ -30,7 +46,7 @@ class Controls(Inspection):
             elif params['expectedRevision'] != revision:
                 send({'id': message['id'], 'error': {'code': -32600, 'message': 'Selected goal definition changed'}})
             else:
-                assert params['origin'] == 'user'
+                assert params['origin'] == self.expected_origin
                 self.revisions[thread] = int(revision) + 1
                 if method.endswith('Clear'):
                     cleared = self.goals.pop(thread, None) is not None
@@ -98,11 +114,25 @@ def qualify(binary):
         pause, _ = prepare('pause', original('Pause the current Alpha goal.'))
         paused = j.cli(entry, 'goal_execute', {'id': pause['control']['id']})
         assert paused['phase'] == 'acknowledged' and j.goals['native-topic-7']['status'] == 'paused'
+        before_notices = len(j.rpc)
+        import subprocess
+        notice_reply = subprocess.run([j.binary, '--control', str(j.config), 'topics', 'notices', 'native-topic-7'], capture_output=True, text=True, check=True, timeout=20)
+        notice_feed = json.loads(notice_reply.stdout)['result']
+        assert notice_feed['schema'] == 'telecodex.thread-notices/v1' and notice_feed['available']
+        assert notice_feed['native_thread'] == 'native-topic-7' and notice_feed['history']
+        assert 'Native session acknowledged' in notice_feed['items'][-1]['text']
+        assert len(j.rpc) == before_notices, 'Reading notices never contacts native or starts work'
+        j.wait(lambda: j.row("SELECT phase FROM topic_publications WHERE kind='control' AND json_extract(source,'$[0]')=?", (pause['control']['id'],)) == [('sent',)])
+        notices = [(m,p) for m,p in j.messages if 'Native session acknowledged the goal change.' in m['text']]
+        assert len(notices) == 1 and notices[0][0].get('message_thread_id') == 7
+        assert 'Integrator action' in notices[0][0]['text'] and 'goal pause' in notices[0][0]['text']
+        assert pause['control']['id'] not in notices[0][0]['text']
         assert j.goals['native-topic-7']['tokensUsed'] == 80
         assert j.owning_metadata == 2, 'Busy target metadata must use its current subscribed writer'
         count = sum(m.get('method') == 'thread/goal/conditionalSet' for m in j.rpc)
         j.cli(entry, 'goal_execute', {'id': pause['control']['id']})
         assert sum(m.get('method') == 'thread/goal/conditionalSet' for m in j.rpc) == count
+        assert j.row("SELECT COUNT(*) FROM topic_publications WHERE kind='control' AND json_extract(source,'$[0]')=?", (pause['control']['id'],)) == [(1,)]
         cancelled, _ = prepare('pause', reason='Assistant proposal that the human declines', followup='Ask the selected question afterward.')
         goal_views=view(['goals','list','0'])
         proposed_view=next(v for v in goal_views['items'] if v['id']==cancelled['control']['id'])
@@ -145,12 +175,15 @@ def qualify(binary):
         j.goals['native-topic-7'] = {'threadId': 'native-topic-7', 'objective': 'New work', 'status': 'active', 'tokenBudget': 100, 'tokensUsed': 81, 'timeUsedSeconds': 5, 'createdAt': 3, 'updatedAt': 3}
         uncertain, _ = prepare('pause', original('Pause the new Alpha goal.'))
         j.lose_receipt = True
+        j.drop_control_notice = True
         before = len(j.rpc)
         result = j.cli(entry, 'goal_execute', {'id': uncertain['control']['id']})
         assert result['phase'] == 'uncertain' and j.goals['native-topic-7']['status'] == 'paused'
+        j.wait(lambda: j.row("SELECT phase FROM topic_publications WHERE kind='control' AND json_extract(source,'$[0]')=?", (uncertain['control']['id'],)) == [('uncertain',)])
         attempts = len(j.rpc)
         j.cli(entry, 'goal_execute', {'id': uncertain['control']['id']})
         assert len(j.rpc) == attempts and attempts > before
+        assert j.row("SELECT COUNT(*) FROM topic_publications WHERE kind='control' AND json_extract(source,'$[0]')=?", (uncertain['control']['id'],)) == [(1,)]
         assert not any(m.get('method') in ('thread/goal/set', 'thread/goal/clear', 'turn/interrupt') for m in j.rpc)
         j.broadcast('native-topic-7', 'turn/completed', {'turn': {'id': j.runs['native-topic-7'], 'status': 'completed'}})
         thread = 'native-topic-9'
@@ -209,7 +242,63 @@ def staged_pause(binary):
         j.close()
 
 
+def own_and_dormant_controls(binary):
+    j = Controls(binary)
+    try:
+        j.prepare(seed_entry=True)
+        j.allow_native_launch = True
+        j.admit('Edit my current goal while preserving accounting.', topic=1)
+        j.wait(lambda: 'native-topic-9' in j.runs)
+        entry = j.access(1)
+        baseline = {'objective':'Earlier unfinished roadmap', 'status':'blocked',
+                    'tokenBudget':100,'tokensUsed':80,'timeUsedSeconds':5,'createdAt':1,'updatedAt':2}
+        j.goals['native-topic-9'] = {**baseline, 'threadId':'native-topic-9'}
+        seen = j.cli(entry, 'goal_inspect', {'selector':'self'})
+        explicit = j.cli(entry, 'goal_inspect', {'selector':'t1'})
+        assert seen['target_binding'] == explicit['target_binding']
+        reference = j.cli(entry, 'inputs')['inputs'][0]['input_ref']
+        args = {'selector':'self','target_binding':seen['target_binding'],
+                'input_ref':reference,'reason':'Explicit human own-goal edit',
+                'plan':{'action':'edit','expected':seen['snapshot'],
+                        'objective':'Focused work; earlier unfinished roadmap remains pending.',
+                        'token_budget':None,'followup':None}}
+        selected=j.cli(entry,'goal_prepare',args)['control']['id']
+        assert j.cli(entry,'goal_execute',{'id':selected})['phase']=='acknowledged'
+        assert j.goals['native-topic-9']['tokensUsed']==80
+        assert j.goals['native-topic-9']['status']=='blocked'
+
+        # Complete actual Alpha work. Its receiver channel stays cached/dormant;
+        # that is not a preparation in progress and must not block metadata edits.
+        j.admit('Finish this ordinary Alpha turn.',topic=7)
+        j.wait(lambda:'native-topic-7' in j.runs)
+        j.broadcast('native-topic-7','turn/completed',{'turn':{'id':j.runs['native-topic-7'],'status':'completed'}})
+        j.wait(lambda:j.row('SELECT busy FROM sessions WHERE thread_id=7')==[(0,)])
+        j.goals['native-topic-7']={**baseline,'threadId':'native-topic-7'}
+        old=reference
+        j.admit('Edit the current Alpha goal to the new focused objective.',topic=1)
+        j.wait(lambda:j.cli(entry,'inputs')['inputs'][0]['input_ref']!=old)
+        reference=j.cli(entry,'inputs')['inputs'][0]['input_ref']
+        seen=j.cli(entry,'goal_inspect',{'selector':'Alpha'})
+        args.update(selector='Alpha',target_binding=seen['target_binding'],input_ref=reference)
+        args['plan'].update(expected=seen['snapshot'])
+        before=sum(m.get('method') in ('turn/start','turn/steer') for m in j.rpc)
+        selected=j.cli(entry,'goal_prepare',args)['control']['id']
+        done=j.cli(entry,'goal_execute',{'id':selected})
+        assert done['phase']=='acknowledged',done
+        assert j.goals['native-topic-7']['tokensUsed']==80 and j.goals['native-topic-7']['status']=='blocked'
+        assert sum(m.get('method') in ('turn/start','turn/steer') for m in j.rpc)==before
+        # Idempotent acknowledged execution cannot submit metadata twice.
+        count=sum(m.get('method')=='thread/goal/conditionalSet' for m in j.rpc)
+        j.cli(entry,'goal_execute',{'id':selected})
+        assert sum(m.get('method')=='thread/goal/conditionalSet' for m in j.rpc)==count
+        j.broadcast('native-topic-9','turn/completed',{'turn':{'id':j.runs['native-topic-9'],'status':'completed'}})
+        j.idle()
+        print('PASS explicit own-entry controls and dormant writer metadata preserve accounting without new native work')
+    finally:j.close()
+
+
 if __name__ == '__main__':
     binary = str(Path(sys.argv[1]).resolve())
     qualify(binary)
     staged_pause(binary)
+    own_and_dormant_controls(binary)

@@ -2,6 +2,7 @@
 
 use super::*;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanInteraction {
@@ -28,6 +29,143 @@ pub struct TaskWithdrawal {
     pub id: String,
     pub reason: String,
     pub links: serde_json::Value,
+}
+
+/// Project structured native async questions into the existing durable task ledger.
+/// The native item is the immutable source; this creates no response channel.
+pub(super) fn native_async_questions_on(
+    conn: &Connection,
+    local: i64,
+    native: &str,
+    physical: &str,
+    item: &str,
+    questions: &serde_json::Value,
+) -> Result<usize> {
+    use anyhow::bail;
+    let rows = questions
+        .as_array()
+        .context("Invalid native async questions")?;
+    if rows.is_empty() || rows.len() > 10 || serde_json::to_vec(questions)?.len() > 65_536 {
+        bail!("Native async question bounds exceeded");
+    }
+    let (session, user): (i64, i64) = conn
+        .query_row(
+            "SELECT s.id,t.from_user_id FROM turns t JOIN sessions s ON s.id=t.session_id
+         JOIN users u ON u.tg_user_id=t.from_user_id
+         JOIN interaction_native_messages m ON m.local_turn=t.id AND m.native_thread=?2
+           AND m.native_turn=?3 AND m.item_id=?4
+         WHERE t.id=?1 AND t.native_thread_id=?2 AND s.codex_thread_id=?2
+           AND s.creator_user_id=t.from_user_id AND s.force_fresh_thread=0 AND u.allowed=1",
+            params![local, native, physical, item],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .context("Native async question has no current owned source")?;
+    let mut prepared = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let title = row["title"]
+            .as_str()
+            .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+            .context("Native async question title missing")?;
+        let mut action = title.to_owned();
+        if let Some(options) = row.get("options").filter(|value| !value.is_null()) {
+            let options = options.as_array().context("Invalid native async choices")?;
+            if options.len() > 32 {
+                bail!("Native async choice bounds exceeded");
+            }
+            for option in options {
+                let text = option
+                    .as_str()
+                    .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+                    .context("Invalid native async choice")?;
+                action.push_str("\n- ");
+                action.push_str(text);
+            }
+        }
+        if action.chars().count() > 8000 {
+            bail!("Native async question text exceeds task bounds");
+        }
+        let identity = serde_json::json!([
+            "native-async-question/v1",
+            user,
+            native,
+            physical,
+            item,
+            index
+        ]);
+        let id = format!(
+            "{:x}",
+            sha2::Sha256::digest(identity.to_string().as_bytes())
+        )[..32]
+            .to_owned();
+        let source = serde_json::json!({"links":[],"nativeAsyncQuestion":{
+            "thread":native,"turn":physical,"item":item,"index":index,"question":row,
+            "revision":format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(row)?)),
+            "meaning":"Ordinary conversational question; not a native RPC answer or approval."}});
+        let entry = HumanInteraction {
+            id: id.clone(),
+            kind: "task".into(),
+            state: "pending".into(),
+            requester: user,
+            native_thread: native.into(),
+            local_turn: local,
+            title: title.chars().take(120).collect(),
+            action,
+            blocking: false,
+            source,
+        };
+        prepared.push((id, entry));
+    }
+    let mut fresh = Vec::new();
+    for (id, entry) in prepared {
+        let prior: Option<String> = conn
+            .query_row(
+                "SELECT payload_json FROM human_interactions WHERE id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(raw) = prior {
+            let previous: HumanInteraction = serde_json::from_str(&raw)?;
+            if previous.source != entry.source
+                || previous.requester != user
+                || previous.native_thread != native
+            {
+                bail!("Native async question source changed");
+            }
+            continue; // A repeated event must not reopen an answered/dismissed question.
+        }
+        fresh.push((id, entry));
+    }
+    let existing: usize = conn.query_row(
+        "SELECT count(*) FROM human_interactions
+        WHERE requester=?1 AND native_thread=?2 AND kind='task'
+        AND json_extract(payload_json,'$.source.nativeAsyncQuestion.turn')=?3",
+        params![user, native, physical],
+        |r| r.get(0),
+    )?;
+    if existing + fresh.len() > 10 {
+        bail!("Native async turn question bounds exceeded");
+    }
+    let mut inserted = 0;
+    for (id, entry) in fresh {
+        conn.execute(
+            "INSERT INTO human_interactions(id,session_id,requester,native_thread,local_turn,
+            kind,state,instance_id,client_id,payload_json,created_at,updated_at)
+            VALUES(?1,?2,?3,?4,?5,'task','pending',?6,?1,?7,?8,?8)",
+            params![
+                id,
+                session,
+                user,
+                native,
+                local,
+                "native-async-question/v1",
+                serde_json::to_string(&entry)?,
+                now_string()
+            ],
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
 }
 
 fn projected(
@@ -153,10 +291,27 @@ pub(super) fn withdraw_task_on(
     doc["source"]["agentWithdrawal"] = serde_json::json!({"reason":entry.reason,"links":entry.links,"sourceTurn":turn,"at":at,"actor":actor});
     tx.execute("UPDATE human_interactions SET state='cancelled',payload_json=?2,updated_at=?3 WHERE id=?1 AND state='pending'",params![entry.id,serde_json::to_string(&doc)?,at])?;
     tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(NULL,'human_task_withdrawn_by_agent',?1,?2)",params![serde_json::json!({"interaction_id":entry.id,"requester":user,"source_turn":turn,"reason":entry.reason,"links":entry.links,"actor":actor}).to_string(),at])?;
+    if actor.is_object() {
+        super::topic_publications::task_withdrawal_on(tx, &entry.id)?;
+    }
     Ok(true)
 }
 
 impl Store {
+    pub fn record_native_async_questions(
+        &self,
+        local: i64,
+        native: &str,
+        physical: &str,
+        item: &str,
+        questions: &serde_json::Value,
+    ) -> Result<usize> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let count = native_async_questions_on(&tx, local, native, physical, item, questions)?;
+        tx.commit()?;
+        Ok(count)
+    }
     pub(super) fn init_interactions(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS human_interactions(
@@ -211,6 +366,80 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Read-only attention across the owner's current internal sessions.
+    /// This does not widen canonical For you, create a responder, or alter ingress.
+    pub fn internal_pending_page(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        after: i64,
+    ) -> Result<serde_json::Value> {
+        if after < 0 {
+            anyhow::bail!("Invalid internal pending cursor");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (entry_session, native) = super::presentation::entry_on(&tx, human, entry)?;
+        let binding = super::presentation::entry_binding(&tx, human, entry, entry_session)?;
+        let mut stmt = tx.prepare(
+            "SELECT h.rowid,h.payload_json,h.state,s.chat_id,s.thread_id,s.session_title,
+                    h.created_at,h.updated_at
+             FROM human_interactions h JOIN sessions s ON s.id=h.session_id
+             JOIN users u ON u.tg_user_id=h.requester JOIN turns t ON t.id=h.local_turn
+             WHERE h.rowid>?1 AND h.requester=?2 AND s.creator_user_id=?2 AND u.allowed=1
+               AND s.id<>?3 AND h.kind IN ('task','native')
+               AND h.state IN ('pending','answering','unknown')
+               AND s.force_fresh_thread=0 AND s.codex_thread_id=h.native_thread
+               AND t.session_id=s.id AND t.from_user_id=?2 AND t.native_thread_id=h.native_thread
+             ORDER BY h.rowid LIMIT 21",
+        )?;
+        let rows = stmt
+            .query_map(params![after, human, entry_session], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let more = rows.len() > 20;
+        let mut cursor = after;
+        let mut items = Vec::new();
+        for (sequence, raw, state, chat, topic, label, created, updated) in
+            rows.into_iter().take(20)
+        {
+            let mut item: HumanInteraction = serde_json::from_str(&raw)?;
+            item.state = state;
+            let target = SessionKey::new(chat, Some(topic));
+            let revision = format!(
+                "{:x}",
+                sha2::Sha256::digest(
+                    serde_json::json!(["internal-pending/v1", binding, target, item])
+                        .to_string()
+                        .as_bytes()
+                )
+            );
+            items.push(serde_json::json!({"id":item.id,"kind":item.kind,"state":item.state,
+                "target":target,"label":label.unwrap_or_else(||format!("Session {topic}")).chars().take(120).collect::<String>(),
+                "title":item.title.chars().take(200).collect::<String>(),"preview":item.action.chars().take(240).collect::<String>(),
+                "revision":revision,"created_at":created,"updated_at":updated,
+                "source_native":item.native_thread,"live_response":"not_established_by_ledger_read"}));
+            cursor = sequence;
+        }
+        drop(stmt);
+        tx.commit()?;
+        Ok(
+            serde_json::json!({"schema":"telecodex.internal-pending-list/v1",
+            "binding":binding,"entry_binding":[human,entry,entry_session,native],
+            "items":items,"cursor":cursor,"more":more,"read_only":true}),
+        )
     }
 
     #[cfg(test)]
@@ -283,15 +512,71 @@ impl Store {
     ) -> Result<()> {
         self.save_human_requests(key, tasks, None)
     }
+    #[cfg(test)]
     pub fn save_human_requests(
         &self,
         key: SessionKey,
         tasks: &[(String, HumanInteraction)],
         withdrawal: Option<(i64, &str, i64, &[TaskWithdrawal])>,
     ) -> Result<()> {
+        self.save_human_requests_checked(key, tasks, withdrawal, None)
+            .map(|_| ())
+    }
+    pub fn save_human_requests_checked(
+        &self,
+        key: SessionKey,
+        tasks: &[(String, HumanInteraction)],
+        withdrawal: Option<(i64, &str, i64, &[TaskWithdrawal])>,
+        live: Option<(&LiveTaskActor<'_>, &tokio_util::sync::CancellationToken)>,
+    ) -> Result<Vec<String>> {
+        use anyhow::bail;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        if let Some((actor, closed)) = live {
+            super::live_tasks::actor_on(&tx, actor, closed)?;
+            if key != actor.key
+                || tasks.iter().any(|(_, item)| {
+                    item.requester != actor.human
+                        || item.native_thread != actor.native
+                        || item.local_turn != actor.local
+                })
+                || withdrawal.is_some_and(|(user, native, turn, rows)| {
+                    user != actor.human
+                        || native != actor.native
+                        || turn != actor.local
+                        || !rows.is_empty()
+                })
+            {
+                bail!("Live task declaration differs from current actor");
+            }
+        }
+        let mut receipts = Vec::new();
         for (client, item) in tasks {
+            let prior: Option<(String,String)> = tx.query_row(
+                "SELECT h.id,h.payload_json FROM human_interactions h JOIN sessions s ON s.id=h.session_id JOIN users u ON u.tg_user_id=h.requester WHERE h.local_turn=?1 AND h.kind='task' AND h.client_id=?2 AND s.chat_id=?3 AND s.thread_id=?4 AND s.codex_thread_id=h.native_thread AND u.allowed=1",
+                params![item.local_turn,client,key.chat_id,key.thread_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((id, raw)) = prior {
+                let previous: HumanInteraction = serde_json::from_str(&raw)?;
+                if previous.requester != item.requester
+                    || previous.native_thread != item.native_thread
+                    || previous.title != item.title
+                    || previous.action != item.action
+                    || previous.source["links"] != item.source["links"]
+                {
+                    bail!("Human task declaration changed; original retained");
+                }
+                receipts.push(id);
+                continue;
+            }
+            let count: i64 = tx.query_row(
+                "SELECT count(*) FROM human_interactions WHERE local_turn=?1 AND kind='task'",
+                [item.local_turn],
+                |r| r.get(0),
+            )?;
+            if count >= 10 {
+                bail!("Task declarations exceed ten per logical turn");
+            }
+            receipts.push(item.id.clone());
             let session: Option<i64> = tx
                 .query_row(
                     "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=?3
@@ -340,8 +625,11 @@ impl Store {
                 )?;
             }
         }
+        if let Some((actor, closed)) = live {
+            super::live_tasks::actor_on(&tx, actor, closed)?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(receipts)
     }
 
     pub fn update_native_interaction(
@@ -489,12 +777,352 @@ mod lifecycle_tests {
         }
     }
     #[test]
+    fn native_async_questions_reuse_tasks_without_responder_or_reopening() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "question",
+                Some("final_answer"),
+                "Choose",
+            )
+            .unwrap();
+        let questions = json!([{"title":"Choose a symbol","options":["Luna","Estrella"]}]);
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            1
+        );
+        let page = store.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(page.pending_total, 1);
+        let question = &page.items[0];
+        assert_eq!(question.kind, "task");
+        assert!(!question.blocking);
+        assert_eq!(question.action, "Choose a symbol\n- Luna\n- Estrella");
+        assert!(question.source["requestId"].is_null());
+        assert_eq!(question.source["nativeAsyncQuestion"]["item"], "question");
+        let view = store
+            .conversation_human_task(100, key, &question.id)
+            .unwrap();
+        assert_eq!(view["native_question"]["question"], questions[0]);
+        assert!(
+            store
+                .conversation_human_task(101, key, &question.id)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            0
+        );
+        store
+            .transition_interaction(key, 100, &question.id, "pending", "answered")
+            .unwrap();
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &questions)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        assert!(
+            store
+                .record_native_async_questions(
+                    turn,
+                    "source",
+                    "physical",
+                    "question",
+                    &json!([{"title":"Changed"}])
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "other", "physical", "question", &questions)
+                .is_err()
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "unobserved", "question", &questions)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_async_question_bounds_are_atomic() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "question",
+                Some("final_answer"),
+                "Choose",
+            )
+            .unwrap();
+        let invalid = json!([{"title":"Valid"},{"title":"Invalid","options":[123]}]);
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &invalid)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "question", &json!([]))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_async_freeform_questions_and_turn_bound_preserve_closed_cards() {
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "open",
+                Some("final_answer"),
+                "Questions",
+            )
+            .unwrap();
+        let questions =
+            json!([{"title":"Tell me more"},{"title":"Any preference?","options":null}]);
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "open", &questions)
+                .unwrap(),
+            2
+        );
+        let page = store.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(page.pending_total, 2);
+        for row in page.items {
+            assert!(!row.action.contains("\n-"));
+            store
+                .transition_interaction(key, 100, &row.id, "pending", "cancelled")
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "open", &questions)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, false)
+                .unwrap()
+                .pending_total,
+            0
+        );
+        store
+            .record_native_message(
+                turn,
+                "source",
+                "physical",
+                "excess",
+                Some("final_answer"),
+                "More",
+            )
+            .unwrap();
+        let excess = serde_json::Value::Array(
+            (0..9)
+                .map(|i| json!({"title":format!("Question {i}")}))
+                .collect(),
+        );
+        assert!(
+            store
+                .record_native_async_questions(turn, "source", "physical", "excess", &excess)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .interactions_page(key, 100, 0, true)
+                .unwrap()
+                .history_total,
+            2
+        );
+    }
+    #[test]
+    fn internal_pending_keeps_entry_separate_and_rechecks_source_ownership() {
+        let (_root, store, worker, turn) = fixture();
+        let entry = SessionKey::new(100, Some(9));
+        let defaults = super::super::tests::defaults();
+        store.ensure_session(entry, 100, &defaults).unwrap();
+        store.set_session_codex_thread(entry, "integrator").unwrap();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .save_human_tasks(worker, &[("worker-task".into(), task("worker-task", turn))])
+            .unwrap();
+        let page = store.internal_pending_page(100, entry, 0).unwrap();
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["items"][0]["id"], "worker-task");
+        assert_eq!(page["items"][0]["target"], json!(worker));
+        assert!(page["read_only"].as_bool().unwrap());
+        assert!(store.internal_pending_page(101, entry, 0).is_err());
+        assert!(store.internal_pending_page(100, entry, -1).is_err());
+        assert!(
+            store.internal_pending_page(100, worker, 0).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let cursor = page["cursor"].as_i64().unwrap();
+        assert!(
+            store.internal_pending_page(100, entry, cursor).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .set_session_codex_thread(worker, "replacement")
+            .unwrap();
+        assert!(
+            store.internal_pending_page(100, entry, 0).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        store.set_session_codex_thread(worker, "source").unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("UPDATE turns SET from_user_id=101 WHERE id=?1", [turn])
+                .unwrap();
+        }
+        assert!(
+            store.internal_pending_page(100, entry, 0).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn internal_task_detail_and_dismiss_share_ledger_without_widening_for_you() {
+        let (_root, store, worker, turn) = fixture();
+        let entry = SessionKey::new(100, Some(9));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store.set_session_codex_thread(entry, "integrator").unwrap();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        store
+            .save_human_tasks(
+                worker,
+                &[("direct-action".into(), task("direct-action", turn))],
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_human_task(100, entry, "direct-action")
+                .is_err()
+        );
+        assert!(
+            store
+                .internal_human_task(101, entry, "direct-action")
+                .is_err()
+        );
+        let selected = store
+            .internal_human_task(100, entry, "direct-action")
+            .unwrap();
+        let binding = selected["binding"].as_str().unwrap();
+        let revision = selected["revision"].as_str().unwrap();
+        assert!(
+            store
+                .internal_dismiss_human_task(100, entry, binding, "direct-action", &"0".repeat(64))
+                .is_err()
+        );
+        let result = store
+            .internal_dismiss_human_task(100, entry, binding, "direct-action", revision)
+            .unwrap();
+        assert_eq!(result["state"], "cancelled");
+        assert_eq!(result["human_completion"], false);
+        assert_eq!(result["work_cancelled"], false);
+        assert_eq!(
+            store
+                .internal_dismiss_human_task(100, entry, binding, "direct-action", revision)
+                .unwrap()["new_dismissal"],
+            false
+        );
+        assert!(
+            store
+                .conversation_human_task(100, entry, "direct-action")
+                .is_err()
+        );
+        assert!(
+            store.internal_pending_page(100, entry, 0).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn internal_pending_pages_do_not_drop_or_repeat_items() {
+        let (_root, store, worker, turn) = fixture();
+        let entry = SessionKey::new(100, Some(9));
+        store
+            .ensure_session(entry, 100, &super::super::tests::defaults())
+            .unwrap();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        // Historical ledgers may exceed the new declaration bound; pagination must retain them.
+        for index in 0..23 {
+            let id = format!("worker-{index}");
+            store
+                .save_interaction(worker, &task(&id, turn), Some(&id))
+                .unwrap();
+        }
+        store
+            .transition_interaction(worker, 100, "worker-2", "pending", "completed")
+            .unwrap();
+        let first = store.internal_pending_page(100, entry, 0).unwrap();
+        assert_eq!(first["items"].as_array().unwrap().len(), 20);
+        assert_eq!(first["more"], true);
+        let second = store
+            .internal_pending_page(100, entry, first["cursor"].as_i64().unwrap())
+            .unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 2);
+        assert_eq!(second["more"], false);
+        let ids: std::collections::BTreeSet<_> = first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(second["items"].as_array().unwrap())
+            .map(|v| v["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 22);
+        assert!(!ids.contains("worker-2"));
+    }
+
+    #[test]
     fn pages_have_topic_totals_and_separate_terminal_history() {
         let (_root, store, key, turn) = fixture();
+        // Populate retained historical rows without using the bounded new-declaration writer.
         for n in 0..60 {
             let id = format!("task-{n:03}");
             store
-                .save_human_tasks(key, &[(id.clone(), task(&id, turn))])
+                .save_interaction(key, &task(&id, turn), Some(&id))
                 .unwrap();
         }
         store
@@ -697,6 +1325,80 @@ mod lifecycle_tests {
         );
     }
     #[test]
+    fn live_publication_is_atomic_bounded_and_never_reopens_originals() {
+        use crate::store::LiveTaskActor;
+        use tokio_util::sync::CancellationToken;
+        let (_root, store, key, turn) = fixture();
+        store.record_turn_native_thread(turn, "source").unwrap();
+        let closed = CancellationToken::new();
+        let actor = LiveTaskActor {
+            key,
+            human: 100,
+            local: turn,
+            native: "source",
+            physical: "current",
+            integrator: false,
+        };
+        let mut entry = task("original", turn);
+        let publish = |rows: &[(String, HumanInteraction)]| {
+            store.save_human_requests_checked(key, rows, None, Some((&actor, &closed)))
+        };
+        assert_eq!(
+            publish(&[("phone".into(), entry.clone())]).unwrap(),
+            vec!["original"]
+        );
+        store
+            .transition_interaction(key, 100, "original", "pending", "completed")
+            .unwrap();
+        entry.id = "retry-uuid".into();
+        assert_eq!(
+            publish(&[("phone".into(), entry.clone())]).unwrap(),
+            vec!["original"]
+        );
+        assert_eq!(
+            store
+                .interaction(key, 100, "original")
+                .unwrap()
+                .unwrap()
+                .state,
+            "completed"
+        );
+        // Final manifest uses the same receipt rather than duplicating a live request.
+        store
+            .save_human_requests(key, &[("phone".into(), entry.clone())], None)
+            .unwrap();
+        let mut changed = entry.clone();
+        changed.action = "Different task".into();
+        assert!(
+            publish(&[
+                ("fresh".into(), task("fresh", turn)),
+                ("phone".into(), changed)
+            ])
+            .is_err()
+        );
+        assert!(store.interaction(key, 100, "fresh").unwrap().is_none());
+        let mut foreign = entry.clone();
+        foreign.requester = 101;
+        assert!(publish(&[("foreign".into(), foreign)]).is_err());
+        let many: Vec<_> = (0..10)
+            .map(|n| (format!("task-{n}"), task(&format!("task-{n}"), turn)))
+            .collect();
+        assert!(publish(&many).is_err());
+        assert_eq!(
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM human_interactions", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        closed.cancel();
+        assert!(publish(&[("cancelled".into(), entry)]).is_err());
+    }
+
+    #[test]
     fn live_retirement_requires_current_actor_and_exact_task_and_preserves_human_meaning() {
         use crate::store::LiveTaskActor;
         use tokio_util::sync::CancellationToken;
@@ -737,6 +1439,13 @@ mod lifecycle_tests {
         let item = store.interaction(key, 100, "live").unwrap().unwrap();
         assert_eq!(item.state, "withdrawn");
         assert_eq!(item.action, "Do the selected human action");
+        assert!(
+            store.topic_publication_inventory(100).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["kind"] != "task_control")
+        );
         assert_eq!(
             item.source["agentWithdrawal"]["actor"]["session"],
             json!(key)

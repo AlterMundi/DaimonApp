@@ -11,16 +11,25 @@ struct Submit {
     id: String,
     text: String,
     #[serde(default)]
-    visual: Option<crate::visual::VisualReference>,
+    visual: Option<crate::visual::VisualSelection>,
+    #[serde(default)]
+    files: Vec<crate::files::FileReference>,
     #[serde(default)]
     reply: Option<crate::store::ConversationReply>,
+    #[serde(default)]
+    playback: Option<crate::store::ConversationPlayback>,
 }
 
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
-    json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,
-        "new_input":fresh,"retired":input.retired,"text":input.text,"visual":input.visual,"voice":input.voice,"routing":input.routing,
-        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.phase=="accepted" {"observed"}else{"unconfirmed"},
-        "incorporation":"Not established by input retention or native acceptance"})
+    let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
+        "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
+        "entry_binding":[input.human,input.entry,input.session,input.native],"native_acceptance":if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {"not_requested"}else if input.phase=="accepted" {"observed"}else{"unconfirmed"},
+        "incorporation":"Not established by input retention or native acceptance"});
+    if let Some(dialogue) = &input.foreground_dialogue {
+        value["foreground_dialogue"] = json!(dialogue);
+        value["foreground_delegation"] = json!(input.foreground_delegation);
+    }
+    value
 }
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
@@ -72,7 +81,7 @@ fn decorate_recovery(
     value: &mut Value,
 ) -> Result<()> {
     let recoveries=app.shared.store.conversation_recoverable_routes(human,entry,id)?.into_iter()
-        .filter(|i|super::routing::enrolled(&app.shared,i.target))
+        .filter(|i|super::routing::instruction_available(&app.shared,i))
         .map(|i|json!({"instruction":i.id,"label":super::routing::label(&app.shared,i.target),"target":i.target})).collect::<Vec<_>>();
     if !recoveries.is_empty() {
         value["binding"] = app
@@ -120,18 +129,532 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(body) = args.strip_prefix("voice native initialize ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Initialize {
+            binding: String,
+        }
+        let selected: Initialize = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        anyhow::ensure!(
+            app.shared.config.codex.shared_app_server && app.shared.config.voice.is_some(),
+            "Configured native voice is required"
+        );
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Voice initialization binding changed"
+        );
+        if current["entry_binding"][3]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            return Ok(current);
+        }
+        let session = app
+            .shared
+            .store
+            .get_session(cfg.entry())?
+            .context("Voice entry unavailable")?;
+        let token = uuid::Uuid::now_v7().to_string();
+        let native = app
+            .shared
+            .codex
+            .initialize_voice_context(&session, &super::dialogue::tool_specs(), || {
+                app.shared.store.conversation_voice_initialize_claim(
+                    human,
+                    cfg.entry(),
+                    &selected.binding,
+                    &token,
+                )
+            })
+            .await?;
+        let bound = app.shared.store.conversation_voice_initialize_observe(
+            human,
+            cfg.entry(),
+            session.id,
+            &token,
+            &native,
+        )?;
+        anyhow::ensure!(
+            bound,
+            "Observed native thread retained; voice ownership changed during initialization"
+        );
+        return app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry());
+    }
+    if let Some(body) = args.strip_prefix("artifacts recover ") {
+        let selected: super::artifact_outputs::Recovery = serde_json::from_str(body)?;
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        anyhow::ensure!(
+            current["binding"] == selected.binding,
+            "Artifact recovery binding changed"
+        );
+        super::artifact_outputs::recover_selected(
+            app.shared.clone(),
+            human,
+            cfg.entry(),
+            &selected,
+        )?;
+        return Ok(
+            json!({"schema":"telecodex.artifact-recovery/v1","binding":selected.binding,"local_turn":selected.local_turn,"state":"copy_recovery_registered","native_replay":false,"publication_replay":false}),
+        );
+    }
+    if let Some(body) = args.strip_prefix("voice native attach ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Selected {
+            binding: String,
+            native_thread: String,
+            native_turn: String,
+        }
+        let selected: Selected = serde_json::from_str(body)?;
+        if !app.shared.config.codex.shared_app_server
+            || selected.native_thread.len() > 128
+            || selected.native_turn.is_empty()
+            || selected.native_turn.len() > 128
+            || selected.native_turn.chars().any(char::is_whitespace)
+        {
+            bail!("Select one existing native voice writer");
+        }
+        let current = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        if current["binding"] != selected.binding
+            || current["entry_binding"][3] != selected.native_thread
+        {
+            bail!("Native voice entry changed");
+        }
+        app.shared
+            .store
+            .validate_owned_binding(cfg.entry(), human, &selected.native_thread)?;
+        if app.shared.store.stop_fenced(cfg.entry())?
+            || app.shared.store.maintenance_writer_held(cfg.entry())?
+        {
+            bail!("Native voice collection cannot release a writer hold");
+        }
+        if app
+            .shared
+            .codex
+            .live_native_turn(&selected.native_thread)
+            .await?
+            .as_deref()
+            != Some(selected.native_turn.as_str())
+        {
+            return Ok(
+                json!({"binding":current["binding"],"entry_binding":current["entry_binding"],"state":"not_current","native_turn":selected.native_turn,
+                "meaning":"Writer changed or completed; no input or replacement was started"}),
+            );
+        }
+        let worker = app.workers.lock().await.get(&cfg.entry()).cloned();
+        if let Some(worker) =
+            worker.filter(|w| w.cancel.lock().expect("cancel mutex poisoned").is_some())
+        {
+            let local = worker
+                .steer
+                .lock()
+                .expect("steer mutex poisoned")
+                .as_ref()
+                .map(|s| s.turn_id);
+            let collecting = local.and_then(|local| {
+                super::controller::collecting_native_turn(&app.shared, human, cfg.entry(), local)
+            });
+            return Ok(
+                json!({"binding":current["binding"],"entry_binding":current["entry_binding"],"state":if collecting.as_deref()==Some(selected.native_turn.as_str()) {"collecting"}else{"pending"},
+                "native_turn":selected.native_turn,
+                "meaning":"Existing collector observation only; no duplicate worker or input"}),
+            );
+        }
+        // Reuse the exact-current writer attachment. It never kicks off work,
+        // alters a goal or replays the voice delegation already admitted by Core.
+        let mut result = super::goals::attach_active(
+            app,
+            human,
+            &format!(
+                "{} {} {} {}",
+                cfg.chat_id, cfg.topic_id, selected.native_thread, selected.native_turn
+            ),
+        )
+        .await?;
+        result["binding"] = current["binding"].clone();
+        result["entry_binding"] = current["entry_binding"].clone();
+        Ok(result)
+    } else if matches!(args, "voice native capabilities" | "voice native current") {
+        let mut result = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        let native = result["entry_binding"][3]
+            .as_str()
+            .context("Native voice requires an enrolled thread")?
+            .to_owned();
+        app.shared
+            .store
+            .validate_owned_binding(cfg.entry(), human, &native)?;
+        if app.shared.store.stop_fenced(cfg.entry())?
+            || app.shared.store.maintenance_writer_held(cfg.entry())?
+        {
+            bail!("Native voice cannot release a writer hold");
+        }
+        result["native_codex_voice"] = json!(if app.shared.config.codex.shared_app_server {
+            Some("v1")
+        } else {
+            None
+        });
+        if args == "voice native current" {
+            if !app.shared.config.codex.shared_app_server {
+                bail!("Native voice requires the shared owner");
+            }
+            result["native_turn"] = json!(app.shared.codex.live_native_turn(&native).await?);
+        }
+        Ok(result)
+    } else {
+        command_input(app, human, args).await
+    }
+}
+
+async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
+    let cfg = app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .context("Missing integrating entry")?;
+    if args == "workspace" {
+        return app
+            .shared
+            .store
+            .conversation_workspace_destinations(human, cfg.entry());
+    }
+    if let Some(body) = args.strip_prefix("foreground context ") {
+        let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;
+        if !matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
+                | crate::store::LiveContextCommand::Guidance { .. }
+                | crate::store::LiveContextCommand::GuidanceBegin { .. }
+                | crate::store::LiveContextCommand::GuidanceOutcome { .. }
+                | crate::store::LiveContextCommand::RolloverRead { .. }
+                | crate::store::LiveContextCommand::ResumeRead { .. }
+                | crate::store::LiveContextCommand::PinRead { .. }
+                | crate::store::LiveContextCommand::RolloverCommit { .. }
+                | crate::store::LiveContextCommand::RolloverStatus { .. }
+                | crate::store::LiveContextCommand::RolloverAbort { .. }
+        ) {
+            bail!("Semantic incorporation belongs to the native integrator");
+        }
+        let dialogue = match &selected {
+            crate::store::LiveContextCommand::Open { dialogue, .. }
+            | crate::store::LiveContextCommand::Append { dialogue, .. }
+            | crate::store::LiveContextCommand::Close { dialogue, .. }
+            | crate::store::LiveContextCommand::Sync { dialogue, .. }
+            | crate::store::LiveContextCommand::CheckpointNeeded { dialogue, .. }
+            | crate::store::LiveContextCommand::Guidance { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceBegin { dialogue, .. }
+            | crate::store::LiveContextCommand::GuidanceOutcome { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverRead { dialogue, .. }
+            | crate::store::LiveContextCommand::ResumeRead { dialogue, .. }
+            | crate::store::LiveContextCommand::PinRead { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverCommit { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverStatus { dialogue, .. }
+            | crate::store::LiveContextCommand::RolloverAbort { dialogue, .. } => dialogue.clone(),
+            _ => unreachable!(),
+        };
+        let publishes_context = matches!(
+            selected,
+            crate::store::LiveContextCommand::Open { .. }
+                | crate::store::LiveContextCommand::Append { .. }
+                | crate::store::LiveContextCommand::Sync { .. }
+                | crate::store::LiveContextCommand::Close { .. }
+                | crate::store::LiveContextCommand::CheckpointNeeded { .. }
+        );
+        let result = app
+            .shared
+            .store
+            .live_context(human, cfg.entry(), selected)?;
+        if publishes_context {
+            super::workflows::foreground(app, human, &dialogue).await?;
+        }
+        return Ok(result);
+    }
+    if let Some(body) = args.strip_prefix("foreground retain ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Retain {
+            binding: String,
+            id: String,
+            text: String,
+            dialogue_id: String,
+            #[serde(default)]
+            capture_questions: Option<std::collections::BTreeMap<String, String>>,
+        }
+        let selected: Retain = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = app.shared.store.conversation_foreground_capture(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.text,
+            &selected.dialogue_id,
+            selected.capture_questions,
+        )?;
+        // Retention never calls deliver/submit, selects a worker or answers work.
+        return response(app, &input, fresh);
+    }
+    #[cfg(unix)]
+    if let Some(body) = args.strip_prefix("foreground interpret ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Interpret {
+            binding: String,
+            id: String,
+            dialogue_id: String,
+            audio_sha256: String,
+            model: String,
+            text: String,
+            audio_millis: u64,
+            transcription_millis: u64,
+        }
+        let selected: Interpret = serde_json::from_str(body)?;
+        if selected.model != "gpt-transcribe"
+            || Uuid::parse_str(&selected.id)
+                .ok()
+                .is_none_or(|v| v.to_string() != selected.id)
+            || selected.text.trim().is_empty()
+            || selected.text.len() > 16000
+            || selected.text.contains('\0')
+        {
+            bail!("Select one completed source-bound OpenAI interpretation");
+        }
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let input = app
+            .shared
+            .store
+            .conversation_input_read(human, cfg.entry(), &selected.id)?;
+        if input.foreground_dialogue.as_deref() != Some(&selected.dialogue_id)
+            || input
+                .voice
+                .as_ref()
+                .is_none_or(|v| v.audio_sha256 != selected.audio_sha256)
+        {
+            bail!("Public interpretation source is not this foreground original");
+        }
+        if let Some(proof) = input
+            .voice
+            .as_ref()
+            .and_then(|v| v.transcription.as_ref())
+            .cloned()
+        {
+            if proof.actual_transcriber.as_deref() != Some("gpt-transcribe")
+                || proof.audio_millis != selected.audio_millis
+            {
+                bail!("A committed interpretation cannot be replaced");
+            }
+            let (input, fresh) = app.shared.store.conversation_foreground_interpretation(
+                human,
+                cfg.entry(),
+                &selected.binding,
+                &selected.id,
+                &selected.dialogue_id,
+                &selected.text,
+                proof,
+            )?;
+            return response(app, &input, fresh);
+        }
+        let path =
+            std::path::PathBuf::from(format!("{}.voice", app.shared.config.db_path.display()))
+                .join(&selected.id);
+        let id = selected.id.clone();
+        let hash = selected.audio_sha256.clone();
+        let proof = tokio::task::spawn_blocking(move || {
+            crate::voice::public_interpretation_source(
+                &path,
+                &id,
+                &hash,
+                selected.audio_millis,
+                selected.transcription_millis,
+            )
+        })
+        .await??;
+        let (input, fresh) = app.shared.store.conversation_foreground_interpretation(
+            human,
+            cfg.entry(),
+            &selected.binding,
+            &selected.id,
+            &selected.dialogue_id,
+            &selected.text,
+            proof,
+        )?;
+        return response(app, &input, fresh);
+    }
+    if let Some(body) = args.strip_prefix("foreground delegate ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Delegate {
+            binding: String,
+            id: String,
+            intent_id: String,
+            formulation: String,
+            source_ids: Vec<String>,
+            #[serde(default)]
+            live_window: Option<LiveWindow>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LiveWindow {
+            path: String,
+            proof: crate::voice::PublicLiveWindow,
+        }
+        let selected: Delegate = serde_json::from_str(body)?;
+        let _ingress = app.shared.conversation_ingress.lock().await;
+        let (input, fresh) = if let Some(window) = selected.live_window {
+            #[cfg(unix)]
+            {
+                let proof = window.proof;
+                let checked = proof.clone();
+                let path = std::path::PathBuf::from(window.path);
+                let text = tokio::task::spawn_blocking(move || {
+                    crate::voice::public_live_window_source(&path, &checked)
+                })
+                .await??;
+                app.shared.store.conversation_foreground_live_delegate(
+                    human,
+                    cfg.entry(),
+                    &selected.binding,
+                    &selected.id,
+                    &selected.intent_id,
+                    &selected.formulation,
+                    &selected.source_ids,
+                    &text,
+                    proof,
+                )?
+            }
+            #[cfg(not(unix))]
+            {
+                bail!("Private Live journal reader unavailable on this receiver");
+            }
+        } else {
+            app.shared.store.conversation_foreground_delegate(
+                human,
+                cfg.entry(),
+                &selected.binding,
+                &selected.id,
+                &selected.intent_id,
+                &selected.formulation,
+                &selected.source_ids,
+            )?
+        };
+        if fresh {
+            // Bypass voice-selected routing and automatic question answers.
+            // Only the existing integrator decides downstream work.
+            submit(app.clone(), input.clone()).await?;
+        }
+        return response(
+            app,
+            &app.shared
+                .store
+                .conversation_input_read(human, cfg.entry(), &input.id)?,
+            fresh,
+        );
+    }
     if args == "voice capabilities" {
         let mut result = app
             .shared
             .store
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
+        result["voice_original_hold"] = json!("v1");
+        result["foreground_retention"] = json!("v1");
+        #[cfg(unix)]
+        {
+            result["foreground_interpretation"] = json!("gpt-transcribe/v1");
+        }
+        result["voice_default_transcription_profile"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .and_then(|voice| voice.default_transcription_profile.as_deref())
+        );
+        result["voice_transcription_profiles"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .map(|v| v.transcription_profiles.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        result["foreground_context"] = json!("v1");
+        result["foreground_trace_results"] = json!("v1");
+        result["foreground_public_live_transcripts"] = json!("v1");
+        #[cfg(unix)]
+        {
+            result["foreground_live_window"] = json!("journal-input/v1");
+        }
+        result["foreground_audio_observations"] = json!("v1");
+        result["foreground_derived_captions"] = json!("v1");
+        result["foreground_guidance"] = json!("v1");
+        result["foreground_rollover"] = json!("v1");
+        result["foreground_resume"] = json!("v1");
+        result["foreground_resume_compaction"] = json!("v1");
+        result["foreground_continuation"] = json!("v1");
+        result["foreground_completed_reader"] = json!(
+            app.shared
+                .config
+                .voice
+                .as_ref()
+                .is_some_and(|v| v.completed_transcription_command.is_some())
+        );
         result["max_bytes"] = json!(crate::voice::MAX_BYTES);
         result["max_seconds"] = json!(120);
         return Ok(result);
     }
     if let Some(body) = args.strip_prefix("voice submit ") {
-        return voice_submit(app, human, cfg.entry(), body).await;
+        return voice_submit(app, human, cfg.entry(), body, false).await;
+    }
+    if let Some(body) = args.strip_prefix("voice recover ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Recovery {
+            binding: String,
+            id: String,
+        }
+        let selected: Recovery = serde_json::from_str(body)?;
+        let input = app
+            .shared
+            .store
+            .conversation_input_read(human, cfg.entry(), &selected.id)?;
+        if !matches!(
+            input.phase.as_str(),
+            "preparation_unconfirmed" | "foreground_captured"
+        ) {
+            return response(app, &input, false);
+        }
+        let voice = input.voice.context("Original voice capture unavailable")?;
+        let mut payload = json!({"binding":selected.binding,"id":selected.id,
+            "audio_sha256":voice.audio_sha256,"mime":voice.mime,"capture_stop":voice.capture_stop,"files":input.files,"visual":input.visual,"reply":input.reply,"playback":input.playback,"capture_questions":input.capture_questions});
+        if let Some(profile) = voice.transcription_profile {
+            payload["transcription_profile"] = json!(profile);
+        }
+        if let Some(dialogue) = input.foreground_dialogue {
+            payload["foreground_dialogue"] = json!(dialogue);
+        }
+        return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
     }
     if let Some(body) = args.strip_prefix("retry ") {
         let selected: Recover = serde_json::from_str(body)?;
@@ -148,7 +671,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .interaction_instruction(&selected.instruction, human)?
             .context("Selected recovery unavailable")?;
-        if !super::routing::enrolled(&app.shared, current.target) {
+        if !super::routing::instruction_available(&app.shared, &current) {
             bail!("Recovery target no longer enrolled");
         }
         let (changed, _) = app.shared.store.conversation_recover_route(
@@ -256,6 +779,29 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             *direction == "before",
         );
     }
+    if let Some(args) = args.strip_prefix("trace-results ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        let [id, instruction, before] = fields.as_slice() else {
+            bail!("Expected trace original, instruction and result cursor");
+        };
+        return app.shared.store.conversation_input_trace_results(
+            human,
+            cfg.entry(),
+            id,
+            instruction,
+            before.parse()?,
+        );
+    }
+    if let Some(args) = args.strip_prefix("trace-result ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        let [id, source] = fields.as_slice() else {
+            bail!("Expected trace original and canonical delivery");
+        };
+        return app
+            .shared
+            .store
+            .conversation_input_trace_result(human, cfg.entry(), id, source);
+    }
     if let Some(id) = args.strip_prefix("trace ") {
         let mut trace = app
             .shared
@@ -295,7 +841,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     }
     let interruption_targets = super::voice::snapshot(app).await;
     let _ingress = app.shared.conversation_ingress.lock().await;
-    let (input, fresh) = app.shared.store.conversation_input_capture_visual(
+    let (input, fresh) = app.shared.store.conversation_input_capture_files(
         human,
         cfg.entry(),
         &request.binding,
@@ -303,6 +849,8 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         &request.text,
         request.reply,
         request.visual,
+        request.playback,
+        request.files,
     )?;
     if fresh && input.phase == "retained" {
         if let Err(error) = super::voice::INTERRUPT_TARGETS
@@ -322,6 +870,32 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .conversation_input_read(human, cfg.entry(), &input.id)?,
         fresh,
     )
+}
+
+/// Owner-local authenticated Tribu admission shares the existing original,
+/// controller, native writer and return surface. It is not a browser endpoint.
+pub(super) async fn admit_tribu(app: &App, record: Value) -> Result<Value> {
+    let p = app.shared.config.tribu.as_ref().context("Tribu disabled")?;
+    let _ingress = app.shared.conversation_ingress.lock().await;
+    let (input, fresh) = app.shared.store.conversation_tribu_capture(
+        p.human_id,
+        p.key(),
+        crate::interaction::TribuSource { record },
+        p.max_pending,
+    )?;
+    if fresh && input.phase == "retained" {
+        if let Err(error) = deliver(app, input.clone(), None).await {
+            app.shared
+                .store
+                .conversation_input_finish(input.human, &input.id)?;
+            return Err(error);
+        }
+    }
+    let current = app
+        .shared
+        .store
+        .conversation_input_read(input.human, input.entry, &input.id)?;
+    Ok(json!({"id":current.id,"state":current.phase,"duplicate":!fresh}))
 }
 
 async fn deliver(app: &App, input: ConversationInput, resolve: Option<&str>) -> Result<()> {
@@ -453,23 +1027,35 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     let shared = app.shared.clone();
     let id = input.id.clone();
     let human = input.human;
+    let entry = input.entry;
+    let retained_text = format!(
+        "{}{}",
+        input.rendered(),
+        crate::files::rendered(&app.shared.config.db_path, &input.files)?
+    );
     let packet = CodexSteerRequest {
+        tool_output: None,
         observation: None,
         images: crate::visual::attachments(&app.shared.config.db_path, input.visual.as_ref())?
             .into_iter()
             .map(|a| a.path)
             .collect(),
-        admission_check: Some(Arc::new(move || {
-            shared.store.conversation_input_validate(human, &id)
-        })),
+        admission_check: Some(crate::codex::SteerInputAdmission::Async(Arc::new(
+            move || {
+                let shared = shared.clone();
+                let id = id.clone();
+                Box::pin(async move {
+                    super::tribu::validate_conversation(&shared, human, entry, &id).await?;
+                    shared.store.conversation_input_validate(human, &id)
+                })
+            },
+        ))),
         client_message_id: Some(format!("conversation:{}", input.id)),
         text: match &active.controller_hint {
-            Some(hint) => format!(
-                "{}\n\n[Controller access for this execution]{}",
-                input.rendered(),
-                hint
-            ),
-            None => input.rendered(),
+            Some(hint) => {
+                format!("{retained_text}\n\n[Controller access for this execution]{hint}")
+            }
+            None => retained_text,
         },
         goal: None,
         response: send,
@@ -499,7 +1085,9 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
                         },
                     )?;
                 }
-                Ok(Ok(Err(CodexSteerError::Rejected(_)))) => {
+                Ok(Ok(Err(
+                    CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired,
+                ))) => {
                     app.shared.store.conversation_input_event(
                         human,
                         &input.id,
@@ -548,18 +1136,29 @@ fn enqueue(
             request: TurnRequest {
                 session_key: input.entry,
                 from_user_id: input.human,
-                prompt: input.rendered(),
+                prompt: format!(
+                    "{}{}",
+                    input.rendered(),
+                    crate::files::rendered(&app.shared.config.db_path, &input.files)?
+                ),
                 runtime_instructions: None,
                 attachments: crate::visual::attachments(
                     &app.shared.config.db_path,
                     input.visual.as_ref(),
-                )?,
+                )?
+                .into_iter()
+                .chain(crate::files::attachments(
+                    &app.shared.config.db_path,
+                    &input.files,
+                )?)
+                .collect(),
                 review_mode: None,
                 override_search_mode: None,
             },
             chat_kind: "conversation".into(),
             update_id: None,
             conversation_input: Some(input.id.clone()),
+            workflow_return: None,
             tribu_admission: None,
             goal: None,
             nexus: None,
@@ -575,25 +1174,76 @@ fn enqueue(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VoiceSubmit {
+    #[serde(default)]
+    transcription_profile: Option<String>,
+    #[serde(default)]
+    preserve_original: bool,
     binding: String,
+    #[serde(default)]
+    foreground_dialogue: Option<String>,
+    #[serde(default)]
+    defer_foreground: bool,
     id: String,
     audio_sha256: String,
     mime: String,
     #[serde(default)]
-    visual: Option<crate::visual::VisualReference>,
+    capture_stop: Option<String>,
+    #[serde(default)]
+    visual: Option<crate::visual::VisualSelection>,
+    #[serde(default)]
+    files: Vec<crate::files::FileReference>,
     #[serde(default)]
     reply: Option<crate::store::ConversationReply>,
+    #[serde(default)]
+    playback: Option<crate::store::ConversationPlayback>,
+    #[serde(default)]
+    capture_questions: Option<std::collections::BTreeMap<String, String>>,
 }
 
-async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> Result<Value> {
+async fn voice_submit(
+    app: &App,
+    human: i64,
+    entry: SessionKey,
+    body: &str,
+    recover: bool,
+) -> Result<Value> {
     use crate::store::ConversationVoice;
-    let request: VoiceSubmit = serde_json::from_str(body)?;
-    let config = app
+    let mut request: VoiceSubmit = serde_json::from_str(body)?;
+    // Classic clients and unfinished local recordings carry no profile. Keep
+    // their original route; new clients freeze the selected default explicitly.
+    if request.transcription_profile.is_none() {
+        let existing = app
+            .shared
+            .store
+            .conversation_input_read(human, entry, &request.id)
+            .ok();
+        request.transcription_profile = if let Some(original) = existing {
+            original.voice.and_then(|voice| voice.transcription_profile)
+        } else {
+            None
+        };
+    }
+    if request.defer_foreground && request.foreground_dialogue.is_none() {
+        bail!("Deferred completion requires a foreground capture");
+    }
+    let mut config = app
         .shared
         .config
         .voice
-        .clone()
-        .context("Voice input is not configured")?;
+        .as_ref()
+        .context("Voice input is not configured")?
+        .select_profile(request.transcription_profile.as_deref())?;
+    // A deferred acoustic reservation starts no recognizer and therefore does
+    // not require an unused completed-transcript command. Ordinary foreground
+    // recovery still selects only its configured completed reader.
+    let completed_only =
+        recover || (request.foreground_dialogue.is_some() && !request.defer_foreground);
+    if completed_only {
+        config.transcription_command = config
+            .completed_transcription_command
+            .clone()
+            .context("Completed-transcript recovery is not configured")?;
+    }
     if Uuid::parse_str(&request.id)
         .ok()
         .is_none_or(|v| v.to_string() != request.id)
@@ -601,8 +1251,11 @@ async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> R
         bail!("Invalid voice capture identity");
     }
     let voice = ConversationVoice {
+        transcription_profile: request.transcription_profile,
+        preserve_original: request.preserve_original.then_some(true),
         audio_sha256: request.audio_sha256,
         mime: request.mime,
+        capture_stop: request.capture_stop,
         transcription: None,
     };
     voice.validate()?;
@@ -634,24 +1287,65 @@ async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> R
     {
         super::conversation_requests::validate_reply(app, human, request.reply.as_ref()).await?;
     }
-    let interruption_targets = super::voice::snapshot(app).await;
-    let permit = app
-        .shared
-        .voice_preparations
-        .clone()
-        .try_acquire_owned()
-        .ok();
+    let interruption_targets = if request.foreground_dialogue.is_some() {
+        Default::default()
+    } else {
+        super::voice::snapshot(app).await
+    };
+    let permit = if request.defer_foreground {
+        None
+    } else {
+        app.shared
+            .voice_preparations
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    };
     let _ingress = app.shared.conversation_ingress.lock().await;
-    let (input, fresh) = app.shared.store.conversation_voice_capture_reply(
-        human,
-        entry,
-        &request.binding,
-        &request.id,
-        voice,
-        permit.is_some(),
-        request.reply,
-        request.visual,
-    )?;
+    if recover && permit.is_none() {
+        bail!("Voice preparation busy; recovery was not started");
+    }
+    let (mut input, mut fresh) = if let Some(dialogue) = request.foreground_dialogue.as_ref() {
+        if request.reply.is_some()
+            || request.visual.is_some()
+            || request.playback.is_some()
+            || !request.files.is_empty()
+        {
+            bail!("Foreground capture metadata must come from its own acoustic activity");
+        }
+        app.shared.store.conversation_foreground_voice_capture(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            dialogue,
+            request.capture_questions,
+        )?
+    } else {
+        app.shared.store.conversation_voice_capture_files(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+            voice,
+            permit.is_some(),
+            request.reply,
+            request.visual,
+            request.playback,
+            request.capture_questions,
+            request.files,
+        )?
+    };
+    if recover {
+        (input, fresh) = app.shared.store.conversation_voice_resume(
+            human,
+            entry,
+            &request.binding,
+            &request.id,
+        )?;
+    }
     if fresh && input.phase == "preparing" {
         let worker = app.clone();
         let captured = input.clone();
@@ -661,7 +1355,8 @@ async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> R
                 worker
                     .shared
                     .store
-                    .conversation_voice_validate(human, &captured.id)?;
+                    .conversation_voice_validate(human, &captured.id)
+                    .context(crate::voice::VoiceFailureStage::SourceValidation)?;
                 let expected = &captured
                     .voice
                     .as_ref()
@@ -676,35 +1371,52 @@ async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> R
                 )
                 .await?;
                 let _ingress = worker.shared.conversation_ingress.lock().await;
-                let ready = worker.shared.store.conversation_voice_commit(
-                    human,
-                    &captured.id,
-                    &text,
-                    proof,
-                )?;
-                if crate::voice::retire_transcribed_clip(&path, expected).is_err() {
+                let ready = worker
+                    .shared
+                    .store
+                    .conversation_voice_commit(human, &captured.id, &text, proof)
+                    .context(crate::voice::VoiceFailureStage::TranscriptCommit)?;
+                // The persisted capture, not a later retry's policy argument,
+                // owns this hold. Python may retire it only after exact archive
+                // handoff. Process restart/ASR completion cannot drop that fence.
+                if captured
+                    .voice
+                    .as_ref()
+                    .is_none_or(|v| v.preserve_original != Some(true))
+                    && crate::voice::retire_transcribed_clip(&path, expected).is_err()
+                {
                     // Durable text is already committed. A later client read
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");
                 }
-                if let Err(error) = deliver(&worker, ready, None).await {
+                if ready.foreground_dialogue.is_none()
+                    && let Err(error) = deliver(&worker, ready, None).await
+                {
                     worker
                         .shared
                         .store
                         .conversation_input_finish(human, &captured.id)?;
-                    return Err(error);
+                    return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
                 }
                 Ok::<_, anyhow::Error>(())
             });
-            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!("Voice preparation ended for listener restart")),result=preparation=>result};
-            if result.is_err() {
-                let _ = worker
+            let result = tokio::select! {biased;_ = worker.shared.voice_shutdown.cancelled()=>Err(anyhow!(crate::voice::VoiceFailureStage::ListenerShutdown)),result=preparation=>result};
+            if let Err(error) = result {
+                let mut diagnostic = crate::voice::VoiceFailureDiagnostic::from_error(
+                    &error,
+                    crate::voice::VoiceFailureStage::Unclassified,
+                );
+                diagnostic.completed_only = completed_only;
+                if worker
                     .shared
                     .store
-                    .conversation_voice_fail(human, &captured.id);
-                tracing::warn!(
-                    "Committed conversation voice preparation unconfirmed; no automatic retry"
-                );
+                    .conversation_voice_fail_diagnostic(human, &captured.id, &diagnostic)
+                    .is_err()
+                {
+                    tracing::warn!("Voice failure diagnostic could not be retained");
+                }
+                tracing::warn!(stage=?diagnostic.stage, interrupted=diagnostic.interrupted,
+                    "Committed conversation voice preparation unconfirmed; no automatic retry");
             }
         });
     }
@@ -713,6 +1425,6 @@ async fn voice_submit(app: &App, human: i64, entry: SessionKey, body: &str) -> R
         &app.shared
             .store
             .conversation_input_read(human, entry, &input.id)?,
-        fresh,
+        fresh && !recover,
     )
 }

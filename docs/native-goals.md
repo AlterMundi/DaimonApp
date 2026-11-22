@@ -34,9 +34,12 @@ Human selection, 2026-10-19: an explicit human instruction to start, pause, resu
 or clear a selected goal needs no repeated permission request. If the assistant
 proposes the lifecycle change, explain the target/action/reason and wait for
 human confirmation. This is the selected initial policy, not blanket autonomous
-goal reactivation. The integrator/host control adapter remains planned in
-[Telecodex #210](https://github.com/AlterMundi/telecodex/issues/210); this correction
-does not itself expose new owner CLI verbs or install recovery services.
+goal reactivation. The selected integrator adapter in
+[Telecodex #210](https://github.com/AlterMundi/telecodex/issues/210) uses retained
+human originals, confirmed proposals, native preconditions and ordered follow-ups;
+see [integrator controls](integrator-controls.md). This is not an arbitrary owner
+shell interface or an autonomous recovery service. Destination visibility for
+controls without worker speech is owned by #241.
 
 ## Verification
 
@@ -47,3 +50,12 @@ work, budget-limited resumption after budget headroom exists, exhausted activati
 rejection and objective edits without kickoff, preserving accounting and explicit
 pause. They assert native operation counts as well as visible results. This
 qualification does not claim actual model execution or human receiving acceptance.
+
+## Shared backend recovery work
+
+[Issue297](https://github.com/AlterMundi/telecodex/issues/297) selects retained
+human delegation and default transient-failure recovery shared with independent
+clients. See [the implementation checkpoint and client contract](goal-service.md).
+The first slice retains attributable native failure evidence only; it does not
+yet enable delegated execution or automatic recovery, and does not resume any
+existing goal or replace the currently implemented confirmation policy.

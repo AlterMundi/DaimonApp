@@ -1,13 +1,13 @@
-"""Host adapter between approved ExecutionStore cycles and the selected Matrix SDK.
+"""Host adapters over the existing signed Matrix execution journal and SDK.
 
-No client, journal, scheduler, inbox reader or model is created by this module.
-A trusted host can relay an authenticated retained human original as a technical
-send. Model execution separately requires the immutable approved task and
-existing ReviewController. This object is never a model tool or
-an OS isolation boundary. SDK native journals own send identity and receipts;
-ExecutionStore owns approval, admission, fuel and uncertainty. Provenance text
-never authorizes receiving inference. A paid cross-body trial still requires its
-selected participants, qualified runner, provider accounting and human approval.
+Ordinary technical relays do not activate models. Explicitly selected native
+account owners retain the existing work capability for one bounded pipe session;
+legacy one-call reviews keep their existing controller. No new balance journal,
+signer, scheduler or background attention is created. SDK journals own send
+identity/receipts; ExecutionStore owns approval, fuel, charges and uncertainty.
+These host functions are neither model tools nor an OS isolation boundary.
+Real account/route/exposure/usage and credential isolation need qualification;
+source preparation alone selects no account, budget or paid native execution.
 """
 
 import hashlib
@@ -427,6 +427,7 @@ class _NativeMatrixTransport:
             )
         self._scope, self._task, self._client = scope, value, native_client
         self._author, self._execution_ref = dict(author), execution_ref
+        self._coordination = None
         # The native journal owns idempotency even across host restart. A changed
         # recipient, payload or execution reference cannot reuse this send ID.
         role = "request" if scope.tool == "messaging_send" else "result"
@@ -442,7 +443,7 @@ class _NativeMatrixTransport:
         # runner separately uses ExecutionStore; the SDK rechecks authority.
         return scope == self._scope
 
-    def _invoke(self, method, params, timeout):
+    def _invoke(self, method, params, timeout, *, validator=None, deadline_ns=None):
         if (
             type(timeout) not in (int, float)
             or not math.isfinite(timeout)
@@ -450,26 +451,30 @@ class _NativeMatrixTransport:
         ):
             raise MatrixExecutionError("Bounded native timeout required")
         deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+        if deadline_ns is not None:
+            deadline = min(deadline, deadline_ns)
         client = replace(self._client, timeout_seconds=timeout, deadline_ns=deadline)
         try:
-            if method in ("messaging.send", "messaging.reply"):
+            if method in ("messaging.send", "messaging.reply", "messaging.inbox"):
                 # Same authenticated client and absolute deadline for both
                 # observations. Origin is bound before any authored effect.
-                _, status = client.invoke("runtime.status", {})
-                source = status.get("result", {}) if status.get("ok") is True else {}
-                if (
-                    source.get("schema") != "dm.runtime.status/v1"
-                    or source.get("being_ref") != self._author["being_ref"]
-                    or source.get("local_origin", {}).get("embodiment_id")
-                    != self._author["embodiment_id"]
-                ):
-                    raise MatrixExecutionError(
-                        "Authenticated source differs from selected source"
-                    )
+                enrolled_source = getattr(client, "verified_source", None)
+                if enrolled_source is not None:
+                    if enrolled_source != self._author:
+                        raise MatrixExecutionError("Authenticated source differs from selected source")
+                else:
+                    _, status = client.invoke("runtime.status", {})
+                    source = status.get("result", {}) if status.get("ok") is True else {}
+                    if (
+                        source.get("schema") != "dm.runtime.status/v1"
+                        or source.get("being_ref") != self._author["being_ref"]
+                        or source.get("local_origin", {}).get("embodiment_id") != self._author["embodiment_id"]
+                    ):
+                        raise MatrixExecutionError("Authenticated source differs from selected source")
             _, response = client.invoke(method, params)
             if not isinstance(response, dict) or response.get("ok") is not True:
                 raise MatrixExecutionError("Native response not successful")
-            return self._validate_result(response["result"])
+            return (validator or self._validate_result)(response["result"])
         except Exception:
             # Native journals retain uncertainty. An execution cycle additionally
             # keeps its charge. Never substitute a send, recipient or refund.
@@ -571,6 +576,8 @@ class _NativeMatrixTransport:
                 received_channel_id=scope.channel,
                 message_id=self._task["parent"]["message_id"],
             )
+        if self._coordination is not None:
+            params["coordination"] = dict(self._coordination)
         return self._invoke("messaging." + scope.action, params, timeout)
 
     def inspect(self, timeout=1.0):
@@ -591,10 +598,14 @@ class _NativeMatrixTransport:
         Recording this through the authenticated Telecodex owner retains the
         canonical external reply. It does not authorize another native turn.
         """
+        answer = self.accept_verified_reply(request_result, message)
+        return self._conversation_callback(request_result, message, answer)
+
+    def _conversation_callback(self, request_result, message, answer):
+        # Callers have already checked the authenticated route and reply kind.
         origin = self._task.get("origin")
         if origin is None:
             raise MatrixExecutionError("Frozen conversation origin required")
-        answer = self.accept_verified_reply(request_result, message)
         selected = request_result["destination"]
         recipient = {
             key: selected[key]
@@ -622,8 +633,8 @@ class _NativeMatrixTransport:
             "text": answer,
         }
 
-    def accept_verified_reply(self, request_result, message):
-        """Correlate an already SDK-verified selected event, without inference."""
+    def _verified_reply_body(self, request_result, message):
+        """Check the authenticated exact parent/author/thread, without inference."""
         if self._scope.tool != "messaging_send":
             raise MatrixExecutionError("Outgoing request required")
         self._validate_result(request_result)
@@ -648,6 +659,11 @@ class _NativeMatrixTransport:
             raise MatrixExecutionError(
                 "Reply is not from the selected request and recipient"
             )
+        return body
+
+    def accept_verified_reply(self, request_result, message):
+        """Strict controller-worker result; never ordinary speech or approval."""
+        body = self._verified_reply_body(request_result, message)
         relay = closed(
             strict_json(body["text"]),
             ("schema", "via", "kind", "input_ref", "execution_ref", "text"),
@@ -668,27 +684,209 @@ class _NativeMatrixTransport:
         return text(relay["text"])
 
 
+def serve_native_account_owner(owner, input_fd, output_fd, *, receipt_provider=None):
+    """One bounded per-turn pipe session; no listener, retry or new balance store.
+
+    Only the trusted App host owns these pipes. It supplies observed native
+    binding/terminal reconciliation and separately authenticated usage proofs;
+    this is not an agent tool or a replacement for host/process isolation.
+    EOF, deadline and lost writes retain uncertainty instead of reconstructing
+    the capability or claiming that external effects stopped.
+    """
+    import os
+    import selectors
+
+    context = owner._context
+    original_modes = (os.get_blocking(input_fd), os.get_blocking(output_fd))
+    os.set_blocking(input_fd, False)
+    os.set_blocking(output_fd, False)
+    buffered = bytearray()
+    native_turn = None
+
+    def publish(value):
+        raw = (canonical(value) + "\n").encode()
+        # Replies fit in one atomic, nonblocking pipe write. Do not wait for a
+        # consumer or reenter the journal while a provider dispatch owns it.
+        if len(raw) > os.fpathconf(output_fd, "PC_PIPE_BUF") or os.write(output_fd, raw) != len(raw):
+            raise MatrixExecutionError("Native owner reply unconfirmed")
+
+    def read_frame(selector):
+        while b"\n" not in buffered:
+            # Accounting and terminal reconciliation remain possible while
+            # admission is paused. reserve() independently rechecks admission.
+            remaining = min(context.remaining(),
+                            owner._allowance["deadlineUnixMs"] / 1000
+                            - context._store.observe_clock())
+            if remaining <= 0 or not selector.select(remaining):
+                raise MatrixExecutionError("Native owner session deadline reached")
+            chunk = os.read(input_fd, min(4096, 65537 - len(buffered)))
+            if not chunk:
+                raise MatrixExecutionError("Native owner pipe closed without reconciliation")
+            buffered.extend(chunk)
+            if len(buffered) > 65536:
+                raise MatrixExecutionError("Native owner frame exceeds bound")
+        end = buffered.index(b"\n")
+        frame = bytes(buffered[:end])
+        del buffered[:end + 1]
+        return strict_json(frame)
+
+    try:
+        publish({"ready": owner.descriptor()})
+        with selectors.DefaultSelector() as selector:
+            selector.register(input_fd, selectors.EVENT_READ)
+            # Reservation, observation and signed receipt per attempt, plus bind/terminal.
+            # Duplicate requests are refused rather than growing retained state.
+            for _ in range(owner._allowance["maxProviderAttempts"] * 3 + 2):
+                value = read_frame(selector)
+                operation = value.get("operation") if isinstance(value, dict) else None
+                if operation == "reserve":
+                    closed(value, ("operation", "params"))
+                    owner.reserve(value["params"], publish)
+                elif operation == "usage":
+                    closed(value, ("operation", "params"))
+                    publish(owner.record_usage(value["params"]) if receipt_provider is None else
+                            owner.record_usage(value["params"], receipt_provider=receipt_provider))
+                elif operation == "bind":
+                    closed(value, ("operation", "cycleId", "nativeTurnId"))
+                    if value["cycleId"] != context.cycle.cycle_id or native_turn is not None:
+                        raise MatrixExecutionError("Native owner binding changed")
+                    native_turn = identifier(value["nativeTurnId"])
+                    publish({"bound": native_turn, "cycleId": context.cycle.cycle_id})
+                elif operation == "settle":
+                    closed(value, ("operation", "usage", "proof"))
+                    context._store.settle_charge(context.cycle, value["usage"], value["proof"])
+                    publish({"settled": value["usage"]["operation_id"],
+                             "cycleId": context.cycle.cycle_id})
+                elif operation == "reconcile":
+                    closed(value, ("operation", "cycleId", "nativeTurnId", "outcome", "effectsReconciled"))
+                    if value["outcome"] == "not_started":
+                        if (native_turn is not None or value["nativeTurnId"] is not None
+                                or value["cycleId"] != context.cycle.cycle_id
+                                or value["effectsReconciled"] is not True):
+                            raise MatrixExecutionError("Exact native non-submission required")
+                        # One atomic journal check: even a pre-ACK provider
+                        # intent forbids claiming that this owner never started.
+                        context._finish("stopped", require_unstarted=True)
+                        publish({"reconciled": "not_started", "cycleId": context.cycle.cycle_id})
+                        return
+                    if (native_turn is None or value["nativeTurnId"] != native_turn
+                            or value["cycleId"] != context.cycle.cycle_id
+                            or value["effectsReconciled"] is not True
+                            or value["outcome"] not in ("completed", "stopped")):
+                        raise MatrixExecutionError("Observed native reconciliation required")
+                    context._finish(value["outcome"])
+                    publish({"reconciled": value["outcome"], "cycleId": context.cycle.cycle_id})
+                    return
+                else:
+                    raise MatrixExecutionError("Unsupported native owner frame")
+        raise MatrixExecutionError("Native owner session frame allowance exhausted")
+    except BaseException:
+        context._store.mark_ambiguous(context.cycle)
+        raise
+    finally:
+        os.set_blocking(input_fd, original_modes[0])
+        os.set_blocking(output_fd, original_modes[1])
+
+
+def prepare_native_account_owner(
+    store, instruction, task, *, thread_id, parent_allowance, cost_bound,
+    registration, work_id, read_message, host_source=None, monotonic=time.monotonic,
+):
+    """Concrete provider-account factory for the current signed queued original.
+
+    The trusted host selects instruction, cost registration and actual thread.
+    The existing native reader revalidates the original at journal checkpoints.
+    This does not force a private reply route or create a one-call review runner;
+    communication still uses the App's existing authorized native tool routes.
+    """
+    from daimon_matrix.execution_instruction import ExecutionDenied
+    from daimon_matrix.review_runner import CycleContext, NativeProviderOwner
+
+    if (store.store_id != instruction.store_id
+            or store.get_instruction(instruction.instruction_id, instruction.revision).sha256
+            != instruction.sha256
+            or registration.get("native_thread_id") != thread_id
+            or registration.get("binding") != list(instruction.binding)
+            or hashlib.sha256(task.encode()).hexdigest() != instruction.task_sha256):
+        raise ExecutionDenied("Native owner differs from the selected work binding")
+    from daimon_matrix.execution_instruction import digest
+
+    mode = registration.get("source_mode", "coordination")
+    if (digest(dict(registration)) != cost_bound.registration_sha256
+            or mode not in {"coordination", "app_owned_inbox"}
+            or (mode == "coordination" and (work_id is None or host_source is not None))
+            or (mode == "app_owned_inbox" and (
+                work_id is not None or host_source is None
+                or registration.get("instruction_sha256") != instruction.sha256
+                or registration.get("source_channel") != host_source.get("channel_id")))):
+        raise ExecutionDenied("Signed native source policy differs from selected work")
+    context = CycleContext.prepare(
+        store, None, instruction.instruction_id, instruction.revision, task,
+        principal=registration.get("principal"), binding=instruction.binding,
+        work_id=work_id, require_funding=True, require_queued_source=True,
+        read_message=read_message, host_source=host_source, monotonic=monotonic,
+    )
+    if context is None:
+        raise ExecutionDenied("Selected native work cannot be reserved")
+    try:
+        return NativeProviderOwner(
+            context, thread_id=thread_id, parent_allowance=parent_allowance,
+            cost_bound=cost_bound, registration=registration,
+        )
+    except BaseException:
+        # A reserved cycle is never reconstructed/refunded on startup loss.
+        store.mark_ambiguous(context.cycle)
+        raise
+
+
 class MatrixExecutionBroker(_NativeMatrixTransport):
     """One independently approved execution cycle's fixed native broker."""
 
-    def __init__(self, instruction, task, native_client):
+    def __init__(self, instruction, task, native_client, *, received_source=None):
         if (
-            instruction.mode != "manual"
-            or instruction.max_cycles != 1
+            received_source is None
+            and (instruction.mode != "manual" or instruction.max_cycles != 1)
             or len(instruction.scope) != 1
             or hashlib.sha256(task.encode()).hexdigest() != instruction.task_sha256
         ):
             raise MatrixExecutionError(
-                "One approved manual task and exact digest required"
+                "Exact approved purpose and one native scope required; legacy tasks stay manual"
             )
         self._instruction = instruction
+        self._received_source = None
+        self._queued_metadata = None
+        route_task = task
+        if received_source is not None:
+            from daimon_matrix.execution_instruction import (
+                coordination_metadata,
+                digest,
+            )
+
+            metadata = coordination_metadata(
+                received_source["payload"]["body"].get("coordination")
+            )
+            if (
+                metadata["kind"] != "work"
+                or metadata["instruction_sha256"] != instruction.sha256
+            ):
+                raise MatrixExecutionError(
+                    "Selected original differs from the approved instruction"
+                )
+            route_task = make_received_task(received_source, instruction.scope[0])
+            self._received_source = {
+                "message_id": received_source["event_id"],
+                "source_sha256": digest(received_source),
+            }
+            self._queued_metadata = metadata
         super().__init__(
-            task,
+            route_task,
             instruction.scope[0],
             {"being_ref": instruction.being, "embodiment_id": instruction.embodiment},
             native_client,
             {"id": instruction.instruction_id, "revision": instruction.revision},
         )
+        if self._queued_metadata is not None:
+            self._coordination = self._queued_metadata | {"kind": "result"}
 
     def controller(self, store, runner, **options):
         """Create the only supported host controller, pinned to this approval.
@@ -703,9 +901,16 @@ class MatrixExecutionBroker(_NativeMatrixTransport):
         instruction = self._instruction
         if store.store_id != instruction.store_id:
             raise MatrixExecutionError("Execution store differs from approved root")
+        if self._received_source is not None:
+            for required in ("require_funding", "require_queued_source"):
+                if options.get(required, True) is not True:
+                    raise MatrixExecutionError(
+                        "Queued reply requires existing funding/source gates"
+                    )
+                options[required] = True
 
         class PinnedController(ReviewController):
-            def run_due_once(self, identity, revision, task):
+            def run_due_once(self, identity, revision, task, *, work_id=None):
                 if (
                     identity != instruction.instruction_id
                     or revision != instruction.revision
@@ -715,15 +920,37 @@ class MatrixExecutionBroker(_NativeMatrixTransport):
                     raise ExecutionDenied(
                         "Controller is pinned to another approved task"
                     )
+                if broker._received_source is not None:
+                    if work_id is None:
+                        raise ExecutionDenied(
+                            "Queued reply requires its exact selected work"
+                        )
+                    work = self.store.coordination_work(work_id)
+                    if (
+                        work["account_id"] != broker._queued_metadata["account_id"]
+                        or work["instruction_sha256"] != instruction.sha256
+                        or any(
+                            work["source"].get(k) != v
+                            for k, v in broker._received_source.items()
+                        )
+                    ):
+                        raise ExecutionDenied(
+                            "Queued work differs from the pinned receiving original"
+                        )
+                elif work_id is not None:
+                    raise ExecutionDenied(
+                        "Queued work requires the explicit selected-source broker"
+                    )
+                queued = {} if work_id is None else {"work_id": work_id}
                 try:
                     retained = self.store.get_instruction(identity, revision)
                 except ExecutionDenied:
-                    return super().run_due_once(identity, revision, task)
+                    return super().run_due_once(identity, revision, task, **queued)
                 if retained.sha256 != instruction.sha256:
                     raise ExecutionDenied(
                         "Controller instruction differs from approved root"
                     )
-                return super().run_due_once(identity, revision, task)
+                return super().run_due_once(identity, revision, task, **queued)
 
         return PinnedController(store, runner, broker, **options)
 
@@ -736,7 +963,7 @@ class MatrixConversationTransport(_NativeMatrixTransport):
     controller. No approval, funding, listener or receiving turn is created.
     """
 
-    def __init__(self, status, author, native_client):
+    def __init__(self, status, author, native_client, *, coordination=None):
         from daimon_matrix.execution_instruction import Scope
 
         scope = Scope(
@@ -744,6 +971,15 @@ class MatrixConversationTransport(_NativeMatrixTransport):
         )
         task = make_conversation_task(status, scope)
         super().__init__(task, scope, author, native_client, None)
+        if coordination is not None:
+            from daimon_matrix.execution_instruction import coordination_metadata
+
+            metadata = coordination_metadata(coordination)
+            if metadata["kind"] != "work":
+                raise MatrixExecutionError(
+                    "Technical request requires explicit work correlation"
+                )
+            self._coordination = metadata
 
     def send(self, timeout=1.0):
         return self.submit(self._scope, {"text": self._task["question"]}, timeout)
@@ -785,6 +1021,111 @@ class MatrixConversationReceipt(_NativeMatrixTransport):
         super().__init__(task, scope, author, native_client, None)
         self._validate_submission(submission)
         self._retained_submission = strict_json(canonical(submission))
+
+    def conversation_return(self, request_result, message):
+        """Retain signed speech as speech; structured work results stay strict.
+
+        This read-only receipt cannot create an execution controller. A native
+        human-authorized reply needs no invented worker execution reference.
+        Neither kind establishes task completion, spending or a native turn.
+        """
+        body = self._verified_reply_body(request_result, message)
+        raw = text(body["text"])
+        try:
+            return super().conversation_return(request_result, message)
+        except MatrixExecutionError:
+            # The outer signed route already passed. Non-worker text, including
+            # unverified structured claims, remains verbatim peer speech. It is
+            # not decoded into an instruction, work result or execution grant.
+            pass
+        result = self._conversation_callback(request_result, message, raw)
+        result["reply_kind"] = "speech"
+        return result
+
+    def read_replies(self, *, after=0, limit=3, timeout=1.0):
+        """One authenticated selected-thread page; no polling or native input.
+
+        Only correlated worker replies leave this host boundary. The global
+        cursor advances across other speech in that thread, never another thread.
+        The same absolute deadline covers retained send observation and page read.
+        """
+        if (
+            type(after) is not int
+            or not 0 <= after <= 2**53 - 1
+            or type(limit) is not int
+            or not 1 <= limit <= 3
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or not 0.05 <= timeout <= 60
+        ):
+            raise MatrixExecutionError("Bounded selected reply page required")
+        deadline = time.monotonic_ns() + int(timeout * 1_000_000_000)
+        original = self._invoke(
+            "messaging.delivery",
+            {
+                "channel_id": self._scope.channel,
+                "send_id": self.send_id,
+            },
+            timeout,
+            deadline_ns=deadline,
+        )
+
+        def validate(page):
+            if (
+                not isinstance(page, dict)
+                or page.get("channel_id") != self._scope.channel
+                or not isinstance(page.get("items"), list)
+                or len(page["items"]) > limit
+            ):
+                raise MatrixExecutionError("Selected authenticated inbox page required")
+            cursor, results = after, []
+            wanted_parent = {
+                "message_id": original["message_id"],
+                "message_hash": original["message_hash"],
+                "sender_being_ref": self._author["being_ref"],
+                "sender_embodiment_id": self._author["embodiment_id"],
+            }
+            target = self._task["destination"]
+            for row in page["items"]:
+                sequence, message = row["inbox_sequence"], row["message"]
+                if (
+                    type(sequence) is not int
+                    or not cursor < sequence <= 2**53 - 1
+                    or message["payload"]["intent"]["thread_id"] != self._scope.thread
+                ):
+                    raise MatrixExecutionError(
+                        "Selected inbox cursor or thread changed"
+                    )
+                body = message["payload"]["body"]
+                if (
+                    body.get("response_context") == wanted_parent
+                    and message["being_ref"] == target["being_ref"]
+                    and (
+                        target["kind"] != "body"
+                        or message["origin"]["embodiment_id"] == target["embodiment_id"]
+                    )
+                ):
+                    results.append(self.conversation_return(original, message))
+                cursor = sequence
+            return {
+                "after": after,
+                "next_cursor": cursor,
+                "results": results,
+                "page_full": len(page["items"]) == limit,
+            }
+
+        return self._invoke(
+            "messaging.inbox",
+            {
+                "channel_id": self._scope.channel,
+                "thread_id": self._scope.thread,
+                "after": after,
+                "limit": limit,
+            },
+            timeout,
+            validator=validate,
+            deadline_ns=deadline,
+        )
 
     def submit(self, scope, payload, timeout):
         raise MatrixExecutionError("Receipt correlation cannot author a native message")

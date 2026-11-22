@@ -10,10 +10,19 @@ origin = "https://your-authorized-host"
 prefix = "/sessions"
 bot_id = 123456
 bot_username = "YourBot"
+# For an independent web-only receiving instance instead, OMIT bot_id,
+# bot_username and miniapp_short_name and select one stable application UUID:
+# application_id = "f5625230-c06a-4d8f-a1ac-bb803b4b46b3"
+# Its native receiver must have telegram.enabled=false. Do not configure
+# Telegram Alerts/menu or Traffic adapters. No bot or token is needed.
 label = "This receiving bot"
+# Presentation only; native identity and permissions remain in their existing bindings.
+daimon_name = "Your daimon"
 # Optional public pair appearance from the existing shared Homemaker consumer.
 # Resolves no viewer identity and grants no private preference/session access.
 # appearance_origin = "https://your-receiving-home"
+# Independent Interaction can select its authored design without changing Sessions.
+# conversation_appearance = "authored" # default: "inherit"
 # Optional: set only after BotFather confirms this named app on this same bot,
 # pointing to the origin + prefix above. Menu then uses its half-height link.
 # miniapp_short_name = "sessions"
@@ -64,4 +73,83 @@ Development = "/your-development-mount"
 # enabled = true
 # home_origin = "https://your-registered-home"
 # entry_path = "/interaction/"
+# Web-only instances require the EXACT human reference registered by shared
+# auth for this pairing, not an invented Telegram account or a display name.
+# human_ref = "human:provider:REPLACE_WITH_ACTUAL_REGISTERED_REFERENCE"
 # artifact_access = false
+
+# Optional live input-transcription preparation; no conversational model change.
+# Captions preserve the ordinary compressed original and final file-ASR provider.
+# Prepared mode instead requires a matching interaction_asr.py streaming_cache_root.
+# [streaming_transcription]
+# enabled = true
+# mode = "captions" # or "prepared" (legacy default)
+# provider = "qwen" # or "gemini" for the dedicated Gemini transcription model
+# endpoint = "wss://your-workspace.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus"
+# Gemini endpoint (credential is sent privately in a header, never in this URL):
+# endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+# credential_file = "/private/existing-provider-key"
+# cache_root = "/private/receiving/streaming-transcripts"
+# Optional native speech foreground above the existing integrator; default off.
+# Requires provider="gemini", prepared mode and a loaded native listener
+# advertising foreground_retention/completed-reader support. Manual activity
+# needs configured turn_detection; automatic activity uses provider boundaries.
+# Supported browser and Android PCM owners retain their own playback route.
+# native_dialogue = false
+# Optional owner-only UTF-8 identity/SOUL selection, at most8KiB. Read on explicit
+# avatar opening, before provider/microphone; no automatic memory retrieval.
+# native_identity_file = "/private/selected-being-identity.txt"
+
+# Optional shorter first spoken segment and one-ahead browser preparation.
+# Requires the ordinary selected speech binding; default is false.
+# [speech]
+# binding = "/private/existing-speech-route.json"
+# timeout_seconds = 60
+# incremental_segments = false
+# Optional Qwen SSE/MP3 output through the existing media element; default off.
+# Unsupported MediaSource clients and native questions retain the WAV reader.
+# streaming_output = false
+
+# Optional Qwen word-end positions for exact plain-text projections; default off.
+# Existing rendered or uncertain audio is reused/refused, never regenerated for timing.
+# word_timestamps = false
+
+# Optional forward-only exact-dialogue original audio handoff. Default absent.
+# See docs/scoped-original-audio.md for consumer receipts, disable and retirement.
+# [media_retention]
+# directory = "/private/selected-dialogue/producer-originals"
+# human_id = 100
+# chat_id = 100
+# topic_id = 1
+# native_thread = "11111111-1111-4111-8111-111111111111"
+# since = "2026-10-29T00:00:00+00:00"
+# max_bytes = 268435456
+
+# Optional public GPT-Live comparison; independent of Codex login and Realtime.
+# Default absent/off. See docs/interaction-public-gpt-live.md before enabling.
+# This does not inherit integrating memory, tools or active work automatically.
+# [openai_live]
+# enabled = false
+# api_key_file = "/private/explicit-openai-project-key"
+# identity_file = "/private/selected-live-identity.txt"
+# native_backend_enabled = false # separately selectable native client mode
+# native_identity_file = "/private/selected-native-live-identity.txt" # native template, <=8192bytes
+# backend_instructions_file = "/private/selected-responses-instructions.txt"
+# backend_model = "OWNER_SELECTED_RESPONSES_MODEL"
+# session_seconds = 600
+# continuous_renewal = false # Explicit native-only logical capture until Stop; finite physical calls/storage remain.
+# resume_mode = "fresh" # or "stored_fork", only with explicit permitted storage
+# backend_tools = []
+# conversation_context = false # owner-authorized current conversation reads only
+# session_options = {}
+# backend_options = {}
+# delegation_options = {}
+# For stored continuation, select resume_mode="stored_fork" AND
+# session_options={store=true}. Project storage must be enabled/permitted.
+# This uploads/stores the voice conversation with the provider; never enable
+# it implicitly or interpret a closed-source fork as backend work completion.
+
+# Optional receiver-owned session menu default. Saved per-browser choices win.
+# This changes visibility only within the existing authorized inventory.
+# [session_workspace]
+# default_filter = "recent" # or "all" for an explicitly selected receiver profile

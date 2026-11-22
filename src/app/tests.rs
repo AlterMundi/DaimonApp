@@ -160,6 +160,52 @@ fn artifact_snapshot_retains_actual_bytes_with_partial_failure_and_no_path_autho
         id
     );
     assert_eq!(fs::read(&private).unwrap(), b"Never copy this");
+    // New response snapshots enumerate their frozen names, not later live files.
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(out.join("good.txt")).unwrap();
+    let mut frozen = observed.clone();
+    frozen["files"] = json!({"good.txt":[meta.dev(),meta.ino(),meta.len(),meta.mtime(),meta.mtime_nsec(),meta.ctime(),meta.ctime_nsec()]});
+    for index in 0..11 {
+        fs::write(out.join(format!("later-{index}.txt")), b"Later response").unwrap();
+    }
+    artifact_outputs::snapshot(
+        &app.shared,
+        &cfg,
+        local,
+        100,
+        &out,
+        Some(&anchored),
+        &frozen,
+    )
+    .unwrap();
+    assert_eq!(
+        app.shared.store.artifact_list(100, key).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // A disappeared selected file is unavailable, never silently omitted.
+    frozen["files"] = json!({"missing.txt":[]});
+    assert!(
+        artifact_outputs::snapshot(
+            &app.shared,
+            &cfg,
+            local,
+            100,
+            &out,
+            Some(&anchored),
+            &frozen
+        )
+        .is_err()
+    );
+    assert!(
+        app.shared.store.artifact_list(100, key).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "missing.txt" && v["available"] == false)
+    );
 }
 
 #[cfg(unix)]
@@ -246,12 +292,14 @@ impl Drop for CodexHomeGuard {
 
 fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
     Config {
+        goal_recovery: crate::config::GoalRecoveryConfig::default(),
         voice: None,
         interaction: None,
         nexus: None,
         session_control: None,
         tribu: None,
         telegram: crate::config::TelegramConfig {
+            enabled: true,
             capture_message_reactions: false,
             bot_token: Some("test-token".to_string()),
             bot_token_env: None,
@@ -275,6 +323,7 @@ fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
             auto_attach_latest_history: true,
             default_cwd: default_cwd.clone(),
             default_model: Some("gpt-5.4".to_string()),
+            session_profiles: vec![],
             default_reasoning_effort: Some("medium".to_string()),
             default_sandbox: "workspace-write".to_string(),
             default_approval: "never".to_string(),
@@ -294,11 +343,65 @@ fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
     }
 }
 
+#[test]
+fn conversation_profile_does_not_spread_to_created_workers() {
+    let (mut app, _db) = sample_app();
+    let source_key = SessionKey::new(100, Some(7));
+    Arc::get_mut(&mut app.shared)
+        .unwrap()
+        .config
+        .codex
+        .session_profiles
+        .push(crate::config::SessionModelProfile {
+            chat_id: 100,
+            topic_id: 7,
+            profile: "fixture".into(),
+            reasoning_effort: Some("high".into()),
+        });
+    let mut source = app
+        .shared
+        .store
+        .ensure_session(source_key, 100, &sample_defaults())
+        .unwrap();
+    source.model = Some("selected-profile-model".into());
+    source.reasoning_effort = Some("high".into());
+    source.session_prompt = Some("Retain the selected workspace context".into());
+    source.sandbox_mode = "read-only".into();
+    for (topic, native) in [(8, None), (9, Some("native-history-fork"))] {
+        let target = SessionKey::new(100, Some(topic));
+        let mut template = source.clone();
+        template.codex_thread_id = native.map(str::to_owned);
+        app.initialize_topic_session(target, 100, &template)
+            .unwrap();
+        let actual = app.shared.store.get_session(target).unwrap().unwrap();
+        assert_eq!(actual.model, app.shared.session_defaults.model);
+        assert_eq!(
+            actual.reasoning_effort,
+            app.shared.session_defaults.reasoning_effort
+        );
+        assert_eq!(actual.codex_thread_id.as_deref(), native);
+        assert_eq!(actual.session_prompt, source.session_prompt);
+        assert_eq!(actual.sandbox_mode, "read-only");
+    }
+    assert_eq!(source.model.as_deref(), Some("selected-profile-model"));
+    // Ordinary topic inheritance retains its established behavior.
+    source.key = SessionKey::new(100, Some(11));
+    let target = SessionKey::new(100, Some(12));
+    app.initialize_topic_session(target, 100, &source).unwrap();
+    let actual = app.shared.store.get_session(target).unwrap().unwrap();
+    assert_eq!(actual.model, source.model);
+    assert_eq!(actual.reasoning_effort, source.reasoning_effort);
+}
+
 fn sample_app() -> (App, NamedTempFile) {
     let db = NamedTempFile::new().unwrap();
     let config = sample_config(db.path().to_path_buf(), sample_workspace());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
+        goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -340,10 +443,125 @@ fn sample_app() -> (App, NamedTempFile) {
 }
 
 #[tokio::test]
+async fn shared_backend_heartbeat_needs_no_telegram_and_preserves_native_binding() {
+    let (mut app, _db) = sample_app();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let shared = Arc::get_mut(&mut app.shared).unwrap();
+    shared.config.telegram.enabled = false;
+    shared.telegram = TelegramClient::new(
+        String::new(),
+        format!("http://{}", listener.local_addr().unwrap()),
+    );
+    let key = SessionKey::new(100, Some(7));
+    shared
+        .store
+        .ensure_session(key, 100, &shared.session_defaults)
+        .unwrap();
+    shared
+        .store
+        .set_session_codex_thread(key, "existing-native")
+        .unwrap();
+    let before = shared.store.get_session(key).unwrap().unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::backend::tick(&app, &app.shared.shutdown),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(!app.shared.shutdown.is_cancelled());
+    let after = app.shared.store.get_session(key).unwrap().unwrap();
+    assert_eq!(after.codex_thread_id, before.codex_thread_id);
+    assert_eq!(after.model, before.model);
+    assert_eq!(after.reasoning_effort, before.reasoning_effort);
+    assert_eq!(after.busy, before.busy);
+    assert!(app.workers.lock().await.is_empty());
+    app.shared.store.release_instance_lock().unwrap();
+    crate::backend::tick(&app, &app.shared.shutdown).await;
+    assert!(app.shared.shutdown.is_cancelled());
+}
+
+#[tokio::test]
+async fn integrated_tribu_keeps_an_existing_native_binding_without_legacy_feature_profile() {
+    let (mut app, _db) = sample_app();
+    let key = SessionKey::new(100, Some(7));
+    app.shared
+        .store
+        .ensure_session(key, 100, &app.shared.session_defaults)
+        .unwrap();
+    app.shared
+        .store
+        .set_session_codex_thread(key, "existing-integrator-native")
+        .unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.tribu = Some(serde_json::from_value(serde_json::json!({
+        "mode":"bounded", "socket_path":"/tmp/fixture.sock", "owner_client_file":"/tmp/fixture-owner.json",
+        "being_ref":"fixture-being", "body_label":"fixture.codex@fixture", "embodiment_id":"fixture-body",
+        "human_id":100, "chat_id":100, "topic_id":7, "activated_after":1
+    })).unwrap());
+    {
+        // This reader shares CODEX_HOME with history fixtures that temporarily
+        // replace it. Use their existing lock and an isolated empty history.
+        let _lock = codex_home_test_lock().lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = CodexHomeGuard::set(home.path());
+        let existing = app.shared.store.get_session(key).unwrap().unwrap();
+        assert!(
+            super::turns::resolve_session_codex_binding_from_history(&app.shared, existing.clone())
+                .is_err()
+        );
+        Arc::get_mut(&mut app.shared)
+            .unwrap()
+            .config
+            .tribu
+            .as_mut()
+            .unwrap()
+            .mode = crate::config::TribuMode::Interaction;
+        let selected =
+            super::turns::resolve_session_codex_binding_from_history(&app.shared, existing)
+                .unwrap();
+        assert_eq!(
+            selected.codex_thread_id.as_deref(),
+            Some("existing-integrator-native")
+        );
+        assert_eq!(selected.key, key);
+    }
+    // Browser IDs are client supplied. An occupied UUID is not evidence that
+    // this authenticated public original was admitted or delivered.
+    let source_id = "a".repeat(64);
+    let id = crate::interaction::TribuSource::identity("fixture-being", &source_id, key);
+    let binding = app
+        .shared
+        .store
+        .interaction_presentation_list(100, key, 0, 0)
+        .unwrap()["binding"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.shared
+        .store
+        .conversation_input_capture(100, key, &binding, &id, "Unrelated private original")
+        .unwrap();
+    let error = super::tribu::handle_socket(
+        &app,
+        &serde_json::json!({"op":"admit","source_id":source_id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("unrelated original"));
+}
+
+#[tokio::test]
 async fn maintenance_hold_blocks_queued_turn_and_public_admission() {
     let (mut app, _db) = sample_app();
     let key = SessionKey::new(100, Some(7));
     Arc::get_mut(&mut app.shared).unwrap().config.tribu = Some(crate::config::TribuConfig {
+        mode: crate::config::TribuMode::Bounded,
         socket_path: sample_workspace().join("unused.sock"),
         owner_client_file: sample_workspace().join("nonexistent-owner.json"),
         being_ref: "synthetic-being".into(),
@@ -383,6 +601,7 @@ async fn maintenance_hold_blocks_queued_turn_and_public_admission() {
             chat_kind: "private".into(),
             update_id: None,
             conversation_input: None,
+            workflow_return: None,
             tribu_admission: Some("queued-before-hold".into()),
             goal: None,
             stop_resume: None,
@@ -551,6 +770,78 @@ fn independent_topics_preserve_native_bindings_across_restart_without_history_im
 }
 
 #[tokio::test]
+async fn new_on_zero_forum_root_does_not_clear_its_binding() {
+    let (api, server) = crate::telegram::tests::serve_api(vec![(
+        200,
+        serde_json::json!({"ok":true,"result":{"message_id":20,"chat":{"id":100,"type":"supergroup"}}}),
+    )]);
+    let (mut app, _db) = sample_app();
+    Arc::get_mut(&mut app.shared).unwrap().telegram = TelegramClient::new("synthetic".into(), api);
+    let key = SessionKey::new(100, Some(0));
+    app.ensure_session(key, 100).unwrap();
+    app.shared
+        .store
+        .set_session_codex_thread(key, "retained-root-native")
+        .unwrap();
+    let user = app.shared.store.get_user(100).unwrap().unwrap();
+    let message:Message=serde_json::from_value(serde_json::json!({"message_id":3,"message_thread_id":0,"chat":{"id":100,"type":"supergroup","is_forum":true},"text":"/new Chosen title"})).unwrap();
+    app.handle_new_session(&user, &message, Some("Chosen title".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.shared
+            .store
+            .get_session(key)
+            .unwrap()
+            .unwrap()
+            .codex_thread_id
+            .as_deref(),
+        Some("retained-root-native")
+    );
+    assert!(server.join().unwrap()[0].0.contains("sendMessage"));
+}
+
+#[tokio::test]
+async fn named_new_reuses_topic_rename_and_preserves_old_native_history() {
+    let reply = serde_json::json!({"ok":true,"result":{"message_id":20,"chat":{"id":100,"type":"private"}}});
+    let (api, server) = crate::telegram::tests::serve_api(vec![
+        (200, serde_json::json!({"ok":true,"result":true})),
+        (200, reply),
+    ]);
+    let (mut app, _db) = sample_app();
+    Arc::get_mut(&mut app.shared).unwrap().telegram = TelegramClient::new("synthetic".into(), api);
+    let key = SessionKey::new(100, Some(12));
+    app.ensure_session(key, 100).unwrap();
+    app.shared
+        .store
+        .set_session_codex_thread(key, "retained-old-native")
+        .unwrap();
+    app.shared
+        .store
+        .set_explicit_session_title(key, "Old title")
+        .unwrap();
+    let user = app.shared.store.get_user(100).unwrap().unwrap();
+    let message:Message=serde_json::from_value(serde_json::json!({"message_id":3,"message_thread_id":12,"chat":{"id":100,"type":"private"},"text":"/new Chosen title"})).unwrap();
+    app.handle_new_session(&user, &message, Some("Chosen title".into()))
+        .await
+        .unwrap();
+    let after = app.shared.store.get_session(key).unwrap().unwrap();
+    assert!(after.codex_thread_id.is_none() && after.force_fresh_thread);
+    assert_eq!(
+        app.shared
+            .store
+            .explicit_session_title(key)
+            .unwrap()
+            .as_deref(),
+        Some("Chosen title")
+    );
+    let calls = server.join().unwrap();
+    assert!(calls[0].0.contains("editForumTopic"));
+    assert_eq!(calls[0].1["name"], "Chosen title");
+    assert!(calls[1].0.contains("sendMessage"));
+}
+
+#[tokio::test]
 async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
     let message: Message = serde_json::from_value(serde_json::json!({
         "message_id": 3, "message_thread_id": 12,
@@ -650,6 +941,15 @@ async fn sends_plain_text_to_the_active_turn() {
 
 #[tokio::test]
 async fn falls_back_when_the_active_turn_rejects_steering() {
+    check_rejected_steering(CodexSteerError::Rejected("turn already completed".into())).await;
+}
+
+#[tokio::test]
+async fn fresh_financial_execution_request_uses_ordinary_human_fallback() {
+    check_rejected_steering(CodexSteerError::FreshExecutionRequired).await;
+}
+
+async fn check_rejected_steering(rejection: CodexSteerError) {
     let (app, _db) = sample_app();
     let session_key = SessionKey::new(1, Some(2));
     app.ensure_session(session_key, 100).unwrap();
@@ -670,12 +970,7 @@ async fn falls_back_when_the_active_turn_rejects_steering() {
     );
     let responder = tokio::spawn(async move {
         let steer = steer_rx.recv().await.expect("steer request");
-        steer
-            .response
-            .send(Err(CodexSteerError::Rejected(
-                "turn already completed".to_string(),
-            )))
-            .expect("steer response");
+        steer.response.send(Err(rejection)).expect("steer response");
     });
 
     assert!(
@@ -2041,6 +2336,7 @@ async fn upload_failure_marks_turn_failed_and_retains_output_for_explicit_recove
         codex_thread_id: Some("thread-123".to_string()),
         assistant_text: "answer".to_string(),
         stderr_text: String::new(),
+        draft_item: None,
     };
     let failure_messages = Arc::new(StdMutex::new(Vec::<String>::new()));
     let failure_messages_sink = failure_messages.clone();
@@ -2122,6 +2418,10 @@ fn rebinds_stale_session_to_latest_active_thread_for_same_cwd() {
     let config = sample_config(db.path().to_path_buf(), workspace.clone());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
+        goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -2250,6 +2550,10 @@ fn keeps_truly_archived_session_unbound_when_no_active_replacement_exists() {
     let config = sample_config(db.path().to_path_buf(), workspace.clone());
     let store = Store::open(db.path(), &[100], &sample_defaults()).unwrap();
     let shared = Arc::new(AppShared {
+        heartbeat_loop: StdMutex::new(None),
+        heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
+        heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
+        goal_recovery_wakeup: tokio::sync::Notify::new(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -2612,6 +2916,7 @@ async fn retired_queue_packet_never_runs_after_stop_release() {
         chat_kind: "private".into(),
         update_id: None,
         conversation_input: None,
+        workflow_return: None,
         tribu_admission: None,
         goal: None,
         nexus: None,
@@ -2796,4 +3101,179 @@ async fn topic_catalog_records_actual_api_receipts_without_accepting_false_ack()
         "closed"
     );
     assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn backend_serves_owner_controls_with_no_telegram_credentials_or_api() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let database = root.path().join("backend.sqlite");
+    let socket = root.path().join("owner.sock");
+    let mut config = sample_config(database.clone(), root.path().into());
+    config.codex.shared_app_server = true;
+    config.telegram.enabled = false;
+    config.telegram.bot_token = None;
+    config.telegram.bot_token_env = None;
+    config.telegram.bot_token_file = None;
+    config.telegram.api_base = "not a usable Telegram URL".into();
+    config.session_control = Some(crate::config::SessionControlConfig {
+        socket_path: socket.clone(),
+        human_id: 100,
+    });
+    let app = App::bootstrap(config).await.unwrap();
+    assert_eq!(app.shared.bot_id, 0);
+    assert!(app.shared.bot_username.is_none());
+    let cancellation = app.shared.shutdown.clone();
+    let mut running = tokio::spawn(app.run());
+    let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match UnixStream::connect(&socket).await {
+                Ok(stream) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tokio::select! {
+                        ended = &mut running => panic!("Backend exited before owner socket readiness: {ended:?}"),
+                        _ = sleep(Duration::from_millis(10)) => {},
+                    }
+                }
+                Err(error) => panic!("Backend control connection failed: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    stream
+        .write_all(b"{\"command\":\"topics list 1\"}\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        BufReader::new(stream).read_line(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let reply: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let evidence = rusqlite::Connection::open_with_flags(
+        &database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    for table in ["turns", "incoming_updates"] {
+        let count = evidence
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "Backend startup manufactured native or Telegram ingress"
+        );
+    }
+    cancellation.cancel();
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+fn cold_interaction_config(database: PathBuf, cwd: PathBuf, human: i64) -> Config {
+    let mut config = sample_config(database, cwd);
+    config.startup_admin_ids = vec![100];
+    config.telegram.enabled = false;
+    config.codex.binary = PathBuf::from("/no-native-process-may-start");
+    config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id":human,"chat_id":100,"topic_id":77
+        }))
+        .unwrap(),
+    );
+    config
+}
+
+#[tokio::test]
+async fn cold_interaction_entry_bootstraps_readable_owned_metadata_without_a_model() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("entry.sqlite");
+    let config = cold_interaction_config(path.clone(), root.path().into(), 100);
+    let app = App::bootstrap(config.clone()).await.unwrap();
+    let key = config.interaction.as_ref().unwrap().entry();
+    let entry = app.shared.store.get_session(key).unwrap().unwrap();
+    assert_eq!(app.shared.store.session_creator(key).unwrap(), 100);
+    assert!(entry.codex_thread_id.is_none());
+    assert!(!entry.busy);
+    let page = app
+        .shared
+        .store
+        .interaction_presentation_list(100, key, 0, 0)
+        .unwrap();
+    assert_eq!(page["schema"], "telecodex.presentation-list/v1");
+    assert!(page["items"].as_array().unwrap().is_empty());
+    app.shared
+        .store
+        .set_session_title(key, Some("Retained title"))
+        .unwrap();
+    app.shared
+        .store
+        .set_session_codex_thread(key, "retained-native-history")
+        .unwrap();
+    drop(app);
+    let repeated = App::bootstrap(config).await.unwrap();
+    let current = repeated.shared.store.get_session(key).unwrap().unwrap();
+    assert_eq!(current.id, entry.id);
+    assert_eq!(
+        current.codex_thread_id.as_deref(),
+        Some("retained-native-history")
+    );
+    assert_eq!(current.session_title.as_deref(), Some("Retained title"));
+}
+
+#[tokio::test]
+async fn cold_interaction_entry_never_grants_an_unallowed_owner() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("entry.sqlite");
+    let config = cold_interaction_config(path.clone(), root.path().into(), 200);
+    assert!(App::bootstrap(config.clone()).await.is_err());
+    let store = Store::open(&path, &[100], &SessionDefaults::from(&config.codex)).unwrap();
+    assert!(store.get_user(200).unwrap().is_none());
+    assert!(
+        store
+            .get_session(config.interaction.as_ref().unwrap().entry())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cold_interaction_entry_never_adopts_another_owners_session() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("entry.sqlite");
+    let config = cold_interaction_config(path.clone(), root.path().into(), 100);
+    let key = config.interaction.as_ref().unwrap().entry();
+    let defaults = SessionDefaults::from(&config.codex);
+    let store = Store::open(&path, &[100, 200], &defaults).unwrap();
+    let original = store.ensure_session(key, 200, &defaults).unwrap();
+    store
+        .set_session_codex_thread(key, "other-owners-history")
+        .unwrap();
+    drop(store);
+    assert!(App::bootstrap(config).await.is_err());
+    let retained = Store::open(&path, &[100, 200], &defaults).unwrap();
+    assert_eq!(retained.session_creator(key).unwrap(), 200);
+    assert_eq!(retained.get_session(key).unwrap().unwrap().id, original.id);
+    assert_eq!(
+        retained
+            .get_session(key)
+            .unwrap()
+            .unwrap()
+            .codex_thread_id
+            .as_deref(),
+        Some("other-owners-history")
+    );
 }

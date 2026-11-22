@@ -31,6 +31,10 @@ pub(super) async fn attach_active(app: &App, human: i64, args: &str) -> Result<s
         .tribu
         .as_ref()
         .is_some_and(|p| p.key() == key)
+        && app
+            .shared
+            .store
+            .tribu_native_writer_held(key, native, physical)?
     {
         bail!("Bounded I/O work requires its retained deadline/reconciliation route");
     }
@@ -481,7 +485,7 @@ async fn activate(
             conditional: None,
         };
         let (response, ack) = oneshot::channel();
-        attached.sender.send(CodexSteerRequest{observation:None, images:vec![], admission_check: None,client_message_id:None,text:String::new(),goal:Some(GoalControl::Activate(Box::new(activation))),response})
+        attached.sender.send(CodexSteerRequest{tool_output:None,observation:None, images:vec![], admission_check: None,client_message_id:None,text:String::new(),goal:Some(GoalControl::Activate(Box::new(activation))),response})
             .map_err(|_|anyhow!("The goal subscriber just finished. Inspect /goal and request the change again; it was not queued."))?;
         match tokio::time::timeout(Duration::from_secs(12), ack).await {
             Ok(Ok(Ok(_))) => {}
@@ -749,6 +753,7 @@ pub(super) async fn control_live(
     attached
         .sender
         .send(CodexSteerRequest {
+            tool_output: None,
             observation: None,
             images: vec![],
             admission_check: None,
@@ -771,6 +776,19 @@ struct GoalInspection {
     selector: String,
 }
 
+/// Goal controls can target the integrating entry itself. This does not enroll
+/// that entry as an ordinary routing destination or permit creating new work.
+pub(super) fn resolve_goal_target(
+    cfg: &crate::interaction::InteractionConfig,
+    selector: &str,
+) -> Vec<SessionKey> {
+    if selector == "self" || selector == format!("t{}", cfg.entry().thread_id) {
+        vec![cfg.entry()]
+    } else {
+        cfg.resolve(selector)
+    }
+}
+
 /// Inspect only: a native goal status is never a proxy for current execution.
 pub(super) async fn inspect(
     app: &App,
@@ -787,64 +805,63 @@ pub(super) async fn inspect(
         .strip_prefix("/self#")
         .or_else(|| args.selector.strip_prefix('#'))
         .unwrap_or(&args.selector);
-    let targets = cfg.resolve(selector);
+    let targets = resolve_goal_target(&cfg, selector);
     if targets.len() != 1 {
         return Ok(
             json!({"kind":"clarification_required","selector":args.selector,"candidates":targets,"read_only":true}),
         );
     }
-    let target = targets[0];
-    let binding = app
-        .shared
-        .store
-        .conversation_request_binding(human, target)?;
-    let session = app
-        .shared
+    inspect_target(app, human, targets[0]).await
+}
+
+pub(super) async fn inspect_target(
+    app: &App,
+    human: i64,
+    target: SessionKey,
+) -> Result<serde_json::Value> {
+    inspect_shared(&app.shared, human, target).await
+}
+
+/// Shared read-only inspection for the existing controller and portfolio view.
+pub(super) async fn inspect_shared(
+    shared: &AppShared,
+    human: i64,
+    target: SessionKey,
+) -> Result<serde_json::Value> {
+    let binding = shared.store.conversation_request_binding(human, target)?;
+    let session = shared
         .store
         .get_session(target)?
         .context("Selected session is unavailable")?;
     let Some(native) = session.codex_thread_id.as_deref() else {
-        if app
-            .shared
-            .store
-            .conversation_request_binding(human, target)?
-            != binding
-        {
+        if shared.store.conversation_request_binding(human, target)? != binding {
             bail!("Selected session changed during inspection");
         }
         return Ok(
             json!({"kind":"goal_inspection","target":target,"availability":"not_materialized","receiver_busy":session.busy,"read_only":true}),
         );
     };
-    app.shared
-        .store
-        .validate_owned_binding(target, human, native)?;
+    shared.store.validate_owned_binding(target, human, native)?;
     let began = Utc::now().to_rfc3339();
     let (snapshot, activity) = tokio::join!(
-        app.shared.codex.get_goal_snapshot(native),
-        app.shared.codex.native_activity(native)
+        shared.codex.get_goal_snapshot(native),
+        shared.codex.native_activity(native)
     );
-    app.shared
-        .store
-        .validate_owned_binding(target, human, native)?;
-    if app
-        .shared
-        .store
-        .conversation_request_binding(human, target)?
-        != binding
-    {
+    shared.store.validate_owned_binding(target, human, native)?;
+    if shared.store.conversation_request_binding(human, target)? != binding {
         bail!("Selected session changed during inspection");
     }
-    let requests = app
-        .shared
-        .store
-        .interactions_page(target, human, 0, false)?;
-    let mut result = json!({"kind":"goal_inspection","target":target,"label":super::routing::label(&app.shared,target),
+    let requests = shared.store.interactions_page(target, human, 0, false)?;
+    let mut result = json!({"kind":"goal_inspection","target":target,"label":super::routing::label(shared,target),
         "native_thread":native,"target_binding":binding,"receiver_busy":session.busy,"native_activity":activity.ok(),
         "pending_human_actions":requests.pending_total,"unconfirmed_human_receipts":requests.actionable_total-requests.pending_total,
-        "stop_held":app.shared.store.stop_fenced(target)?,"maintenance_held":app.shared.store.maintenance_writer_held(target)?,
+        "stop_held":shared.store.stop_fenced(target)?,"maintenance_held":shared.store.maintenance_writer_held(target)?,
         "observation_started_at":began,"observation_finished_at":Utc::now().to_rfc3339(),"read_only":true,
         "meaning":"Goal definition, native activity and receiver bookkeeping are separate observations. Blocked status alone does not establish its cause. No goal change, resume, attachment or new turn was requested."});
+    result["historical_failure_evidence"] =
+        shared
+            .store
+            .goal_recovery_evidence(human, target, Some(native))?;
     match snapshot {
         Ok(snapshot) => {
             let snapshot: crate::codex::NativeGoalSnapshot = snapshot;

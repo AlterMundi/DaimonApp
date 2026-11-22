@@ -1,16 +1,18 @@
 # Selected visual context
 
-The integrating conversation can retain one selected point in one still image
+The integrating conversation can retain up to eight ordered still images, each with an optional selected point
 with an original text message or finalized voice clip. The original UUID,
 authenticated owner, entry generation, admitted destinations, correction order
 and return route remain the existing Interaction contracts. Uploading an image
 alone starts no conversation or model work.
 
-In the browser, open **Point to something in an image**, choose an image and
-select a point. Clicking, arrow keys and explicit X/Y fields select the same
+In the browser, use the paperclip to choose a photo or take one. The whole image is attached
+by default; selecting a point is optional. Clicking, arrow keys and explicit X/Y fields select the same
 image-pixel coordinates. Then write or speak normally. A message can still use
-`#Topic`, reply context or semantic routing. Choosing another image clears its
-selection. Recording freezes the selected image before microphone acquisition;
+`#Topic`, reply context or semantic routing. Gallery selection can add several photos at once; the camera adds one photo. Each
+thumbnail can be removed or moved earlier/later without discarding the draft.
+Choose a thumbnail to view it or mark its own optional point. Recording freezes
+the entire ordered selection before microphone acquisition;
 a later view cannot silently replace it while ASR is preparing.
 
 The browser normalizes the selected view to a bounded PNG, at most 2048 pixels
@@ -18,15 +20,19 @@ on each side and 2 MiB. The authenticated server accepts still PNGs of at most
 4 megapixels, validates chunks and fully decodes them, and retains their exact
 hash-named bytes in an owner-private directory beside the receiver database.
 No public URL or caller-supplied filesystem path is accepted. Readback uses the
-original input UUID under the same owner grant, not a public image URL.
+original input UUID under the same owner grant, not a public image URL. Append `?index=0`, `?index=1`, and so on to the
+existing image readback route for collection members; omitted index retains
+first-image compatibility. Every read enforces the same original audience.
 
 ## Reference and transport
 
 `POST /api/interaction/visual` uploads PNG bytes with `Content-Type: image/png`,
 `X-Image-Sha256`, the existing session/device authorization, Origin and action
 token. It returns the hash and actual image dimensions, with
-`work_admitted: false`. The existing original-input body accepts an optional
-`visual` reference:
+`work_admitted: false`. The existing original-input body accepts an optional `visual`: a single reference
+retains the legacy object shape below, while several images use an ordered array
+of one to eight such references. Every member has a distinct `source_id`; each
+image retains its own bytes, dimensions, times and optional point:
 
 ```json
 {
@@ -43,6 +49,13 @@ token. It returns the hash and actual image dimensions, with
 }
 ```
 
+Array order is immutable under the original UUID. Empty or over-eight arrays,
+repeated source identities and any unavailable member reject the entire new
+submission before admission. Successful individual uploads may be reused on an
+explicit retry; an upload alone never submits the message.
+
+Set `point` to `null` to refer to the whole image, without invented coordinates.
+
 Coordinates start at the top-left of the retained image: X points right and Y
 down, within the actual pixel bounds. `source_id` identifies the client-selected
 view; the revision identifies its exact bytes. Time and producer kind are
@@ -53,9 +66,13 @@ remain distinct producer kinds; a camera frame selected more than five seconds
 after its reported capture is refused. This consumer does not install or enable
 a camera/gesture producer.
 
-A new selection must be no older than five minutes and cannot name different
-selected/image revisions, an unavailable/ambiguous/disconnected view, a missing
-point or absent image bytes. The HTTP response asks for a fresh selection and
+An attached `selected_image` does not expire while composing or uploading. Keep
+its original timestamps, exact pixels, optional point and source identity; do
+not refresh its times to evade validation. Camera frames and application views
+still require a selection no older than five minutes; future selections beyond
+the existing five-second allowance refuse. Any selection naming different
+selected/image revisions, an unavailable/ambiguous/disconnected view, or absent
+image bytes refuses. The HTTP response asks for a fresh selection and
 admits no original. A structured `visual_reselection` response certifies that
 this attempt did not reach original submission. The composer can request a new
 selection; an explicit recording retry can then freeze the same saved clip
@@ -101,3 +118,36 @@ selection and actual model/device acceptance must be recorded separately.
 
 Owning visual adapter: [Integrators #5](https://github.com/AlterMundi/daimon-integrators/issues/5).
 Parent: [Daimon Interaction](https://github.com/AlterMundi/daimon-matrix/issues/313).
+
+## Receiving adoption and rollback
+
+Deploy the qualified native consumer and web assets together before enabling
+collection inputs. Legacy single-image originals remain readable. After accepting
+a collection, keep a consumer that understands both JSON forms: selecting an old
+single-image-only executable is not a compatible rollback for that journal.
+Preserve recorded originals rather than rewriting arrays or deleting their history.
+The receiving upgrade retains active writers/goals and reattaches collectors through
+the existing supported route; no global Stop or original replay is authorized.
+
+
+## Shared pending image uploads and interruption recovery
+
+Text and voice preparation share one in-flight upload for the same immutable
+selected PNG and binding. A second caller waits for that request; it does not
+start a duplicate write. The existing20second deadline,2MiB limit, image hashes,
+source identities and frozen destination checks remain unchanged. Another binding
+cannot adopt the pending request. Removing/resetting the selection aborts only
+its request; a late acknowledgement cannot restore a removed selection.
+
+Timeout, network failure and an unreadable acknowledgement retain the selected
+image and draft with an explicit recovery message. No retry or original/work
+submission happens automatically. A later deliberate Send can retry the same
+bytes/hash; confirmed earlier images are reused. A raw PNG retention acknowledgement
+still does not admit native work. HTTP status is checked before decoding JSON,
+so an HTML service error does not become a misleading JSON-parser message.
+
+The user-action fixture covers concurrent text/voice requests, the shared timeout,
+body-read failure, explicit same-byte retry, remove/late-ack cleanup and binding
+changes, alongside existing ordered/point/paste/camera/source preservation. This
+source regression reproduces duplicate concurrent uploads; it does not establish
+that this race caused a particular earlier human network interruption.

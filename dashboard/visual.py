@@ -13,6 +13,7 @@ from .private_state import private_directory
 from scripts.speech_render import sync_directory
 
 MAX_BYTES = 2*1024*1024
+MAX_IMAGES = 8
 
 
 def png_dimensions(data):
@@ -80,7 +81,14 @@ class VisualSelectionInvalid(ValueError):
 
 def check_reference(value, fresh=False):
     try:
-        _check_reference(value,fresh)
+        if value is None:return
+        images=value if isinstance(value,list) else [value]
+        if not 1<=len(images)<=MAX_IMAGES:raise ValueError('Select between one and eight images')
+        identities=set()
+        for image in images:
+            _check_reference(image,fresh)
+            if image['source_id'] in identities:raise ValueError('Repeated visual source identity')
+            identities.add(image['source_id'])
     except (ValueError,TypeError,KeyError) as error:
         raise VisualSelectionInvalid("Select the captured image again") from error
 
@@ -91,7 +99,7 @@ def _check_reference(value, fresh=False):
     if value is None:return
     keys={'source_kind','source_id','image_sha256','width','height','captured_at','selected_at','selected_revision','state','point'}
     if not isinstance(value,dict) or set(value)!=keys or len(json.dumps(value))>4096:
-        raise ValueError('Select one point in a retained image')
+        raise ValueError('Select a retained image')
 
     import re
     import uuid
@@ -101,16 +109,21 @@ def _check_reference(value, fresh=False):
             or not isinstance(value['image_sha256'],str) or not re.fullmatch('[a-f0-9]{64}',value['image_sha256'])
             or value['selected_revision']!=value['image_sha256'] or value['state']!='selected'
             or type(value['width']) is not int or type(value['height']) is not int
-            or not 0<value['width']<=4096 or not 0<value['height']<=4096 or value['width']*value['height']>4194304
-            or not isinstance(value['point'],dict) or set(value['point'])!={'x','y'}
-            or any(type(value['point'][k]) is not int for k in ('x','y'))
-            or not 0<=value['point']['x']<value['width'] or not 0<=value['point']['y']<value['height']):
-        raise ValueError('Visual reference missing, changed or ambiguous. Select one point again.')
+            or not 0<value['width']<=4096 or not 0<value['height']<=4096 or value['width']*value['height']>4194304):
+        raise ValueError('Visual reference missing, changed or ambiguous. Select the image again.')
+    point=value['point']
+    if point is not None and (not isinstance(point,dict) or set(point)!={'x','y'}
+            or any(type(point[k]) is not int for k in ('x','y'))
+            or not 0<=point['x']<value['width'] or not 0<=point['y']<value['height']):
+        raise ValueError('Selected point is outside the captured image.')
     try:
         captured=datetime.fromisoformat(value['captured_at'].replace('Z','+00:00'))
         selected=datetime.fromisoformat(value['selected_at'].replace('Z','+00:00'))
+        age=(datetime.now(timezone.utc)-selected).total_seconds()
         if (not captured.tzinfo or not selected.tzinfo or selected<captured
                 or value['source_kind']=='camera_frame' and (selected-captured).total_seconds()>5
-                or fresh and not -5<=(datetime.now(timezone.utc)-selected).total_seconds()<=300):
+                or fresh and (age < -5
+                    or value['source_kind']!='selected_image'
+                    and age>300)):
             raise ValueError('Visual selection is stale. Select the image again.')
     except (TypeError,AttributeError,OverflowError):raise ValueError('Select one current visual reference') from None

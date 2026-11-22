@@ -8,3 +8,5 @@ tmp-config.toml
 .env.*
 .telecodex/
 .build-number
+clients/ios/.build/
+clients/ios/.swiftpm/

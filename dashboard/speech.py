@@ -1,5 +1,7 @@
 """Source-linked synthesis; delivery to a client never claims playback."""
 import asyncio
+import base64
+import copy
 import hashlib
 import json
 import os
@@ -12,8 +14,85 @@ import sys
 from scripts import speech_render
 
 
+async def retain_io(method, *args, **kwargs):
+    """Keep disk waits off the shared event loop, completing an owned write on cancel."""
+    task = asyncio.create_task(asyncio.to_thread(method, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
+
+
 class SpeechUnavailable(Exception):
     pass
+
+
+def speech_part(source, bound=None):
+    """Choose an exact canonical prefix; offsets remain Unicode character counts."""
+    # Question labels and their synthetic prefixes keep the existing reader contract.
+    if source.get('kind') == 'native_question':
+        return source
+    text = source['text']
+    bound = bound or (240 if source['offset'] == 0 else 640)
+    if len(text) <= bound:
+        return source
+    window = text[:bound]
+    boundaries = [m.end() for m in re.finditer(r'[.!?](?:\s|$)|\n', window)
+                  if m.end() >= 60]
+    end = boundaries[-1] if boundaries else window.rfind(' ')
+    if end < 60:
+        end = bound
+    # Keep ordinary links/code/emphasis together rather than feeding a TTS
+    # segment half a label or URL. This is a conservative boundary preference;
+    # Markdown interpretation itself belongs to the standard parser.
+    spans = r'!?\[[^\]\n]*\]\([^\n]*?\)|(`+)[^`]*\1|\*\*[^*]*\*\*|__[^_]*__'
+    for match in re.finditer(spans, text):
+        if match.start() < end < match.end():
+            end = match.start() if match.start() >= 60 else match.end()
+            break
+    return {**source, 'text':text[:end], 'next_offset':source['offset']+end}
+
+
+def speech_request(source, language="en-US"):
+    text = source['text']
+    if source.get('kind') in ('worker_result','worker_progress','matrix_result') and source.get('offset') == 0:
+        label = source.get('label')
+        if not isinstance(label,str) or not label.strip():
+            raise SpeechUnavailable('Selected work source has no audible label')
+        label = label.strip().lstrip('#').strip().rstrip('.:;').rstrip()
+        if not label:
+            raise SpeechUnavailable('Selected work source has no audible label')
+        introduction = 'Novedades desde' if language.split('-')[0] == 'es' else 'Update from'
+        text = introduction + ' ' + label[:198] + '\n\n' + text
+    scope = speech_render.sha(speech_render.canonical([source['entry_binding'],source['id'],source['offset']]))
+    return {'scope':scope,'text':text}
+
+
+def canonical_word_alignment(source, payload, language, alignment):
+    """Only exact plain-text projection can certify canonical word positions.
+
+    Markdown/URL/topic-label transformations retain approximate Follow. Do not
+    guess a canonical position from provider ordinals or a text similarity match.
+    """
+    text = payload['text']
+    spoken = speech_render.spoken_markdown(text, language)
+    if (not isinstance(alignment, dict)
+            or alignment.get('text_sha256') != hashlib.sha256(spoken.encode()).hexdigest()
+            or not text.endswith(source['text']) or not spoken.endswith(source['text']) or not isinstance(alignment.get('words'), list)
+            or not 1 <= len(alignment['words']) <= 512):
+        return None
+    prefix = len(spoken)-len(source['text']); result = []; previous = 0; last_time = 0
+    for word in alignment['words']:
+        if (not isinstance(word,list) or len(word)!=4 or any(type(n) is not int for n in word)):
+            return None
+        begin,end,start,stop = word
+        if not previous <= begin < end <= len(spoken) or not last_time <= start < stop <= 3600000:
+            return None
+        previous=end;last_time=stop
+        if begin >= prefix:
+            result.append([source['offset']+begin-prefix,source['offset']+end-prefix,start,stop])
+    return {'offset':source['offset'],'words':result} if result else None
 
 
 class Speech:
@@ -22,30 +101,83 @@ class Speech:
         self.timeout = config.get('timeout_seconds', 60)
         if not self.binding.is_absolute() or type(self.timeout) is not int or not 1 <= self.timeout <= 120:
             raise ValueError('Absolute owner speech binding and bounded deadline required')
+        self.incremental = config.get('incremental_segments',False)
+        if type(self.incremental) is not bool:
+            raise ValueError('incremental_segments must be a boolean')
+        self.streaming = config.get('streaming_output',False)
+        if type(self.streaming) is not bool:
+            raise ValueError('streaming_output must be a boolean')
+        self.word_timestamps = config.get('word_timestamps',False)
+        if type(self.word_timestamps) is not bool:
+            raise ValueError('word_timestamps must be a boolean')
+        self.live_response = config.get('live_response',False)
+        if type(self.live_response) is not bool:
+            raise ValueError('live_response must be a boolean')
         self.capacity = asyncio.Semaphore(2)
+
+    def selected_voice(self, config, revision):
+        """Freeze the actor's selected voice for this reading; share existing quotas."""
+        from .voice_studio import configured_profiles, choice
+        frozen=choice(revision,revision['profile'])
+        if frozen['profile'] not in configured_profiles(config):
+            raise SpeechUnavailable('Selected voice is unavailable; no fallback')
+        base=speech_render.route(self.binding)
+        if base['provider']!='openai-realtime':
+            raise SpeechUnavailable('Selected voice requires the configured OpenAI reader')
+        route={k:base[k] for k in ('schema','cache_root','language','audio_retention_seconds','audio_cache_max_bytes') if k in base}
+        route.update(provider='openai-live',model=frozen['profile']['model'],voice=frozen['profile']['voice'],
+            credential_file=config['openai_live']['api_key_file'],purpose='read-aloud',timeout_seconds=120,
+            instruction=base.get('instruction','')+'\n'+frozen['delivery'])
+        result=copy.copy(self)
+        result.frozen_route=speech_render.route(route)
+        result.timeout=120
+        return result
+
+    def receiving_route(self):
+        return getattr(self,'frozen_route',None) or speech_render.route(self.binding)
 
     async def render(self, source):
         if self.capacity.locked():
             raise SpeechUnavailable('Speech preparation capacity is occupied')
         async with self.capacity:
-            return await self._render(source)
+            retention = getattr(self, 'media_retention', None)
+            original = await retain_io(retention.begin, source, 'assistant', 'audio/wav', speech_render.MAX_AUDIO) if retention else None
+            fallback = None
+            try:
+                if original:
+                    route = self.receiving_route()
+                    payload = speech_request(source, route['language'])
+                    _, _, ident = speech_render.render_plan(route, payload)
+                    fallback = Path(route['cache_root']) / ident
+                data, result = await self._render(source)
+                if original:
+                    await retain_io(original.append, data)
+                    await retain_io(original.finish, complete=True)
+                return data, result
+            finally:
+                if original and not original.closed:
+                    # A renderer may have durably generated the WAV before its
+                    # stdout/parent confirmation was cancelled. Reuse the same
+                    # supported identity plan; never discover an unrelated job.
+                    if fallback and not original.used:
+                        try:
+                            data = speech_render.private_bytes(fallback / 'audio.wav', speech_render.MAX_AUDIO)
+                            speech_render.audio_info(data)
+                            await retain_io(original.append, data)
+                        except (OSError, ValueError, speech_render.RenderError):
+                            pass
+                    await retain_io(original.finish, complete=False)
 
     async def _render(self, source):
         # The caller supplies a controller-certified part, never browser-authored text.
         config_bytes = speech_render.private_bytes(self.binding, 16384)
-        route = speech_render.route(self.binding)
-        text = source['text']
-        if source.get('kind') in ('worker_result','worker_progress','matrix_result') and source.get('offset') == 0:
-            label = source.get('label')
-            if not isinstance(label, str) or not label.strip():
-                raise SpeechUnavailable('Selected work source has no audible label')
-            # Keep canonical text/offsets intact. The certified source label is
-            # spoken once, within the renderer's existing 1,800-character bound.
-            text = label[:198] + '. ' + text
-        scope = speech_render.sha(speech_render.canonical([
-            source['entry_binding'], source['id'], source['offset']]))
-        request = json.dumps({'scope': scope, 'text': text}).encode()
-        command = [sys.executable, str(Path(speech_render.__file__).resolve()), '--binding', str(self.binding)]
+        route = self.receiving_route()
+        payload = speech_request(source, route['language'])
+        text = payload['text']
+        request = json.dumps(payload).encode()
+        if getattr(self,'frozen_route',None):
+            request=json.dumps({'route':route,'request':payload}).encode()
+        command = [sys.executable, str(Path(speech_render.__file__).resolve()), *(['--reading-route'] if getattr(self,'frozen_route',None) else ['--binding',str(self.binding)])]
         child = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         try:
@@ -91,3 +223,59 @@ class Speech:
                 or speech_render.audio_info(data) != result.get('format')):
             raise SpeechUnavailable('Speech artifact integrity failed')
         return data, result
+
+    async def stream(self, source):
+        if not self.streaming or self.capacity.locked():
+            raise SpeechUnavailable('Streaming speech unavailable or occupied')
+        async with self.capacity:
+            retention = getattr(self, 'media_retention', None)
+            original = await retain_io(retention.begin, source, 'assistant', 'audio/mpeg', speech_render.MAX_AUDIO) if retention else None
+            audio_hash = hashlib.sha256()
+            config_bytes = speech_render.private_bytes(self.binding,16384)
+            command = [sys.executable,str(Path(speech_render.__file__).resolve()),'--binding',str(self.binding),'--stream']
+            child = await asyncio.create_subprocess_exec(*command,stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,start_new_session=True,limit=65536)
+            total = 0; ended = False
+            try:
+                async with asyncio.timeout(self.timeout):
+                    language=speech_render.route(self.binding)['language']
+                    payload=speech_request(source,language)
+                    request={**payload, **({'timing':True} if self.word_timestamps else {})}
+                    child.stdin.write(json.dumps(request).encode());await child.stdin.drain();child.stdin.close()
+                    while raw := await child.stdout.readline():
+                        total += len(raw)
+                        if len(raw)>65536 or total>16*1024*1024 or ended:
+                            raise SpeechUnavailable('Streaming speech output exceeds bound')
+                        value=json.loads(raw)
+                        if value.get('type') not in ('audio','end'):
+                            raise SpeechUnavailable('Speech outcome retained; no automatic retry')
+                        if speech_render.private_bytes(self.binding,16384)!=config_bytes:
+                            raise SpeechUnavailable('Speech receiving binding changed')
+                        ended=value['type']=='end'
+                        if ended:
+                            # Retain the terminal frame until the process confirms success.
+                            terminal=value
+                        else:
+                            if original:
+                                data = base64.b64decode(value['data'], validate=True)
+                                if hashlib.sha256(data).hexdigest() != value.get('sha256'):
+                                    raise SpeechUnavailable('Streamed original integrity failed')
+                                await retain_io(original.append, data)
+                                audio_hash.update(data)
+                            yield value
+                    if await child.wait()!=0 or not ended:
+                        raise SpeechUnavailable('Streaming speech incomplete')
+                    if original:
+                        if terminal.get('audio_bytes') != original.used or terminal.get('audio_sha256') != audio_hash.hexdigest():
+                            raise SpeechUnavailable('Streamed original terminal integrity failed')
+                        await retain_io(original.finish, complete=True)
+                    alignment=canonical_word_alignment(source,payload,language,terminal.pop('alignment',None))
+                    if alignment is not None:
+                        terminal['alignment']=alignment
+                    yield terminal
+            finally:
+                try:os.killpg(child.pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                await child.wait()
+                if original and not original.closed:
+                    await retain_io(original.finish, complete=False)

@@ -1,3 +1,4 @@
+let heartbeatView;
 "use strict";
 const $ = (selector) => document.querySelector(selector);
 const monitorOnly = new URL(location.href).searchParams.get('view') === 'monitor';
@@ -6,7 +7,17 @@ const deviceMode = monitorOnly || standaloneConversation;
 const tg = deviceMode ? undefined : window.Telegram?.WebApp;
 let deviceAuthorization;
 let sharedConversationConnected = false;
-let sharedSignInAction;
+let sharedSignInAction, sharedAccessRead;
+async function sharedAccess() {
+  if(sharedAccessRead)return sharedAccessRead;
+  sharedAccessRead=(async()=>{
+    const response=await fetch("api/interaction/access",{credentials:"same-origin",redirect:"error",cache:"no-store",signal:AbortSignal.timeout(10000)});
+    if(!response.ok)throw Object.assign(Error("Conversation access unavailable"),{status:response.status});
+    const access=await response.json();
+    csrf=access.csrf;return access;
+  })();
+  try{return await sharedAccessRead;}finally{sharedAccessRead=undefined;}
+}
 let snapshot,
   csrf,
   filter = "attention",
@@ -21,6 +32,7 @@ let conversationMode = false;
 const acknowledgmentRequests = new Map();
 let resolvedHistoryExpanded = false;
 let alertTrailOpened = false;
+let conversationAlertsRead, conversationAlertsAgain=false, conversationAlertsDenied=false, conversationAlertsGeneration=0, lastConversationAlerts;
 const statuses = {
   active: "Working",
   idle: "Idle",
@@ -50,6 +62,19 @@ const elapsed = (n) =>
     : n < 60
       ? `${n}s`
       : `${Math.floor(n / 60)}m ${n % 60}s`;
+function recoveryLabel(value) {
+  if (!value) return "";
+  const labels = {waiting:"Waiting to retry",claimed:"Preparing continuation",submitted:"Native submission unconfirmed",
+    acknowledged:"Continuation accepted",uncertain:"Outcome unknown; automatic replay held",partial:"Partial outcome; automatic replay held",
+    returned:"Native result retained",native_completed:"Native continuation completed",failed_again:"Provider failure observed",
+    superseded:"Retired by later direction or authority",disabled:"Disabled",interrupted:"Interrupted",rejected:"Native control rejected"};
+  const label = labels[value.state];
+  if (!label) return "";
+  const availability = value.enabled === true ? "" : value.enabled === false ? "Disabled · retained " : "Availability unknown · retained ";
+  const next = value.enabled === true && value.state === "waiting" && Number.isSafeInteger(value.next_attempt_at)
+    ? ` · next check in ${elapsed(Math.max(0, Math.ceil(value.next_attempt_at-Date.now()/1000)))}` : "";
+  return `Goal recovery · ${availability}${label}${next}`;
+}
 function authorizationHeaders() {
   if(deviceMode){
     if(sharedConversationConnected)return {};
@@ -63,7 +88,10 @@ async function api(route, body) {
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    ["stop", "resume"].includes(route) ? 30000 : 20000,
+    // Preview synthesis owns a thirty-second provider attempt plus bounded
+    // process cleanup. Other writes keep their existing timeout and no retry.
+    route === "interaction/avatars/voice/previews" && body?.action === "render"
+      ? 45000 : ["stop", "resume"].includes(route) ? 30000 : 20000,
   );
   try {
     const headers = body
@@ -72,21 +100,42 @@ async function api(route, body) {
     if(monitorOnly && body)throw new Error('This monitor is read-only');
     if(deviceMode && !route.startsWith('interaction'))throw new Error('This access is limited to your conversation');
     if(route!=="session")Object.assign(headers,authorizationHeaders());
-    const response = await fetch(`api/${route}`, {
-      signal: controller.signal,
-      method: body ? "POST" : "GET",
-      credentials: "same-origin",
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const value = await response.json();
-    if (!response.ok) {
-      const error = new Error(value.detail || "Request unavailable");
-      error.status = response.status;
-      if(value.code==="visual_reselection"&&value.submission_attempted===false)error.visualReselection=true;
-      throw error;
+    // Only immutable source-text reads may repeat after a cut JSON body.
+    // Writes and other endpoints retain their original once-only outcome.
+    const sourceRead = !body && route.startsWith("interaction/part?");
+    let sharedVerified=false;
+    for (let attempt=0; ; attempt++) {
+      const response = await fetch(`api/${route}`, {
+        signal: controller.signal,
+        method: body ? "POST" : "GET",
+        credentials: "same-origin",
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      // Revalidate only the existing shared session. Never repeat a write or
+      // treat a resource failure as proof that the browser cookie has expired.
+      if(response.status===401 && !body && attempt===0 && sharedConversationConnected){
+        try{await sharedAccess();sharedVerified=true;continue;}catch(_){/* Retain the original rejection. */}
+      }
+      let value;
+      try { value = await response.json(); }
+      catch (cause) {
+        if (sourceRead && response.ok && cause.name === "SyntaxError" && attempt === 0) continue;
+        const error = new Error(sourceRead
+          ? "Saved text could not be read. Retry reading; nothing was resent."
+          : "Server response unavailable. Check current state before retrying.");
+        error.status = response.status;
+        throw error;
+      }
+      if (!response.ok) {
+        const error = new Error(value.detail || "Request unavailable");
+        error.status = response.status===401 && sharedVerified ? 503 : response.status;
+        if(sharedVerified && response.status===401)error.message="This observation is unavailable; your sign-in is still valid.";
+        if(value.code==="visual_reselection"&&value.submission_attempted===false)error.visualReselection=true;
+        throw error;
+      }
+      return value;
     }
-    return value;
   } catch (e) {
     if (controller.signal.aborted)
       throw new Error(route === "session"
@@ -222,6 +271,8 @@ function sessions() {
     );
     head.title = s.title;
     if (s.goal) head.append(el("span", `Goal · ${s.goal.status}`, "goal-chip"));
+    if (s.goal_recovery?.enabled === true && ["waiting","claimed","submitted","uncertain","partial"].includes(s.goal_recovery.state))
+      head.append(el("span", "Recovery pending", "goal-chip"));
     const activeChildren = s.children.filter(
       (child) => child.status === "active",
     ).length;
@@ -241,6 +292,7 @@ function sessions() {
       );
     } else if (s.goal_state === "unavailable")
       card.append(el("p", "Goal metadata unavailable", "session-meta"));
+    if (recoveryLabel(s.goal_recovery)) card.append(el("p", recoveryLabel(s.goal_recovery), "session-meta"));
     if (s.children.length) {
       const detail = el("details");
       detail.dataset.session = `${s.id}:children`;
@@ -318,13 +370,21 @@ function controlButton(op, stale, count) {
 }
 function alerts(data) {
   const section = $("#operations");
-  if (!data || data.state === "not_configured") { section.hidden = true; return; }
+  if (!data || data.state === "not_configured") {
+    section.hidden = true;
+    if(data?.read_only && conversationMode){
+      section.hidden=false;$("#incidents").replaceChildren();
+      $("#operations-summary").textContent="Operational alerts";
+      $("#alerts-state").textContent="Alerts are not configured for this receiver.";
+    }
+    return;
+  }
   section.hidden = false;
   const open = (data.incidents || []).filter((i) => i.projection.processing_state === "open").length;
   const unacknowledged = [...(data.incidents || []), ...(data.resolved_incidents || [])]
     .filter((i) => i.projection.processing_state === "open" && !i.acknowledgments.length).length;
   section.dataset.attention = String(unacknowledged > 0);
-  if (!alertTrailOpened && unacknowledged > 0) { section.open = true; alertTrailOpened = true; }
+  if (!conversationMode && !alertTrailOpened && unacknowledged > 0) { section.open = true; alertTrailOpened = true; }
   $("#operations-summary").textContent = `${data.attention?.symbol ? data.attention.symbol + " " : unacknowledged ? "⚠ " : ""}Operational alerts · ${open} open`
     + (unacknowledged ? ` · ${unacknowledged} unacknowledged` : "");
   $("#alerts-state").textContent = data.state === "unavailable"
@@ -368,24 +428,43 @@ function alerts(data) {
     item.append(badges, el("h3", `${trailSymbol ? trailSymbol + " " : ""}${source} · ${p.phase}`),
       el("p", `Reported by: ${p.producer_id} · Resource: ${p.resource_ref || "Unspecified"}`, "note"),
       el("p", p.summary), el("p", p.processing_state === "resolved" ? `Previous action: ${p.action}` : p.action));
+    const dates = el("p", undefined, "note incident-dates");
+    const appendDate = (label, seconds) => {
+      const date = new Date(seconds * 1000);
+      if (!Number.isSafeInteger(seconds) || seconds < 0 || !Number.isFinite(date.getTime())) return false;
+      const stamp = el("time", date.toLocaleString(undefined, {timeZoneName:"short"}));
+      stamp.setAttribute("datetime", date.toISOString());
+      stamp.title = date.toISOString();
+      dates.append(el("span", `${dates.children.length ? " · " : ""}${label}: `), stamp);
+      return true;
+    };
+    // source_at is immutable incident provenance; receipt/poll times are not emission dates.
+    if (!appendDate("Issued", p.source_at)) dates.append(el("span", "Issue date unavailable"));
+    if (p.updated_at !== p.source_at) appendDate("Updated", p.updated_at);
+    item.append(dates);
     const deliveries = incident.deliveries.map((d) => d.state).join(", ") || "No receiving route configured";
     item.append(el("p", `Observation ${incident.freshness} · Delivery: ${deliveries}`, "note"));
     if (incident.acknowledgments.length) item.append(el("p", "Acknowledged. Producer recovery remains separate.", "note"));
-    else {
+    else if (!conversationMode && data.read_only !== true) {
       const button = el("button", "Acknowledge");
       const requestKey = `${p.producer_id}/${p.incident_id}`;
       button.disabled = data.state !== "available";
       button.addEventListener("click", async () => {
         if (!acknowledgmentRequests.has(requestKey)) acknowledgmentRequests.set(requestKey, crypto.randomUUID());
         const requestId = acknowledgmentRequests.get(requestKey); button.disabled = true;
+        const modeGeneration = conversationAlertsGeneration;
         try {
           const acknowledgment = await api("alerts/acknowledge", {producer_id:p.producer_id, incident_id:p.incident_id, request_id:requestId});
+          if (conversationMode || modeGeneration !== conversationAlertsGeneration) return;
           button.textContent = "Acknowledged";
           // Reflect confirmed acceptance immediately; polling supplies durable state.
           const accepted = (items) => (items || []).map((i) => i === incident
             ? {...i, acknowledgments:[acknowledgment]} : i);
           alerts({...data, incidents:accepted(data.incidents), resolved_incidents:accepted(data.resolved_incidents)});
-        } catch (e) { $("#alerts-state").textContent = e.message; button.disabled = false; }
+        } catch (e) {
+          if (conversationMode || modeGeneration !== conversationAlertsGeneration) return;
+          $("#alerts-state").textContent = e.message; button.disabled = false;
+        }
       });
       item.append(button);
     }
@@ -398,6 +477,49 @@ function alerts(data) {
   const uncertain = (data.local_deliveries || []).filter((d) =>
     ["uncertain", "failed"].includes(d.outcome) || d.state === "claim_unconfirmed").length;
   if (uncertain) target.append(el("p", `${uncertain} recent delivery attempt(s) failed or unconfirmed. No automatic resend.`, "note"));
+}
+function closeConversationAlerts() {
+  const section=$("#operations");section.open=false;
+  $("#conversation-alerts-toggle").setAttribute("aria-expanded","false");
+}
+function clearConversationAlerts() {
+  heartbeatView?.reset();
+  conversationAlertsGeneration++;conversationAlertsRead=undefined;conversationAlertsAgain=false;conversationAlertsDenied=false;lastConversationAlerts=undefined;
+  closeConversationAlerts();delete $("#operations").dataset.conversationOverlay;$("#operations").hidden=true;
+  $("#conversation-alerts-toggle").hidden=true;$("#conversation-alerts-close").hidden=true;
+  $("#incidents").replaceChildren();$("#alerts-state").textContent="";$("#operations-summary").textContent="Operational alerts";
+}
+async function refreshConversationAlerts() {
+  if(!authenticated || !conversationMode || monitorOnly || conversationAlertsDenied)return;
+  if(conversationAlertsRead){conversationAlertsAgain=true;return conversationAlertsRead;}
+  const generation=conversationAlertsGeneration;
+  const current=()=>generation===conversationAlertsGeneration && authenticated && conversationMode;
+  const operation=api("interaction/alerts").then(data=>{
+    if(!current())return;
+    const attention=data.attention;
+    if(attention?.schema!=="telecodex.alert-attention/v1" || !["clear","info","warning","error","unknown"].includes(attention.level)
+      || !Number.isSafeInteger(attention.count) || attention.count<0 || typeof attention.symbol!=="string")throw Error("Alert projection unavailable");
+    lastConversationAlerts={...data,read_only:true};alerts(lastConversationAlerts);
+    const button=$("#conversation-alerts-toggle");button.hidden=attention.level==="clear";
+    button.dataset.level=attention.level;button.textContent=attention.symbol;
+    const label=`Open alerts · ${attention.level}${attention.count ? " · "+attention.count+" unacknowledged" : ""}`;
+    button.title=label;button.setAttribute("aria-label",label);
+    $("#conversation-alerts-close").hidden=false;
+  }).catch(error=>{
+    if(!current())return;
+    if(error.status===403){clearConversationAlerts();conversationAlertsDenied=true;return;}
+    if(error.status===401){clearConversationAlerts();authenticated=false;conversationView?.unauthenticated?.();sharedSignInAction?.();return;}
+    // A failed optional read does not stop speech or lose the conversation draft.
+    const button=$("#conversation-alerts-toggle");button.hidden=false;button.dataset.level="unknown";button.textContent="⚪";
+    button.title="Alerts unavailable";button.setAttribute("aria-label","Open alerts · unavailable");
+    alerts({...lastConversationAlerts,state:"unavailable",read_only:true});
+    $("#conversation-alerts-close").hidden=false;
+  }).finally(()=>{
+    if(conversationAlertsRead!==operation)return;
+    conversationAlertsRead=undefined;
+    if(conversationAlertsAgain && current()){conversationAlertsAgain=false;void refreshConversationAlerts();}
+  });
+  conversationAlertsRead=operation;return operation;
 }
 function render() {
   csrf = snapshot.csrf;
@@ -472,8 +594,10 @@ function traffic(data) {
   if (data.alert_history_incomplete) $("#traffic-coverage").textContent += " Alert history exceeded its backlog bound; inspect retained traffic.";
 }
 async function refresh(force = false) {
-  if (refreshing || !authenticated || (document.hidden && !force)) return;
-  if (conversationMode) return conversationView?.refresh(force);
+  if (refreshing || !authenticated) return;
+  if(!document.hidden)void heartbeatView?.refresh();
+  if (conversationMode) { void refreshConversationAlerts(); return conversationView?.refresh(force); }
+  if (document.hidden && !force) return;
   refreshing = true;
   $("#refresh").disabled = true;
   if (!snapshot) $("#overview").textContent = "Reading native state…";
@@ -503,9 +627,16 @@ async function refresh(force = false) {
     $("#refresh").disabled = false;
   }
 }
+let liveConversation;
 function schedule() {
   clearInterval(timer);
-  if (!document.hidden) timer = setInterval(refresh, conversationMode ? 2000 : 10000);
+  if (standaloneConversation && authenticated && conversationMode) {
+    liveConversation ||= window.InteractionLive.mount({headers:authorizationHeaders, refresh:()=>refresh(true),
+      expired:()=>conversationView?.unauthenticated()});
+    liveConversation.start();return;
+  }
+  liveConversation?.stop();
+  if (!document.hidden || standaloneConversation) timer = setInterval(refresh, conversationMode ? 2000 : 10000);
 }
 $("#refresh").addEventListener("click", () => refresh(true));
 for (const button of document.querySelectorAll("[data-filter]"))
@@ -579,11 +710,30 @@ tg?.onEvent?.("activated", () => {
 });
 tg?.onEvent?.("deactivated", () => clearInterval(timer));
 tg?.ready?.();
+$("#conversation-alerts-toggle").addEventListener("click",()=>{
+  if(!authenticated || !conversationMode || monitorOnly)return;
+  const section=$("#operations");section.dataset.conversationOverlay="true";
+  section.hidden=false;section.open=!section.open;
+  $("#conversation-alerts-toggle").setAttribute("aria-expanded",String(section.open));
+  if(section.open){$("#conversation-alerts-close").focus?.();void refreshConversationAlerts();}
+});
+$("#conversation-alerts-close").addEventListener("click",()=>{
+  closeConversationAlerts();$("#conversation-alerts-toggle").focus?.();
+});
+document.addEventListener("keydown",event=>{
+  if(event.key==="Escape" && $("#operations").dataset.conversationOverlay==="true" && $("#operations").open){
+    closeConversationAlerts();$("#conversation-alerts-toggle").focus?.();event.preventDefault();event.stopPropagation();
+  }
+});
+$("#operations").addEventListener("toggle",()=>{
+  if(conversationMode && $("#operations").dataset.conversationOverlay==="true")
+    $("#conversation-alerts-toggle").setAttribute("aria-expanded",String($("#operations").open));
+});
 const conversationView = window.Conversation?.mount({
   api,
   headers: () => ({"Content-Type":"application/json", "X-Dashboard-CSRF":csrf || "",...authorizationHeaders()}),
   setCsrf: (value) => { csrf = value; },
-  modeChanged: (enabled, initial) => { conversationMode = enabled; if (!initial) { schedule(); refresh(true); } },
+  modeChanged: (enabled, initial) => { conversationMode = enabled; clearConversationAlerts(); if (!initial) { schedule(); refresh(true); } },
   telegram: tg,
   readOnly: monitorOnly,
   standalone: standaloneConversation,
@@ -594,27 +744,47 @@ const conversationView = window.Conversation?.mount({
     document.title='Daimon Interaction';
     const feedback=$('#feedback');
     const signIn=el('button','Sign in');signIn.type='button';
+    let reconnecting;
+    const reconnect=()=>{
+      if(reconnecting)return reconnecting;
+      reconnecting=sharedAccess().then(access=>{
+        sharedConversationConnected=true;authenticated=true;conversationView?.identity?.(access.actor_ref);
+        const humanName=el('span',access.label);humanName.className='human-name';
+        $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;
+        feedback.replaceChildren();conversationView?.authenticated();schedule();
+        // Re-read observations only; accepted or uncertain inputs are not replayed.
+        void refresh(true);return true;
+      }).catch(()=>false).finally(()=>{reconnecting=undefined;});
+      return reconnecting;
+    };
     sharedSignInAction=()=>{
-      sharedConversationConnected=false;authenticated=false;
+      clearConversationAlerts();sharedConversationConnected=false;authenticated=false;
+      $('#conversation-account').textContent='';$('#conversation-account').hidden=true;
       feedback.replaceChildren(el('p','Sign in again to reconnect.'),signIn);
+      void reconnect();
     };
     signIn.addEventListener('click',async()=>{
       signIn.disabled=true;
       try{
+        if(await reconnect())return;
         const result=await window.DaimonHomeAccess.createClient().signIn();
         if(result?.status!=='redirecting')location.reload();
       }catch(_){feedback.replaceChildren(el('p','Sign-in did not finish. You can try again.'),signIn);}
       finally{signIn.disabled=false;}
     });
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!authenticated)void reconnect();});
+    window.addEventListener('online',()=>{if(!authenticated)void reconnect();});
+    for(const event of ['pageshow','focus'])window.addEventListener(event,()=>{if(!document.hidden&&!authenticated)void reconnect();});
     try{
-      const response=await fetch('api/interaction/access',{credentials:'same-origin',redirect:'error',signal:AbortSignal.timeout(10000)});
-      if(!response.ok)throw Object.assign(Error('Sign in to continue'),{status:response.status});
-      const access=await response.json();
-      csrf=access.csrf;sharedConversationConnected=true;authenticated=true;
-      feedback.replaceChildren(el('span','Connected · '+access.label));
+      const access=await sharedAccess();
+      csrf=access.csrf;sharedConversationConnected=true;authenticated=true;conversationView?.identity?.(access.actor_ref);
+      const humanName=el('span',access.label);humanName.className='human-name';
+      $('#conversation-account').replaceChildren(el('span','human: '),humanName);$('#conversation-account').hidden=false;
+      feedback.replaceChildren();
       conversationView?.authenticated();await refresh(true);schedule();
     }catch(error){
       sharedConversationConnected=false;
+      $('#conversation-account').textContent='';$('#conversation-account').hidden=true;
       feedback.replaceChildren(el('p',error.status===401?'Sign in with your existing Daimon Matrix account.':error.status===403?'This account cannot access this conversation.':'Connection unavailable. You can retry signing in.'),signIn);
       if(error.status===401){
         try{await window.DaimonHomeAccess.createClient().signIn();}
@@ -656,9 +826,9 @@ const conversationView = window.Conversation?.mount({
       }
       await refresh(true);schedule();
     }
-    function clearCredential(){accessVersion++;deviceAuthorization=undefined;csrf=undefined;authenticated=false;conversationView?.unauthenticated?.();document.title=title;sessionStorage.removeItem(storageKey);}
+    function clearCredential(){clearConversationAlerts();accessVersion++;deviceAuthorization=undefined;csrf=undefined;authenticated=false;conversationView?.unauthenticated?.();document.title=title;sessionStorage.removeItem(storageKey);}
     file.addEventListener('change',async()=>{
-      const version=++accessVersion;authenticated=false;conversationView?.unauthenticated?.();
+      clearConversationAlerts();const version=++accessVersion;authenticated=false;conversationView?.unauthenticated?.();
       try{const selected=file.files?.[0];if(!selected || selected.size>4096)throw Error('Select the small operator-issued access file');await openCredential(JSON.parse(await selected.text()),version);}
       catch(error){if(version===accessVersion){clearCredential();feedback.replaceChildren(label,el('p',error.message));}}
       finally{file.value='';}
@@ -694,3 +864,5 @@ const conversationView = window.Conversation?.mount({
     $("#refresh").disabled = true;
   }
 })();
+
+heartbeatView = window.InteractionHeartbeat?.mount({api, authenticated:()=>authenticated,canControl:()=>!monitorOnly});

@@ -52,7 +52,26 @@ frame_ms=100
         local=self.row("SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=? AND t.status='running' ORDER BY t.id DESC LIMIT 1",(topic,))[0][0]
         files=list(self.root.glob(f'.telecodex/turns/{local}-*/controller-access.json'))
         assert len(files)==1
-        return files[0]
+        selected=files[0]
+        # The synthetic native peer records turn/start before the bridge has
+        # consumed its ACK and bound the physical execution. Observe this
+        # read-only contract; never retry the following control action.
+        def ready():
+            result=subprocess.run([self.binary,'--controller',str(selected),
+                json.dumps({'operation':'capabilities','arguments':{}})],
+                capture_output=True,text=True,timeout=10)
+            if result.returncode==0:
+                outer=json.loads(result.stdout)
+                assert outer['ok'] and outer['result']['success'],outer
+                return True
+            try:
+                refused=json.loads(result.stdout)
+            except json.JSONDecodeError:
+                refused={}
+            assert (refused.get('ok') is False and refused.get('error')=='Native turn has not started') or result.stderr.strip()=='Error: Native turn has not started',(result.stderr,result.stdout)
+            return False
+        self.wait(ready)
+        return selected
     def cli(self,path,operation,arguments=None,*,ok=True):
         token=json.loads(path.read_text())['token']
         result=subprocess.run([self.binary,'--controller',str(path),json.dumps({'operation':operation,'arguments':arguments or {}})],capture_output=True,text=True,timeout=30)
@@ -122,7 +141,9 @@ def qualify(binary,pack=False):
         j.answer(8,'The selected helper evidence.')
         j.wait(lambda:len(j.instructions(7))==2 and j.instructions(7)[1][1]=='accepted')
         j.answer(7,'Work incorporating the helper evidence.')
-        j.wait(lambda:j.row("SELECT count(*) FROM interaction_deliveries WHERE phase!='delivered'")==[(0,)])
+        j.wait(lambda:j.row("SELECT count(*) FROM interaction_public_deliveries WHERE phase!='delivered'")==[(0,)])
+        assert j.row("SELECT count(*) FROM interaction_deliveries WHERE json_extract(doc,'$.internal')=1")==[(1,)]
+        assert not j.has('The selected helper evidence.',1)
         j.wait(lambda:not worker.exists())
         j.cli(stale,'capabilities',ok=False)
         sources=j.cli(entry,'conversation')['presentation']['items']
@@ -139,7 +160,7 @@ def qualify(binary,pack=False):
         # Dormant access may exist locally, but ordinary direct input is unchanged.
         packet=j.packets['native-topic-8'][-1]
         assert not any('Controller access for this execution' in item.get('text','') for item in packet['input'])
-        runtime=packet.get('additionalContext',{}).get('telecodex.runtime',{}).get('value','')
+        runtime=''.join(v['value'] for k,v in sorted(packet.get('additionalContext',{}).items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
         assert 'controller fallback' not in runtime and 'scoped live controller' not in runtime
         j.broadcast('native-topic-8','turn/completed',{'turn':{'id':j.runs['native-topic-8'],'status':'completed'}})
         j.idle()

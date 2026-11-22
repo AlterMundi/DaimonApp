@@ -12,12 +12,18 @@ impl Drop for Lease {
 }
 
 pub(super) fn enabled(shared: &AppShared, key: SessionKey, human: i64) -> bool {
-    shared.config.interaction.as_ref().is_some_and(|c| {
-        c.telegram_projection && c.human_id == human && super::routing::enrolled(shared, key)
-    })
+    shared.config.telegram.enabled
+        && shared.config.interaction.as_ref().is_some_and(|c| {
+            c.human_id == human
+                && ((c.telegram_projection && super::routing::enrolled(shared, key))
+                    || (c.telegram_entry_projection && c.entry() == key))
+        })
 }
 
 pub(super) fn recover(shared: Arc<AppShared>) -> Result<()> {
+    if !shared.config.telegram.enabled {
+        return Ok(());
+    }
     for key in shared.store.topic_publication_targets()? {
         wake(shared.clone(), key);
     }
@@ -25,9 +31,18 @@ pub(super) fn recover(shared: Arc<AppShared>) -> Result<()> {
 }
 
 pub(super) fn wake(shared: Arc<AppShared>, key: SessionKey) {
+    if !shared.config.telegram.enabled {
+        return;
+    }
     let Ok(Some(human)) = shared.store.topic_publication_owner(key) else {
         return;
     };
+    if let Some(c) = shared.config.interaction.as_ref()
+        && c.entry() != key
+        && enabled(&shared, c.entry(), c.human_id)
+    {
+        wake(shared.clone(), c.entry());
+    }
     for files in [false, true] {
         let shared = shared.clone();
         tokio::spawn(async move {
@@ -48,6 +63,12 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
             shared: shared.clone(),
             id: publication.id,
         };
+        if !publication.direct && !enabled(shared, key, human) {
+            shared
+                .store
+                .topic_publication_not_selected(publication.id)?;
+            continue;
+        }
         let chunks = if publication.kind == "artifact" {
             vec![publication.body.clone()]
         } else {
@@ -63,11 +84,20 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
                 shared
                     .telegram
                     .send_message_checked(key.chat_id, || {
-                        if (!publication.direct && !enabled(shared, key, human)
-                            || publication.direct
-                                && shared
+                        // A goal control can select the integrating return on an
+                        // already-running direct turn. Its opted-in source-topic
+                        // projection still uses this same canonical publication.
+                        if !shared
+                            .store
+                            .workflow_native_visible(publication.local_turn)?
+                        {
+                            return Ok(None);
+                        }
+                        if (!enabled(shared, key, human)
+                            && (!publication.direct
+                                || shared
                                     .store
-                                    .conversation_turn_return(publication.local_turn)?)
+                                    .conversation_turn_return(publication.local_turn)?))
                             || !shared
                                 .store
                                 .topic_publication_reserve(publication.id, part)?

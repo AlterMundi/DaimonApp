@@ -1,0 +1,911 @@
+"""Authenticated WebSocket preparation, exact audio receipt and no dispatch."""
+import hashlib
+import asyncio
+import json
+import logging
+import os
+from pathlib import Path
+import queue
+import sys
+import tempfile
+import threading
+import socket
+import time
+import unittest
+from unittest.mock import patch
+import uuid
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+from dashboard.app import create_app
+from dashboard.provider import Provider
+from dashboard.companion import Grants
+from scripts.interaction_asr import streaming_result
+from dashboard.private_state import read_json
+from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox, VoiceActor
+from dashboard.transcription import TranscriptionUnavailable
+from dashboard_io import Receiver
+
+
+class Stream:
+    opened = []
+    def __init__(self,*args,**kwargs):
+        self.selected_provider=kwargs.get('provider','qwen')
+        self.events=queue.Queue();self.events.put({'type':'ready'})
+        self.pcm=b'';self.finished=False;self.closed=False;self.closed_event=threading.Event()
+        self.opened.append(self)
+    def append(self,pcm):
+        self.pcm+=pcm
+        self.events.put({'type':'partial','text':'Draft words','revision':1})
+    def finish(self):
+        self.finished=True;self.events.put({'type':'final','text':'Final words','revision':2})
+    def receive(self):
+        value=self.events.get(timeout=2)
+        if value is None:raise TranscriptionUnavailable('closed')
+        return value
+    def result(self):
+        return {'text':'Final words','final':True,'model':{'openai':'gpt-live-transcribe','gemini':'gemini-3.5-transcribe-live'}.get(self.selected_provider,'qwen-audio-3.0-realtime-plus'),
+                'pcm_sha256':hashlib.sha256(self.pcm).hexdigest(),
+                'audio_millis':len(self.pcm)*1000//32000}
+    def close(self):self.closed=True;self.events.put(None);self.closed_event.set()
+
+
+class LiveTranscription(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.root.chmod(0o700)
+        self.provider=Receiver();self.provider.receiver={'voice':{'enabled':True}}
+        self.provider.input_id=Provider.input_id
+        self.provider.binding_bytes=b'fixture-receiving-binding'
+        self.provider.assert_binding=lambda:None
+        self.provider.presentation_list=lambda *_: {'items':[]}
+        self.binding='b'*64
+        self.provider.presentation=lambda _: {'binding':self.binding}
+        self.config={'state_dir':str(self.root/'state'),'origin':'https://example.test','bot_id':123,
+                     'companion':{'enabled':True,'grants_dir':str(self.root/'grants')},
+                     'streaming_transcription':{'enabled':True,'endpoint':'wss://provider.test/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus',
+                     'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared'),
+                     'turn_detection':{'enabled':True,'command':['/fixture/python','capture-turn']}}}
+        self.patch=patch('dashboard.live_transcription.TranscriptionStream',Stream);self.patch.start()
+        # The constant belongs to the adapter contract, including in synthetic peers.
+        Stream.max_audio_bytes=120*32000;Stream.opened=[]
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test')
+        self.client.__enter__()
+        response=self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.assertEqual(response.status_code,200)
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+        self.ident=str(uuid.uuid4())
+    def tearDown(self):self.client.__exit__(None,None,None);self.patch.stop();self.tmp.cleanup()
+    def meta(self,**extra):return {'id':self.ident,'binding':self.binding,'csrf':self.csrf,**extra}
+    def open(self,origin='https://example.test'):
+        return self.client.websocket_connect('/api/interaction/voice/live',headers={'origin':origin})
+    def test_openai_caption_route_is_explicit_no_original_or_work_authority(self):
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'captions',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared'),
+            'transcription_options':{'languages':['es'],'delay':'low'}}
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            response=client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            self.assertEqual(response.status_code,200)
+            client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
+            response=client.get('/api/interaction');self.assertEqual(response.status_code,200,response.text)
+            caps=response.json();self.assertTrue(caps['openai_can_stream_transcribe'])
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(), 'csrf':caps['csrf'],'mode':'captions'})
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600)
+                self.assertEqual(ws.receive_json()['type'],'partial')
+                self.assertEqual(Stream.opened[-1].selected_provider,'openai')
+                ws.send_json({'type':'discard'})
+            self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+            self.assertFalse(Stream.opened[-1].finished)
+            self.assertFalse(list((self.root/'prepared').glob('*.json')))
+            self.assertEqual(len(Stream.opened),1,'No silent fallback or second paid stream')
+        with self.assertRaises(ValueError):
+            create_app({**self.config,'streaming_transcription_openai':{**self.config['streaming_transcription_openai'],'fallback':{'provider':'qwen'}}},self.provider)
+
+    def test_openai_captions_accept_existing_shared_home_and_device_grants(self):
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'captions',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared')}
+        token='h'*43;identity={'contract':'dm.home-session/v1','origin':'https://home.example.test',
+            'expires':int(time.time())+3600,'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://home.example.test') as client:
+                headers={'Host':'home.example.test','Cookie':'__Host-home='+token,'Origin':'https://home.example.test'}
+                response=client.get('/api/interaction/access',headers=headers);self.assertEqual(response.status_code,200,response.text)
+                csrf=response.json()['csrf']
+                with client.websocket_connect('/api/interaction/voice/openai/live',headers=headers) as ws:
+                    ws.send_json({**self.meta(),'csrf':csrf,'mode':'captions'})
+                    self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                    ws.send_json({'type':'discard'})
+                self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+                self.assertEqual(Stream.opened[-1].selected_provider,'openai')
+                opened=len(Stream.opened)
+                with self.assertLogs('dashboard.live_transcription',level='WARNING') as logged:
+                    with client.websocket_connect('/api/interaction/voice/openai/live',headers=headers) as ws:
+                        ws.send_json({**self.meta(),'csrf':'wrong-action','mode':'captions'})
+                        self.assertEqual(ws.receive_json()['type'],'unavailable')
+                self.assertEqual(len(Stream.opened),opened,'Bad action token cannot open a billable provider')
+                self.assertIn('HTTPException',str(logged.output));self.assertNotIn(token,str(logged.output))
+        device_file=self.root/'caption-device.json'
+        grants=Grants(self.config,self.provider);grants.enroll('Caption fixture',device_file,3600)
+        device=read_json(device_file)
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'Origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(),'authorization':device['authorization'],'csrf':device['csrf'],'mode':'captions'})
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                ws.send_json({'type':'discard'})
+            self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+        # Upload through the same enrolled-device action scope, not an admin cookie.
+        self.provider.receiver['voice']['transcription_profiles']={'openai-live':{},'previous-live':{}}
+        retained=[]
+        self.provider.conversation_voice_submit=lambda meta,data: retained.append(meta) or {'id':meta['id'],'phase':'preparing'}
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            headers={'Origin':'https://example.test','Authorization':device['authorization'],
+                'x-dashboard-csrf':device['csrf'],'content-type':'audio/wav',
+                'x-input-binding':self.binding,'x-input-id':self.ident,'x-audio-sha256':'a'*64}
+            for profile in ('openai-live','previous-live'):
+                response=client.post('/api/interaction/voice/'+profile,content=b'original',headers=headers)
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(retained[-1]['transcription_profile'],profile)
+                self.assertEqual(client.post('/api/interaction/voice/'+profile,content=b'original',headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
+        from dashboard.companion import permitted
+        self.assertTrue(permitted('POST','/api/interaction/voice/openai/live'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/live','monitor_readonly'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/live/extra'))
+
+    def test_openai_prepared_result_is_reused_without_another_recognition(self):
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'prepared',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared')}
+        pcm=b'\0\0'*1600
+        with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
+            csrf=client.get('/api/state').json()['csrf']
+            with client.websocket_connect('/api/interaction/voice/openai/live',headers={'Origin':'https://example.test'}) as ws:
+                ws.send_json({**self.meta(),'csrf':csrf,'mode':'prepared'})
+                self.assertEqual(ws.receive_json()['type'],'ready');ws.send_bytes(pcm)
+                self.assertEqual(ws.receive_json()['type'],'partial');ws.send_json({'type':'finish'})
+                final=ws.receive_json();self.assertEqual(final['type'],'prepared')
+        self.assertEqual(len(Stream.opened),1);self.assertTrue(Stream.opened[0].finished)
+        source=self.root/self.ident;source.write_bytes(wav_bytes(pcm));source.chmod(0o600)
+        from scripts.interaction_asr import process
+        binding=self.root/'live-only.json';binding.write_text(json.dumps({
+            'schema':'telecodex.interaction-asr/v1','provider':'live-result','models':['gpt-live-transcribe'],
+            'streaming_cache_root':str(self.root/'prepared'),'cache_root':str(self.root/'asr')}));binding.chmod(0o600)
+        with patch('scripts.interaction_asr.openai_recognizer',side_effect=AssertionError('Second recognition forbidden')):
+            result=process(source,binding)
+            self.assertEqual(result['text'],final['text']);self.assertEqual(result['live_model'],'gpt-live-transcribe')
+            self.assertEqual(process(source,binding,completed_only=True)['text'],final['text'])
+        self.assertEqual(source.read_bytes(),wav_bytes(pcm));self.assertEqual(len(Stream.opened),1)
+
+    def test_streams_before_finish_retains_only_text_for_exact_wav(self):
+        pcm=b'\0\0'*1600
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(pcm);self.assertEqual(ws.receive_json()['type'],'partial')
+            self.assertFalse(list((self.root/'prepared').glob('*.json')))
+            ws.send_json({'type':'finish'})
+            result=ws.receive_json();self.assertEqual(result['type'],'prepared')
+            self.assertEqual(result['source_sha256'],hashlib.sha256(wav_bytes(pcm)).hexdigest())
+        value=json.loads((self.root/'prepared'/f'{self.ident}.json').read_text())
+        self.assertEqual(value['text'],'Final words');self.assertEqual(value['capture_id'],self.ident)
+        self.assertEqual(value['binding'],self.binding);self.assertEqual(self.provider.calls,[])
+        self.assertFalse(list((self.root/'prepared').glob('*.wav')))
+        self.assertTrue(Stream.opened[0].finished);self.assertTrue(Stream.opened[0].closed_event.wait(2))
+        original=self.root/self.ident;original.write_bytes(wav_bytes(pcm));original.chmod(0o600)
+        trusted=streaming_result({'streaming_cache_root':str(self.root/'prepared')},original,
+                                 hashlib.sha256(original.read_bytes()).hexdigest())
+        self.assertEqual(trusted,{'text':'Final words','streaming_model':'qwen-audio-3.0-realtime-plus'})
+    def test_preparation_timing_separates_final_provider_and_receipt_without_storage(self):
+        finish = Stream.finish
+        def delayed_finish(stream):
+            time.sleep(.02)
+            finish(stream)
+        def delayed_save(*args):
+            time.sleep(.03)
+            return save_prepared(*args)
+        with patch.object(Stream, 'finish', delayed_finish), patch('dashboard.live_transcription.save_prepared', delayed_save):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                ws.send_json({'type':'finish'})
+                result=ws.receive_json();self.assertEqual(result['type'],'prepared')
+        timing=result['timing']
+        self.assertEqual(set(timing), {'finish_to_prepared_ms','finish_authorization_ms',
+            'provider_final_ms','final_authorization_ms','receipt_write_ms'})
+        self.assertTrue(all(isinstance(v,(int,float)) and 0 <= v <= 140000 for v in timing.values()))
+        self.assertGreaterEqual(timing['provider_final_ms'], 15)
+        self.assertGreaterEqual(timing['receipt_write_ms'], 25)
+        self.assertGreaterEqual(timing['finish_to_prepared_ms'], timing['provider_final_ms'])
+        self.assertGreaterEqual(timing['finish_to_prepared_ms'], timing['receipt_write_ms'])
+        receipt=read_json(self.root/'prepared'/f'{self.ident}.json')
+        self.assertNotIn('timing',receipt)
+        self.assertEqual(receipt['text'],'Final words')
+        self.assertEqual(self.provider.calls,[])
+
+    def test_selected_gemini_prepares_exact_original_with_no_dispatch(self):
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription']['provider']='gemini'
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+        pcm=b'\0\0'*1600
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(pcm);self.assertEqual(ws.receive_json()['type'],'partial')
+            ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+        original=self.root/self.ident;original.write_bytes(wav_bytes(pcm));original.chmod(0o600)
+        value=streaming_result({'streaming_cache_root':str(self.root/'prepared')},original,
+                               hashlib.sha256(original.read_bytes()).hexdigest())
+        self.assertEqual(value,{'text':'Final words','streaming_model':'gemini-3.5-transcribe-live'})
+        self.assertEqual(Stream.opened[0].selected_provider,'gemini')
+        self.assertEqual(self.provider.calls,[])
+
+    def select_streaming_fallback(self):
+        self.client.__exit__(None,None,None)
+        selected=self.config['streaming_transcription'];selected['provider']='gemini'
+        selected['fallback']={'provider':'qwen','endpoint':'wss://fallback.test/api-ws/v1/realtime?model=qwen-audio-3.0-realtime-plus','credential_file':str(self.root/'qwen-key')}
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test');self.client.__enter__()
+        self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/')
+        self.csrf=self.client.get('/api/state').json()['csrf']
+
+    def test_unavailable_gemini_open_selects_qwen_before_any_audio(self):
+        self.select_streaming_fallback();attempts=[]
+        class UnavailableOpen(Stream):
+            def __init__(self,*args,**kwargs):
+                attempts.append(kwargs['provider'])
+                if kwargs['provider']=='gemini':raise TranscriptionUnavailable('Synthetic unavailable open')
+                super().__init__(*args,**kwargs)
+        with patch('dashboard.live_transcription.TranscriptionStream',UnavailableOpen),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+            ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+        self.assertEqual(attempts,['gemini','qwen'])
+        value=json.loads((self.root/'prepared'/f'{self.ident}.json').read_text())
+        self.assertEqual(value['model'],'qwen-audio-3.0-realtime-plus')
+        self.assertEqual(value['audio_millis'],100);self.assertEqual(self.provider.calls,[])
+
+    def test_failed_gemini_setup_closes_it_before_selecting_qwen(self):
+        self.select_streaming_fallback()
+        class FailedSetup(Stream):
+            def receive(self):
+                if self.selected_provider=='gemini':raise TranscriptionUnavailable('Synthetic unavailable setup')
+                return super().receive()
+        with patch('dashboard.live_transcription.TranscriptionStream',FailedSetup),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\0\0');ws.receive_json();ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+        self.assertEqual([v.selected_provider for v in Stream.opened],['gemini','qwen'])
+        self.assertTrue(Stream.opened[0].closed);self.assertEqual(Stream.opened[0].pcm,b'')
+
+    def test_no_stream_provider_replay_after_readiness_or_audio(self):
+        self.select_streaming_fallback()
+        class FailedAudio(Stream):
+            def append(self,pcm):
+                super().append(pcm);raise TranscriptionUnavailable('Synthetic uncertain audio send')
+        with patch('dashboard.live_transcription.TranscriptionStream',FailedAudio),self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\0\0');self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertEqual([v.selected_provider for v in Stream.opened],['gemini'])
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+        self.assertEqual(self.provider.calls,[])
+
+    def test_caption_mode_never_prepares_canonical_text(self):
+        self.client.__exit__(None,None,None)
+        self.config['streaming_transcription']['mode']='captions'
+        self.config['streaming_transcription'].pop('turn_detection',None)
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test');self.client.__enter__()
+        response=self.client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+        self.client.cookies.set('telecodex_dashboard',self.client.cookies.get('telecodex_dashboard'),path='/');self.csrf=self.client.get('/api/state').json()['csrf']
+        with self.open() as ws:
+            ws.send_json(self.meta(mode='captions'));self.assertEqual(ws.receive_json()['type'],'ready')
+            ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+            ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+        self.assertFalse(Stream.opened[0].finished);self.assertTrue(Stream.opened[0].closed_event.wait(2))
+        self.assertEqual(self.provider.calls,[])
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertEqual(len(Stream.opened),1,'A stale prepared-mode client must not select a different stream contract')
+
+    def test_wrong_origin_csrf_or_binding_never_opens_provider(self):
+        with self.assertRaises(WebSocketDisconnect):
+            with self.open('https://wrong.test'):pass
+        for meta in (self.meta(csrf='wrong'),self.meta(binding='c'*64)):
+            with self.open() as ws:
+                ws.send_json(meta);self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertEqual(Stream.opened,[])
+    def test_discard_and_disconnect_do_not_finish_or_save(self):
+        for discard in (True,False):
+            with self.open() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0');ws.receive_json()
+                if discard:ws.send_json({'type':'discard'})
+        self.assertFalse(any(x.finished for x in Stream.opened))
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+    def test_replaced_binding_blocks_final_preparation(self):
+        with self.assertLogs('dashboard.live_transcription',level='WARNING') as logs:
+            with self.open() as ws:
+                ws.send_json(self.meta());ws.receive_json();ws.send_bytes(b'\0\0');ws.receive_json()
+                self.binding='d'*64
+                ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'unavailable')
+            self.assertTrue(Stream.opened[0].closed_event.wait(2))
+        diagnostic=json.loads(logs.records[0].getMessage().split(' ',1)[1])
+        self.assertEqual(diagnostic,{'capture_id':self.ident,'stage':'finish_authorization',
+            'audio_bytes':2,'finish_received':True,'prepared_saved':False,'error_type':'ValueError'})
+        self.assertFalse(Stream.opened[0].finished)
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+    def test_revoked_human_cannot_finish_preparation(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());ws.receive_json();ws.send_bytes(b'\0\0');ws.receive_json()
+            self.provider.allowed=False
+            ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertFalse(Stream.opened[0].finished)
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+    def test_companion_scope_and_revocation_use_existing_grants(self):
+        grants=Grants(self.config,self.provider)
+        for scope in ('monitor_readonly','interaction_only'):
+            output=self.root/(scope+'.json')
+            enrolled=grants.enroll('Synthetic voice client',output,3600,scope=scope)
+            credential=read_json(output)
+            with self.open() as ws:
+                ws.send_json(self.meta(authorization=credential['authorization'],csrf=credential['csrf']))
+                if scope=='monitor_readonly':
+                    self.assertEqual(ws.receive_json()['type'],'unavailable');self.assertEqual(Stream.opened,[])
+                else:
+                    self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_bytes(b'\0\0');ws.receive_json();grants.revoke(enrolled['grant_id'])
+                    ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertFalse(any(value.finished for value in Stream.opened))
+    def test_two_completed_receipts_serialize_the_existing_cache_writer(self):
+        entered,release,second_entered=threading.Event(),threading.Event(),threading.Event();calls=[]
+        from dashboard.live_transcription import save_prepared as real_save
+        def held_save(*args):
+            calls.append(args[1])
+            if len(calls)==1:
+                entered.set()
+                if not release.wait(2):raise TimeoutError('Synthetic cache writer not released')
+            else:second_entered.set()
+            return real_save(*args)
+        other=str(uuid.uuid4())
+        with patch('dashboard.live_transcription.save_prepared',held_save):
+            try:
+                with self.open() as first,self.open() as second:
+                    first.send_json(self.meta());self.assertEqual(first.receive_json()['type'],'ready')
+                    second.send_json(self.meta(id=other));self.assertEqual(second.receive_json()['type'],'ready')
+                    for ws in (first,second):ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'partial')
+                    first.send_json({'type':'finish'});self.assertTrue(entered.wait(1))
+                    second.send_json({'type':'finish'});self.assertFalse(second_entered.wait(.05),'A second filesystem writer cannot bypass the held first writer')
+                    release.set();self.assertEqual(first.receive_json()['type'],'prepared');self.assertEqual(second.receive_json()['type'],'prepared')
+            finally:release.set()
+        self.assertEqual(calls,[self.ident,other]);self.assertEqual(self.provider.calls,[])
+
+    def test_asr_ready_partial_and_final_do_not_wait_for_analysis_startup(self):
+        entered,cancelled=threading.Event(),threading.Event()
+        class SlowAnalysis:
+            @classmethod
+            async def open(cls,_):
+                entered.set()
+                try:await asyncio.sleep(30)
+                finally:cancelled.set()
+        with patch('dashboard.live_transcription.Detector',SlowAnalysis),self.open() as ws:
+            ws.send_json(self.meta(turn_detection=True))
+            self.assertEqual(ws.receive_json()['type'],'ready')
+            self.assertTrue(entered.wait(1));self.assertFalse(cancelled.is_set())
+            ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+            ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+        self.assertTrue(cancelled.wait(1),'Capture exit must cancel its pending analyzer startup')
+        self.assertTrue(Stream.opened[0].closed_event.wait(1));self.assertEqual(self.provider.calls,[])
+
+    def analysis(self):
+        class Warm:
+            opened=[]
+            @classmethod
+            async def open(cls,argv,*,continuous=False):
+                self.assertTrue(continuous)
+                value=cls();value.queue=asyncio.Queue();value.pcm=b'';value.closed=False;value.generation=1
+                cls.opened.append(value);return value
+            async def feed(value,pcm):
+                value.pcm+=pcm
+                await value.queue.put({'type':'activity','generation':value.generation,
+                    'audio_bytes':len(value.pcm),'speaking':True,'speech_seen':True,
+                    'onset':{'generation':value.generation,'audio_bytes':len(value.pcm)}})
+            async def boundary(value,boundary):
+                await value.queue.put({'type':'boundary',**boundary});value.generation+=1
+            async def receive(value):return await value.queue.get()
+            async def close(value):value.closed=True
+        return Warm
+
+    def open_activity(self,origin='https://example.test'):
+        return self.client.websocket_connect('/api/interaction/voice/activity',headers={'origin':origin})
+
+    def shared_home(self):
+        self.client.__exit__(None,None,None)
+        home='https://home.example.test'
+        self.config['origin']=home
+        self.config['shared_auth']={'enabled':True,'home_origin':home}
+        self.client=TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=home)
+        self.client.__enter__()
+        self.client.cookies.set('__Host-home','h'*43,path='/')
+        return home
+
+    def test_shared_home_delayed_auth_batches_without_dropping_activity_or_boundaries(self):
+        home=self.shared_home();warm=self.analysis();calls=[]
+        def identity(origin,token):
+            calls.append(time.monotonic());time.sleep(.03)
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'ref':'human:telegram:100','kind':'human','name':'Synthetic'}}
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/activity',headers={'origin':home}) as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                before=len(calls)
+                chunks=[bytes([i,0])*1600 for i in range(20)]
+                for chunk in chunks[:10]:ws.send_bytes(chunk)
+                ws.send_json({'boundary':{'generation':1,'audio_bytes':32000}})
+                for chunk in chunks[10:]:ws.send_bytes(chunk)
+                events=[ws.receive_json() for _ in range(21)]
+                self.assertEqual([v['type'] for v in events],['turn_activity']*10+['boundary']+['turn_activity']*10)
+                self.assertEqual([v['activity']['audio_bytes'] for v in events if v['type']=='turn_activity'],
+                                 list(range(3200,64001,3200)))
+                self.assertEqual(events[11]['activity']['onset']['generation'],2)
+                self.assertEqual(warm.opened[0].pcm,b''.join(chunks))
+                # Old per-packet+per-event authorization needs41 lookups. Fresh
+                # checks still happen, but already queued packets share a check.
+                self.assertLess(len(calls)-before,30)
+                self.assertGreaterEqual(len(calls)-before,4)
+                ws.send_json({'type':'close'})
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['received_pcm_bytes'],64000);self.assertEqual(value['analyzed_pcm_bytes'],64000)
+        self.assertEqual(value['delivered_pcm_bytes'],64000)
+        for stage in ('input_authorization','output_authorization'):
+            self.assertGreaterEqual(value['timing'][stage]['max_ms'],20,stage)
+        self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.provider.calls,[])
+
+    def test_shared_home_revocation_during_pending_audio_prevents_feed(self):
+        home=self.shared_home();warm=self.analysis();entered=threading.Event();release=threading.Event();gate=False
+        def identity(origin,token):
+            if gate:
+                entered.set()
+                if not release.wait(2):raise TimeoutError('Fixture gate')
+            return {'contract':'dm.home-session/v1','origin':origin,'expires':int(time.time())+3600,
+                    'actor':{'ref':'human:telegram:100','kind':'human'}}
+        with patch('dashboard.home_auth.identity_response',side_effect=identity),patch('dashboard.live_transcription.Detector',warm):
+            self.csrf=self.client.get('/api/interaction/access').json()['csrf']
+            try:
+                with self.client.websocket_connect('wss://home.example.test/api/interaction/voice/activity',headers={'origin':home}) as ws:
+                    ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready');gate=True
+                    ws.send_bytes(b'\0'*3200);self.assertTrue(entered.wait(1))
+                    for _ in range(10):ws.send_bytes(b'\0'*3200)
+                    self.provider.allowed=False;release.set()
+                    self.assertEqual(ws.receive_json()['type'],'unavailable')
+            finally:release.set()
+        self.assertEqual(warm.opened[0].pcm,b'');self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_summary_separates_received_fed_analyzed_and_sent_without_payloads(self):
+        warm=self.analysis();receive=warm.receive
+        closed=threading.Event();logger=logging.getLogger('uvicorn.error');info=logger.info
+        def observe(message,*args,**kwargs):
+            info(message,*args,**kwargs)
+            if message=='voice_activity_closed %s':closed.set()
+        async def annotated(worker):
+            value=await receive(worker)
+            return {**value,'text':'PRIVATE_PROVIDER_TRANSCRIPT','authorization':'PRIVATE_PROVIDER_CREDENTIAL'}
+        warm.receive=annotated
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm),patch.object(logger,'info',side_effect=observe):
+            with self.open_activity() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                for _ in range(3):
+                    ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'turn_activity')
+                ws.send_json({'type':'close'})
+                self.assertTrue(closed.wait(2),'Observe the retained close summary before client teardown adds a disconnect')
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        self.assertLess(len(lines[0]),2048)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['session_id'],self.ident);self.assertEqual(value['outcome'],'client_close')
+        for key in ('received_pcm_bytes','fed_pcm_bytes','analyzed_pcm_bytes','delivered_pcm_bytes'):
+            self.assertEqual(value[key],9600,key)
+        self.assertEqual(value['input_messages'],4);self.assertEqual(value['worker_events'],3)
+        self.assertGreaterEqual(value['input_peak_bytes'],3200);self.assertGreaterEqual(value['output_peak_messages'],1)
+        self.assertEqual(value['onsets_observed'],3);self.assertEqual(value['endpoints_observed'],0)
+        self.assertEqual(value['timing']['worker_feed']['count'],3)
+        self.assertEqual(value['timing']['output_send']['count'],3)
+        self.assertEqual(value['timing']['input_authorization']['count'],4)
+        self.assertEqual(value['timing']['output_authorization']['count'],3)
+        self.assertNotIn('PRIVATE_',lines[0]);self.assertNotIn(self.csrf,lines[0])
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_summary_records_revoked_authorization_without_exception_details(self):
+        warm=self.analysis()
+        with self.assertLogs('uvicorn.error',level='INFO') as log,patch('dashboard.live_transcription.Detector',warm):
+            with self.open_activity() as ws:
+                ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                self.provider.allowed=False
+                ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'unavailable')
+        lines=[v for v in log.output if 'voice_activity_closed ' in v];self.assertEqual(len(lines),1)
+        value=json.loads(lines[0].split('voice_activity_closed ',1)[1])
+        self.assertEqual(value['outcome'],'unavailable');self.assertEqual(value['error_type'],'HTTPException')
+        self.assertEqual(value['failure_stage'],'input_authorization')
+        self.assertEqual(value['received_pcm_bytes'],3200);self.assertEqual(value['fed_pcm_bytes'],0)
+        self.assertEqual(value['analyzed_pcm_bytes'],0);self.assertEqual(value['delivered_pcm_bytes'],0)
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_analysis_stays_warm_between_utterance_boundaries(self):
+        warm=self.analysis()
+        with patch('dashboard.live_transcription.Detector',warm),self.open_activity() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json(),{'type':'ready','id':self.ident,'analysis_only':True})
+            ws.send_bytes(b'\0'*3200);first=ws.receive_json();self.assertEqual(first['type'],'turn_activity')
+            self.assertEqual(first['activity']['onset']['generation'],1)
+            ws.send_json({'boundary':{'generation':1,'audio_bytes':3200}})
+            self.assertEqual(ws.receive_json()['type'],'boundary')
+            ws.send_bytes(b'\0'*3200);second=ws.receive_json()
+            self.assertEqual(second['activity']['onset']['generation'],2)
+            self.assertEqual(second['activity']['audio_bytes'],6400)
+            self.assertEqual(len(warm.opened),1)
+            ws.send_json({'type':'close'})
+        self.assertTrue(warm.opened[0].closed)
+        self.assertEqual(Stream.opened,[]);self.assertEqual(self.provider.calls,[])
+        self.assertEqual(list((self.root/'prepared').glob('*.json')),[])
+
+    def test_foreground_auth_revocation_capacity_and_actor_release(self):
+        warm=self.analysis()
+        with patch('dashboard.live_transcription.Detector',warm):
+            with self.assertRaises(WebSocketDisconnect):
+                with self.open_activity('https://wrong.test'):pass
+            for changed in ({'csrf':'wrong'},{'binding':'c'*64}):
+                with self.open_activity() as ws:
+                    ws.send_json(self.meta(**changed));self.assertEqual(ws.receive_json()['type'],'unavailable')
+            self.assertEqual(warm.opened,[])
+            with self.open_activity() as first:
+                first.send_json(self.meta());self.assertEqual(first.receive_json()['type'],'ready')
+                with self.open_activity() as duplicate:
+                    duplicate.send_json(self.meta(id=str(uuid.uuid4())));self.assertEqual(duplicate.receive_json()['type'],'unavailable')
+                first.send_bytes(b'\0'*3200);self.assertEqual(first.receive_json()['type'],'turn_activity')
+                self.provider.allowed=False
+                first.send_bytes(b'\0'*3200);self.assertEqual(first.receive_json()['type'],'unavailable')
+            self.assertTrue(warm.opened[0].closed);self.assertEqual(len(warm.opened[0].pcm),3200)
+            self.provider.allowed=True
+            with self.open_activity() as replacement:
+                replacement.send_json(self.meta(id=str(uuid.uuid4())));self.assertEqual(replacement.receive_json()['type'],'ready')
+                replacement.send_json({'type':'close'})
+        self.assertEqual(self.provider.calls,[])
+
+    def test_foreground_analysis_uses_existing_companion_voice_grants(self):
+        warm=self.analysis();grants=Grants(self.config,self.provider)
+        with patch('dashboard.live_transcription.Detector',warm):
+            for scope in ('monitor_readonly','interaction_only'):
+                path=self.root/(scope+'-activity.json')
+                enrolled=grants.enroll('Synthetic foreground voice',path,3600,scope=scope)
+                credential=read_json(path)
+                with self.open_activity() as ws:
+                    ws.send_json(self.meta(authorization=credential['authorization'],csrf=credential['csrf']))
+                    if scope=='monitor_readonly':
+                        self.assertEqual(ws.receive_json()['type'],'unavailable');self.assertEqual(warm.opened,[])
+                    else:
+                        self.assertEqual(ws.receive_json()['type'],'ready')
+                        grants.revoke(enrolled['grant_id'])
+                        ws.send_bytes(b'\0'*3200);self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertEqual(self.provider.calls,[])
+
+    def test_distinct_asr_utterances_can_overlap_but_not_duplicate_or_exceed_global_bound(self):
+        other=str(uuid.uuid4())
+        with self.open() as first,self.open() as second:
+            first.send_json(self.meta());self.assertEqual(first.receive_json()['type'],'ready')
+            with self.open() as duplicate:
+                duplicate.send_json(self.meta());self.assertEqual(duplicate.receive_json()['type'],'unavailable')
+            second.send_json(self.meta(id=other));self.assertEqual(second.receive_json()['type'],'ready')
+            with self.open() as excess:
+                excess.send_json(self.meta(id=str(uuid.uuid4())));self.assertEqual(excess.receive_json()['type'],'unavailable')
+            first.send_bytes(b'\1\0'*1600);second.send_bytes(b'\2\0'*1600)
+            self.assertEqual(first.receive_json()['type'],'partial');self.assertEqual(second.receive_json()['type'],'partial')
+            first.send_json({'type':'finish'});second.send_json({'type':'finish'})
+            a=first.receive_json();b=second.receive_json()
+            self.assertEqual((a['id'],b['id']),(self.ident,other))
+            self.assertNotEqual(a['source_sha256'],b['source_sha256'])
+        self.assertEqual(len(Stream.opened),2);self.assertEqual(self.provider.calls,[])
+
+    def test_completed_receipt_is_immutable_and_requires_matching_audio(self):
+        pcm=b'\0\0'*1600
+        result={'text':'Retained words','final':True,'model':'synthetic',
+                'pcm_sha256':hashlib.sha256(pcm).hexdigest(),'audio_millis':100}
+        root=self.root/'prepared'
+        first=save_prepared(root,self.ident,self.binding,pcm,result)
+        self.assertEqual(first,save_prepared(root,self.ident,self.binding,pcm,result))
+        before=(root/(self.ident+'.json')).read_bytes()
+        for changed in ({**result,'text':'replacement'},{**result,'final':False},{**result,'pcm_sha256':'0'*64}):
+            with self.assertRaises(ValueError):save_prepared(root,self.ident,self.binding,pcm,changed)
+            self.assertEqual((root/(self.ident+'.json')).read_bytes(),before)
+        unsafe=str(uuid.uuid4());(root/(unsafe+'.json')).symlink_to(root/(self.ident+'.json'))
+        with self.assertRaises(OSError):save_prepared(root,unsafe,self.binding,pcm,result)
+
+    def test_revoked_actor_receives_no_delayed_caption(self):
+        with self.open() as ws:
+            ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+            self.provider.allowed=False
+            Stream.opened[0].events.put({'type':'partial','text':'Must not leak','revision':1})
+            self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertFalse(Stream.opened[0].finished)
+    def test_canceled_dial_closes_late_socket_and_releases_actor(self):
+        entered,release,closed=threading.Event(),threading.Event(),threading.Event()
+        class Delayed(Stream):
+            count=0
+            def __init__(self,*args,**kwargs):
+                Delayed.count+=1;self.delayed=Delayed.count==1
+                if self.delayed:
+                    entered.set()
+                    if not release.wait(3):raise TimeoutError('Synthetic dial gate')
+                super().__init__(*args,**kwargs)
+            def close(self):
+                super().close()
+                if self.delayed:closed.set()
+        with patch('dashboard.live_transcription.TranscriptionStream',Delayed):
+            try:
+                with self.open() as ws:
+                    ws.send_json(self.meta());self.assertTrue(entered.wait(2))
+                # New actor admission must not wait for a canceled dial's socket.
+                with self.open() as ws:
+                    ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_json({'type':'discard'})
+                release.set();self.assertTrue(closed.wait(2))
+            finally:release.set()
+    def test_second_cancel_during_close_does_not_strand_actor_slot(self):
+        entered,release=threading.Event(),threading.Event()
+        class SlowClose(Stream):
+            count=0
+            def __init__(self,*args,**kwargs):
+                SlowClose.count+=1;self.slow=SlowClose.count==1;super().__init__(*args,**kwargs)
+            def close(self):
+                if self.slow:
+                    entered.set();release.wait(3)
+                super().close()
+        with patch('dashboard.live_transcription.TranscriptionStream',SlowClose):
+            try:
+                with self.open() as ws:
+                    ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_json({'type':'discard'});self.assertTrue(entered.wait(2))
+                with self.open() as ws:
+                    ws.send_json(self.meta());self.assertEqual(ws.receive_json()['type'],'ready')
+                    ws.send_json({'type':'discard'})
+            finally:release.set()
+    def test_real_uvicorn_upgrade_and_ordered_capture(self):
+        import uvicorn
+        import websocket
+        app=create_app(self.config,self.provider,lambda raw,bot:int(raw))
+        server=uvicorn.Server(uvicorn.Config(app,log_level='error',lifespan='off'))
+        listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(16)
+        thread=threading.Thread(target=server.run,kwargs={'sockets':[listener]},daemon=True);thread.start()
+        deadline=time.monotonic()+3
+        while not server.started and thread.is_alive() and time.monotonic()<deadline:time.sleep(.005)
+        try:
+            self.assertTrue(server.started,'Locked receiving runtime must support real WebSocket upgrade')
+            ws=websocket.create_connection('ws://127.0.0.1:'+str(listener.getsockname()[1])+'/api/interaction/voice/live',
+                                           origin='https://example.test',timeout=3)
+            try:
+                ws.send(json.dumps(self.meta(authorization='Bearer '+next(c.value for c in self.client.cookies.jar if c.name=='telecodex_dashboard'))))
+                self.assertEqual(json.loads(ws.recv())['type'],'ready')
+                ws.send_binary(b'\0\0'*1600);self.assertEqual(json.loads(ws.recv())['type'],'partial')
+                ws.send(json.dumps({'type':'finish'}));self.assertEqual(json.loads(ws.recv())['type'],'prepared')
+            finally:ws.close()
+        finally:
+            server.should_exit=True;thread.join(4);listener.close()
+            self.assertFalse(thread.is_alive(),'Finite fixture server must stop after its socket closes')
+        self.assertEqual(self.provider.calls,[])
+
+    def test_optional_detection_shares_pcm_without_admitting_input(self):
+        class Analysis:
+            instance=None
+            @classmethod
+            async def open(cls,_):
+                cls.instance=cls();cls.instance.queue=asyncio.Queue();cls.instance.pcm=b'';cls.instance.closed=False
+                return cls.instance
+            async def feed(self,data):
+                self.pcm+=data
+                await self.queue.put({'schema':'telecodex.turn-activity/v1','type':'activity','generation':1,'speaking':False,
+                    'speech_seen':True,'audio_bytes':len(self.pcm),'endpoint':{'generation':1,'audio_bytes':len(self.pcm),
+                    'probability':.9,'authority':'analysis_only'}})
+            async def receive(self):return await self.queue.get()
+            async def close(self):self.closed=True
+        pcm=b'\0\0'*1600
+        with patch('dashboard.live_transcription.Detector',Analysis):
+            with self.open() as ws:
+                ws.send_json(self.meta(turn_detection=True));self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(pcm);events=[ws.receive_json(),ws.receive_json()]
+                self.assertEqual({v['type'] for v in events},{'partial','turn_activity'})
+                self.assertEqual(next(v for v in events if v['type']=='turn_activity')['id'],self.ident)
+                self.assertEqual(self.provider.calls,[]);self.assertEqual(Analysis.instance.pcm,pcm)
+                ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+            self.assertTrue(Analysis.instance.closed)
+        self.assertEqual(self.provider.calls,[])
+
+    def test_detector_failure_keeps_existing_asr_and_original_boundary(self):
+        from dashboard.turn_detection import DetectionUnavailable
+        class Unavailable:
+            @classmethod
+            async def open(cls,_):raise DetectionUnavailable('Fixture analysis failure')
+        with patch('dashboard.live_transcription.Detector',Unavailable):
+            with self.open() as ws:
+                ws.send_json(self.meta(turn_detection=True));self.assertEqual(ws.receive_json()['type'],'turn_detection_unavailable')
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+        self.assertEqual(self.provider.calls,[])
+
+    def test_analysis_pipe_failure_does_not_close_recognition(self):
+        from dashboard.turn_detection import DetectionUnavailable
+        class BrokenPipe:
+            instance=None
+            @classmethod
+            async def open(cls,_):cls.instance=cls();cls.instance.closed=False;return cls.instance
+            async def receive(self):await asyncio.Future()
+            async def feed(self,_):raise DetectionUnavailable('Fixture pipe failure')
+            async def close(self):self.closed=True
+        with patch('dashboard.live_transcription.Detector',BrokenPipe):
+            with self.open() as ws:
+                ws.send_json(self.meta(turn_detection=True));self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\0'*1600)
+                self.assertEqual({ws.receive_json()['type'],ws.receive_json()['type']},{'partial','turn_detection_unavailable'})
+                ws.send_bytes(b'\0\0'*1600);self.assertEqual(ws.receive_json()['type'],'partial')
+                ws.send_json({'type':'finish'});self.assertEqual(ws.receive_json()['type'],'prepared')
+            self.assertTrue(BrokenPipe.instance.closed)
+        self.assertEqual(self.provider.calls,[])
+
+    def test_explicit_credential_does_not_downgrade_to_cookie(self):
+        with self.open() as ws:
+            ws.send_json(self.meta(authorization='Bearer invalid'));self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertEqual(Stream.opened,[])
+
+
+class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_consumers_share_only_the_inflight_read_and_revocation_is_fresh(self):
+        from fastapi import HTTPException
+        held=asyncio.Event();release=asyncio.Event();reads=[];allowed=True
+        async def authorize(request):
+            reads.append(request);held.set();await release.wait()
+            if not allowed:raise HTTPException(401,'Synthetic revoked session')
+            return {'human':100}
+        actor=VoiceActor(authorize,object(),100)
+        tasks=[asyncio.create_task(actor()) for _ in range(8)]
+        await held.wait();self.assertEqual(len(reads),1)
+        tasks[0].cancel()
+        with self.assertRaises(asyncio.CancelledError):await tasks[0]
+        self.assertFalse(actor.pending.done(),'One waiter must not cancel shared authorization')
+        release.set();await asyncio.gather(*tasks[1:])
+        self.assertEqual(actor.snapshot()['calls'],8);self.assertEqual(actor.snapshot()['fresh_checks'],1)
+        allowed=False
+        with self.assertRaises(HTTPException):await actor()
+        self.assertEqual(len(reads),2,'Completed authority is never cached')
+
+    async def test_changed_actor_is_refused_and_not_retained_for_the_next_call(self):
+        from fastapi import HTTPException
+        human=101
+        async def authorize(_):return {'human':human}
+        actor=VoiceActor(authorize,None,100)
+        with self.assertRaises(HTTPException):await actor()
+        human=100;await actor();self.assertEqual(actor.snapshot()['fresh_checks'],2)
+
+
+class VoiceInboxBounds(unittest.IsolatedAsyncioTestCase):
+    async def test_queue_wait_records_consumption_age_without_changing_frames(self):
+        queue=asyncio.Queue();frame={'type':'websocket.receive','bytes':b'\0'*3200}
+        inbox=VoiceInbox(queue.get,pcm=True)
+        try:
+            queue.put_nowait(frame);await asyncio.wait_for(inbox.changed.wait(),1)
+            await asyncio.sleep(.01)
+            self.assertEqual(await inbox.batch(),[frame]);self.assertGreaterEqual(inbox.peak_wait_seconds,.01)
+        finally:await inbox.close()
+    async def test_native_burst_waits_for_space_without_growing_or_losing_frames(self):
+        queue=asyncio.Queue()
+        frames=[{'type':'websocket.receive','bytes':bytes([n])*3200} for n in range(100)]
+        frames.insert(85,{'type':'websocket.receive','text':'{"type":"playback","played_bytes":2}'})
+        for frame in [*frames,{'type':'websocket.disconnect'}]:queue.put_nowait(frame)
+        inbox=VoiceInbox(queue.get,pcm=True,batch_size=50,batch_control_frames=True,wait_for_space=True)
+        try:
+            await asyncio.sleep(0)
+            self.assertEqual(inbox.bytes,256000)
+            self.assertIsNone(inbox.error)
+            received=[]
+            while not received or received[-1]['type']!='websocket.disconnect':
+                batch=await asyncio.wait_for(inbox.batch(),1)
+                received.extend(batch)
+                # A fresh authorization can run while the collector is full.
+                await asyncio.sleep(.001)
+            self.assertEqual(received,[*frames,{'type':'websocket.disconnect'}])
+            self.assertEqual(inbox.received_bytes,320000)
+            self.assertLessEqual(inbox.peak_bytes,256000)
+            self.assertLessEqual(inbox.peak_messages,128)
+        finally:await inbox.close()
+        self.assertTrue(inbox.task.done())
+
+    async def test_native_backpressure_still_expires_without_consumer_progress(self):
+        queue=asyncio.Queue()
+        for _ in range(81):queue.put_nowait({'type':'websocket.receive','bytes':b'\0'*3200})
+        inbox=VoiceInbox(queue.get,pcm=True,wait_for_space=True);inbox.space_timeout=.02
+        try:
+            await asyncio.wait_for(inbox.task,.3)
+            with self.assertRaisesRegex(ValueError,'backlog'):await inbox.batch()
+            self.assertEqual(inbox.bytes,256000)
+        finally:await inbox.close()
+
+    async def test_native_backpressure_does_not_wait_on_invalid_frames(self):
+        queue=asyncio.Queue();queue.put_nowait({'type':'websocket.receive','bytes':b'odd'})
+        inbox=VoiceInbox(queue.get,pcm=True,wait_for_space=True)
+        try:
+            await asyncio.wait_for(inbox.task,.3)
+            with self.assertRaisesRegex(ValueError,'frame bounds'):await inbox.batch()
+            self.assertEqual(inbox.received_bytes,0)
+        finally:await inbox.close()
+
+    async def test_backlog_bounds_release_and_keep_original_control_order(self):
+        queue=asyncio.Queue()
+        inbox=VoiceInbox(queue.get,pcm=True)
+        try:
+            for value in ({'type':'websocket.receive','bytes':b'a'*3200},
+                          {'type':'websocket.receive','text':'{"boundary":{}}'},
+                          {'type':'websocket.receive','bytes':b'b'*3200},
+                          {'type':'websocket.disconnect'}):
+                queue.put_nowait(value)
+            await asyncio.sleep(0)
+            self.assertEqual((await inbox.batch())[0]['bytes'],b'a'*3200)
+            self.assertIn('text',(await inbox.batch())[0])
+            self.assertEqual((await inbox.batch())[0]['bytes'],b'b'*3200)
+            self.assertEqual((await inbox.batch())[0]['type'],'websocket.disconnect')
+        finally:await inbox.close()
+        self.assertTrue(inbox.task.done());self.assertEqual(inbox.bytes,0)
+        for frames in ([{'type':'websocket.receive','bytes':b'0'*3200}]*81,
+                       [{'type':'websocket.receive','text':'{}'}]*129,
+                       [{'type':'websocket.receive','bytes':b'x'}],
+                       [{'type':'websocket.receive','bytes':b'0'*32002}],
+                       [{'type':'websocket.receive','text':'x'*257}]):
+            queue=asyncio.Queue()
+            for frame in frames:queue.put_nowait(frame)
+            inbox=VoiceInbox(queue.get,pcm=True)
+            try:
+                await asyncio.sleep(0)
+                with self.assertRaises(ValueError):await inbox.batch()
+                self.assertLessEqual(inbox.bytes,256000);self.assertLessEqual(len(inbox.items),128)
+            finally:await inbox.close()
+            self.assertTrue(inbox.task.done())
+
+    async def test_native_controls_batch_in_exact_order_and_disconnect_stays_separate(self):
+        queue=asyncio.Queue()
+        frames=[{'type':'websocket.receive','text':'{"type":"capture_scope"}'},
+                {'type':'websocket.receive','bytes':b'a'*3200},
+                {'type':'websocket.receive','text':'{"type":"playback","played_bytes":2}'},
+                {'type':'websocket.receive','text':'{"type":"playback","played_bytes":4}'},
+                {'type':'websocket.receive','bytes':b'b'*3200}]
+        for frame in [*frames,{'type':'websocket.disconnect'}]:queue.put_nowait(frame)
+        inbox=VoiceInbox(queue.get,pcm=True,batch_size=50,batch_control_frames=True)
+        try:
+            await asyncio.sleep(0)
+            self.assertEqual(await inbox.batch(),frames)
+            self.assertEqual(await inbox.batch(),[{'type':'websocket.disconnect'}])
+            self.assertEqual(inbox.received_bytes,6400)
+        finally:await inbox.close()
+
+    async def test_output_backlog_never_drops_events_silently(self):
+        queue=asyncio.Queue()
+        for _ in range(129):queue.put_nowait({'type':'activity'})
+        inbox=VoiceInbox(queue.get)
+        try:
+            await asyncio.sleep(0)
+            with self.assertRaises(ValueError):await inbox.batch()
+        finally:await inbox.close()
+
+
+if __name__=='__main__':unittest.main()

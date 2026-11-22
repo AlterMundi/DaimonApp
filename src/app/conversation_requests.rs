@@ -72,8 +72,15 @@ fn response(snapshot: &ConversationRequest, payload: &Value, offset: usize) -> R
     result["schema"] = json!("telecodex.conversation-request/v1");
     result["id"] = json!(snapshot.item.id);
     result["revision"] = json!(revision(snapshot, payload));
+    result["capture_version"] = json!(snapshot.capture_version);
     result["binding"] = json!(snapshot.binding);
     result["entry_binding"] = snapshot.entry_binding.clone();
+    result["target"] = json!(snapshot.key);
+    result["audio_track"] = json!(if json!(snapshot.key) == snapshot.entry_binding[1] {
+        "conversation"
+    } else {
+        "session"
+    });
     result["state"] = json!(snapshot.item.state);
     result["title"] = json!(snapshot.item.title.chars().take(200).collect::<String>());
     result["offset"] = json!(offset);
@@ -157,9 +164,32 @@ async fn detail(
     id: &str,
     offset: usize,
 ) -> Result<Value> {
+    detail_scoped(app, human, entry, id, offset, false).await
+}
+fn request_snapshot(
+    app: &App,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+    internal: bool,
+) -> Result<ConversationRequest> {
+    if internal {
+        app.shared.store.internal_native_request(human, entry, id)
+    } else {
+        app.shared.store.conversation_request(human, entry, id)
+    }
+}
+async fn detail_scoped(
+    app: &App,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+    offset: usize,
+    internal: bool,
+) -> Result<Value> {
     {
         let guard = app.shared.pending_questions.lock().await;
-        let snapshot = app.shared.store.conversation_request(human, entry, id)?;
+        let snapshot = request_snapshot(app, human, entry, id, internal)?;
         if let Some(p) = guard
             .get(id)
             .filter(|p| question_matches(p, &snapshot, human))
@@ -168,7 +198,7 @@ async fn detail(
         }
     }
     let guard = app.shared.pending_approvals.lock().await;
-    let snapshot = app.shared.store.conversation_request(human, entry, id)?;
+    let snapshot = request_snapshot(app, human, entry, id, internal)?;
     if let Some(p) = guard
         .get(id)
         .filter(|p| approval_matches(p, &snapshot, human))
@@ -218,6 +248,186 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         bail!("Conversation request owner mismatch");
     }
     let entry = cfg.entry();
+    if let Some(raw) = args.strip_prefix("internal decide ") {
+        let decision: Decision = serde_json::from_str(raw)?;
+        return decide_scoped(app, human, entry, decision, None, None, true).await;
+    }
+    if let Some(raw) = args.strip_prefix("internal dismiss ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Dismissal {
+            binding: String,
+            id: String,
+            revision: String,
+        }
+        let selected: Dismissal = serde_json::from_str(raw)?;
+        let mut armed = app.shared.pending_task_text.lock().await;
+        let result = app.shared.store.internal_dismiss_human_task(
+            human,
+            entry,
+            &selected.binding,
+            &selected.id,
+            &selected.revision,
+        )?;
+        let target: SessionKey = serde_json::from_value(result["target"].clone())?;
+        if armed.get(&(target, human)) == Some(&selected.id) {
+            armed.remove(&(target, human));
+        }
+        return Ok(result);
+    }
+    if let Some(args) = args.strip_prefix("internal ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        return match fields.as_slice() {
+            ["list", after] => {
+                let mut page =
+                    app.shared
+                        .store
+                        .internal_pending_page(human, entry, after.parse()?)?;
+                let binding = page["binding"].clone();
+                let entry_binding = page["entry_binding"].clone();
+                for item in page["items"]
+                    .as_array_mut()
+                    .context("Missing internal items")?
+                {
+                    let id = item["id"]
+                        .as_str()
+                        .context("Missing internal identity")?
+                        .to_owned();
+                    item["binding"] = binding.clone();
+                    item["entry_binding"] = entry_binding.clone();
+                    if item["kind"] == "native" {
+                        let detail = detail_scoped(app, human, entry, &id, 0, true).await?;
+                        for key in [
+                            "kind",
+                            "revision",
+                            "state",
+                            "actionable",
+                            "question_index",
+                            "question_total",
+                            "capture_version",
+                            "target",
+                            "audio_track",
+                        ] {
+                            item[key] = detail[key].clone();
+                        }
+                    } else if item["kind"] == "task" {
+                        let task = app.shared.store.internal_human_task(human, entry, &id)?;
+                        for key in ["revision", "state", "can_dismiss"] {
+                            item[key] = task[key].clone();
+                        }
+                    }
+                }
+                Ok(page)
+            }
+            ["request", id, offset] | ["request", id, offset, _] if id.len() <= 64 => {
+                let value = detail_scoped(app, human, entry, id, offset.parse()?, true).await?;
+                if fields.len() == 4 && value["revision"] != fields[3] {
+                    bail!("Internal request changed; read its current proposal");
+                }
+                Ok(value)
+            }
+            ["task", id, offset] | ["task", id, offset, _] if id.len() <= 64 => {
+                let mut value = app.shared.store.internal_human_task(human, entry, id)?;
+                if fields.len() == 4 && value["revision"] != fields[3] {
+                    bail!("Internal action changed; read its current text");
+                }
+                let offset: usize = offset.parse()?;
+                let body = value["body"].as_str().context("Missing task text")?;
+                let length = body.chars().count();
+                if offset > length {
+                    bail!("Invalid task offset");
+                }
+                let part: String = body.chars().skip(offset).take(4000).collect();
+                let end = offset + part.chars().count();
+                value["body"] = json!(part);
+                value["offset"] = json!(offset);
+                value["next_offset"] = if end < length {
+                    json!(end)
+                } else {
+                    Value::Null
+                };
+                let target: SessionKey = serde_json::from_value(value["target"].clone())?;
+                value["label"] = json!(super::routing::label(&app.shared, target));
+                Ok(value)
+            }
+            ["receipt", id, rev] if id.len() <= 64 && rev.len() == 64 => {
+                retained_receipt(app, human, entry, id, rev, false)
+            }
+            _ => bail!("Expected internal list CURSOR, request ID OFFSET or decide JSON"),
+        };
+    }
+    if let Some(raw) = args.strip_prefix("tasks dismiss ") {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Dismissal {
+            binding: String,
+            id: String,
+            revision: String,
+        }
+        let selected: Dismissal = serde_json::from_str(raw)?;
+        let mut armed = app.shared.pending_task_text.lock().await;
+        let result = app.shared.store.conversation_dismiss_human_task(
+            human,
+            entry,
+            &selected.binding,
+            &selected.id,
+            &selected.revision,
+        )?;
+        let target: SessionKey = serde_json::from_value(result["target"].clone())?;
+        if armed.get(&(target, human)) == Some(&selected.id) {
+            armed.remove(&(target, human));
+        }
+        return Ok(result);
+    }
+    if let Some(args) = args.strip_prefix("tasks ") {
+        let fields: Vec<_> = args.split_whitespace().collect();
+        return match fields.as_slice() {
+            ["list", after] => {
+                let mut value =
+                    app.shared
+                        .store
+                        .conversation_human_tasks(human, entry, after.parse()?)?;
+                for item in value["items"].as_array_mut().context("Missing task list")? {
+                    let key: SessionKey = serde_json::from_value(item["target"].clone())?;
+                    item["label"] = json!(if key == entry {
+                        "Conversation".into()
+                    } else {
+                        format!("#{}", super::routing::label(&app.shared, key))
+                    });
+                }
+                Ok(value)
+            }
+            ["detail", id, offset] | ["detail", id, offset, _] if id.len() <= 64 => {
+                let mut value = app.shared.store.conversation_human_task(human, entry, id)?;
+                if fields.len() == 4 && value["revision"] != fields[3] {
+                    bail!("Task changed; read its current action");
+                }
+                let body = value["body"].as_str().context("Missing task action")?;
+                let offset: usize = offset.parse()?;
+                let length = body.chars().count();
+                if offset > length {
+                    bail!("Invalid task text offset");
+                }
+                let text: String = body.chars().skip(offset).take(4000).collect();
+                let end = offset + text.chars().count();
+                value["body"] = json!(text);
+                value["offset"] = json!(offset);
+                value["next_offset"] = if end < length {
+                    json!(end)
+                } else {
+                    Value::Null
+                };
+                let key: SessionKey = serde_json::from_value(value["target"].clone())?;
+                value["label"] = json!(if key == entry {
+                    "Conversation".into()
+                } else {
+                    format!("#{}", super::routing::label(&app.shared, key))
+                });
+                Ok(value)
+            }
+            _ => bail!("Expected tasks list CURSOR or detail ID OFFSET [REVISION]"),
+        };
+    }
     if let Some(raw) = args.strip_prefix("decide ") {
         let decision: Decision = serde_json::from_str(raw)?;
         return decide(app, human, entry, decision, None, None).await;
@@ -463,6 +673,17 @@ async fn decide(
     source_input: Option<&str>,
     interpretation: Option<(&str, &CancellationToken, bool)>,
 ) -> Result<Value> {
+    decide_scoped(app, human, entry, d, source_input, interpretation, false).await
+}
+async fn decide_scoped(
+    app: &App,
+    human: i64,
+    entry: SessionKey,
+    d: Decision,
+    source_input: Option<&str>,
+    interpretation: Option<(&str, &CancellationToken, bool)>,
+    internal: bool,
+) -> Result<Value> {
     if d.id.len() > 64 || d.revision.len() != 64 {
         bail!("Invalid request decision identity");
     }
@@ -470,13 +691,13 @@ async fn decide(
     if let Some(result) = already_recorded(app, human, entry, &d, &action, source_input)? {
         return Ok(result);
     }
-    let snapshot = app.shared.store.conversation_request(human, entry, &d.id)?;
+    let snapshot = request_snapshot(app, human, entry, &d.id, internal)?;
     if snapshot.item.state != "pending" {
         bail!("Native request no longer pending");
     }
     if snapshot.item.source["kind"] == "question" {
         let mut guard = app.shared.pending_questions.lock().await;
-        let snapshot = app.shared.store.conversation_request(human, entry, &d.id)?;
+        let snapshot = request_snapshot(app, human, entry, &d.id, internal)?;
         if let Some(result) = already_recorded(app, human, entry, &d, &action, source_input)? {
             return Ok(result);
         }
@@ -557,7 +778,7 @@ async fn decide(
         }
     } else if snapshot.item.source["kind"] == "approval" {
         let mut guard = app.shared.pending_approvals.lock().await;
-        let snapshot = app.shared.store.conversation_request(human, entry, &d.id)?;
+        let snapshot = request_snapshot(app, human, entry, &d.id, internal)?;
         if let Some(result) = already_recorded(app, human, entry, &d, &action, source_input)? {
             return Ok(result);
         }

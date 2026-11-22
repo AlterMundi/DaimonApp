@@ -1,0 +1,512 @@
+"""Exact acoustic span/provider correlation with no ASR, Sol, hardware or network."""
+import asyncio
+from pathlib import Path
+import sys
+import unittest
+from types import SimpleNamespace
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from dashboard.native_acoustic import NativeAcousticSession, NativeAutomaticAcousticSession
+from dashboard.native_foreground import ForegroundUnavailable
+
+
+class Stream:
+    activity_mode='manual'
+    def __init__(self):self.events=[]
+    def activity_start(self):self.events.append(('start',))
+    def append(self,pcm):self.events.append(('pcm',pcm))
+    def activity_end(self):self.events.append(('end',))
+
+
+class Bridge:
+    def __init__(self):self.stream=Stream();self.captures=[];self.transcripts=[]
+    def capture(self,*args,**kwargs):self.captures.append(args)
+    def transcript(self,*args):self.transcripts.append(args)
+
+
+class Detector:
+    def __init__(self):self.frames=[];self.boundaries=[]
+    async def feed(self,pcm):self.frames.append(pcm)
+    async def boundary(self,value):self.boundaries.append(value)
+
+
+class Acoustic(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bridge=Bridge();self.detector=Detector();self.events=[]
+        async def notify(value):self.events.append(value)
+        self.session=NativeAcousticSession(self.bridge,self.detector,{'a'*32:'b'*64},notify)
+    def activity(self,end,generation=1,*,onset=None,endpoint=False):
+        value={'type':'activity','audio_bytes':end,'generation':generation,'speaking':not endpoint}
+        if onset:value['onset']={'audio_bytes':onset,'generation':generation}
+        if endpoint:value['endpoint']={'audio_bytes':end,'generation':generation,'probability':.9,'authority':'analysis_only'}
+        return value
+    async def ack(self,kind,offset):
+        await self.session.provider_event({'type':'voice_activity','activity':kind,'audio_offset':offset,
+                                           'source':'provider_manual_activity_ack'})
+    async def first(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(6400,endpoint=True))
+    async def test_qwen_commit_ack_matches_only_the_owned_exact_range(self):
+        self.bridge.stream.model='qwen-audio-3.0-realtime-plus'
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(6400,endpoint=True))
+        event={'type':'input_committed','source':'provider_qwen_commit','item_id':'qwen-item',
+               'stream_start':0,'stream_end':6400}
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({**event,'stream_end':6398})
+        self.assertFalse(self.session.provider.end_ack)
+        await self.session.provider_event(event)
+        self.assertTrue(self.session.provider.start_ack);self.assertTrue(self.session.provider.end_ack)
+        await self.session.provider_event({'type':'input_transcript','text':'Hola.','finished':True})
+        self.assertEqual(self.bridge.transcripts[0][1],'Hola.')
+
+    async def test_empty_committed_qwen_original_stays_unconfirmed_and_next_phrase_continues(self):
+        self.bridge.stream.model='qwen-audio-3.0-realtime-plus'
+        for n,text in enumerate(['  ', 'Next exact phrase.']):
+            start=n*6400
+            await self.session.feed(b'\1\0'*1600)
+            await self.session.activity(self.activity(start+3200,generation=n+1,onset=start+3072))
+            await self.session.feed(b'\0\0'*1600)
+            await self.session.activity(self.activity(start+6400,generation=n+1,endpoint=True))
+            await self.session.provider_event({'type':'input_committed','source':'provider_qwen_commit',
+                'item_id':str(n),'stream_start':start,'stream_end':start+6400})
+            await self.session.provider_event({'type':'input_transcript','text':text,'finished':True})
+            self.assertIsNone(self.session.provider)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[1][0],'Next exact phrase.')])
+        reviewed=[e for e in self.events if e['type']=='input_uninterpreted']
+        self.assertEqual(reviewed,[{'type':'input_uninterpreted','id':self.bridge.captures[0][0],
+                                  'reason':'empty_final_transcript'}])
+        self.assertFalse(self.session.closed)
+
+    async def test_first_local_marker_freezes_each_phrase_question_scope(self):
+        selected={'c'*32:'d'*64}
+        await self.session.marker(640,selected)
+        selected['c'*32]='e'*64
+        await self.first()
+        self.assertEqual(self.bridge.captures[0][2],{'c'*32:'d'*64})
+        with self.assertRaises(ForegroundUnavailable):await self.session.marker(640,{})
+
+    async def test_manual_failure_before_onset_retains_exact_audio_once(self):
+        pcm=b'\1\0'*1600
+        await self.session.feed(pcm)
+        await self.session.close(recover_unassigned=True)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1:],(pcm,{'a'*32:'b'*64}))
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.bridge.stream.events,[])
+
+    async def test_manual_explicit_close_without_onset_does_not_invent_a_phrase(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.close()
+        self.assertEqual(self.bridge.captures,[])
+
+    async def test_manual_unknown_tail_uses_three_bounded_chunks_and_earlier_scope(self):
+        await self.session.marker(640,{'c'*32:'d'*64})
+        for _ in range(300):
+            await self.session.feed(bytes(32000))
+            self.session.analyzed=self.session.captured
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual([len(c[1]) for c in self.bridge.captures],
+                         [120*32000,120*32000,60*32000])
+        self.assertTrue(all(c[2]=={'a'*32:'b'*64} for c in self.bridge.captures))
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_extended_session_stops_at_resident_bound_and_retains_unknown_tail(self):
+        self.session.max_bytes=600*32000
+        for _ in range(298):
+            await self.session.feed(bytes(32000));self.session.analyzed=self.session.captured
+        with self.assertRaisesRegex(ForegroundUnavailable,'capacity reached'):
+            await self.session.feed(bytes(32000))
+        self.assertEqual(len(self.session.pcm),299*32000)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(sum(len(c[1]) for c in self.bridge.captures),299*32000)
+        self.assertEqual(len(self.bridge.captures),3)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_extended_unsent_spans_are_bounded_independently_from_analysis(self):
+        self.session.max_bytes=600*32000
+        await self.first()  # Keep the previous provider confirmation pending.
+        await self.session.feed(b'\2\0'*16000)
+        await self.session.activity(self.activity(self.session.captured,2,onset=self.session.captured))
+        start=self.session.local.start
+        for _ in range(8):
+            try:await self.session.feed(b'\3\0'*16000)
+            except ForegroundUnavailable:break
+            await self.session.activity(self.activity(self.session.captured,2))
+        else:self.fail('Unsent speech must not accumulate behind an earlier confirmation')
+        captured=self.session.captured
+        self.assertLessEqual(captured-start,8*32000)
+        self.assertLessEqual(captured-self.session.analyzed,32000)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertEqual(len(self.bridge.captures[-1][1]),captured-start)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_manual_failure_retains_only_unassigned_tail_after_completed_span(self):
+        await self.first()
+        await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        tail=b'\2\0'*1600
+        await self.session.feed(tail)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual([c[1] for c in self.bridge.captures],
+                         [b'\1\0'*1600+b'\0\0'*1600,tail])
+        self.assertEqual(len(self.bridge.transcripts),1)
+
+    async def test_endpoint_ends_native_audio_before_transcript_or_integrator(self):
+        await self.first()
+        self.assertEqual([v[0] for v in self.bridge.stream.events],['start','pcm','pcm','end'])
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.bridge.captures[0][1],b'\1\0'*1600+b'\0\0'*1600)
+        self.assertEqual(self.events[-1]['type'],'phrase_end')
+        self.assertEqual(self.detector.boundaries,[{'generation':1,'audio_bytes':6400}])
+        await self.session.provider_event({'type':'input_transcript','text':'Hello'})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'Hello')])
+
+    async def test_renewal_preserves_wholly_unsent_span_and_preroll_on_successor(self):
+        await self.first()
+        self.session.renewal_hold=True
+        await self.session.feed(b'\2\0'*1600)
+        await self.session.activity(self.activity(9600,2,onset=9600))
+        await self.session.feed(b'\3\0'*1600)
+        await self.session.activity(self.activity(12800,2,endpoint=True))
+        queued=self.session.spans[1]
+        ident=queued.ident;expected=self.bridge.captures[-1][1]
+        self.assertEqual(self.session.unsent_originals(),{ident})
+        self.assertFalse(self.session.handover_ready(),'Already transmitted input still owns its final transcript')
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertIsNone(self.session.provider)
+        self.assertTrue(self.session.handover_ready())
+        self.assertEqual(self.session.sent,6400,'Queued speech must not leak onto the old socket')
+        successor=Stream()
+        async with self.session.lock:
+            self.session.replace_stream(successor)
+            await self.session._pump()
+        self.assertEqual(self.session.spans[0].ident,ident)
+        self.assertEqual(b''.join(e[1] for e in successor.events if e[0]=='pcm'),expected)
+        self.assertEqual(self.session.provider_offset_base,6400)
+        self.assertEqual(len(self.bridge.captures),2,'Replacement cannot create another original')
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts[-1],(ident,'Second'))
+
+    async def test_handover_retires_only_completed_prefix_and_keeps_logical_tail_offsets(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        await self.ack('ACTIVITY_END','0.2s')
+        tail=b'\2\0'*1600
+        await self.session.feed(tail);await self.session.activity(self.activity(9600))
+        successor=Stream()
+        async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm_base,6400)
+        self.assertEqual(self.session.pcm,tail)
+        self.assertEqual(self.session.captured,9600)
+        await self.session.feed(b'\3\0'*1600)
+        await self.session.activity(self.activity(12800,2,onset=12800))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(16000,2,endpoint=True))
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.3s')
+        self.assertEqual(self.bridge.captures[-1][1],tail+b'\3\0'*1600+b'\0\0'*1600)
+        self.assertEqual(self.session.sent,16000)
+        async with self.session.lock:self.session.replace_stream(Stream())
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.captured,16000)
+        # The logical pilot bound cannot be reset by freeing a buffer.
+        self.session.max_bytes=16000
+        with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0\0')
+
+    async def test_extended_retirement_waits_for_confirmed_idle_original_and_keeps_tail(self):
+        s=self.session;s.max_bytes=600*32000
+        s.pcm=bytearray(b'\1\0'*3200+b'\2\0'*1600)
+        s.boundary=6400;s.analyzed=9600;s.sent=6400;s.provider_offset_base=1234
+        completion=asyncio.get_running_loop().create_future()
+        capture=SimpleNamespace(phase='foreground',completion=completion)
+        s.bridge=SimpleNamespace(captures={'original':capture})
+        await s.retire_completed_prefix()
+        self.assertEqual(s.pcm_base,0,'Pending durable completion retains its PCM')
+        completion.set_result(None)
+        capture.phase='unconfirmed'
+        await s.retire_completed_prefix();self.assertEqual(s.pcm_base,0)
+        capture.phase='foreground';s.local=object()
+        await s.retire_completed_prefix();self.assertEqual(s.pcm_base,0)
+        s.local=None
+        await s.retire_completed_prefix()
+        self.assertEqual(s.pcm,bytearray(b'\2\0'*1600))
+        self.assertEqual((s.pcm_base,s.captured,s.analyzed,s.sent,s.provider_offset_base),
+                         (6400,9600,9600,6400,1234))
+        await s.retire_completed_prefix()
+        self.assertEqual(s.captured,9600,'Repeated retirement cannot reset logical clocks')
+    async def test_early_noninterim_text_is_not_committed_as_a_whole_original(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.ack('ACTIVITY_START','0s')
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'Unexpected early segment'})
+        await self.session.close()
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.bridge.captures[0][1],b'\1\0'*1600)
+
+    async def test_owned_acoustic_silence_ends_native_activity_without_a_semantic_claim(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.ack('ACTIVITY_START','0s')
+        await self.session.feed(b'\0\0'*1600)
+        value=self.activity(6400)
+        value.update(speaking=False,endpoint={'generation':1,'audio_bytes':6400,
+                                            'authority':'acoustic_silence','silence_millis':1600})
+        await self.session.activity(value)
+        self.assertEqual(self.bridge.stream.events[-1],('end',))
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.transcripts,[],'A silence boundary is not a transcript or admission')
+
+    async def test_end_ack_before_transcript_has_the_same_source(self):
+        await self.first();await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'input_transcript','text':'Original'})
+        self.assertEqual(self.bridge.transcripts[0][0],self.bridge.captures[0][0])
+    async def test_fragmented_transcript_waits_for_explicit_end_and_matching_audio_ack(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'First part ','finished':False})
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts,[],'Audio end alone cannot commit a partial transcript')
+        await self.session.provider_event({'type':'input_transcript','text':'and the rest.','finished':False})
+        self.assertEqual(self.events[-1]['text'],'First part and the rest.')
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'input_transcript','text':'','finished':True})
+        self.assertEqual(self.bridge.transcripts,[(self.bridge.captures[0][0],'First part and the rest.')])
+    async def test_explicit_fragments_can_arrive_while_captured_speech_is_still_open(self):
+        await self.session.feed(b'\1\0'*1600)
+        await self.session.activity(self.activity(3200,onset=3072));await self.ack('ACTIVITY_START','0s')
+        await self.session.provider_event({'type':'input_transcript','text':'Early ','finished':False})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.feed(b'\0\0'*1600);await self.session.activity(self.activity(6400,endpoint=True))
+        await self.session.provider_event({'type':'input_transcript','text':'ending.','finished':True})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.ack('ACTIVITY_END','0.2s')
+        self.assertEqual(self.bridge.transcripts[0][1],'Early ending.')
+    async def test_fragmented_transcript_cannot_finish_on_an_unmarked_fragment_or_exceed_bound(self):
+        await self.first()
+        await self.session.provider_event({'type':'input_transcript','text':'Partial','finished':False})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'not a final signal'})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'x'*16000,'finished':False})
+        self.assertEqual(self.bridge.transcripts,[])
+    async def test_next_phrase_is_retained_in_order_while_prior_transcript_is_pending(self):
+        await self.first()
+        # Hold the provider's first final interpretation while local analysis
+        # and the next phrase continue. These are separate queue boundaries.
+        self.session.provider.ended_at-=2
+        await self.session.feed(b'\2\0'*1600)
+        await self.session.activity(self.activity(9600,2,onset=9472))
+        await self.session.feed(b'\0\0'*1600)
+        await self.session.activity(self.activity(12800,2,endpoint=True))
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertEqual(sum(v[0]=='start' for v in self.bridge.stream.events),1)
+        observed=self.session.diagnostics()
+        self.assertEqual(observed['peak_analysis_audio_ms'],100)
+        self.assertEqual(observed['peak_unsent_span_audio_ms'],200)
+        self.assertGreaterEqual(observed['peak_input_confirmation_wait_ms'],2000)
+        await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'First'})
+        self.assertEqual(sum(v[0]=='start' for v in self.bridge.stream.events),2)
+        await self.ack('ACTIVITY_START','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'Second'})
+        await self.ack('ACTIVITY_END','0.4s')
+        self.assertEqual([v[1] for v in self.bridge.transcripts],['First','Second'])
+        self.assertEqual(self.bridge.captures[1][1],b'\2\0'*1600+b'\0\0'*1600)
+        await self.session.close()
+        self.assertEqual(self.session.diagnostics()['peak_unsent_span_audio_ms'],200,
+                         'Cleanup must retain scalar peaks after retiring PCM/spans')
+    async def test_caption_and_output_completion_do_not_finalize_a_source(self):
+        await self.first()
+        for kind in ('input_caption','output_transcript','generation_complete','turn_complete'):
+            await self.session.provider_event({'type':kind,'text':'Not a human final'})
+        self.assertEqual(self.bridge.transcripts,[])
+    async def test_missing_final_transcript_enters_review_without_model_polling(self):
+        self.session.transcript_timeout=.02
+        await self.first();await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'turn_complete'})
+        await asyncio.wait_for(self.session.watch_transcripts(),.3)
+        review=self.events[-1]
+        self.assertEqual(review['type'],'review')
+        self.assertEqual(review['id'],self.bridge.captures[0][0])
+        self.assertIn('not confirmed in time',review['message'])
+        self.assertEqual(self.bridge.transcripts,[],'Timeout cannot invent or finalize an interpretation')
+        self.assertEqual(len(self.bridge.captures),1)
+
+    async def test_missing_manual_ack_also_enters_review(self):
+        self.session.transcript_timeout=.02
+        await self.first();await self.session.provider_event({'type':'input_transcript','text':'Exact original'})
+        await asyncio.wait_for(self.session.watch_transcripts(),.3)
+        self.assertEqual(self.events[-1]['type'],'review')
+        self.assertEqual(self.bridge.transcripts,[],'A transcript without matching manual-end ACK remains unconfirmed')
+
+    async def test_confirmed_transcript_retires_its_deadline_and_close_wakes_watch(self):
+        self.session.transcript_timeout=.02
+        await self.first();watch=asyncio.create_task(self.session.watch_transcripts())
+        await self.ack('ACTIVITY_END','0.2s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        await asyncio.sleep(.04)
+        self.assertFalse(watch.done())
+        self.assertFalse(any(v['type']=='review' for v in self.events))
+        await self.session.close();await asyncio.wait_for(watch,.3)
+        self.assertEqual(self.bridge.transcripts[0][1],'Confirmed')
+        self.assertIsNone(self.session.boundary_mismatch)
+
+    async def test_wrong_audio_offset_is_not_attached_to_human_source(self):
+        await self.first()
+        with self.assertRaises(ForegroundUnavailable):await self.ack('ACTIVITY_END','3s')
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(self.session.boundary_mismatch,{'activity':'end',
+            'expected_pcm_bytes':6400,'reported_offset_nanoseconds':3000000000,
+            'sent_pcm_bytes':6400,'provider_input_bytes':None,'span_start':0,'span_end':6400,
+            'start_observed':True,'end_observed':False})
+    async def test_analysis_cannot_send_audio_it_has_not_observed(self):
+        await self.session.feed(b'\1\0'*3200)
+        await self.session.activity(self.activity(3200,onset=3072))
+        self.assertEqual(self.bridge.stream.events[-1],('pcm',b'\1\0'*1600))
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.activity(self.activity(6402))
+    async def test_close_keeps_unanalyzed_tail_and_never_delegates(self):
+        await self.session.feed(b'\1\0'*3200)
+        await self.session.activity(self.activity(3200,onset=3072))
+        await self.session.close()
+        self.assertEqual(self.bridge.captures[0][1],b'\1\0'*3200)
+        self.assertEqual(self.bridge.transcripts,[]);self.assertEqual(self.session.pcm,b'')
+    async def test_falling_analysis_and_activity_queue_have_bounds(self):
+        self.session.max_backlog=2
+        with self.assertRaises(ForegroundUnavailable):await self.session.feed(b'\0'*4)
+        self.assertEqual(self.detector.frames,[])
+
+
+class Automatic(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bridge=Bridge();self.bridge.stream.activity_mode='automatic';self.events=[]
+        async def notify(value):self.events.append(value)
+        self.session=NativeAutomaticAcousticSession(self.bridge,{},notify)
+        self.pcm=bytes(range(256))*250
+        for offset in range(0,len(self.pcm),32000):await self.session.feed(self.pcm[offset:offset+32000])
+    async def vad(self,kind,offset):
+        return await self.session.provider_event({'type':'voice_activity','activity':kind,
+            'audio_offset':offset,'source':'provider_automatic_activity'})
+    async def test_successor_rebases_provider_offsets_without_replaying_pcm(self):
+        successor=Stream();successor.activity_mode='automatic'
+        with self.assertRaises(ForegroundUnavailable):self.session.replace_stream(successor)
+        await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Previous'})
+        await self.vad('ACTIVITY_END','2s')
+        async with self.session.lock:self.session.replace_stream(successor)
+        self.assertEqual(self.session.pcm,b'')
+        self.assertEqual(self.session.pcm_base,64000)
+        pcm=b'\3\0'*16000
+        await self.session.feed(pcm)
+        await self.vad('ACTIVITY_START','0.25s');await self.vad('ACTIVITY_END','1s')
+        await self.session.provider_event({'type':'input_transcript','text':'Next'})
+        self.assertEqual(self.bridge.captures[-1][1],pcm)
+        self.assertEqual(successor.events,[('pcm',pcm)])
+        self.assertEqual(self.session.provider_offset_base,64000)
+        self.assertEqual(self.session.boundary,96000)
+        await self.session.close()
+        self.assertEqual(self.session.captured,96000)
+    async def test_continuous_noise_and_early_final_keep_exact_original_and_event_identity(self):
+        ident=await self.vad('ACTIVITY_START','0.75s')
+        self.assertEqual(self.bridge.pending_acoustic,ident)
+        self.assertEqual(await self.session.provider_event({'type':'input_transcript','text':'Seven'}),ident)
+        self.assertEqual(self.bridge.transcripts,[])
+        self.assertEqual(await self.vad('ACTIVITY_END','1.5s'),ident)
+        self.assertEqual(self.bridge.captures,[(ident,self.pcm[8000:48000],{})])
+        self.assertEqual(self.bridge.transcripts,[(ident,'Seven')])
+        self.assertIsNone(self.bridge.pending_acoustic)
+        self.assertEqual([v['type'] for v in self.events],['capture_started','phrase_end','input_interpreted'])
+        self.assertEqual(b''.join(v[1] for v in self.bridge.stream.events),self.pcm)
+        self.assertTrue(all(v[0]=='pcm' for v in self.bridge.stream.events),'No manual activity or duplicate PCM')
+    async def test_transcript_without_start_retains_unassigned_audio_but_never_interprets_it(self):
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'Uncorrelated speech'})
+        await self.session.close();await self.session.close()
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_failed_connection_keeps_pcm_before_any_provider_onset_or_transcript(self):
+        await self.session.close(recover_unassigned=True)
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),1)
+        self.assertEqual(self.bridge.captures[0][1],self.pcm)
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_failed_connection_keeps_only_tail_after_completed_original(self):
+        first=await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Confirmed'})
+        await self.vad('ACTIVITY_END','1.5s')
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(self.bridge.captures[0],(first,self.pcm[8000:48000],{}))
+        self.assertEqual(self.bridge.captures[1][1],self.pcm[48000:])
+        self.assertEqual(self.bridge.transcripts,[(first,'Confirmed')])
+
+    async def test_unassigned_recovery_keeps_existing_chunk_bound_and_question_scope(self):
+        original=self.pcm
+        for _ in range(120):await self.session.feed(bytes(32000))
+        await self.session.close(recover_unassigned=True)
+        self.assertEqual(len(self.bridge.captures),2)
+        self.assertTrue(all(len(c[1])<=120*32000 and c[2]=={} for c in self.bridge.captures))
+        self.assertEqual(b''.join(c[1] for c in self.bridge.captures),original+bytes(120*32000))
+        self.assertEqual(self.bridge.transcripts,[])
+
+    async def test_final_after_end_and_fragmentation(self):
+        ident=await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Se','finished':False})
+        await self.vad('ACTIVITY_END','1.5s')
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'turn_complete'})
+        self.assertEqual(self.bridge.transcripts,[])
+        await self.session.provider_event({'type':'input_transcript','text':'ven','finished':True})
+        self.assertEqual(self.bridge.transcripts,[(ident,'Seven')])
+    async def test_ambiguous_next_start_retains_closed_original_and_new_tail(self):
+        first=await self.vad('ACTIVITY_START','0.75s')
+        await self.vad('ACTIVITY_END','1.2s')
+        with self.assertRaises(ForegroundUnavailable):await self.vad('ACTIVITY_START','1.75s')
+        second=self.session.local.ident
+        await self.session.close()
+        self.assertEqual(self.bridge.captures,[(first,self.pcm[8000:38400],{}),(second,self.pcm[40000:],{})])
+        self.assertEqual(self.bridge.transcripts,[])
+    async def test_invalid_offsets_and_sources_cannot_close_an_original(self):
+        await self.vad('ACTIVITY_START','0.75s')
+        for offset in ('0.75s','0.5s','2.1s','1.00001s'):
+            with self.assertRaises(ForegroundUnavailable):await self.vad('ACTIVITY_END',offset)
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'voice_activity','activity':'ACTIVITY_END',
+                'audio_offset':'1.5s','source':'provider_manual_activity_ack'})
+        self.assertEqual(self.bridge.captures,[])
+        await self.session.close()
+        self.assertEqual(self.bridge.captures[0][1],self.pcm[8000:])
+    async def test_frozen_marker_and_second_source_do_not_reuse_current_scope(self):
+        await self.session.marker(64100,{'c'*32:'d'*64})
+        await self.session.feed(bytes(32000))
+        ident=await self.vad('ACTIVITY_START','2.1s')
+        await self.vad('ACTIVITY_END','2.8s')
+        await self.session.provider_event({'type':'input_transcript','text':'Correction'})
+        self.assertEqual(self.bridge.captures[0][2],{'c'*32:'d'*64})
+        self.assertEqual(self.bridge.transcripts,[(ident,'Correction')])
+    async def test_fragmented_transcript_cannot_be_finished_by_unmarked_text(self):
+        await self.vad('ACTIVITY_START','0.75s')
+        await self.session.provider_event({'type':'input_transcript','text':'Se','finished':False})
+        with self.assertRaises(ForegroundUnavailable):
+            await self.session.provider_event({'type':'input_transcript','text':'ven'})
+        self.assertEqual(self.bridge.transcripts,[])
+
+
+if __name__=='__main__':unittest.main()

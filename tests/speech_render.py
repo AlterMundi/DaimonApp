@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Actual HTTP/filesystem/process contracts; all voices and credentials are fake."""
 import concurrent.futures
+from contextlib import nullcontext
+import base64
 import hashlib
 import http.server
 import importlib.util
@@ -40,6 +42,7 @@ class Render(unittest.TestCase):
         self.declared_size = None
         self.data = wav()
         self.hold = False
+        self.stream_hold = False
         self.synced = []
         self.synced_on_request = []
         self.entered, self.release = threading.Event(), threading.Event()
@@ -60,7 +63,13 @@ class Render(unittest.TestCase):
                     self.send_header('Location', '/must-not-follow')
                 self.end_headers()
                 try:
-                    self.wfile.write(owner.data)
+                    if owner.stream_hold:
+                        boundary=owner.data.index(b'\n\n')+2
+                        self.wfile.write(owner.data[:boundary]);self.wfile.flush()
+                        owner.release.wait(timeout=5)
+                        self.wfile.write(owner.data[boundary:])
+                    else:
+                        self.wfile.write(owner.data)
                 except (ConnectionError, OSError):
                     pass
 
@@ -92,6 +101,136 @@ class Render(unittest.TestCase):
 
     def render(self, request=None):
         return speech.render(self.binding, self.request if request is None else request)
+
+    def qwen_route(self):
+        self.environment.write_text('synthetic-qwen-key\n')
+        self.config.update(provider='qwen-tts', model='qwen-audio-3.0-tts-plus',
+                           voice='longanlingxin', credential_file=str(self.environment),
+                           instruction='Warm and natural; preserve Spanish and English.')
+        del self.config['env_file']
+        self.binding.write_text(json.dumps(self.config))
+
+    def test_markdown_projection_preserves_labels_code_and_canonical_digest(self):
+        original = '**Real Time**: [Android](https://example.org/path). Use `git status`. 🎸'
+        request = {**self.request, 'text': original}
+        result = self.render(request)
+        self.assertIn('Real Time: Android. Use git status. 🎸'.encode(), self.calls[0][2])
+        self.assertNotIn(b'**Real Time**', self.calls[0][2])
+        self.assertNotIn(b'https://example.org', self.calls[0][2])
+        self.assertEqual(result['text_sha256'], hashlib.sha256(original.encode()).hexdigest())
+        self.assertTrue(self.render(request)['cache_hit'])
+        self.assertEqual(len(self.calls), 1)
+        # Identical spoken text with different original markup is not a cache
+        # collision against the source digest or an invented original.
+        plain = {**request, 'text': 'Real Time: Android. Use git status. 🎸'}
+        self.assertNotEqual(self.render(plain)['render_id'], result['render_id'])
+        self.assertEqual(speech.spoken_markdown('<https://example.org/a>', 'es-US'), 'enlace')
+        self.assertEqual(speech.spoken_markdown('<https://example.org/a>', 'en-US'), 'link')
+        self.assertEqual(speech.spoken_markdown('![Diagram](https://example.org/image)', 'en-US'), 'Diagram')
+        self.assertEqual(speech.spoken_markdown('```sh\ngit status --short\n```', 'en-US'), 'git status --short')
+        self.assertEqual(speech.spoken_markdown('2 * 3 = 6', 'en-US'), '2 * 3 = 6')
+
+    def test_spoken_topic_labels_preserve_code_and_issue_references(self):
+        self.assertEqual(speech.spoken_markdown('Novedades de **#Realtime** y #H.B. Guitar.', 'es-US'),
+                         'Novedades de Realtime y H.B. Guitar.')
+        self.assertEqual(speech.spoken_markdown('Use C#; see #123 and `#Realtime`.', 'en-US'),
+                         'Use C#; see #123 and #Realtime.')
+
+    def test_qwen_ssml_breaks_are_structured_and_escape_source_markup(self):
+        import xml.etree.ElementTree as ET
+        self.qwen_route();self.config['ssml_breaks']=True
+        self.binding.write_text(json.dumps(self.config))
+        original='Novedades desde Realtime\n\nUse `git status` & keep <break time="9s"/> literal.'
+        expected='<speak>Novedades desde Realtime<break time="450ms"/>Use git status &amp; keep &lt;break time=&quot;9s&quot;/&gt; literal.</speak>'
+        self.content_type='application/json';url='https://synthetic.oss-cn-beijing.aliyuncs.com/synthetic.wav'
+        self.data=json.dumps({'output':{'audio':{'url':url}}}).encode()
+        audio=io.BytesIO()
+        with wave.open(audio,'wb') as output:
+            output.setparams((1,2,24000,0,'NONE','not compressed'));output.writeframes(b'\x01\x00'*2400)
+        original_fetch=speech.fetch
+        def fetch(request, timeout, **kwargs):
+            return audio.getvalue() if request.full_url==url else original_fetch(request,timeout,**kwargs)
+        with mock.patch.object(speech,'fetch',side_effect=fetch):
+            result=self.render({**self.request,'text':original})
+        self.assertEqual(json.loads(self.calls[-1][2])['input']['text'],expected)
+        self.assertIs(json.loads(self.calls[-1][2])['input'].get('enable_ssml'),True,
+                      'Provider must parse our escaped SSML instead of treating it as plain text')
+        tree=ET.fromstring(expected);self.assertEqual(len(tree.findall('break')),1)
+        self.assertEqual(result['text_sha256'],hashlib.sha256(original.encode()).hexdigest())
+        self.content_type='text/event-stream';self.data=self.stream_data();frames=[]
+        speech.stream_render(self.binding,{**self.request,'text':original},frames.append)
+        self.assertEqual(json.loads(self.calls[-1][2])['input']['text'],expected)
+        self.assertIs(json.loads(self.calls[-1][2])['input'].get('enable_ssml'),True,
+                      'Provider must parse our escaped SSML instead of treating it as plain text')
+        self.assertEqual(frames[-1]['type'],'end')
+        self.config['ssml_breaks']='true';self.binding.write_text(json.dumps(self.config))
+        with self.assertRaises(speech.RenderError):speech.route(self.binding)
+
+    def test_streamed_markdown_uses_label_not_url_and_retains_source_hash(self):
+        self.qwen_route();self.content_type='text/event-stream';self.data=self.stream_data();frames=[]
+        original='Read **Real Time** and [the source](https://example.org/).'
+        speech.stream_render(self.binding,{**self.request,'text':original},frames.append)
+        self.assertEqual(json.loads(self.calls[0][2])['input']['text'],'Read Real Time and the source.')
+        state=json.loads(next((self.root/'cache').glob('*/state.json')).read_text())
+        self.assertEqual(state['text_sha256'],hashlib.sha256(original.encode()).hexdigest())
+
+    def test_qwen_http_identity_download_and_cache(self):
+        self.qwen_route()
+        url = 'https://speech.oss-ap-southeast-1.aliyuncs.com/sample.wav?signature=fake'
+        self.content_type = 'application/json'
+        self.data = json.dumps({'output': {'audio': {'url': url.replace('https:', 'http:')}}}).encode()
+        original = speech.fetch
+        downloads = []
+        audio = io.BytesIO()
+        with wave.open(audio, 'wb') as w:
+            w.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+            w.writeframes(b'\x01\x00' * 2400)
+        def fetch(request, timeout, **kw):
+            if request.full_url == url:
+                downloads.append(request)
+                return audio.getvalue()
+            return original(request, timeout, **kw)
+        with mock.patch.object(speech, 'fetch', side_effect=fetch):
+            first = self.render()
+            self.assertTrue(self.render()['cache_hit'])
+            self.assertEqual(first['format']['sample_rate_hz'], 24000)
+            self.assertEqual(len(self.calls), 1)
+            self.assertEqual(self.calls[0][1], 'Bearer synthetic-qwen-key')
+            body = json.loads(self.calls[0][2])
+            self.assertEqual(body['input']['text'], self.request['text'])
+            self.assertEqual(body['model'], self.config['model'])
+            self.assertIsNone(downloads[0].get_header('Authorization'))
+            self.config['instruction'] = 'A different style'
+            self.binding.write_text(json.dumps(self.config))
+            self.assertNotEqual(self.render()['render_id'], first['render_id'])
+
+    def test_qwen_rejects_untrusted_download_and_preserves_uncertainty(self):
+        self.qwen_route()
+        self.content_type = 'application/json'
+        self.data = json.dumps({'output': {'audio': {'url': 'http://127.0.0.1/private'}}}).encode()
+        with self.assertRaisesRegex(speech.RenderError, 'unconfirmed'):
+            self.render()
+        with self.assertRaisesRegex(speech.RenderError, 'retained-render-outcome'):
+            self.render()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_qwen_requires_explicit_endpoint_and_normalizes_only_known_stream_header(self):
+        self.qwen_route()
+        del self.config['endpoint']
+        self.binding.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(speech.RenderError, 'endpoint'):
+            self.render()
+        self.assertEqual(len(self.calls), 0)
+        import struct
+        data = (b'RIFF\xbf\xff\xff\x7fWAVEfmt \x10\x00\x00\x00'
+                + struct.pack('<HHIIHH', 1, 1, 24000, 48000, 2, 16)
+                + b'data\x9b\xff\xff\x7f' + b'\x00\x00' * 2400)
+        self.assertEqual(speech.audio_info(speech.qwen_wav(data))['audio_millis'], 100)
+        with self.assertRaises(speech.RenderError):
+            speech.qwen_wav(data[:-1])
+        corrupt = data[:40] + struct.pack('<I', 5000) + data[44:]
+        with self.assertRaises(speech.RenderError):
+            speech.qwen_wav(corrupt)
 
     def age_audio(self, result, seconds):
         path=Path(result['audio_path']).parent/'state.json'
@@ -166,7 +305,8 @@ class Render(unittest.TestCase):
                 before=len(self.calls)
                 # The next maximum-sized render needs8MiB of free capacity in
                 # a16MiB budget; protected occupancy must trigger eligible GC.
-                result=speech.prune_audio({**self.config,'audio_cache_max_bytes':speech.MAX_AUDIO})
+                with speech.lock(protected/'.lock') if phase=='intent' else nullcontext():
+                    result=speech.prune_audio({**self.config,'audio_cache_max_bytes':speech.MAX_AUDIO})
                 self.assertFalse(Path(first['audio_path']).exists())
                 self.assertEqual(json.loads((protected/'state.json').read_text())['phase'],phase)
                 self.assertEqual(result['accounted_audio_bytes'],speech.MAX_AUDIO)
@@ -233,6 +373,8 @@ class Render(unittest.TestCase):
         self.assertFalse(list((self.root / 'cache').rglob('audio.wav')))
 
     def test_killed_request_retains_intent_without_reissuing(self):
+        self.config['audio_cache_max_bytes']=speech.MAX_AUDIO
+        self.binding.write_text(json.dumps(self.config))
         self.hold = True
         child = subprocess.Popen([sys.executable, str(SCRIPT), '--binding', str(self.binding)],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -241,6 +383,7 @@ class Render(unittest.TestCase):
             child.stdin.write(json.dumps(self.request))
             child.stdin.close()
             self.assertTrue(self.entered.wait(timeout=3))
+            self.assertEqual(speech.audio_occupancy(self.root/'cache'),speech.MAX_AUDIO)
             child.kill()
             child.wait(timeout=3)
             state = next((self.root / 'cache').rglob('state.json'))
@@ -248,6 +391,17 @@ class Render(unittest.TestCase):
             with self.assertRaisesRegex(speech.RenderError, 'retained-render-outcome'):
                 self.render()
             self.assertEqual(len(self.calls), 1)
+            self.assertEqual(speech.audio_occupancy(self.root/'cache'),0,
+                             'An orphan intent cannot permanently reserve its maximum audio size')
+            self.hold=False;self.release.set()
+            fresh=self.render({**self.request,'scope':'distinct-after-interruption'})
+            self.assertTrue(Path(fresh['audio_path']).exists())
+            self.assertEqual(len(self.calls),2,'Only the distinct new source may synthesize')
+            self.assertEqual(json.loads(state.read_text())['phase'],'intent',
+                             'Uncertain original outcome remains retained')
+            with self.assertRaisesRegex(speech.RenderError,'retained-render-outcome'):
+                self.render()
+            self.assertEqual(len(self.calls),2)
         finally:
             if child.poll() is None:
                 child.kill()
@@ -309,6 +463,137 @@ class Render(unittest.TestCase):
             self.render()
         self.assertEqual(len(self.calls), 1)
         self.assertFalse(list((self.root / 'cache').rglob('audio.wav')))
+
+    def stream_data(self, *, terminal=True):
+        raw=b'ID3synthetic encoded audio'
+        frames=[{'output':{'audio':{'data':base64.b64encode(raw).decode()}}}]
+        if terminal:frames.append({'output':{'finish_reason':'stop'}})
+        return b''.join(b'data: '+json.dumps(v).encode()+b'\n\n' for v in frames)
+
+    def test_sse_microchunks_keep_first_audio_and_batch_later_integrity_checks(self):
+        parts=[bytes([n%256])*256 for n in range(500)]
+        events=[{'output':{'audio':{'data':base64.b64encode(part).decode()}}} for part in parts]
+        events.append({'output':{'finish_reason':'stop'}})
+        wire=b''.join(b'data: '+json.dumps(event).encode()+b'\n\n' for event in events)
+        response=io.BytesIO(wire);chunks=speech.sse_audio(response)
+        first=next(chunks)
+        self.assertEqual(first,parts[0]);self.assertLess(response.tell(),len(wire),'First audio stays progressive')
+        rest=list(chunks);self.assertEqual(b''.join([first]+rest),b''.join(parts))
+        self.assertLess(len(rest),8,'Hundreds of tiny provider frames cannot require hundreds of HTTP authority checks')
+        self.assertTrue(all(len(chunk)==32768 for chunk in rest[:-1]))
+        self.assertLessEqual(len(rest[-1]),32768)
+
+    def test_stream_intent_cache_integrity_and_retention(self):
+        self.qwen_route();self.content_type='text/event-stream';self.data=self.stream_data();frames=[]
+        speech.stream_render(self.binding,self.request,frames.append)
+        self.assertEqual([v['type'] for v in frames],['audio','end'])
+        self.assertEqual(frames[0]['sequence'],0)
+        self.assertEqual(len(self.calls),1)
+        audio=next((self.root/'cache').glob('*/audio.mp3'))
+        self.assertEqual(speech.audio_occupancy(audio.parent.parent),audio.stat().st_size)
+        again=[];speech.stream_render(self.binding,self.request,again.append)
+        self.assertEqual(again,frames);self.assertEqual(len(self.calls),1)
+        result=speech.prune_audio(speech.route(self.binding),now=time.time()+4000)
+        self.assertGreater(result['removed_audio_bytes'],0);self.assertFalse(audio.exists())
+        speech.stream_render(self.binding,self.request,lambda frame:None)
+        self.assertEqual(len(self.calls),2,'Known expired media may be explicitly synthesized again')
+        audio.write_bytes(b'changed')
+        with self.assertRaisesRegex(speech.RenderError,'integrity'):
+            speech.stream_render(self.binding,self.request,lambda frame:None)
+        self.assertEqual(len(self.calls),2)
+
+    def test_timed_stream_cache_and_cumulative_snapshots(self):
+        self.qwen_route();self.content_type='text/event-stream'
+        request={**self.request,'text':'Hola. Mundo 🌱','timing':True}
+        sentence={'index':0,'words':[
+            {'text':'Hola','begin_index':0,'end_index':1,'begin_time':0,'end_time':200},
+            {'text':'.Mundo','begin_index':1,'end_index':2,'begin_time':200,'end_time':600},
+            {'text':' 🌱','begin_index':2,'end_index':3,'begin_time':700,'end_time':900}]}
+        snapshots=[{'output':{'type':'sentence-synthesis','sentence':sentence}},
+                   {'output':{'type':'sentence-end','sentence':sentence}}]
+        data=self.stream_data()
+        self.data=data.replace(b'data: {"output": {"finish_reason": "stop"}}',
+            b''.join(b'data: '+json.dumps(v).encode()+b'\n\n' for v in snapshots)+b'data: {"output": {"finish_reason": "stop"}}')
+        frames=[];speech.stream_render(self.binding,request,frames.append)
+        self.assertEqual(json.loads(self.calls[0][2])['input']['word_timestamp_enabled'],True)
+        self.assertEqual(frames[-1]['alignment']['words'],[[0,4,0,200],[6,11,200,600],[12,13,700,900]])
+        again=[];speech.stream_render(self.binding,request,again.append)
+        self.assertEqual(frames,again);self.assertEqual(len(self.calls),1)
+        self.assertLess(len(next((self.root/'cache').glob('*/state.json')).read_bytes()),32768)
+        # Timing failure is metadata unavailability, not permission to synthesize again.
+        self.data=self.stream_data(terminal=False)
+        other={**request,'scope':'timed-uncertain'}
+        with self.assertRaisesRegex(speech.RenderError,'unconfirmed'):
+            speech.stream_render(self.binding,other,lambda frame:None)
+        with self.assertRaisesRegex(speech.RenderError,'no-automatic-retry'):
+            speech.stream_render(self.binding,other,lambda frame:None)
+        self.assertEqual(len(self.calls),2)
+
+    def test_timing_cannot_repeat_existing_untimed_outcome(self):
+        self.qwen_route();self.content_type='text/event-stream';self.data=self.stream_data()
+        speech.stream_render(self.binding,self.request,lambda frame:None)
+        frames=[];speech.stream_render(self.binding,{**self.request,'timing':True},frames.append)
+        self.assertEqual(len(self.calls),1);self.assertNotIn('alignment',frames[-1])
+        self.data=self.stream_data(terminal=False);other={**self.request,'scope':'untimed-uncertain'}
+        with self.assertRaises(speech.RenderError):speech.stream_render(self.binding,other,lambda frame:None)
+        with self.assertRaisesRegex(speech.RenderError,'no-automatic-retry'):
+            speech.stream_render(self.binding,{**other,'timing':True},lambda frame:None)
+        self.assertEqual(len(self.calls),2)
+
+    def test_word_alignment_refuses_unknown_text_or_clocks(self):
+        word={'text':'Hola','begin_time':0,'end_time':200}
+        self.assertIsNotNone(speech.word_alignment('Hola',[{'index':0,'words':[word]}]))
+        for sentences in ([],[None],[{'index':1,'words':[word]}],
+                [{'index':0,'words':[dict(word,text='Otro')]}],
+                [{'index':0,'words':[dict(word,end_time=0)]}],
+                [{'index':0,'words':[dict(word,begin_time=True)]}],
+                [{'index':0,'words':[word,dict(word,begin_time=0)]}],
+                [{'index':0,'words':[word]*513}]):
+            self.assertIsNone(speech.word_alignment('Hola',sentences))
+        self.assertIsNone(speech.word_alignment('Hola mundo',[{'index':0,'words':[word]}]))
+
+    def test_word_alignment_does_not_drop_command_operators(self):
+        for text, tokens in [('x != y',['x','=','y']),('!foo',['foo']),('x ?: y',['x','y']),('. foo',['foo'])]:
+            words=[{'text':v,'begin_time':n*200,'end_time':(n+1)*200}for n,v in enumerate(tokens)]
+            self.assertIsNone(speech.word_alignment(text,[{'index':0,'words':words}]),text)
+        for text in ['3.0','foo.bar','x!=y','!foo']:
+            words=[{'text':text,'begin_time':0,'end_time':200}]
+            self.assertIsNotNone(speech.word_alignment(text,[{'index':0,'words':words}]),text)
+
+    def test_canonical_word_mapping_preserves_prefix_and_unicode(self):
+        sys.path.insert(0,str(SCRIPT.parents[1]))
+        from dashboard.speech import canonical_word_alignment
+        source={'text':'Hola 🌱','offset':240}
+        payload={'text':'Novedades desde Alfa. Hola 🌱'}
+        alignment=speech.word_alignment(payload['text'],[{'index':0,'words':[
+            {'text':'Novedades desde Alfa.','begin_time':0,'end_time':200},
+            {'text':'Hola','begin_time':200,'end_time':400},
+            {'text':'🌱','begin_time':400,'end_time':600}]}])
+        self.assertEqual(canonical_word_alignment(source,payload,'es-US',alignment),
+            {'offset':240,'words':[[240,244,200,400],[245,246,400,600]]})
+        for text in ('**Hola** 🌱','[Hola](https://example.test) 🌱','#Alfa Hola 🌱'):
+            self.assertIsNone(canonical_word_alignment({'text':text,'offset':0},{'text':text},'es-US',alignment))
+        self.assertIsNone(canonical_word_alignment(source,payload,'es-US',{'text_sha256':'0'*64,'words':[]}))
+
+    def test_stream_uncertainty_and_disconnected_reader_never_retry(self):
+        self.qwen_route();self.content_type='text/event-stream';self.data=self.stream_data(terminal=False)
+        with self.assertRaisesRegex(speech.RenderError,'unconfirmed'):
+            speech.stream_render(self.binding,self.request,lambda frame:None)
+        with self.assertRaisesRegex(speech.RenderError,'no-automatic-retry'):
+            speech.stream_render(self.binding,self.request,lambda frame:None)
+        self.assertEqual(len(self.calls),1)
+        self.data=self.stream_data()
+        def disconnected(frame):raise BrokenPipeError()
+        with self.assertRaisesRegex(speech.RenderError,'unconfirmed'):
+            speech.stream_render(self.binding,{**self.request,'scope':'another-explicit-source'},disconnected)
+        self.assertEqual(len(self.calls),2)
+
+    def test_stream_parser_multiline_bounds_and_terminal(self):
+        raw=self.stream_data().replace(b'data: {"output":',b'data: {\ndata: "output":')
+        self.assertEqual(list(speech.sse_audio(io.BytesIO(raw))),[b'ID3synthetic encoded audio'])
+        for data in (b'data: '+b'x'*(1024*1024+1),self.stream_data(terminal=False),b'data: {"output":{"audio":{"data":"!!"}}}\n\n'):
+            with self.assertRaises((ValueError,speech.RenderError)):
+                list(speech.sse_audio(io.BytesIO(data)))
 
 
 if __name__ == '__main__':

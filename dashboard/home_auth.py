@@ -21,7 +21,10 @@ def identity_response(origin, token):
             raise ValueError('Shared sign-in required')
         if response.status != 200 or len(body) > 8192:
             raise OSError('Shared authentication unavailable')
-        return json.loads(body)
+        try:
+            return json.loads(body)
+        except (ValueError, UnicodeError):
+            raise OSError('Shared identity response unavailable') from None
     finally:
         connection.close()
 
@@ -45,7 +48,31 @@ class HomeAuth:
         self.artifacts = self.selected.get('artifact_access', False)
         if type(self.artifacts) is not bool:
             raise ValueError('Explicit shared conversation file permission required')
+        self.alerts = self.selected.get('alerts_access', False)
+        if type(self.alerts) is not bool:
+            raise ValueError('Explicit shared conversation alert permission required')
+        self.coordination = self.selected.get('coordination_access', False)
+        if type(self.coordination) is not bool:
+            raise ValueError('Explicit shared conversation budget permission required')
+        self.coordination_control = self.selected.get('coordination_control_access', False)
+        if type(self.coordination_control) is not bool:
+            raise ValueError('Explicit shared human budget-control permission required')
+        self.workspace = self.selected.get('workspace_access', False)
+        if type(self.workspace) is not bool:
+            raise ValueError('Explicit shared session workspace permission required')
+        self.native_decisions = self.selected.get('native_decision_access', False)
+        if type(self.native_decisions) is not bool:
+            raise ValueError('Explicit shared native-request decision permission required')
+        self.coordination = self.coordination or self.coordination_control
         self.binding = config['origin'] + config.get('prefix', '/sessions')
+        if 'application_id' in config:
+            self.binding += ':' + config['application_id']
+        self.human_ref = self.selected.get('human_ref', 'human:telegram:' + str(provider.human))
+        if (not isinstance(self.human_ref, str) or not re.fullmatch(r'human:[A-Za-z0-9:._/-]{1,240}', self.human_ref)
+                or 'application_id' in config and 'human_ref' not in self.selected):
+            raise ValueError('Select the exact registered shared human reference')
+        if 'application_id' in config:
+            self.binding += ':' + self.human_ref
 
     def authenticate(self, request):
         if not self.enabled or request.headers.get('host') != self.host:
@@ -55,19 +82,23 @@ class HomeAuth:
             return None
         value = identity_response(self.origin, token)
         if not isinstance(value, dict) or not isinstance(value.get('actor'), dict):
-            raise ValueError('Shared identity unavailable')
+            raise OSError('Shared identity unavailable')
         actor = value.get('actor', {})
         expires = value.get('expires')
-        if type(expires) is not int or expires <= time.time():
+        if type(expires) is not int:
+            raise OSError('Shared identity expiry unavailable')
+        if expires <= time.time():
             raise ValueError('Shared sign-in expired')
         human = self.provider.human
         if (value.get('contract') != 'dm.home-session/v1' or value.get('origin') != self.origin
-                or actor.get('kind') != 'human' or actor.get('ref') != 'human:telegram:' + str(human)
+                or actor.get('kind') != 'human' or actor.get('ref') != self.human_ref
                 or not self.provider.authorized(human)):
             raise PermissionError('This account has no receiving conversation grant')
         if request.url.path != '/api/interaction/access' and not permitted(
-                request.method, request.url.path, 'interaction_only', self.artifacts):
+                request.method, request.url.path, 'interaction_only', self.artifacts, self.alerts, self.coordination, self.coordination_control, self.workspace, self.native_decisions):
             raise PermissionError('Shared browser access is limited to the conversation')
-        return {'human': human, 'scope': 'interaction_only', 'artifact_access': self.artifacts, 'expires': expires,
+        return {'human': human, 'scope': 'interaction_only', 'artifact_access': self.artifacts,
+                'alerts_access': self.alerts, 'workspace_access': self.workspace, 'coordination_access': self.coordination,
+                'coordination_control_access': self.coordination_control, 'native_decision_access': self.native_decisions, 'expires': expires,
                 'csrf': hashlib.sha256(('shared-conversation:' + self.binding + ':' + token).encode()).hexdigest(),
                 'label': actor.get('name', 'Your conversation'), 'presentation_profile': 'simple'}

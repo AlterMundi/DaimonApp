@@ -1,0 +1,16 @@
+/* Receiving adaptation: preserve Home appearance roles and explicit Save/Use. */
+:root{--paper:var(--dm-surface,#fcf4e9);--surface:var(--paper);--ink:var(--dm-text,#422f64);--accent:var(--dm-accent,#77538f)}
+.stage.world{background:var(--paper);color:var(--ink)}
+.keep-actions{display:grid;grid-template-columns:1fr 1fr}#save,#use-avatar{grid-column:auto;font:500 20px ArchivePixel;min-height:48px;padding:7px;min-width:0;width:100%}#use-avatar{background:#fcf4e9;border:2px solid var(--ink)}#save-state{grid-column:1/-1}.topright #cancel-workshop{font:500 18px ArchivePixel;min-height:44px;padding:8px}
+@media(max-width:720px){.topright{gap:4px;flex-direction:column;align-items:stretch}#versions{font-size:16px;padding:5px;min-height:38px;transform:none}.topright #cancel-workshop{font-size:16px;min-height:32px;padding:2px}.masthead{height:114px}.stage .keep-actions #save,#use-avatar{font-size:18px;padding:6px;min-height:44px}.stage .world-label .name-button{font-size:19px}}
+/* Use the receiving surface as the material base in both light and dark homes. */
+:root{--lav:color-mix(in srgb,var(--paper) 72%,#c5afe5);--rose:color-mix(in srgb,var(--paper) 70%,#e59ac5);--line:var(--ink)}
+body{background-color:color-mix(in srgb,var(--paper) 80%,#b6c3de)}
+.brand{color:var(--ink);text-shadow:2px 2px var(--paper)}
+.application-bar,.wardrobe-tile[aria-pressed=true],#save,.trial-tools #surprise{background:var(--rose)}
+#tabs button,.wardrobe-tile,.prop-controls,.history button{background:var(--lav)}
+#tabs [aria-selected=true]{background:var(--paper)}
+button:hover{background:var(--rose)}
+
+/* Account actions retain readable receiving materials in dark appearances. */
+#use-avatar,#cancel-workshop{background:var(--paper);color:var(--ink)}

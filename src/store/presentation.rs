@@ -8,9 +8,12 @@ use tokio_util::sync::CancellationToken;
 // Worker progress is visible only through the return selection retained when
 // this native item was first observed. Later direct input never widens its scope.
 const NATIVE_VISIBILITY: &str = "t.from_user_id=?3 AND s.creator_user_id=?3 AND
-    ((t.session_id=?2 AND m.native_thread=?4 AND m.phase IN ('commentary','final_answer'))
+    ((t.session_id=?2 AND m.native_thread=?4 AND (m.phase IN ('commentary','final_answer') OR m.phase IS NULL))
       OR (EXISTS(SELECT 1 FROM conversation_inputs c
-          WHERE c.id=m.presentation_input AND c.human_id=?3 AND c.session_id=?2)
+          WHERE c.id=m.presentation_input AND c.human_id=?3 AND c.session_id=?2
+          AND NOT (EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id WHERE json_extract(i.doc,'$.local_turn')=m.local_turn)
+            AND NOT EXISTS(SELECT 1 FROM interaction_instructions i WHERE json_extract(i.doc,'$.local_turn')=m.local_turn
+                AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id))))
           AND (m.phase='commentary' OR (m.phase='final_answer' AND EXISTS(
               SELECT 1 FROM interaction_goal_controls g WHERE g.human_id=?3
               AND g.phase='acknowledged' AND json_extract(g.doc,'$.worker_execution.local')=m.local_turn
@@ -27,6 +30,57 @@ fn companion_hint_key(native: &str, physical: &str) -> String {
 
 fn digest(value: &Value) -> String {
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+}
+
+/// Observe only new, already-visible worker commentary. The frozen native
+/// presentation selection remains the audience; this never scans private work.
+pub(super) fn heartbeat_progress_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    start: i64,
+    after: i64,
+) -> Result<(i64, Vec<super::heartbeat::producer::Offer>)> {
+    let (session, native) = entry_on(conn, human, entry)?;
+    let rows = |cursor| -> Result<Vec<i64>> {
+        let mut q = conn.prepare(&format!(
+            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
+             JOIN sessions s ON s.id=t.session_id WHERE m.rowid>?1 AND t.session_id<>?2
+             AND m.phase='commentary' AND {NATIVE_VISIBILITY}
+             ORDER BY m.rowid LIMIT 4"
+        ))?;
+        Ok(
+            q.query_map(params![cursor, session, human, native], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?,
+        )
+    };
+    let mut selected = rows(after)?;
+    if selected.is_empty() && after > start {
+        selected = rows(start)?;
+    }
+    let next = selected.last().copied().unwrap_or(start);
+    let mut offers = Vec::new();
+    for row in selected {
+        let id = format!("native:{row}");
+        let Some(source) = source_on(conn, human, entry, &id)? else {
+            continue;
+        };
+        if source["kind"] != "worker_progress" || source["native_binding_current"] != true {
+            continue;
+        }
+        let revision = source["revision"]
+            .as_str()
+            .context("Progress revision missing")?
+            .to_owned();
+        offers.push(super::heartbeat::producer::Offer {
+            key: format!("progress:{id}"), revision: revision.clone(),
+            evidence: json!({"source":format!("progress:{id}"),"revision":revision,
+                "reason":"worker_progress_available","target":source["target"],
+                "reader":{"operation":"conversation_part","arguments":{"source":id,"revision":revision,"offset":0}},
+                "meaning":"Already visible attributed worker commentary, not task completion, new human authority or permission to resume work."}),
+        });
+    }
+    Ok((next, offers))
 }
 
 pub(super) fn entry_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<(i64, String)> {
@@ -53,7 +107,196 @@ pub(super) fn entry_binding(
     Ok(digest(&json!([human, entry, session, generation])))
 }
 
+pub(super) fn live_speech_bounds(id: &str) -> Option<(usize, usize)> {
+    let fields: Vec<_> = id.split(':').collect();
+    if fields.len() != 6
+        || fields[0] != "live"
+        || fields[1..3].iter().any(|v| {
+            v.is_empty()
+                || v.len() > 128
+                || !v
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+        })
+        || fields[5].len() != 64
+        || !fields[5]
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    {
+        return None;
+    }
+    let start = fields[3].parse::<usize>().ok()?;
+    let end = fields[4].parse::<usize>().ok()?;
+    (fields[3] == start.to_string()
+        && fields[4] == end.to_string()
+        && end > start
+        && end - start <= 640
+        && end <= 65536)
+        .then_some((start, end))
+}
+
 impl Store {
+    /// A native lifecycle event owns this ephemeral producer, including later goal turns.
+    pub fn start_response_draft(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        local: i64,
+        thread: &str,
+        physical: &str,
+    ) -> Result<bool> {
+        if [thread, physical]
+            .iter()
+            .any(|v| v.is_empty() || v.len() > 128)
+        {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = entry_on(&conn, human, entry)?;
+        if native != thread {
+            return Ok(false);
+        }
+        if !super::workflows::native_visible_on(&conn, local)? {
+            return Ok(false);
+        }
+        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN native_collections n ON n.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)",params![local,session,human,thread],|r|r.get(0))?;
+        if !valid {
+            return Ok(false);
+        }
+        let value = json!({"local":local,"thread":thread,"turn":physical,"generation":entry_binding(&conn,human,entry,session)?,"item":null,"text":null});
+        conn.execute("INSERT INTO bot_state(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("interaction-response-draft:{session}"),value.to_string()])?;
+        Ok(true)
+    }
+
+    /// One bounded replaceable display snapshot per conversation, not an answer journal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn interaction_response_draft(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        local: i64,
+        thread: &str,
+        physical: &str,
+        item: &str,
+        text: &str,
+        started: bool,
+        completed: bool,
+    ) -> Result<bool> {
+        if [thread, physical, item]
+            .iter()
+            .any(|v| v.is_empty() || v.len() > 128)
+            || text.len() > 64 * 1024
+        {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = entry_on(&conn, human, entry)?;
+        if native != thread {
+            return Ok(false);
+        }
+        if !super::workflows::native_visible_on(&conn, local)? {
+            return Ok(false);
+        }
+        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)
+            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages WHERE native_thread=?4 AND native_turn=?5 AND item_id=?6)",params![local,session,human,thread,physical,item],|r|r.get(0))?;
+        if !valid {
+            return Ok(false);
+        }
+        let key = format!("interaction-response-draft:{session}");
+        let previous: Option<String> = conn
+            .query_row("SELECT value FROM bot_state WHERE key=?", [&key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let Some(previous) = previous.and_then(|v| serde_json::from_str::<Value>(&v).ok()) else {
+            return Ok(false);
+        };
+        let generation = entry_binding(&conn, human, entry, session)?;
+        if previous["local"] != local
+            || previous["thread"] != thread
+            || previous["turn"] != physical
+            || previous["generation"] != generation
+        {
+            return Ok(false);
+        }
+        if started {
+            if previous["item"] == item {
+                return Ok(false);
+            }
+            let value = json!({"local":local,"thread":thread,"turn":physical,"generation":generation,"item":item,"text":null,"closed":false});
+            conn.execute(
+                "UPDATE bot_state SET value=?2 WHERE key=?1",
+                params![key, value.to_string()],
+            )?;
+            return Ok(true);
+        }
+        if previous["item"] != item || previous["closed"] == true {
+            return Ok(false);
+        }
+        if completed {
+            if previous["item"] == item {
+                conn.execute(
+                    "UPDATE bot_state SET value=json_set(value,'$.text',NULL,'$.closed',json('true')) WHERE key=?1",
+                    [&key],
+                )?;
+            }
+            return Ok(false);
+        }
+        if text.trim().is_empty() {
+            return Ok(false);
+        }
+        let now = Utc::now().timestamp_millis();
+        if previous["item"] == item
+            && previous["at_millis"]
+                .as_i64()
+                .is_some_and(|t| now.saturating_sub(t) < 200)
+        {
+            return Ok(false);
+        }
+        let mut visible = text.split("\n<daimon-").next().unwrap_or("").trim_end();
+        // Withhold an unfinished trailer prefix, without changing the canonical item.
+        if let Some((body, last)) = visible.rsplit_once('\n')
+            && !last.is_empty()
+            && "<daimon-result>".starts_with(last)
+        {
+            visible = body.trim_end();
+        }
+        let observed = if previous["item"] == item {
+            previous["observed_at"].as_str().map(str::to_owned)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let value = json!({"local":local,"thread":thread,"turn":physical,"generation":generation,"item":item,"text":visible,"at_millis":now,"observed_at":observed});
+        conn.execute(
+            "UPDATE bot_state SET value=?2 WHERE key=?1",
+            params![key, value.to_string()],
+        )?;
+        Ok(true)
+    }
+
+    pub fn clear_response_draft(
+        &self,
+        local: i64,
+        physical: &str,
+        item: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let key = format!(
+            "interaction-response-draft:{}",
+            conn.query_row("SELECT session_id FROM turns WHERE id=?1", [local], |r| r
+                .get::<_, i64>(
+                0
+            ))?
+        );
+        if let Some(item) = item {
+            conn.execute("UPDATE bot_state SET value=json_set(value,'$.text',NULL,'$.closed',json('true')) WHERE key=?1 AND json_extract(value,'$.local')=?2 AND json_extract(value,'$.turn')=?3 AND json_extract(value,'$.item')=?4",params![key,local,physical,item])?;
+        } else {
+            conn.execute("DELETE FROM bot_state WHERE key=?1 AND json_extract(value,'$.local')=?2 AND json_extract(value,'$.turn')=?3",params![key,local,physical])?;
+        }
+        Ok(())
+    }
+
     /// Register at most one cosmetic choice for an actual current execution.
     /// A recorded final source cannot acquire a hint later and change revision.
     #[allow(clippy::too_many_arguments)]
@@ -223,6 +466,63 @@ impl Store {
         after_matrix: Option<i64>,
         before: bool,
     ) -> Result<Value> {
+        self.interaction_presentation_page_messages(
+            human,
+            entry,
+            after_delivery,
+            after_native,
+            after_matrix,
+            None,
+            None,
+            before,
+        )
+    }
+
+    /// Owner/current-entry canonical Matrix sources; no live Matrix I/O or second journal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn interaction_presentation_page_messages(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        after_delivery: i64,
+        after_native: i64,
+        after_matrix: Option<i64>,
+        after_inbox: Option<i64>,
+        after_response: Option<i64>,
+        before: bool,
+    ) -> Result<Value> {
+        self.interaction_presentation_page_publications(
+            human,
+            entry,
+            after_delivery,
+            after_native,
+            after_matrix,
+            after_inbox,
+            after_response,
+            None,
+            before,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn interaction_presentation_page_publications(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        after_delivery: i64,
+        after_native: i64,
+        after_matrix: Option<i64>,
+        after_inbox: Option<i64>,
+        after_response: Option<i64>,
+        after_publication: Option<i64>,
+        before: bool,
+    ) -> Result<Value> {
+        if after_publication.is_some_and(|v| v < 0) {
+            bail!("Invalid publication cursor");
+        }
+        if after_inbox.is_some_and(|v| v < 0) || after_response.is_some_and(|v| v < 0) {
+            bail!("Invalid Matrix source cursor");
+        }
         if after_delivery < 0 || after_native < 0 || after_matrix.is_some_and(|v| v < 0) {
             bail!("Invalid presentation cursor");
         }
@@ -240,7 +540,7 @@ impl Store {
             after_native
         };
         let mut stmt = conn.prepare(&format!(
-            "SELECT d.rowid,d.id FROM interaction_deliveries d
+            "SELECT d.rowid,d.id FROM interaction_public_deliveries d
             JOIN interaction_requests r ON r.id=d.request_id
             JOIN interaction_sources x ON x.id=r.input_id
             JOIN sessions s ON s.id=r.session_id
@@ -285,7 +585,69 @@ impl Store {
         } else {
             vec![]
         };
+        let inbox_rows = |cursor: Option<i64>, responses: bool| -> Result<Vec<(i64, String)>> {
+            let Some(cursor) = cursor else {
+                return Ok(vec![]);
+            };
+            let bound = if before && cursor == 0 {
+                i64::MAX
+            } else {
+                cursor
+            };
+            let sequence = if responses {
+                "COALESCE(CAST(json_extract(handling,'$._presentation_sequence') AS INTEGER),rowid)"
+            } else {
+                "rowid"
+            };
+            let filter = if responses {
+                " AND json_type(handling,'$.intent.text')='text'"
+            } else {
+                ""
+            };
+            let mut query = conn.prepare(&format!("SELECT {sequence},message_id FROM interaction_matrix_inbox WHERE entry_session=?1 AND human_id=?2 AND {sequence}{comparison}?3{filter} ORDER BY {sequence} {order},rowid {order} LIMIT 9"))?;
+            Ok(query
+                .query_map(params![session, human, bound], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        };
+        let inbox = inbox_rows(after_inbox, false)?;
+        let responses = inbox_rows(after_response, true)?;
+        let publications = if let Some(cursor) = after_publication {
+            let bound = if before && cursor == 0 {
+                i64::MAX
+            } else {
+                cursor
+            };
+            let mut q=conn.prepare(&format!("SELECT rowid,publication_id FROM conversation_matrix_publications
+                WHERE human_id=?1 AND entry_session=?2 AND rowid{comparison}?3 ORDER BY rowid {order} LIMIT 9"))?;
+            q.query_map(params![human, session, bound], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
         let mut items = Vec::new();
+        for (sequence, id) in publications.iter().take(8) {
+            if let Some(mut source) =
+                source_on(&conn, human, entry, &format!("matrix-publication:{id}"))?
+            {
+                source["sequence"] = json!(sequence);
+                preview(&mut source);
+                items.push(source);
+            }
+        }
+        for (rows, prefix) in [(&inbox, "matrix-inbox"), (&responses, "matrix-response")] {
+            for (sequence, id) in rows.iter().take(8) {
+                if let Some(mut source) = source_on(&conn, human, entry, &format!("{prefix}:{id}"))?
+                {
+                    source["sequence"] = json!(sequence);
+                    preview(&mut source);
+                    items.push(source);
+                }
+            }
+        }
         for (sequence, id) in matrices.iter().take(8) {
             if let Some(mut source) = source_on(&conn, human, entry, &format!("matrix:{id}"))? {
                 source["sequence"] = json!(sequence);
@@ -308,19 +670,126 @@ impl Store {
             }
         }
         let mut result = json!({"schema":"telecodex.presentation-list/v1",
-            "binding":entry_binding(&conn,human,entry,session)?,"items":items,
+            "binding":entry_binding(&conn,human,entry,session)?,"items":items,"can_report_playback":true,"can_report_word_position":true,"can_limit_capture_questions":true,"can_reply_updates":true,
             "cursor":{"delivery":deliveries.iter().take(8).next_back().map_or(after_delivery,|r|r.0),
                       "native":natives.iter().take(8).next_back().copied().unwrap_or(after_native)},
             "newest":{"delivery":deliveries.iter().take(8).map(|r|r.0).max().unwrap_or(0),
                       "native":natives.iter().take(8).copied().max().unwrap_or(0)},
-            "more":deliveries.len()>8 || natives.len()>8 || matrices.len()>8,"playback":"not_observed"});
+            "more":deliveries.len()>8 || natives.len()>8 || matrices.len()>8 || inbox.len()>8 || responses.len()>8 || publications.len()>8,"playback":"not_observed"});
+        let draft:Option<String>=conn.query_row("SELECT b.value FROM bot_state b JOIN turns t ON t.id=json_extract(b.value,'$.local') JOIN native_collections n ON n.local_turn=t.id
+            WHERE b.key=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL
+            AND json_extract(b.value,'$.thread')=?4 AND json_extract(b.value,'$.generation')=?5 AND length(trim(json_extract(b.value,'$.text')))>0
+            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages m WHERE m.native_thread=?4 AND m.native_turn=json_extract(b.value,'$.turn') AND m.item_id=json_extract(b.value,'$.item'))",
+            params![format!("interaction-response-draft:{session}"),session,human,native,result["binding"].as_str()],|r|r.get(0)).optional()?;
+        let draft = draft.and_then(|v| serde_json::from_str::<Value>(&v).ok());
+        result["response_draft"] = match draft {
+            Some(v)
+                if v["local"].as_i64().is_some_and(|local| {
+                    super::workflows::native_visible_on(&conn, local).unwrap_or(false)
+                }) =>
+            {
+                json!({"text":v["text"],"native_turn":v["turn"],"native_item":v["item"],"local_turn":v["local"],"observed_at":v["observed_at"],"provisional":true,"can_listen":false})
+            }
+            _ => Value::Null,
+        };
         if let Some(cursor) = after_matrix {
             result["cursor"]["matrix"] =
                 json!(matrices.iter().take(8).next_back().map_or(cursor, |r| r.0));
             result["newest"]["matrix"] =
                 json!(matrices.iter().take(8).map(|r| r.0).max().unwrap_or(0));
         }
+        for (name, cursor, rows) in [
+            ("inbox", after_inbox, &inbox),
+            ("responses", after_response, &responses),
+            ("publications", after_publication, &publications),
+        ] {
+            if let Some(cursor) = cursor {
+                result["cursor"][name] =
+                    json!(rows.iter().take(8).next_back().map_or(cursor, |r| r.0));
+                result["newest"][name] = json!(rows.iter().take(8).map(|r| r.0).max().unwrap_or(0));
+            }
+        }
         Ok(result)
+    }
+
+    /// Read a frozen spoken prefix, never an answer/action/artifact source.
+    /// The selector carries actual native identity, Unicode bounds and prefix hash.
+    /// It survives confirmation only when that exact canonical prefix agrees.
+    pub fn interaction_live_speech_part(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        revision: &str,
+        offset: usize,
+    ) -> Result<Value> {
+        let fields: Vec<_> = id.split(':').collect();
+        let (start, end) = live_speech_bounds(id).context("Invalid live speech selection")?;
+        if offset < start || offset >= end {
+            bail!("Invalid live speech offset");
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = entry_on(&conn, human, entry)?;
+        let generation = entry_binding(&conn, human, entry, session)?;
+        if revision
+            != format!(
+                "{:x}",
+                Sha256::digest(format!("{generation}:{id}").as_bytes())
+            )
+        {
+            bail!("Live speech binding changed");
+        }
+        // Confirmation wins over a residual snapshot. An earlier item can remain
+        // audible during later work only through its ordinary canonical record.
+        let canonical: Option<i64> = conn.query_row(
+            &format!("SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn JOIN sessions s ON s.id=t.session_id
+                WHERE m.native_thread=?4 AND m.native_turn=?5 AND m.item_id=?6 AND t.session_id=?2 AND {NATIVE_VISIBILITY}"),
+            params![0,session,human,native,fields[1],fields[2]],|r|r.get(0)).optional()?;
+        let text = if let Some(row) = canonical {
+            let source = source_on(&conn, human, entry, &format!("native:{row}"))?
+                .context("Live speech source is internal or retired")?;
+            if source["current"] == false {
+                bail!("Live speech workflow source changed");
+            }
+            source["text"]
+                .as_str()
+                .context("Canonical speech text missing")?
+                .to_owned()
+        } else {
+            let snapshot: Option<String> = conn.query_row(
+                "SELECT b.value FROM bot_state b JOIN turns t ON t.id=json_extract(b.value,'$.local') JOIN native_collections n ON n.local_turn=t.id
+                WHERE b.key=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL
+                AND json_extract(b.value,'$.thread')=?4 AND json_extract(b.value,'$.generation')=?5
+                AND json_extract(b.value,'$.turn')=?6 AND json_extract(b.value,'$.item')=?7 AND COALESCE(json_extract(b.value,'$.closed'),0)=0",
+                params![format!("interaction-response-draft:{session}"),session,human,native,generation,fields[1],fields[2]],|r|r.get(0)).optional()?;
+            let snapshot: Value =
+                serde_json::from_str(&snapshot.context("Live speech source retired")?)?;
+            if !snapshot["local"].as_i64().is_some_and(|local| {
+                super::workflows::native_visible_on(&conn, local).unwrap_or(false)
+            }) {
+                bail!("Live workflow draft source retired");
+            }
+            snapshot["text"]
+                .as_str()
+                .context("Live speech text unavailable")?
+                .to_owned()
+        };
+        let prefix: String = text.chars().take(end).collect();
+        if prefix.chars().count() != end
+            || format!("{:x}", Sha256::digest(prefix.as_bytes())) != fields[5]
+        {
+            bail!("Live speech prefix changed");
+        }
+        let text: String = prefix.chars().skip(offset).collect();
+        if text.trim().is_empty() {
+            bail!("Empty live speech segment");
+        }
+        Ok(
+            json!({"schema":"telecodex.presentation-part/v1","id":id,"revision":revision,
+            "kind":"integrator_live","text":text,"offset":offset,"next_offset":null,
+            "native_turn":fields[1],"native_item":fields[2],"provisional":true,
+            "entry_binding":[human,entry,session,generation],"playback":"not_observed"}),
+        )
     }
 
     /// The revision fences source content, owner/native bindings and relevance.
@@ -378,14 +847,31 @@ pub(super) fn source_on(
     id: &str,
 ) -> Result<Option<Value>> {
     let (entry_session, entry_native) = entry_on(conn, human, entry)?;
-    let mut source = if let Some(matrix) = id.strip_prefix("matrix:") {
+    let mut source = if let Some(publication) = id.strip_prefix("matrix-publication:") {
+        let Some(source) = super::matrix::publication::source_on(conn, human, entry, publication)?
+        else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix-inbox:") {
+        let Some(source) = super::matrix::inbox::source_on(conn, human, entry, matrix)? else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix-response:") {
+        let Some(source) = super::matrix::response::presentation_on(conn, human, entry, matrix)?
+        else {
+            return Ok(None);
+        };
+        source
+    } else if let Some(matrix) = id.strip_prefix("matrix:") {
         let Some(source) = super::matrix::result_on(conn, human, entry, matrix)? else {
             return Ok(None);
         };
         source
     } else if let Some(id) = id.strip_prefix("delivery:") {
         let row:Option<(String,String,Option<String>,String,bool,String)>=conn.query_row(
-            "SELECT d.doc,d.phase,s.codex_thread_id,o.native_thread,s.force_fresh_thread,d.result_id FROM interaction_deliveries d
+            "SELECT d.doc,d.phase,s.codex_thread_id,o.native_thread,s.force_fresh_thread,d.result_id FROM interaction_public_deliveries d
              JOIN interaction_requests r ON r.id=d.request_id JOIN interaction_sources x ON x.id=r.input_id
              JOIN sessions s ON s.id=r.session_id JOIN interaction_results o ON o.id=d.result_id
              WHERE d.id=?1 AND d.human_id=?2 AND r.human_id=?2 AND x.human_id=?2 AND s.creator_user_id=?2
@@ -410,14 +896,15 @@ pub(super) fn source_on(
         let found = conn.query_row(&format!(
             "SELECT m.text,m.native_turn,m.item_id,m.phase,m.observed_at,
              t.session_id=?2 AND m.native_thread=?4,s.chat_id,s.thread_id,
-             s.codex_thread_id IS m.native_thread AND s.force_fresh_thread=0
+             s.codex_thread_id IS m.native_thread AND s.force_fresh_thread=0,t.id
              FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
              JOIN sessions s ON s.id=t.session_id WHERE m.rowid=?1 AND {NATIVE_VISIBILITY}"),
              params![row,entry_session,human,entry_native],|r| {
                 let is_entry:bool=r.get(5)?;
-                let phase:String=r.get(3)?;
+                let phase:Option<String>=r.get(3)?;
+                let phase=phase.as_deref().unwrap_or("final_answer");
                 Ok(json!({"id":id,"kind":if !is_entry {if phase=="commentary" {"worker_progress"} else {"worker_result"}} else if phase=="commentary" {"integrator_progress"} else {"integrator_answer"},
-                    "text":r.get::<_,String>(0)?,"native_turn":r.get::<_,String>(1)?,"native_item":r.get::<_,String>(2)?,"observed_at":r.get::<_,String>(4)?,
+                    "text":r.get::<_,String>(0)?,"native_turn":r.get::<_,String>(1)?,"native_item":r.get::<_,String>(2)?,"local_turn":r.get::<_,i64>(9)?,"observed_at":r.get::<_,String>(4)?,
                     "target":if is_entry {Value::Null} else {json!(SessionKey::new(r.get(6)?,Some(r.get(7)?)))},
                     "current":Value::Null,"correction_pending":Value::Null,"completed":Value::Null,
                     "native_binding_current":r.get::<_,bool>(8)?}))
@@ -431,7 +918,7 @@ pub(super) fn source_on(
     };
     if let Some(delivery) = id.strip_prefix("delivery:") {
         let observed: Option<String> = conn.query_row(
-            "SELECT m.observed_at FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id JOIN interaction_native_messages m ON m.native_thread=r.native_thread AND m.native_turn=r.native_turn AND m.item_id=r.item_id WHERE d.id=?1",
+            "SELECT m.observed_at FROM interaction_public_deliveries d JOIN interaction_results r ON r.id=d.result_id JOIN interaction_native_messages m ON m.native_thread=r.native_thread AND m.native_turn=r.native_turn AND m.item_id=r.item_id WHERE d.id=?1",
             [delivery], |r| r.get(0)).optional()?;
         source["observed_at"] = json!(observed);
     }
@@ -469,6 +956,77 @@ pub(super) fn source_on(
             .optional()?;
         if let Some(raw) = raw {
             source["companion_hint"] = serde_json::from_str(&raw)?;
+        }
+    }
+    if let Some(local) = source["local_turn"].as_i64() {
+        let (marker, return_sources): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT presentation_input,native_return_sources FROM interaction_native_messages WHERE rowid=?1",
+                [source["id"]
+                    .as_str()
+                    .and_then(|s| s.strip_prefix("native:"))
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(0)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or_default();
+        if marker.as_deref() == Some("workflow-internal") {
+            return Ok(None);
+        }
+        if let Some(raw) = marker.as_deref().and_then(|s| {
+            s.strip_prefix("workflow-public-set:")
+                .or_else(|| s.strip_prefix("native-public-set:"))
+        }) {
+            let ids: Vec<String> = serde_json::from_str(raw)?;
+            if ids.is_empty() || ids.len() > 32 {
+                return Ok(None);
+            }
+            source["native_return"] = json!(ids[0]);
+            source["native_returns"] = json!(ids);
+            let workflows: Vec<_> = ids
+                .iter()
+                .filter(|id| !id.starts_with("result:") && !id.starts_with("question:"))
+                .collect();
+            if let Some(first) = workflows.first() {
+                source["workflow_return"] = json!(first);
+                source["workflow_returns"] = json!(workflows);
+            }
+            source["current"] = json!(ids.iter().all(|id| {
+                super::workflows::native_source_current_on(conn, id).unwrap_or(false)
+            }));
+            source["internal_evidence_input"] = json!(true);
+        } else if let Some(id) = marker
+            .as_deref()
+            .and_then(|s| s.strip_prefix("workflow-public:"))
+        {
+            source["workflow_return"] = json!(id);
+            source["current"] =
+                json!(super::workflows::native_source_current_on(conn, id).unwrap_or(false));
+            source["internal_evidence_input"] = json!(true);
+        } else if super::workflows::native_only_on(conn, local)? {
+            // Pre-upgrade/unmarked callback items cannot acquire authority later.
+            return Ok(None);
+        }
+        if source["native_returns"].is_null() {
+            if let Some(raw) = return_sources {
+                let ids: Vec<String> = serde_json::from_str(&raw)?;
+                anyhow::ensure!(
+                    ids.len() <= 32,
+                    "Native return association exceeds its bound"
+                );
+                if !ids.is_empty()
+                    && ids.iter().all(|id| {
+                        super::workflows::native_source_current_on(conn, id).unwrap_or(false)
+                    })
+                {
+                    // Association is frozen at item insertion, never inferred
+                    // from later bindings. Human presentation stays independent:
+                    // stale evidence retires this offer, not the human's message.
+                    source["native_return"] = json!(ids[0]);
+                    source["native_returns"] = json!(ids);
+                }
+            }
         }
     }
     // Canonical native items keep controller metadata. All reader/player views
@@ -512,6 +1070,367 @@ pub(super) fn source_on(
 mod tests {
     use super::*;
     use crate::interaction::{RequestRelation, ReturnRoute, SourceInput, TransportPhase};
+
+    #[test]
+    fn live_speech_prefix_is_exact_scoped_and_survives_only_matching_confirmation() {
+        let (file, store, entry, worker, _, _) = setup();
+        let session = store.get_session(entry).unwrap().unwrap();
+        let local = store
+            .record_turn_started(
+                session.id,
+                &TurnRequest {
+                    session_key: entry,
+                    from_user_id: 100,
+                    prompt: "Discuss".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "entry-native")
+            .unwrap();
+        store.native_collection_started(local, "physical").unwrap();
+        store
+            .start_response_draft(100, entry, local, "entry-native", "physical")
+            .unwrap();
+        store
+            .interaction_response_draft(
+                100,
+                entry,
+                local,
+                "entry-native",
+                "physical",
+                "early",
+                "",
+                true,
+                false,
+            )
+            .unwrap();
+        let text = "Hola Nicolás. Mixed English follows. More text";
+        store
+            .interaction_response_draft(
+                100,
+                entry,
+                local,
+                "entry-native",
+                "physical",
+                "early",
+                text,
+                false,
+                false,
+            )
+            .unwrap();
+        let prefix = "Hola Nicolás. ";
+        let end = prefix.chars().count();
+        let id = format!(
+            "live:physical:early:0:{end}:{:x}",
+            Sha256::digest(prefix.as_bytes())
+        );
+        let binding = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let revision = format!("{:x}", Sha256::digest(format!("{binding}:{id}").as_bytes()));
+        let read = || store.interaction_live_speech_part(100, entry, &id, &revision, 0);
+        let selected = read().unwrap();
+        assert_eq!(selected["text"], prefix);
+        assert_eq!(selected["next_offset"], Value::Null);
+        assert_eq!(selected["kind"], "integrator_live");
+        assert!(
+            store
+                .interaction_presentation_part(100, entry, &id, &revision, 0)
+                .is_err(),
+            "Speech selector cannot become answer/action context"
+        );
+        assert!(
+            store
+                .interaction_live_speech_part(200, entry, &id, &revision, 0)
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_live_speech_part(100, worker.key, &id, &revision, 0)
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_live_speech_part(100, entry, &id, &"0".repeat(64), 0)
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_live_speech_part(100, entry, &id, &revision, end)
+                .is_err()
+        );
+        store
+            .record_native_message(
+                local,
+                "entry-native",
+                "physical",
+                "early",
+                Some("final_answer"),
+                &format!("{text} in the canonical completion."),
+            )
+            .unwrap();
+        store
+            .clear_response_draft(local, "physical", Some("early"))
+            .unwrap();
+        assert_eq!(
+            read().unwrap(),
+            selected,
+            "Append-only confirmation must not interrupt an audible prefix"
+        );
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        assert_eq!(
+            store
+                .interaction_live_speech_part(100, entry, &id, &revision, 0)
+                .unwrap(),
+            selected,
+            "Canonical receipt supports an already prepared prefix after restart"
+        );
+        store
+            .set_session_codex_thread(entry, "replacement-native")
+            .unwrap();
+        assert!(
+            store
+                .interaction_live_speech_part(100, entry, &id, &revision, 0)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn response_draft_is_provisional_owned_bounded_and_retires_on_completion() {
+        let (_file, store, entry, worker, _, _) = setup();
+        let session = store.get_session(entry).unwrap().unwrap();
+        let local = store
+            .record_turn_started(
+                session.id,
+                &TurnRequest {
+                    session_key: entry,
+                    from_user_id: 100,
+                    prompt: "Discuss".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "entry-native")
+            .unwrap();
+        store.native_collection_started(local, "physical").unwrap();
+        store
+            .start_response_draft(100, entry, local, "entry-native", "physical")
+            .unwrap();
+        let begin = |physical: &str, item: &str| {
+            store
+                .interaction_response_draft(
+                    100,
+                    entry,
+                    local,
+                    "entry-native",
+                    physical,
+                    item,
+                    "",
+                    true,
+                    false,
+                )
+                .unwrap()
+        };
+        begin("physical", "A");
+        let write =
+            |human: i64, key: SessionKey, native: &str, physical: &str, item: &str, text: &str| {
+                store.interaction_response_draft(
+                    human, key, local, native, physical, item, text, false, false,
+                )
+            };
+        assert!(!write(100, entry, "worker-native", "physical", "A", "Hidden").unwrap());
+        assert!(!write(100, worker.key, "entry-native", "physical", "A", "Hidden").unwrap());
+        assert!(!write(100, entry, "entry-native", "wrong-turn", "A", "Hidden").unwrap());
+        assert!(write(200, entry, "entry-native", "physical", "A", "Hidden").is_err());
+        assert!(!write(100, entry, "entry-native", "physical", "A", "   ").unwrap());
+        let oversized = "x".repeat(65537);
+        assert!(!write(100, entry, "entry-native", "physical", "A", &oversized).unwrap());
+        assert!(
+            write(
+                100,
+                entry,
+                "entry-native",
+                "physical",
+                "A",
+                "Useful early text.\n<daimon-result>partial"
+            )
+            .unwrap()
+        );
+        let page = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap();
+        assert_eq!(page["response_draft"]["text"], "Useful early text.");
+        assert_eq!(page["response_draft"]["provisional"], true);
+        assert_eq!(page["response_draft"]["local_turn"], local);
+        assert_eq!(page["response_draft"]["can_listen"], false);
+        assert!(
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v["preview"] != "Useful early text.")
+        );
+        assert!(!write(100, entry, "entry-native", "physical", "A", "More text").unwrap());
+        store
+            .record_native_message(
+                local,
+                "entry-native",
+                "physical",
+                "A",
+                Some("final_answer"),
+                "Confirmed different text.",
+            )
+            .unwrap();
+        assert!(
+            store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]
+                .is_null()
+        );
+        assert!(!write(100, entry, "entry-native", "physical", "A", "Late replay").unwrap());
+        begin("physical", "B");
+        assert!(write(100, entry, "entry-native", "physical", "B", "Next draft").unwrap());
+        store
+            .clear_response_draft(local, "physical", Some("unrelated-item"))
+            .unwrap();
+        assert!(
+            !store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]
+                .is_null()
+        );
+        store
+            .clear_response_draft(local, "physical", Some("B"))
+            .unwrap();
+        assert!(
+            store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]
+                .is_null()
+        );
+        begin("physical", "C");
+        assert!(
+            write(
+                100,
+                entry,
+                "entry-native",
+                "physical",
+                "C",
+                "Binding scoped"
+            )
+            .unwrap()
+        );
+        store
+            .start_response_draft(100, entry, local, "entry-native", "physical-2")
+            .unwrap();
+        assert!(
+            !write(
+                100,
+                entry,
+                "entry-native",
+                "physical",
+                "late",
+                "Old physical delta"
+            )
+            .unwrap()
+        );
+        begin("physical-2", "D");
+        assert!(
+            write(
+                100,
+                entry,
+                "entry-native",
+                "physical-2",
+                "D",
+                "Goal continuation draft"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]["text"],
+            "Goal continuation draft"
+        );
+        assert!(
+            !store
+                .interaction_response_draft(
+                    100,
+                    entry,
+                    local,
+                    "entry-native",
+                    "physical-2",
+                    "D",
+                    "",
+                    false,
+                    true
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]
+                .is_null()
+        );
+        assert!(
+            !write(
+                100,
+                entry,
+                "entry-native",
+                "physical-2",
+                "D",
+                "Late after blank completion"
+            )
+            .unwrap()
+        );
+        begin("physical-2", "E");
+        assert!(
+            write(
+                100,
+                entry,
+                "entry-native",
+                "physical-2",
+                "E",
+                "Producer lease"
+            )
+            .unwrap()
+        );
+        store
+            .set_session_codex_thread(entry, "replacement-native")
+            .unwrap();
+        assert!(
+            store
+                .interaction_presentation_list(100, entry, 0, 0)
+                .unwrap()["response_draft"]
+                .is_null()
+        );
+        drop(store);
+        let reopened = Store::open(_file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let conn = reopened.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM bot_state WHERE key LIKE 'interaction-response-draft:%'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
 
     #[test]
     fn companion_choice_is_bounded_owned_and_immutable_before_final_source() {
@@ -666,6 +1585,7 @@ mod tests {
         let (instruction, _) = store
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "1".into(),
@@ -741,6 +1661,12 @@ mod tests {
     #[test]
     fn worker_progress_keeps_capture_scope_across_direct_switch_and_reobservation() {
         let (_file, store, entry, _, instruction, _) = setup();
+        store
+            .save_bot_state(
+                "telegram_entry_projection",
+                &json!([100, entry.chat_id, entry.thread_id]).to_string(),
+            )
+            .unwrap();
         let binding = store
             .interaction_presentation_list(100, entry, 0, 0)
             .unwrap()["binding"]
@@ -818,10 +1744,98 @@ mod tests {
             .iter()
             .filter(|s| s["kind"] == "worker_progress")
             .collect::<Vec<_>>();
+        {
+            let conn = store.conn.lock().unwrap();
+            let (cursor, offers) = heartbeat_progress_on(&conn, 100, entry, 0, 0).unwrap();
+            assert!(cursor > 0);
+            assert_eq!(offers.len(), 1);
+            assert_eq!(
+                offers[0].evidence["reader"]["arguments"]["source"],
+                progress[0]["id"]
+            );
+            assert_eq!(offers[0].revision, progress[0]["revision"]);
+            assert!(
+                heartbeat_progress_on(&conn, 100, entry, cursor, cursor)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
         assert_eq!(progress.len(), 1);
         assert_eq!(progress[0]["preview"], "Progress for the web");
         assert_eq!(progress[0]["target"], json!(SessionKey::new(100, Some(7))));
+        let reference = crate::store::ConversationReply {
+            source: progress[0]["id"].as_str().unwrap().into(),
+            revision: progress[0]["revision"].as_str().unwrap().into(),
+            context_only: false,
+        };
+        let reply_id = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"reply-to-progress").to_string();
+        let (original, _) = store
+            .conversation_input_capture_reply(
+                100,
+                entry,
+                &binding,
+                &reply_id,
+                "About that exact update",
+                Some(reference.clone()),
+            )
+            .unwrap();
+        assert_eq!(original.reply, Some(reference.clone()));
+        assert_eq!(
+            original.focus.as_ref().unwrap().target,
+            SessionKey::new(100, Some(7))
+        );
+        let profile:crate::interaction::InteractionConfig=serde_json::from_value(json!({"human_id":100,"chat_id":100,"topic_id":1,"targets":[{"name":"Alpha","topic_id":7}]})).unwrap();
+        let action = store
+            .conversation_route(100, &reply_id, &profile, None)
+            .unwrap()
+            .unwrap();
+        let super::super::conversation_routing::ConversationRouteAction::Worker(routed, true) =
+            action
+        else {
+            panic!("Expected one newly routed reply")
+        };
+        assert_eq!(routed.target.thread_id, 7);
+        assert_eq!(
+            store.interaction_source(&routed.id, 100).unwrap().text,
+            "About that exact update"
+        );
+        let provenance = store
+            .interaction_original_provenance(&routed.id, 100)
+            .unwrap();
+        assert_eq!(
+            provenance["selection"]["reply"],
+            serde_json::to_value(&reference).unwrap()
+        );
+        let mut wrong = reference.clone();
+        wrong.revision = "0".repeat(64);
+        assert!(
+            store
+                .conversation_input_capture_reply(
+                    100,
+                    entry,
+                    &binding,
+                    &Uuid::now_v7().to_string(),
+                    "Stale update",
+                    Some(wrong)
+                )
+                .is_err()
+        );
         assert!(!page.to_string().contains("Direct work stays direct"));
+        let echo = store.topic_publication_claim(entry, 100).unwrap().unwrap();
+        assert_eq!(echo.kind, "entry_progress");
+        assert!(!echo.direct);
+        assert!(echo.body.ends_with("Progress for the web"));
+        let parts = store
+            .topic_publication_parts(echo.id, std::slice::from_ref(&echo.body))
+            .unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(store.topic_publication_reserve(echo.id, 0).unwrap());
+        store
+            .topic_publication_receipt(echo.id, 0, Some(123), false)
+            .unwrap();
+        store.topic_publication_finish(echo.id).unwrap();
+        assert!(store.topic_publication_claim(entry, 100).unwrap().is_none());
         let conn = store.conn.lock().unwrap();
         let direct: i64 = conn
             .query_row(
@@ -909,6 +1923,7 @@ mod tests {
         store
             .interaction_admit(
                 &SourceInput {
+                    tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
                     event_id: "2".into(),
@@ -992,7 +2007,7 @@ mod tests {
                 "entry-native",
                 "entry-turn",
                 "answer",
-                Some("final_answer"),
+                None,
                 original,
             )
             .unwrap();
@@ -1016,6 +2031,7 @@ mod tests {
             .unwrap();
         assert!(source["current"].is_null());
         assert_eq!(source["preview"], "Alpha is still working.");
+        assert!(source["local_turn"].as_i64().is_some_and(|turn| turn > 0));
         assert_eq!(
             source["text_characters"],
             "Alpha is still working.".chars().count()

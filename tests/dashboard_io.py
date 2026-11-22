@@ -65,6 +65,237 @@ class DashboardHTTP(unittest.TestCase):
         return self.client.get('/api/state').json()['csrf']
     def stop(self,nonce,csrf):
         return self.client.post('/api/stop',json={'nonce':nonce},headers={**self.headers,'x-dashboard-csrf':csrf})
+    def test_explicit_native_avatar_default_requires_its_configured_route_without_other_tts(self):
+        self.provider.conversation_inputs=lambda *args:{'binding':'a'*64,'items':[]}
+        self.provider.presentation_list=lambda *args:{'binding':'a'*64,'items':[]}
+        for value,available in ((True,True),(False,False)):
+            config={**self.config,'openai_live':{'default_native':value,'backend_mode':'native'}}
+            with patch('dashboard.openai_live_api.install',return_value=available):
+                app=create_app(config,self.provider,lambda raw,bot:int(raw))
+            with TestClient(app,base_url='https://example.test') as client:
+                response=client.post('/api/session',json={'init_data':'100'},headers=self.headers)
+                token=response.json()['session_token']
+                result=client.get('/api/interaction',headers={'authorization':'Bearer '+token}).json()
+                self.assertEqual(result['avatar_voice_default'],'gpt-live-native' if value else None)
+                self.assertNotEqual(result.get('voice_services_default'),'openai')
+                self.assertEqual(result['can_converse_public_live_native'],available)
+        for selection in ({'default_native':True},{'default_native':'true','backend_mode':'native'}):
+            with patch('dashboard.openai_live_api.install',return_value=True):
+                with self.assertRaises(ValueError):create_app({**self.config,'openai_live':selection},self.provider,lambda raw,bot:int(raw))
+
+    def test_verified_image_preview_allows_local_blob_without_remote_image_sources(self):
+        policy=self.client.get('/').headers['content-security-policy']
+        directives=dict(part.strip().split(' ',1) for part in policy.split(';') if part.strip())
+        self.assertEqual(directives['img-src'].split(), ["'self'", 'data:', 'blob:'])
+        self.assertEqual(directives['connect-src'], "'self'")
+        self.assertEqual(directives['default-src'], "'self'")
+
+    def test_health_binds_maintenance_to_the_actual_voice_lock_without_stopping_other_routes(self):
+        from dashboard.voice_admission import HEADER, maintenance_guard
+        with maintenance_guard(self.config['state_dir']) as guard:
+            health=self.client.get('/health')
+            self.assertEqual(health.json(),{'ok':True})
+            self.assertEqual(health.headers[HEADER],guard.header)
+            self.login()
+
+    def test_heartbeat_status_and_conditional_write_recheck_access(self):
+        from dashboard.provider import ProviderUnavailable
+        from dashboard.companion import permitted
+        status={'schema':'telecodex.heartbeat-control/v1','admission_paused':True,
+            'generation':1,'producer':{'state':'not_configured'},'executions':[]}
+        self.provider.heartbeat_status=lambda:status
+        def refuse(body):raise ValueError()
+        self.provider.heartbeat_control=refuse
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
+        csrf=self.login()
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').json(),status)
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={'action':'resume','generation':1},headers={**self.headers,'x-dashboard-csrf':csrf}).status_code,409)
+        self.assertTrue(permitted('GET','/api/interaction/heartbeat',scope='monitor_readonly'))
+        self.assertTrue(permitted('POST','/api/interaction/heartbeat'))
+        self.assertFalse(permitted('POST','/api/interaction/heartbeat',scope='monitor_readonly'))
+        def revoke():self.provider.allowed=False;return status
+        self.provider.heartbeat_status=revoke
+        self.assertEqual(self.client.get('/api/interaction/heartbeat').status_code,401)
+    def test_heartbeat_write_requires_csrf_and_preserves_unknown_outcome(self):
+        from dashboard.provider import ProviderUnavailable
+        calls=[]
+        self.provider.heartbeat_control=lambda body:calls.append(body) or {'generation':2}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json={},headers=self.headers).status_code,401)
+        csrf=self.login();body={'action':'set_paused','paused':True,'generation':1}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=self.headers).status_code,403)
+        self.assertEqual(calls,[])
+        headers={**self.headers,'x-dashboard-csrf':csrf}
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=headers).json(),{'generation':2})
+        def lost(body):calls.append(body);raise ProviderUnavailable()
+        self.provider.heartbeat_control=lost
+        response=self.client.post('/api/interaction/heartbeat',json=body,headers=headers)
+        self.assertEqual(response.status_code,503);self.assertEqual(len(calls),2)
+        def revoke(body):self.provider.allowed=False;return {'generation':3}
+        self.provider.heartbeat_control=revoke
+        self.assertEqual(self.client.post('/api/interaction/heartbeat',json=body,headers=headers).status_code,401)
+
+    def test_avatar_recovery_runs_bounded_asr_before_existing_owner_completion(self):
+        csrf=self.login();calls=[]
+        ident='10000000-0000-4000-8000-000000000001';dialogue='20000000-0000-4000-8000-000000000002'
+        raw=b'synthetic exact WAV';digest=__import__('hashlib').sha256(raw).hexdigest()
+        media=Path(self.tmp.name)/ident;media.write_bytes(raw)
+        helper=Path(self.tmp.name)/'synthetic_asr.py';helper.write_text('import json; print(json.dumps({"text":"Recovered original","final":True}))')
+        phase=['foreground_captured']
+        def prepare(metadata,data,selected):
+            if selected!=dialogue or metadata['audio_sha256']!=digest or data!=raw:raise ValueError('Original changed')
+            calls.append('prepare')
+            current={'id':ident,'phase':phase[0],'foreground_dialogue':dialogue,'voice':{'audio_sha256':digest}}
+            return {'current':current,**({'command':[sys.executable,str(helper)],'media':media,'timeout':2} if phase[0]=='foreground_captured' else {})}
+        self.provider.conversation_voice_recover=prepare
+        def complete(*args):calls.append('complete');phase[0]='foreground';return {'id':ident,'phase':'foreground','foreground_dialogue':dialogue,'voice':{'audio_sha256':digest}}
+        self.provider.conversation_foreground_complete=complete
+        headers={**self.headers,'x-dashboard-csrf':csrf,'content-type':'audio/wav','x-input-id':ident,'x-input-binding':'a'*64,'x-audio-sha256':digest,'x-foreground-dialogue':dialogue}
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=self.headers).status_code,403)
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers={**headers,'x-audio-sha256':'b'*64}).status_code,400)
+        self.assertEqual(calls,[])
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'foreground')
+        self.assertEqual(calls,['prepare','complete'])
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'foreground')
+        self.assertEqual(calls,['prepare','complete','prepare'],'Completed retry reads only')
+        phase[0]='preparing'
+        self.assertEqual(self.client.post('/api/interaction/voice/recover',content=raw,headers=headers).json()['phase'],'preparing')
+        self.assertEqual(calls.count('complete'),1)
+
+    def test_avatar_recovery_keeps_stored_scope_and_admits_local_only_exactly(self):
+        import sqlite3,hashlib
+        from dashboard.provider import ProviderUnavailable
+        db=Path(self.tmp.name)/'recovery.sqlite3';conn=sqlite3.connect(db)
+        conn.execute('CREATE TABLE conversation_inputs(id TEXT)');conn.commit();conn.close()
+        provider=Provider.__new__(Provider);provider.human=100
+        base=['/usr/bin/python3','/synthetic/interaction_asr.py','--binding','/synthetic/adapter.json']
+        binding=Path(self.tmp.name)/'live-reader.json';binding.write_text(json.dumps({'provider':'live-result'}));binding.chmod(0o600)
+        live=['/usr/bin/python3','/live/interaction_asr.py','--binding',str(binding)]
+        provider.receiver={'db_path':str(db),'voice':{'transcription_command':base,'completed_transcription_command':base+['--completed-only'],'timeout_seconds':2,
+            'transcription_profiles':{'previous-live':{'transcription_command':live,'completed_transcription_command':live+['--completed-only']}}}}
+        provider.assert_binding=lambda:None;provider.authorized=lambda human:human==100
+        provider.presentation=lambda command:{'binding':'a'*64}
+        records={};admissions=[]
+        provider.conversation_input_status=lambda ident:records[ident]
+        def admit(meta,data,**kwargs):
+            admissions.append(kwargs);ident=meta['id'];current={'id':ident,'phase':'foreground_captured','foreground_dialogue':kwargs['foreground_dialogue'],'voice':{'audio_sha256':meta['audio_sha256'],'transcription_profile':meta.get('transcription_profile')}}
+            records[ident]=current
+            with sqlite3.connect(db) as conn:conn.execute('INSERT INTO conversation_inputs VALUES(?)',(ident,))
+            return current
+        provider.conversation_voice_submit=admit
+        raw=b'exact synthetic original';meta={'id':'10000000-0000-4000-8000-000000000001','binding':'a'*64,'mime':'audio/wav','audio_sha256':hashlib.sha256(raw).hexdigest()};dialogue='20000000-0000-4000-8000-000000000002'
+        plan=provider.conversation_voice_recover(meta,raw,dialogue)
+        self.assertEqual(admissions,[{'foreground_dialogue':dialogue,'defer_foreground':True}])
+        self.assertEqual(plan['media'].read_bytes(),raw);self.assertEqual(plan['timeout'],2)
+        self.assertEqual(plan['command'],live+['--completed-only'],'Retry cannot run the base file ASR')
+        self.assertEqual(provider.conversation_voice_recover(meta,raw,dialogue)['media'],plan['media'])
+        self.assertEqual(len(admissions),1,'Stored identity is not admitted twice or changed to ordinary input')
+        binding.write_text(json.dumps({'provider':'openai','key_file':'/synthetic/forbidden'}))
+        with self.assertRaises(ProviderUnavailable):provider.conversation_voice_recover(meta,raw,dialogue)
+        binding.write_text(json.dumps({'provider':'live-result'}))
+        records[meta['id']]['voice'].pop('transcription_profile')
+        self.assertEqual(provider.conversation_voice_recover(meta,raw,dialogue)['command'],base+['--completed-only'])
+        provider.receiver['voice'].pop('completed_transcription_command')
+        with self.assertRaises(ProviderUnavailable):provider.conversation_voice_recover(meta,raw,dialogue)
+        provider.receiver['voice']['completed_transcription_command']=base+['--completed-only']
+        for changed in (dict(meta,audio_sha256='b'*64),dict(meta,binding='b'*64)):
+            with self.assertRaises((ValueError,ProviderUnavailable)):provider.conversation_voice_recover(changed,raw,dialogue)
+        with self.assertRaises(ValueError):provider.conversation_voice_recover(meta,raw,meta['id'])
+        records[meta['id']]['phase']='foreground'
+        self.assertNotIn('command',provider.conversation_voice_recover(meta,raw,dialogue),'Completed originals do not run ASR')
+        records[meta['id']]['phase']='preparing'
+        self.assertNotIn('command',provider.conversation_voice_recover(meta,raw,dialogue),'An already active completion is observed only')
+
+    def test_explicit_openai_recording_route_refuses_missing_configuration_and_keeps_pin(self):
+        from dashboard.companion import permitted
+        csrf=self.login();retained=[]
+        self.provider.conversation_voice_submit=lambda meta,data: retained.append((meta,data)) or {'id':meta['id'],'phase':'preparing'}
+        self.provider.receiver={'voice':{}}
+        headers={**self.headers,'x-dashboard-csrf':csrf,'content-type':'audio/webm',
+                 'x-input-binding':'a'*64,'x-input-id':'10000000-0000-4000-8000-000000000001','x-audio-sha256':'b'*64}
+        path='/api/interaction/voice/openai'
+        self.assertTrue(permitted('POST',path))
+        self.assertFalse(permitted('POST',path,'monitor_readonly'))
+        self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,409)
+        self.assertEqual(retained,[])
+        self.provider.receiver['voice']['transcription_profiles']={'openai':{}}
+        self.assertEqual(self.client.post(path,content=b'original',headers={**headers,'x-dashboard-csrf':'wrong'}).status_code,403)
+        self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'openai')
+        self.assertEqual(retained[-1][1],b'original')
+        self.assertEqual(self.client.post(path+'/limited',content=b'original',headers=headers).status_code,400)
+        self.assertEqual(self.client.post(path+'/limited',content=b'original',headers={**headers,'x-recording-stop':'duration_limit'}).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'openai')
+        self.assertEqual(retained[-1][0]['capture_stop'],'duration_limit')
+        self.provider.receiver['voice']['transcription_profiles']['previous']={}
+        self.assertEqual(self.client.post('/api/interaction/voice/previous',content=b'original',headers=headers).status_code,200)
+        self.assertEqual(retained[-1][0]['transcription_profile'],'previous')
+        self.assertEqual(self.client.post('/api/interaction/voice',content=b'original',headers=headers).status_code,200)
+        self.assertNotIn('transcription_profile',retained[-1][0])
+        for selected in ('openai-live','previous-live'):
+            path='/api/interaction/voice/'+selected
+            self.assertTrue(permitted('POST',path));self.assertFalse(permitted('POST',path,'monitor_readonly'))
+            self.provider.receiver['voice']['transcription_profiles'][selected]={}
+            self.assertEqual(self.client.post(path,content=b'original',headers=headers).status_code,200)
+            self.assertEqual(retained[-1][0]['transcription_profile'],selected)
+
+
+    def test_voice_playback_context_is_bounded_advisory_metadata(self):
+        csrf=self.login();retained=[]
+        self.provider.conversation_voice_submit=lambda metadata,data: retained.append((metadata,data)) or {'id':metadata['id'],'phase':'preparing'}
+        hint={'source':'native:7','revision':'a'*64,'segment_offset':240,'position_millis':3700,'duration_millis':12000,'state':'interrupted'}
+        headers={**self.headers,'x-dashboard-csrf':csrf,'content-type':'audio/webm','x-input-binding':'a'*64,'x-input-id':'10000000-0000-4000-8000-000000000001','x-audio-sha256':'b'*64,'x-playback-context':json.dumps(hint)}
+        response=self.client.post('/api/interaction/voice',content=b'synthetic',headers=headers)
+        self.assertEqual(response.status_code,200);self.assertEqual(retained[0][0]['playback'],hint);self.assertEqual(retained[0][1],b'synthetic')
+        limited=self.client.post('/api/interaction/voice/limited',content=b'synthetic',headers={**headers,'x-recording-stop':'duration_limit'})
+        self.assertEqual(limited.status_code,200)
+        self.assertEqual(retained[-1][0]['capture_stop'],'duration_limit')
+        interrupted=self.client.post('/api/interaction/voice/limited',content=b'synthetic',headers={**headers,'x-recording-stop':'audio_flush_unconfirmed'})
+        self.assertEqual(interrupted.status_code,200)
+        self.assertEqual(retained[-1][0]['capture_stop'],'audio_flush_unconfirmed')
+        self.assertEqual(self.client.post('/api/interaction/voice/limited',content=b'synthetic',headers=headers).status_code,400)
+        self.assertEqual(self.client.post('/api/interaction/voice/limited',content=b'synthetic',headers={**headers,'x-recording-stop':'complete'}).status_code,400)
+
+        for invalid in (dict(hint,position_millis=True),dict(hint,state='heard'),dict(hint,segment_offset=-1),dict(hint,source='native:0'),dict(hint,source='native:01'),dict(hint,source='native:9223372036854775808'),dict(hint,other='not supported')):
+            self.assertEqual(self.client.post('/api/interaction/voice',content=b'synthetic',headers={**headers,'x-playback-context':json.dumps(invalid)}).status_code,400)
+        self.assertEqual(len(retained),3,'Only the three valid recordings reach retaining/dispatch; malformed metadata must fail first')
+        self.assertEqual(self.client.post('/api/interaction/voice',content=b'synthetic',headers={**headers,'x-playback-context':' '*2049}).status_code,400)
+        with self.assertRaises(ValueError):Provider.check_playback(dict(hint,duration_millis=0))
+        Provider.check_playback(dict(hint,duration_millis=None))
+
+    def test_installable_manifest_and_authenticated_event_stream(self):
+        manifest=self.client.get('/manifest.webmanifest')
+        self.assertEqual(manifest.status_code,200)
+        value=manifest.json()
+        self.assertEqual(value['display'],'standalone')
+        self.assertEqual(value['scope'],'/sessions/')
+        self.assertEqual(value['start_url'],'/sessions/?view=conversation&client=standalone')
+        for icon in value['icons']:
+            name=icon['src'].rsplit('/',1)[-1]
+            self.assertTrue(self.client.get('/assets/'+name).content.startswith(b'\x89PNG'))
+        shell=self.client.get('/?view=conversation&client=standalone').text
+        self.assertIn('rel="manifest"',shell)
+        self.assertNotIn('telegram.org/js',shell)
+        self.assertEqual(self.client.get('/api/interaction/events').status_code,401)
+        self.login()
+        self.provider.receiver={'db_path':str(Path(self.tmp.name)/'source.db')}
+        async def events(paths, subscribe=None):
+            self.assertEqual(paths,[Path(self.tmp.name)/'source.db'])
+            self.assertTrue(subscribe is None or callable(subscribe))
+            yield True
+            yield False
+        with patch('dashboard.live.changes',events):
+            response=self.client.get('/api/interaction/events')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['x-accel-buffering'],'no')
+        self.assertEqual(response.text,'data: {}\n\n: keepalive\n\n')
+        self.assertEqual(self.provider.calls,[])
+
+    def test_public_live_browser_transport_is_served_as_an_asset(self):
+        response=self.client.get('/assets/openai-live.js')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.content,(Path(__file__).resolve().parents[1]/'dashboard/web/openai-live.js').read_bytes())
+        self.assertEqual(self.client.get('/assets/not-a-public-asset.js').status_code,404)
+
     def test_private_data_and_actions_require_signed_allowed_owner(self):
         self.assertEqual(self.client.get('/api/state').status_code,401)
         self.assertEqual(self.client.post('/api/session',json={'init_data':'101'},headers=self.headers).status_code,403)
@@ -75,9 +306,22 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(self.client.get('/api/state').status_code,401)
         self.assertEqual(self.stop('action-123456789012',csrf).status_code,401)
         self.assertEqual(self.provider.calls,[])
+    def test_conversation_header_names_are_presentation_and_escaped(self):
+        app = create_app({**self.config, 'daimon_name':'CompAII <source>'}, self.provider, lambda raw,bot:int(raw))
+        with TestClient(app, base_url='https://example.test') as client:
+            text=client.get('/?view=conversation&client=standalone').text
+            self.assertIn('id="conversation-daimon">CompAII &lt;source&gt;</span>',text)
+            self.assertNotIn('DAIMON <span',text)
+            self.assertEqual(text.count('id="conversation-account"'),1)
+            self.assertIn('id="conversation-account" hidden',text)
+        for value in ('', 'x'*81, 'name\nother', 123):
+            with self.assertRaises(ValueError):
+                create_app({**self.config,'daimon_name':value},self.provider)
+
     def test_origin_body_bounds_no_path_override_and_public_shell(self):
         self.assertEqual(self.client.get('/').status_code,200)
         self.assertEqual(self.client.get('/assets/app.js').status_code,200)
+        self.assertEqual(self.client.get('/assets/voice-mode.js').status_code,200)
         self.assertEqual(self.client.get('/assets/space-grotesk-latin.woff2').status_code,200)
         self.assertIn('SIL',self.client.get('/assets/OFL.txt').text)
         self.assertEqual(self.client.get('/assets/app.py').status_code,404)
@@ -307,6 +551,70 @@ class NativeMetadata:
 
 
 class ProviderIO(unittest.TestCase):
+    def test_heartbeat_exact_controls_never_downgrade_or_retry(self):
+        from dashboard.provider import ProviderUnavailable
+        p=Provider.__new__(Provider);p.human=100
+        p.receiver={'session_control':{'socket_path':'unused'}}
+        p.assert_binding=lambda:None;p.authorized=lambda human:True
+        current={'schema':'telecodex.heartbeat-control/v1','generation':4,'admission_paused':True,
+            'controls':{'schema':'telecodex.heartbeat-controls/v1','conditional_global':True,
+                'conditional_lane':True,'actions':['set_paused','set_lane_paused']},
+            'lanes':{'messaging':{'generation':2,'paused':True,'supported':True}}}
+        p.heartbeat_status=lambda:current
+        body={'action':'set_lane_paused','lane':'messaging','paused':False,'generation':2,'global_generation':4}
+        with patch('dashboard.provider.control',return_value=current) as send:
+            p.heartbeat_control(body)
+            self.assertEqual(send.call_args.args[2],'heartbeat resume-lane messaging 4 2')
+            p.heartbeat_control({'action':'set_paused','paused':True,'generation':4})
+            self.assertEqual(send.call_args.args[2],'heartbeat pause 4')
+            for wrong in [{**body,'global_generation':3},{**body,'generation':1},{**body,'lane':'sensory'},
+                    {**body,'paused':1},{**body,'generation':True},{**body,'extra':'x'}]:
+                with self.assertRaises(ValueError):p.heartbeat_control(wrong)
+            self.assertEqual(send.call_count,2)
+            current['controls']={}
+            with self.assertRaises(ProviderUnavailable):p.heartbeat_control(body)
+            self.assertEqual(send.call_count,2)
+        current['controls']={'schema':'telecodex.heartbeat-controls/v1','conditional_lane':True,'actions':['set_lane_paused']}
+        with patch('dashboard.provider.control',side_effect=ProviderUnavailable()) as send:
+            with self.assertRaises(ProviderUnavailable):p.heartbeat_control(body)
+            self.assertEqual(send.call_count,1)
+
+    def test_integrator_message_reference_is_context_only_and_bounded(self):
+        for source in ('native:1','native:9223372036854775807'):
+            Provider.check_reply({'source':source,'revision':'a'*64,'context_only':True})
+        for source in ('native:0','native:01','native:-1','native:9223372036854775808','native:abc'):
+            with self.assertRaises(ValueError):Provider.check_reply({'source':source,'revision':'a'*64,'context_only':True})
+        # Worker updates use native originals as routing references. The native
+        # reader verifies worker kind, exact revision and owned current target.
+        for source in ('native:1','native:9223372036854775807'):
+            Provider.check_reply({'source':source,'revision':'a'*64})
+        for source in ('native:0','native:01','native:-1','native:9223372036854775808','native:abc'):
+            with self.assertRaises(ValueError):Provider.check_reply({'source':source,'revision':'a'*64})
+
+    def test_worker_update_voice_reaches_retention_with_exact_routing_reference(self):
+        import hashlib
+        data=b'bounded synthetic recording'
+        reference={'source':'native:42','revision':'a'*64}
+        metadata={'id':'10000000-0000-4000-8000-000000000001',
+                  'binding':'b'*64,'audio_sha256':hashlib.sha256(data).hexdigest(),
+                  'mime':'audio/wav','reply':reference}
+        self.provider.receiver['voice']=True
+        calls=[]
+        with patch.object(self.provider,'assert_binding'), \
+             patch.object(self.provider,'check_files_original'), \
+             patch.object(self.provider,'check_visual_original'), \
+             patch.object(self.provider,'decorate_input',side_effect=lambda value:value), \
+             patch.object(self.provider,'retire_voice_capture'), \
+             patch.object(self.provider,'presentation',side_effect=lambda command:calls.append(command) or {'phase':'preparing'}):
+            self.provider.conversation_voice_submit(metadata,data)
+        retained=Path(str(self.db)+'.voice')/metadata['id']
+        self.assertEqual(retained.read_bytes(),data)
+        self.assertEqual(len(calls),1)
+        submitted=json.loads(calls[0].removeprefix('input voice submit '))
+        self.assertEqual(submitted['reply'],reference)
+        self.assertNotIn('context_only',submitted['reply'],
+                         'Explicit worker reply must keep its destination, not become integrator-only context')
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.root.chmod(0o700)
         self.db=self.root/'bridge.sqlite'
@@ -341,6 +649,23 @@ class ProviderIO(unittest.TestCase):
         self.assertGreater(result['host']['memory_total'],0)
         self.assertNotIn('rollout_path',json.dumps(result))
         self.assertFalse(self.provider.authorized(101));self.assertFalse(self.provider.authorized(999))
+    def test_current_owned_titles_replace_only_stable_display_fallbacks(self):
+        self.provider.receiver['interaction']={'chat_id':100}
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute("UPDATE sessions SET session_title='H.B. Guitar' WHERE id=1")
+            db.commit()
+        value={'routing_choices':[{'label':'t7','selector':'t7'}],
+               'items':[{'label':'#t7','target':{'chat_id':100,'thread_id':7},'revision':'unchanged'},
+                        {'label':'#t8','target':{'chat_id':101,'thread_id':8}},
+                        {'label':'#Authored alias','target':{'chat_id':100,'thread_id':7}}]}
+        result=self.provider.display_labels(value)
+        self.assertEqual(result['routing_choices'],[{'label':'H.B. Guitar','selector':'t7'}])
+        self.assertEqual([r['label'] for r in result['items']],['#H.B. Guitar','#t8','#Authored alias'])
+        self.assertEqual(result['items'][0]['revision'],'unchanged')
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=1');db.commit()
+        self.assertEqual(self.provider.display_labels({'label':'#t7','target':{'chat_id':100,'thread_id':7}})['label'],'#t7')
+
     def test_scope_changes_invalidate_cached_results(self):
         self.provider.snapshot()
         with closing(sqlite3.connect(self.db)) as db:db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=1');db.commit()
@@ -427,6 +752,19 @@ class DashboardAppearance(unittest.TestCase):
                     'appearance_origin':'https://home.example.test'}
             with TestClient(create_app(config,Receiver(),lambda *_:100),base_url='https://example.test') as client:
                 response=client.get('/')
+                self.assertRegex(response.text, r'id="client-build" title="Client bundle [a-f0-9]{64}" aria-label="Client version [a-f0-9]{12}"')
+                self.assertNotIn('id="client-build" hidden', response.text)
+                from html.parser import HTMLParser
+                class BuildLocation(HTMLParser):
+                    def __init__(self):super().__init__();self.ids=[];self.technical=False
+                    def handle_starttag(self, tag, attrs):
+                        ident=dict(attrs).get('id')
+                        if ident=='client-build':self.technical='conversation-diagnostics' in self.ids
+                        if tag not in ('area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr'):self.ids.append(ident)
+                    def handle_endtag(self, tag):
+                        if self.ids:self.ids.pop()
+                location=BuildLocation();location.feed(response.text)
+                self.assertFalse(location.technical,'The human-selected small served UI fingerprint belongs beside the app title')
                 self.assertIn('data-home-style',response.text)
                 self.assertIn('https://home.example.test/style.css?surface=sessions',response.text)
                 self.assertIn('https://home.example.test/home-style.js',response.text)
@@ -438,8 +776,25 @@ class DashboardAppearance(unittest.TestCase):
                 self.assertIn('immutable',client.get('/'+path).headers['cache-control'])
                 self.assertNotIn('immutable',client.get('/assets/app.js?v=old').headers['cache-control'])
                 self.assertEqual(client.get('/api/state').status_code,401)
+            with TestClient(create_app({**config,'conversation_appearance':'authored'},Receiver()),base_url='https://example.test') as client:
+                standalone=client.get('/?view=conversation&client=standalone').text
+                self.assertIn('data-style-policy="authored"',standalone)
+                self.assertIn('<body class="conversation-mode standalone-conversation">',standalone)
+                self.assertIn('<h1>Daimon</h1>',standalone)
+                self.assertNotIn('<h1>Sessions</h1>',standalone)
+                self.assertNotIn('Connecting to Telegram',standalone)
+                self.assertNotIn('<section id="conversation" hidden',standalone)
+                self.assertIn('<h1>Sessions</h1>',client.get('/').text)
+                self.assertNotIn('data-home-style',standalone)
+                self.assertNotIn('home-style.js',standalone)
+                self.assertIn('data-home-style',client.get('/').text)
+            with self.assertRaises(ValueError): create_app({**config,'conversation_appearance':'wrong'},Receiver())
             for origin in ('http://home.example.test','https://home.example.test/path','https://secret@home.example.test','https://home.example.test?token=x'):
                 with self.assertRaises(ValueError):create_app({**config,'appearance_origin':origin},Receiver())
 
+
+# Include the optional health transport contract in the existing dashboard CI
+# entrypoint; the real installed package is additionally qualified when selected.
+from dashboard_computer_health_io import HealthTests
 
 if __name__ == '__main__': unittest.main()

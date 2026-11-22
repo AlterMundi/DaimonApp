@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug instrumentation alone may drive the same-debug-signer test probe. -->
+    <uses-permission android:name="homes.dmn.interaction.focusprobe.CONTROL" />
+</manifest>

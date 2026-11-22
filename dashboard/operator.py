@@ -50,6 +50,8 @@ def main():
     parser.add_argument('operation', choices=['inspect-menu', 'publish-menu', 'restore-menu'])
     args = parser.parse_args()
     config = tomllib.loads(Path(args.config).read_text())
+    if 'application_id' in config:
+        raise SystemExit('Web-only application has no Telegram menu')
     receiver_bytes = Path(config['receiver_config']).read_bytes()
     receiver = tomllib.loads(receiver_bytes.decode())
     telegram = Telegram(receiver['telegram'])  # Existing safe token-file reader, operator only.

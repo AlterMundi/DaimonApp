@@ -1,5 +1,8 @@
 //! Retained cross-body correlation. Matrix owns transport and receiving execution;
 //! this store neither signs execution approvals nor schedules/activates a peer.
+pub(in crate::store) mod inbox;
+pub(in crate::store) mod publication;
+pub(in crate::store) mod response;
 use super::*;
 use crate::interaction::{InputReference, MatrixDestination, RequestRelation};
 use anyhow::bail;
@@ -29,6 +32,19 @@ pub(super) fn unclaimed_on(
     event: &str,
     update: Option<i64>,
 ) -> Result<()> {
+    super::workflows::unclaimed_on(conn, human, channel, event, update)?;
+    non_workflow_unclaimed_on(conn, human, channel, event, update)
+}
+
+/// Workflow declaration may add a separately identified attributed subtask, but
+/// never override a selected goal control or external Matrix original.
+pub(super) fn non_workflow_unclaimed_on(
+    conn: &Connection,
+    human: i64,
+    channel: &str,
+    event: &str,
+    update: Option<i64>,
+) -> Result<()> {
     super::goal_controls::unclaimed_on(
         conn,
         human,
@@ -39,8 +55,7 @@ pub(super) fn unclaimed_on(
         },
         event,
     )?;
-    let held = selected_on(conn, human, channel, event, update)?.is_some();
-    if held {
+    if selected_on(conn, human, channel, event, update)?.is_some() {
         bail!("Original input has an immutable Matrix destination");
     }
     Ok(())
@@ -72,17 +87,19 @@ fn owned_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Resul
         bail!("Canonical Matrix request UUID required");
     }
     let (session, _) = super::presentation::entry_on(conn, human, entry)?;
-    let (raw,phase,submission,claimed_source):(String,String,Option<String>,Option<String>)=conn.query_row("SELECT doc,phase,submission,claimed_source FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).context("Selected Matrix request unavailable")?;
+    let (raw,phase,submission,claimed_source,cursor):(String,String,Option<String>,Option<String>,u64)=conn.query_row("SELECT doc,phase,submission,claimed_source,inspection_cursor FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).context("Selected Matrix request unavailable")?;
     let request: Value = serde_json::from_str(&raw)?;
     let current = super::presentation::entry_binding(conn, human, entry, session)?
         == request["entry_generation"]
         && super::stopping::admission_epoch_on(conn, entry)? == request["epoch"]
         && !super::stopping::fenced_on(conn, entry)?
         && !super::maintenance_writer_held_on(conn, entry)?;
-    Ok(json!({"request":request,"phase":phase,"current":current,
+    Ok(
+        json!({"request":request,"phase":phase,"current":current,"inspection_cursor":cursor,
         "claimed_source":claimed_source.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,
         "submission":submission.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,
-        "execution":"Not authorized by retention or transport; receiving admission remains Matrix-owned"}))
+        "execution":"Not authorized by retention or transport; receiving admission remains Matrix-owned"}),
+    )
 }
 
 impl Store {
@@ -96,15 +113,34 @@ impl Store {
              CREATE TABLE IF NOT EXISTS interaction_matrix_results(
                 message_id TEXT PRIMARY KEY,request_id TEXT NOT NULL REFERENCES interaction_matrix_requests(id),
                 human_id INTEGER NOT NULL,doc TEXT NOT NULL,created_at TEXT NOT NULL);
-             CREATE INDEX IF NOT EXISTS interaction_matrix_result_request ON interaction_matrix_results(request_id);"
+             CREATE INDEX IF NOT EXISTS interaction_matrix_result_request ON interaction_matrix_results(request_id);
+             CREATE TABLE IF NOT EXISTS interaction_matrix_inbox(
+               entry_session INTEGER NOT NULL,human_id INTEGER NOT NULL,message_id TEXT NOT NULL,
+               binding TEXT NOT NULL,epoch TEXT NOT NULL,native TEXT NOT NULL,channel TEXT NOT NULL,
+               owner TEXT NOT NULL,doc TEXT NOT NULL,created_at TEXT NOT NULL,
+               PRIMARY KEY(entry_session,human_id,message_id));"
         )?;
         let conn = self.conn.lock().expect("store mutex poisoned");
+        super::add_column_if_missing(&conn, "interaction_matrix_inbox", "handling", "TEXT")?;
         super::add_column_if_missing(
             &conn,
             "interaction_matrix_requests",
             "claimed_source",
             "TEXT",
         )?;
+        super::add_column_if_missing(
+            &conn,
+            "interaction_matrix_requests",
+            "inspection_cursor",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        super::add_column_if_missing(
+            &conn,
+            "interaction_matrix_results",
+            "reported_revision",
+            "TEXT",
+        )?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS interaction_matrix_pending_attention ON interaction_matrix_results(human_id) WHERE reported_revision IS NULL")?;
         Ok(())
     }
 
@@ -387,6 +423,12 @@ pub struct MatrixSubmission {
     pub author: MatrixAuthor,
     pub destination: MatrixDestination,
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixReplyKind {
+    Speech,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixReturn {
@@ -397,6 +439,10 @@ pub struct MatrixReturn {
     pub message_hash: String,
     pub author: MatrixAuthor,
     pub text: String,
+    // Absent keeps exact historical typed-worker callback bytes. Never infer
+    // completion from absence; the canonical presentation remains completed:null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_kind: Option<MatrixReplyKind>,
 }
 impl Store {
     /// Trusted receiving host only, after SDK signature/parent verification.
@@ -409,69 +455,215 @@ impl Store {
     ) -> Result<Value> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let selected = owned_on(&tx, human, entry, &value.request)?;
-        let destination: MatrixDestination =
-            serde_json::from_value(selected["request"]["destination"].clone())?;
-        let actual_peer = MatrixDestination::Body {
-            being_ref: value.author.being_ref.clone(),
-            embodiment_id: value.author.embodiment_id.clone(),
-        };
-        actual_peer.validate()?;
-        let source = MatrixDestination::Body {
-            being_ref: value.submission.author.being_ref.clone(),
-            embodiment_id: value.submission.author.embodiment_id.clone(),
-        };
-        source.validate()?;
-        if value.binding != selected["request"]["binding"]
-            || value.submission.destination != destination
-            || value.author.being_ref != destination.being()
-            || matches!(&destination,MatrixDestination::Body{embodiment_id,..} if embodiment_id!=&value.author.embodiment_id)
-            || [
-                &value.message_id,
-                &value.submission.send_id,
-                &value.submission.message_id,
-                &value.submission.thread_id,
-            ]
-            .iter()
-            .any(|id| !canonical_uuid(id))
-            || !hash(&value.message_hash)
-            || !hash(&value.submission.message_hash)
-            || value.text.trim().is_empty()
-            || value.text.len() > 16000
-        {
-            bail!("Matrix return differs from the immutable selected origin and recipient");
-        }
-        if !selected["claimed_source"].is_null() {
-            let expected_send = Uuid::new_v5(
-                &Uuid::NAMESPACE_URL,
-                format!("telecodex.matrix/request:{}", value.request).as_bytes(),
-            )
-            .to_string();
-            if selected["claimed_source"] != serde_json::to_value(&value.submission.author)?
-                || value.submission.send_id != expected_send
-                || value.submission.thread_id != value.request
-            {
-                bail!("Matrix return differs from the retained technical claim");
-            }
-        }
-        let submission = serde_json::to_string(&value.submission)?;
-        if !selected["submission"].is_null()
-            && selected["submission"] != serde_json::to_value(&value.submission)?
-        {
-            bail!("Matrix request submission identity is immutable");
-        }
-        let doc = serde_json::to_string(value)?;
-        if tx.execute("INSERT OR IGNORE INTO interaction_matrix_results(message_id,request_id,human_id,doc,created_at) VALUES(?1,?2,?3,?4,?5)",params![value.message_id,value.request,human,doc,now_string()])?==0 {
-            let previous:String=tx.query_row("SELECT doc FROM interaction_matrix_results WHERE message_id=?",[&value.message_id],|r|r.get(0))?;
-            if previous!=doc {bail!("Canonical Matrix reply identity was reused with different content");}
-        }
-        tx.execute(
-            "UPDATE interaction_matrix_requests SET submission=?2,phase='reply_received' WHERE id=?1",
-            params![value.request, submission],
-        )?;
+        retain_return_on(&tx, human, entry, value)?;
         tx.commit()?;
         drop(conn);
         self.interaction_matrix_status(human, entry, &value.request)
+    }
+}
+
+/// One verified selected-thread page. Its cursor and canonical replies commit together.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixReadPage {
+    pub after: u64,
+    pub next_cursor: u64,
+    pub results: Vec<MatrixReturn>,
+    pub page_full: bool,
+}
+
+impl Store {
+    pub fn interaction_matrix_inspection(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        page: &MatrixReadPage,
+    ) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let selected = owned_on(&tx, human, entry, id)?;
+        if !matches!(
+            selected["phase"].as_str(),
+            Some("submitted" | "reply_received")
+        ) || page.next_cursor < page.after
+            || page.next_cursor > 9_007_199_254_740_991
+            || page.results.len() > 3
+            || page.results.len() as u64 > page.next_cursor - page.after
+            || page
+                .results
+                .iter()
+                .any(|r| r.request != id || r.binding != selected["request"]["binding"])
+        {
+            bail!("Selected Matrix inspection differs from the retained request");
+        }
+        for reply in &page.results {
+            retain_return_on(&tx, human, entry, reply)?;
+        }
+        // Only a page covering the saved cursor advances contiguous progress.
+        // Explicit historical/future reads cannot regress it or skip a gap.
+        tx.execute("UPDATE interaction_matrix_requests SET inspection_cursor=CASE WHEN ?3<=inspection_cursor THEN MAX(inspection_cursor,?2) ELSE inspection_cursor END WHERE id=?1",
+            params![id, page.next_cursor, page.after])?;
+        tx.commit()?;
+        drop(conn);
+        let mut current = self.interaction_matrix_status(human, entry, id)?;
+        current["inspection"] = json!({"after":page.after,"next_cursor":page.next_cursor,"page_full":page.page_full,"canonical_replies":page.results.len(),"native_input":false});
+        Ok(current)
+    }
+}
+
+fn retain_return_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    value: &MatrixReturn,
+) -> Result<()> {
+    let selected = owned_on(conn, human, entry, &value.request)?;
+    let destination: MatrixDestination =
+        serde_json::from_value(selected["request"]["destination"].clone())?;
+    let actual_peer = MatrixDestination::Body {
+        being_ref: value.author.being_ref.clone(),
+        embodiment_id: value.author.embodiment_id.clone(),
+    };
+    actual_peer.validate()?;
+    let source = MatrixDestination::Body {
+        being_ref: value.submission.author.being_ref.clone(),
+        embodiment_id: value.submission.author.embodiment_id.clone(),
+    };
+    source.validate()?;
+    if value.binding != selected["request"]["binding"]
+        || value.submission.destination != destination
+        || value.author.being_ref != destination.being()
+        || matches!(&destination,MatrixDestination::Body{embodiment_id,..} if embodiment_id!=&value.author.embodiment_id)
+        || [
+            &value.message_id,
+            &value.submission.send_id,
+            &value.submission.message_id,
+            &value.submission.thread_id,
+        ]
+        .iter()
+        .any(|id| !canonical_uuid(id))
+        || !hash(&value.message_hash)
+        || !hash(&value.submission.message_hash)
+        || value.text.trim().is_empty()
+        || value.text.len() > 16000
+    {
+        bail!("Matrix return differs from the immutable selected origin and recipient");
+    }
+    if !selected["claimed_source"].is_null() {
+        let expected_send = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("telecodex.matrix/request:{}", value.request).as_bytes(),
+        )
+        .to_string();
+        if selected["claimed_source"] != serde_json::to_value(&value.submission.author)?
+            || value.submission.send_id != expected_send
+            || value.submission.thread_id != value.request
+        {
+            bail!("Matrix return differs from the retained technical claim");
+        }
+    }
+    let submission = serde_json::to_string(&value.submission)?;
+    if !selected["submission"].is_null()
+        && selected["submission"] != serde_json::to_value(&value.submission)?
+    {
+        bail!("Matrix request submission identity is immutable");
+    }
+    let doc = serde_json::to_string(value)?;
+    if conn.execute("INSERT OR IGNORE INTO interaction_matrix_results(message_id,request_id,human_id,doc,created_at) VALUES(?1,?2,?3,?4,?5)",params![value.message_id,value.request,human,doc,now_string()])?==0 {
+            let previous:String=conn.query_row("SELECT doc FROM interaction_matrix_results WHERE message_id=?",[&value.message_id],|r|r.get(0))?;
+            if previous!=doc {bail!("Canonical Matrix reply identity was reused with different content");}
+        }
+    conn.execute(
+        "UPDATE interaction_matrix_requests SET submission=?2,phase='reply_received' WHERE id=?1",
+        params![value.request, submission],
+    )?;
+    Ok(())
+}
+
+/// Pending source-linked offers, using the canonical presentation reader.
+/// No remote read, new queue, source-text copy or model admission occurs here.
+pub(super) fn attention_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<Value> {
+    attention_excluding_on(conn, human, entry, "{}")
+}
+
+/// Matrix replies and their source revisions are immutable within an entry
+/// binding. Exclude reviewed identities before LIMIT without incorporating them.
+pub(super) fn heartbeat_attention_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    seen: &std::collections::BTreeMap<String, String>,
+) -> Result<Value> {
+    attention_excluding_on(conn, human, entry, &serde_json::to_string(seen)?)
+}
+
+fn attention_excluding_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    seen: &str,
+) -> Result<Value> {
+    let (session, _) = super::presentation::entry_on(conn, human, entry)?;
+    let binding = super::presentation::entry_binding(conn, human, entry, session)?;
+    let epoch = super::stopping::admission_epoch_on(conn, entry)?;
+    if super::stopping::fenced_on(conn, entry)? || super::maintenance_writer_held_on(conn, entry)? {
+        return Ok(
+            json!({"envelopes":[],"available":false,"reason":"entry_fenced","has_more":false}),
+        );
+    }
+    let mut query = conn.prepare("SELECT r.message_id FROM interaction_matrix_results r JOIN interaction_matrix_requests m ON m.id=r.request_id WHERE r.human_id=?1 AND m.human_id=?1 AND m.entry_session=?2 AND r.reported_revision IS NULL AND json_extract(m.doc,'$.entry_generation')=?3 AND json_extract(m.doc,'$.epoch')=?4 AND NOT EXISTS(SELECT 1 FROM interaction_matrix_requests c JOIN json_each(c.doc,'$.relation.requests') p WHERE c.human_id=?1 AND c.entry_session=?2 AND json_extract(c.doc,'$.relation.kind')='amends' AND p.value=m.id) AND NOT EXISTS(SELECT 1 FROM json_each(?5) reviewed WHERE reviewed.key='matrix:'||r.message_id) ORDER BY r.rowid LIMIT 17")?;
+    let ids = query
+        .query_map(params![human, session, binding, epoch, seen], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut envelopes = vec![];
+    for id in ids.iter().take(16) {
+        let source = super::presentation::source_on(conn, human, entry, &format!("matrix:{id}"))?
+            .context("Canonical Matrix source unavailable")?;
+        anyhow::ensure!(
+            source["current"] == true,
+            "Matrix attention source no longer current"
+        );
+        envelopes.push(json!({"source":source["id"],"revision":source["revision"],"request_id":source["request_id"],"author":source["source_author"],"message_hash":source["matrix_message_hash"],"reply_kind":source["reply_kind"],"text_characters":source["text_characters"],"text_sha256":source["text_sha256"],"reason":"matrix_reply_available","completed":Value::Null,"internal_evidence":true,
+            "reader":{"operation":"conversation_part","arguments":{"source":source["id"],"revision":source["revision"],"offset":0}},
+            "after_incorporation":{"operation":"matrix_reported","arguments":{"message_id":id,"revision":source["revision"]}}}));
+    }
+    Ok(
+        json!({"envelopes":envelopes,"available":true,"has_more":ids.len()>16,"max_envelopes":16,"automatic_native_return":false,"publication_grant":false}),
+    )
+}
+
+impl Store {
+    /// Exact acknowledgment means integrator-reported incorporation only.
+    pub fn interaction_matrix_reported(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        native: &str,
+        message: &str,
+        revision: &str,
+    ) -> Result<()> {
+        if !canonical_uuid(message) || !hash(revision) {
+            bail!("Canonical Matrix message and exact source revision required");
+        }
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (_, current_native) = super::presentation::entry_on(&tx, human, entry)?;
+        let source =
+            super::presentation::source_on(&tx, human, entry, &format!("matrix:{message}"))?
+                .context("Canonical Matrix source unavailable")?;
+        if current_native != native || source["current"] != true || source["revision"] != revision {
+            bail!("Matrix attention source no longer current for this owner/revision");
+        }
+        let previous: Option<String> = tx.query_row("SELECT reported_revision FROM interaction_matrix_results WHERE message_id=?1 AND human_id=?2",params![message,human],|r|r.get(0))?;
+        if previous.as_deref().is_some_and(|r| r != revision) {
+            bail!("Matrix incorporation revision is immutable");
+        }
+        tx.execute("UPDATE interaction_matrix_results SET reported_revision=?2 WHERE message_id=?1 AND human_id=?3",params![message,revision,human])?;
+        tx.commit()?;
+        Ok(())
     }
 }
 
@@ -492,15 +684,17 @@ pub(super) fn result_on(
         .as_i64()
         .context("Matrix source logical entry unavailable")?;
     let correction:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_matrix_requests m JOIN json_each(m.doc,'$.relation.requests') parent WHERE m.human_id=?1 AND m.entry_session=?2 AND json_extract(m.doc,'$.relation.kind')='amends' AND parent.value=?3)",params![human,session,request_id],|r|r.get(0))?;
-    Ok(Some(
-        json!({"id":format!("matrix:{id}"),"kind":"matrix_result","text":result.text,
+    let mut source = json!({"id":format!("matrix:{id}"),"kind":"matrix_result","text":result.text,
         "label":format!("#{}",selected["request"]["label"].as_str().unwrap_or("Matrix")),
         "request_id":request_id,"current":selected["current"]==true && !correction,
         "correction_pending":correction,"completed":Value::Null,
         "native_binding_current":selected["current"],"delivery_phase":"retained",
         "source_author":result.author,"matrix_message_hash":result.message_hash,
-        "verification":"Receiving host reports SDK-verified event and exact reply parent; no native incorporation or task completion claimed"}),
-    ))
+        "verification":"Receiving host reports SDK-verified event and exact reply parent; no native incorporation or task completion claimed"});
+    if let Some(kind) = result.reply_kind {
+        source["reply_kind"] = json!(kind);
+    }
+    Ok(Some(source))
 }
 
 #[cfg(test)]
@@ -591,8 +785,359 @@ mod tests {
                 embodiment_id: "embodiment:receiver".into(),
             },
             text: "The actual canonical external answer".into(),
+            reply_kind: None,
         }
     }
+    #[test]
+    fn matrix_attention_uses_bounded_canonical_sources_and_exact_incorporation() {
+        let (file, store, entry) = setup();
+        let reference = original(&store, entry, 78);
+        let selected = prepare(&store, entry, &reference);
+        let first = reply(&selected["request"]);
+        for index in 0..18 {
+            let mut callback = first.clone();
+            callback.message_id = if index == 0 {
+                first.message_id.clone()
+            } else {
+                Uuid::now_v7().to_string()
+            };
+            callback.text = format!("Selected Matrix evidence {index} — α");
+            store
+                .interaction_matrix_return(100, entry, &callback)
+                .unwrap();
+        }
+        // A pre-feature database retains canonical replies and starts with no
+        // asserted incorporation markers when the supported migration runs.
+        store.conn.lock().unwrap().execute_batch("DROP INDEX interaction_matrix_pending_attention; ALTER TABLE interaction_matrix_results DROP COLUMN reported_revision").unwrap();
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        let attention = store.interaction_workflow_attention(100, entry).unwrap();
+        assert_eq!(
+            attention["matrix"]["envelopes"].as_array().unwrap().len(),
+            16
+        );
+        assert_eq!(attention["matrix"]["has_more"], true);
+        // Reviewing a bounded window does not incorporate it. The producer
+        // must still reach later immutable replies before applying its limit.
+        let seen = attention["matrix"]["envelopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["source"].as_str().unwrap().to_owned(),
+                    e["revision"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let next = heartbeat_attention_on(&store.conn.lock().unwrap(), 100, entry, &seen).unwrap();
+        assert_eq!(next["envelopes"].as_array().unwrap().len(), 2);
+        assert_eq!(next["has_more"], false);
+        assert!(!next["envelopes"].as_array().unwrap().iter().any(|e| {
+            attention["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .contains(e)
+        }));
+        assert_eq!(
+            store.interaction_workflow_attention(100, entry).unwrap()["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            16
+        );
+
+        assert!(
+            !attention["matrix"]
+                .to_string()
+                .contains("Selected Matrix evidence")
+        );
+        let envelope = &attention["matrix"]["envelopes"][0];
+        let revision = envelope["revision"].as_str().unwrap().to_owned();
+        let part = store
+            .interaction_presentation_part(
+                100,
+                entry,
+                envelope["source"].as_str().unwrap(),
+                &revision,
+                0,
+            )
+            .unwrap();
+        assert_eq!(part["text"], "Selected Matrix evidence 0 — α");
+        assert_eq!(part["completed"], Value::Null);
+        assert!(
+            store
+                .interaction_matrix_reported(
+                    100,
+                    entry,
+                    "other-native",
+                    &first.message_id,
+                    &revision
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_matrix_reported(
+                    101,
+                    entry,
+                    "entry-native",
+                    &first.message_id,
+                    &revision
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .interaction_matrix_reported(
+                    100,
+                    entry,
+                    "entry-native",
+                    &first.message_id,
+                    &"0".repeat(64)
+                )
+                .is_err()
+        );
+        store
+            .interaction_matrix_reported(100, entry, "entry-native", &first.message_id, &revision)
+            .unwrap();
+        store
+            .interaction_matrix_reported(100, entry, "entry-native", &first.message_id, &revision)
+            .unwrap();
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        let attention = store.interaction_workflow_attention(100, entry).unwrap();
+        let pending = attention["matrix"]["envelopes"].as_array().unwrap();
+        assert_eq!(pending.len(), 16);
+        assert!(
+            pending
+                .iter()
+                .all(|e| e["source"] != format!("matrix:{}", first.message_id))
+        );
+        for envelope in pending {
+            store
+                .interaction_matrix_reported(
+                    100,
+                    entry,
+                    "entry-native",
+                    envelope["after_incorporation"]["arguments"]["message_id"]
+                        .as_str()
+                        .unwrap(),
+                    envelope["revision"].as_str().unwrap(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.interaction_workflow_attention(100, entry).unwrap()["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let correction = original(&store, entry, 79);
+        store
+            .interaction_matrix_prepare(
+                entry,
+                100,
+                "entry-native",
+                &correction,
+                "telegram:fixture",
+                "SelectedPeer",
+                &destination(),
+                RequestRelation::Amends(vec![first.request.clone()]),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            store.interaction_workflow_attention(100, entry).unwrap()["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .interaction_matrix_reported(
+                    100,
+                    entry,
+                    "entry-native",
+                    &first.message_id,
+                    &revision
+                )
+                .is_err()
+        );
+        store
+            .set_session_codex_thread(entry, "successor-native")
+            .unwrap();
+        assert!(
+            store.interaction_workflow_attention(100, entry).unwrap()["matrix"]["envelopes"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .interaction_matrix_reported(
+                    100,
+                    entry,
+                    "successor-native",
+                    &first.message_id,
+                    &revision
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn inspection_page_is_atomic_monotonic_and_resumes_after_migration() {
+        let (file, store, entry) = setup();
+        let reference = original(&store, entry, 79);
+        let selected = prepare(&store, entry, &reference);
+        let first = reply(&selected["request"]);
+        store.interaction_matrix_return(100, entry, &first).unwrap();
+        let mut next = first.clone();
+        next.message_id = Uuid::now_v7().to_string();
+        next.message_hash = "c".repeat(64);
+        next.text = "A later signed reply".into();
+        let mut invalid = next.clone();
+        invalid.message_id = Uuid::now_v7().to_string();
+        invalid.text.clear();
+        let page = MatrixReadPage {
+            after: 0,
+            next_cursor: 10,
+            results: vec![next.clone(), invalid],
+            page_full: false,
+        };
+        assert!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &page)
+                .is_err()
+        );
+        let status = store
+            .interaction_matrix_status(100, entry, &first.request)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 0);
+        assert_eq!(status["results"].as_array().unwrap().len(), 1);
+        let page = MatrixReadPage {
+            results: vec![next],
+            ..page
+        };
+        assert!(
+            store
+                .interaction_matrix_inspection(101, entry, &first.request, &page)
+                .is_err()
+        );
+        let status = store
+            .interaction_matrix_inspection(100, entry, &first.request, &page)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 10);
+        assert_eq!(status["results"].as_array().unwrap().len(), 2);
+        let historical = MatrixReadPage {
+            after: 0,
+            next_cursor: 3,
+            results: vec![first.clone()],
+            page_full: false,
+        };
+        assert_eq!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &historical)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        let gap = MatrixReadPage {
+            after: 11,
+            next_cursor: 20,
+            results: vec![],
+            page_full: false,
+        };
+        assert_eq!(
+            store
+                .interaction_matrix_inspection(100, entry, &first.request, &gap)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        assert_eq!(
+            store
+                .interaction_matrix_status(100, entry, &first.request)
+                .unwrap()["inspection_cursor"],
+            10
+        );
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("ALTER TABLE interaction_matrix_requests DROP COLUMN inspection_cursor")
+            .unwrap();
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        let status = store
+            .interaction_matrix_status(100, entry, &first.request)
+            .unwrap();
+        assert_eq!(status["inspection_cursor"], 0);
+        assert_eq!(status["results"].as_array().unwrap().len(), 2);
+        store
+            .set_session_codex_thread(entry, "retired-native")
+            .unwrap();
+        let historical = store
+            .interaction_matrix_inspection(100, entry, &first.request, &page)
+            .unwrap();
+        assert_eq!(historical["current"], false);
+        assert_eq!(historical["inspection"]["native_input"], false);
+    }
+
+    #[test]
+    fn signed_speech_retains_provenance_without_completion_and_survives_reopen() {
+        let (file, store, entry) = setup();
+        let reference = original(&store, entry, 80);
+        let selected = prepare(&store, entry, &reference);
+        let mut callback = reply(&selected["request"]);
+        assert!(
+            serde_json::to_value(&callback)
+                .unwrap()
+                .get("reply_kind")
+                .is_none()
+        );
+        callback.reply_kind = Some(MatrixReplyKind::Speech);
+        let received = store
+            .interaction_matrix_return(100, entry, &callback)
+            .unwrap();
+        assert_eq!(received["results"][0]["result"]["reply_kind"], "speech");
+        let conn = store.conn.lock().unwrap();
+        let source = result_on(&conn, 100, entry, &callback.message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source["reply_kind"], "speech");
+        assert_eq!(source["completed"], Value::Null);
+        assert_eq!(
+            source["source_author"],
+            serde_json::to_value(&callback.author).unwrap()
+        );
+        drop(conn);
+        drop(store);
+        let reopened =
+            Store::open(file.path(), &[100, 101], &super::super::tests::defaults()).unwrap();
+        reopened
+            .interaction_matrix_return(100, entry, &callback)
+            .unwrap();
+        assert_eq!(
+            reopened
+                .interaction_matrix_status(100, entry, &callback.request)
+                .unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut invalid = serde_json::to_value(&callback).unwrap();
+        invalid["reply_kind"] = json!("human_approval");
+        assert!(serde_json::from_value::<MatrixReturn>(invalid).is_err());
+    }
+
     #[test]
     fn technical_claim_survives_duplicates_restart_and_uncertain_outcome() {
         let (file, store, entry) = setup();

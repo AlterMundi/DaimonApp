@@ -102,6 +102,11 @@ class Journey:
                     result = {'file_id': file_id, 'file_unique_id': file_id, 'file_path': 'voice/'+file_id, 'file_size': len(owner.media_files[file_id])}
                 elif method == 'createForumTopic' and hasattr(owner, 'created_topic'):
                     result = owner.created_topic(payload)
+                elif method == 'editMessageText':
+                    with owner.lock:
+                        previous=next(m for m,_ in reversed(owner.messages) if m['message_id']==payload['message_id'])
+                        result=dict(previous,text=html.unescape(payload['text']))
+                        owner.messages.append((dict(result),payload))
                 elif method == 'sendMessage':
                     with owner.lock:
                         owner.message_id += 1
@@ -267,11 +272,18 @@ import_desktop_history=false
             rows = [m for m in self.messages if html.unescape(m[1]['text']).startswith(f'Codex question {index}/') and m[0]['message_thread_id'] == topic and 'inline_keyboard' in m[1].get('reply_markup', {}) and (header is None or header in html.unescape(m[1]['text']))]
             return rows[-1] if rows else None
 
-    @staticmethod
-    def button(control, suffix):
+    def button(self, control, suffix):
         for row in control[1]['reply_markup']['inline_keyboard']:
             for button in row:
                 if button.get('callback_data', '').endswith(suffix):
+                    if button['callback_data'].startswith('q:') and self.mode != 'restart_gap':
+                        # Synthetic HTTP visibility precedes client handling of
+                        # its response and the retained native-question receipt.
+                        # Click a confirmed control, not an unbound HTTP request.
+                        # restart_gap deliberately clicks an uncertain old control.
+                        self.wait(lambda: self.row(
+                            'SELECT message_id FROM question_messages WHERE message_id=?',
+                            (control[0]['message_id'],)))
                     return control[0], button['callback_data']
         raise AssertionError('missing answer control')
 
@@ -369,7 +381,7 @@ import_desktop_history=false
             elif method == 'thread/name/set': send({'id': request_id, 'result': {}})
             elif method == 'turn/start':
                 import re
-                match=re.search(r'explicitly declare it in ([^\s]+human-requests.json)',params.get('additionalContext',{}).get('telecodex.runtime',{}).get('value',''))
+                match=re.search(r'explicitly declare it in ([^\s]+human-requests.json)',''.join(v['value'] for k,v in sorted(params.get('additionalContext',{}).items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.')))
                 assert match,params
                 manifest=pathlib.Path(match[1])
                 assert params['collaborationMode']=={'mode': ('default' if params['input'][0]['text']=='implement after planning' else 'plan'),'settings':{
@@ -582,6 +594,12 @@ def scenario(binary, mode):
             assert len([m for m in j.rpc if m.get('method')=='turn/start'])==2
             print(json.dumps({'scenario':mode,'two_tasks_survive_native_completion_and_restart':True,'scoped_force_reply_and_stale_controls':True}),flush=True);return
         if mode == 'disconnect':
+            # Session busy is cleared before record_turn_finished commits the
+            # uncertain answers. Observe that durable outcome before restart;
+            # an idle session alone is not a receipt for the answer's result.
+            j.wait(lambda: all(j.row('SELECT status FROM incoming_updates WHERE update_id=?',
+                                     (update_id,))==[('undetermined',)]
+                               for update_id in (option_id, answer_id)))
             for update_id in (option_id, answer_id):
                 assert j.row('SELECT status FROM incoming_updates WHERE update_id=?',(update_id,))==[('undetermined',)]
             j.stop(); j.start(); j.admit('late answer',reply=second[0]['message_id']); j.admit('/questions')

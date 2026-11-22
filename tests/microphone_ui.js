@@ -2,60 +2,457 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
 const until=async fn=>{for(let n=0;n<100;n++){if(fn())return;await new Promise(yes=>setTimeout(yes,5));}throw Error('Expected microphone transition did not occur');};
 const deferred=()=>{let resolve;return {promise:new Promise(yes=>{resolve=yes;}),resolve:value=>resolve(value)};};
-function boot(){
- const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[];
+function memoryRecovery(){
+ const values=new Map();
+ const db={createObjectStore(){},close(){},transaction(_name,mode){
+   const tx={aborted:false,abort(){this.aborted=true;this.onabort?.();},objectStore(){return {
+     get(key){const request={};queueMicrotask(()=>{request.result=values.get(key);request.onsuccess?.();queueMicrotask(()=>{if(!tx.aborted)tx.oncomplete?.();});});return request;},
+     put(value,key){assert.equal(mode,'readwrite');values.set(key,value);},delete(key){assert.equal(mode,'readwrite');values.delete(key);}
+   };}};return tx;
+ }};
+ return {values,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
+}
+function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,originalEvents={}){
+ let now=1000;
+ const nodes=new Map(),events={},timers=[],uploads=[],originals=new Map(),received=[],devices=[],activities=[],statusReads=[];
  const document={hidden:false,addEventListener(name,fn){events[name]=fn;},querySelector(name){if(!nodes.has(name))nodes.set(name,{hidden:false,disabled:false,textContent:'',handlers:{},setAttribute(k,v){this[k]=v;},addEventListener(n,f){this.handlers[n]=f;}});return nodes.get(name);}};
- let visual,visualFailure,mediaRequests=0;
- let selection, binding='original-binding',mode,permission,receiptHold,uploadHold,capturePhase='preparing',captureRetired=false,paused=0,unauthorized=0;
+ let fileReferences,mediaFailure,visual,visualFailure,mediaRequests=0,confirmDiscard=true;const confirmations=[];
+ let transcriptionProfile,captureQuestions,playback,selection, binding='original-binding',mode,permission,receiptHold,uploadHold,capturePhase='preparing',captureRetired=false,paused=0,unauthorized=0;
  class Recorder{
   static isTypeSupported(type){return type==='audio/webm;codecs=opus';}
-  constructor(stream){this.stream=stream;this.events={};this.state='inactive';devices.push(this);}
+  constructor(stream,options={}){this.stream=stream;this.mimeType=options.mimeType;this.events={};this.state='inactive';devices.push(this);}
   addEventListener(n,fn){this.events[n]=fn;}
   start(){this.state='recording';}
   stop(){if(this.state==='inactive')return;this.state='inactive';queueMicrotask(()=>{this.events.dataavailable({data:new Blob(['synthetic finalized audio'])});this.events.stop();});}
  }
  const media=()=>({stopped:0,getTracks(){return [{stop:()=>this.stopped++}];}});
- const window={isSecureContext:true,MediaRecorder:Recorder,crypto,addEventListener(n,fn){events[n]=fn;},navigator:{mediaDevices:{async getUserMedia(){mediaRequests++;if(permission)return permission.promise;return media();}}}};
+ const window={indexedDB:recovery,confirm(message){confirmations.push(message);return confirmDiscard;},isSecureContext:true,MediaRecorder:Recorder,crypto,addEventListener(n,fn){events[n]=fn;},navigator:{mediaDevices:{async getUserMedia(){mediaRequests++;if(mediaFailure)throw mediaFailure;if(permission)return permission.promise;return media();}}}};
+ const cueContexts=[],cueTones=[];
+ if(cues)window.AudioContext=class{
+  constructor(){this.state='running';this.currentTime=0;cueContexts.push(this);}
+  resume(){return Promise.resolve();}close(){this.state='closed';return Promise.resolve();}
+  createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){}},connect(){},disconnect(){}};}
+  createOscillator(){const tone={frequency:{setValueAtTime(hz){tone.hz=hz;}},connect(){},disconnect(){},start(){cueTones.push(tone.hz);},stop(){}};return tone;}
+ };
  async function fetch(_route,options){
-  uploads.push(options);const id=options.headers['X-Input-Id'];
+  options.route=_route;uploads.push(options);
+  if(_route==='api/interaction/voice/recover'){
+   const id=options.headers['X-Input-Id'],old=originals.get(id);
+   assert.equal(options.headers['X-Audio-Sha256'],Buffer.from(await crypto.subtle.digest('SHA-256',await options.body.arrayBuffer())).toString('hex'));
+   const result={...(old||{id,foreground_dialogue:options.headers['X-Foreground-Dialogue'],voice:{audio_sha256:options.headers['X-Audio-Sha256']}}),phase:old?.phase==='foreground'?'foreground':'preparing'};
+   originals.set(id,result);return {ok:true,json:async()=>result};
+  }
+  if(_route==='api/interaction/files'){const ref=JSON.parse(decodeURIComponent(options.headers['X-File-Reference']));return {ok:true,json:async()=>ref};}
+  const id=options.headers['X-Input-Id'];
   if(mode==='before'){mode=undefined;throw Error('Offline before capture');}
+  if(mode==='retention-full'){mode=undefined;return {ok:false,status:507,json:async()=>({})};}
   if(mode==='visual-refusal'){mode=undefined;return {ok:false,status:400,json:async()=>({code:'visual_reselection',submission_attempted:false})};}
   if(mode==='denied'){mode=undefined;return {ok:false,status:403,json:async()=>({})};}
-  const result={id,phase:capturePhase,retired:captureRetired,visual:options.headers['X-Visual-Reference']?JSON.parse(options.headers['X-Visual-Reference']):undefined,voice:{audio_sha256:options.headers['X-Audio-Sha256']}};originals.set(id,result);
+  const result={id,phase:capturePhase,retired:captureRetired,visual:options.headers['X-Visual-Reference']?JSON.parse(options.headers['X-Visual-Reference']):undefined,voice:{audio_sha256:options.headers['X-Audio-Sha256'],...(options.headers['X-Recording-Stop']?{capture_stop:options.headers['X-Recording-Stop']}:{})}};if(mode==='visual-extra'){mode=undefined;result.visual.push({source_id:'unexpected-third-image'});}
+  if(options.headers['X-File-References']){result.files=JSON.parse(decodeURIComponent(options.headers['X-File-References'])).map(f=>({size:f.size,name:f.name,mime:f.mime,sha256:f.sha256,file_id:f.file_id}));if(mode==='files-changed'){mode=undefined;result.files[0].size++;}}
+  originals.set(id,result);
   if(uploadHold)await uploadHold.promise;
   if(mode==='after'){mode=undefined;throw Error('Lost acknowledgement');}
   return {ok:true,json:async()=>result};
  }
- const context=vm.createContext({window,document,Blob,Uint8Array,fetch,AbortController,
+ const timing=[],transcripts=[],levels=[];
+ let preparation;
+ if(live)window.StreamingVoice={supported:()=>true,async create(stream,meta){preparation=meta;const recorder=new Recorder(stream);recorder.pause=async()=>{recorder.state='paused';};recorder.resume=async()=>{recorder.state='recording';};recorder.discard=()=>recorder.stop();return recorder;}};
+ const context=vm.createContext({Date:{now:()=>now},window,document,Blob,Uint8Array,ArrayBuffer,Int16Array,fetch,AbortController,
+  TextEncoder,
   setTimeout(fn,ms){const t={fn,ms};timers.push(t);return t;},clearTimeout(t){if(t)t.closed=true;}});
+ vm.runInContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),context);
  vm.runInContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),context);
- let ui;ui=window.VoiceInput.mount({headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,getReply:()=>selection,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route){if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value)throw Error('No recording');return value;}});
- ui.configure(true);
- return {ui,nodes,uploads,originals,received,devices,events,timers,media,activities,
+ let ui;ui=window.VoiceInput.mount({beforeOriginal,onOriginalAttempt:value=>originalEvents.attempt?.(value),onOriginalDiscard:value=>originalEvents.discard?.(value),headers:()=>({'X-Dashboard-CSRF':'synthetic'}),getBinding:()=>binding,onTranscript:value=>transcripts.push(value),canEditDraft:()=>true,onTiming:(id,stage,detail)=>timing.push({id,stage,detail}),getReply:()=>selection,getPlayback:()=>playback,getTranscriptionProfile:()=>transcriptionProfile,getCaptureQuestions:()=>captureQuestions,getFiles:()=>fileReferences,getVisual:()=>{if(visualFailure)throw Error('Selected image loading or unavailable');return visual;},pauseAudio(){paused++;},onActivity(value){activities.push(value);},onLevel(value){levels.push(value);},onInput(value){received.push(value);},unauthorized(){unauthorized++;ui.reset();},async api(route,body){if(route==='interaction/inputs'){if(mode==='before'){mode=undefined;throw Error('Offline before capture');}const value={...body,phase:'accepted'};originals.set(body.id,value);return value;}statusReads.push(route);if(receiptHold)await receiptHold.promise;const value=originals.get(route.split('/').at(-1));if(!value){const error=Error('No recording');if(status404)error.status=404;throw error;}return value;}});
+ ui.configure(true,live);
+ return {visibility:hidden=>{document.hidden=hidden;events.visibilitychange();},profile:value=>{transcriptionProfile=value;},cueContexts,cueTones,timing,statusReads,levels,online:value=>{window.navigator.onLine=value;},advance:ms=>{now+=ms;},files:value=>{fileReferences=value;},ui,nodes,uploads,originals,received,devices,events,timers,media,activities,questions:value=>{captureQuestions=value;},playback:value=>{playback=value;},transcripts,preparation:()=>preparation,
+  wakeLock:value=>{window.navigator.wakeLock=value;},confirmation:value=>{confirmDiscard=value;},confirmations,
   button:()=>nodes.get('#conversation-talk'),state:()=>nodes.get('#conversation-voice-state').textContent,
   click:()=>nodes.get('#conversation-talk').handlers.click(),cancel:()=>nodes.get('#conversation-voice-discard').handlers.click(),check:()=>nodes.get('#conversation-voice-check').handlers.click(),
-  visual:value=>{visual=value;visualFailure=false;},failVisual:()=>{visualFailure=true;},mediaRequests:()=>mediaRequests,select:value=>{selection=value;},captureState:(value,retired=false)=>{capturePhase=value;captureRetired=retired;},mode:value=>{mode=value;},permission:()=>{permission=deferred();return permission;},holdReceipt:()=>{receiptHold=deferred();return receiptHold;},holdUpload:()=>{uploadHold=deferred();return uploadHold;},bind:value=>{binding=value;},paused:()=>paused,unauthorized:()=>unauthorized,
+  visual:value=>{visual=value;visualFailure=false;},failVisual:()=>{visualFailure=true;},mediaRequests:()=>mediaRequests,microphoneFailure:name=>{mediaFailure={name,message:"private platform details"};},select:value=>{selection=value;},captureState:(value,retired=false)=>{capturePhase=value;captureRetired=retired;},mode:value=>{mode=value;},permission:()=>{permission=deferred();return permission;},holdReceipt:()=>{receiptHold=deferred();return receiptHold;},holdUpload:()=>{uploadHold=deferred();return uploadHold;},bind:value=>{binding=value;},paused:()=>paused,unauthorized:()=>unauthorized,
  };
 }
 (async()=>{
+ const contextRef={file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64};
+ for(const live of [false,true]){
+  const contextHold=deferred();let frozen;
+  const surface=boot(live,memoryRecovery(),false,false,async value=>{frozen=value;return contextHold.promise;});
+  await until(()=>surface.ui.canStartNative());const starting=surface.click();await until(()=>!!frozen);
+  assert.equal(surface.mediaRequests(),0,'Context is frozen before microphone permission');
+  assert.equal(frozen.modality,'audio');assert.equal(frozen.binding,'original-binding');
+  contextHold.resolve([contextRef]);await starting;assert.equal(surface.devices.at(-1).captureId,frozen.id);
+  surface.ui.hold();await until(()=>surface.nodes.get('#conversation-recording-review').hidden===false);
+  await surface.click();await until(()=>surface.received.length===1);
+  assert.equal(surface.uploads.at(-1).headers['X-Input-Id'],frozen.id);assert.equal(surface.originals.get(frozen.id).files[0].sha256,contextRef.sha256);
+ }
+ {
+ for(const live of [false,true]){
+  const held=deferred();let snapshot;
+  const audio=boot(live,memoryRecovery(),false,false,value=>{snapshot=value;return Promise.resolve([contextRef]);});await until(()=>audio.ui.canStartNative());audio.files(held.promise);const wait=audio.click();assert(snapshot);assert.equal(audio.mediaRequests(),0);held.resolve([{file_id:crypto.randomUUID(),sha256:'b'.repeat(64),name:'notes.txt',mime:'text/plain',size:50}]);await wait;audio.click();await until(()=>audio.received.length===1);assert.equal(audio.received[0].id,snapshot.id);assert.equal(audio.received[0].files.length,2);
+ }
+ const cancelled=[],startedOriginals=[];let boundaryCapture;
+ const delayedAttachment=deferred(),audioBoundary=boot(false,memoryRecovery(),false,false,value=>{boundaryCapture=value;return Promise.resolve([contextRef]);},{discard:value=>cancelled.push(value),attempt:value=>startedOriginals.push(value)});
+ await until(()=>audioBoundary.ui.canStartNative());audioBoundary.files(delayedAttachment.promise);const opening=audioBoundary.click();assert(boundaryCapture,'Audio host snapshot is dispatched synchronously before waiting for files');assert.equal(audioBoundary.mediaRequests(),0);
+ audioBoundary.cancel();assert.equal(cancelled.length,1);assert.equal(cancelled[0].id,boundaryCapture.id);delayedAttachment.resolve([]);await opening;assert.equal(audioBoundary.mediaRequests(),0);assert.equal(startedOriginals.length,0);
+ for(let n=0;n<35;n++){
+  const one=boot(false,undefined,false,false,async()=>[contextRef],{discard:value=>cancelled.push(value)});await one.click();one.cancel();
+ }
+ assert.equal(cancelled.length,36,'Each known never-submitted cancellation can release one machine reservation');
+ const unknownDiscards=[],unknownAttempts=[],unknownAudio=boot(false,memoryRecovery(),false,false,async()=>[contextRef],{discard:value=>unknownDiscards.push(value),attempt:value=>unknownAttempts.push(value)});
+ await until(()=>unknownAudio.ui.canStartNative());unknownAudio.mode('after');await unknownAudio.click();unknownAudio.click();await until(()=>unknownAudio.state().startsWith('Recording unconfirmed'));unknownAudio.cancel();assert.equal(unknownAttempts.length,1);assert.equal(unknownDiscards.length,0,'An unknown voice POST cannot emit source discard');
+ }
+ const editedStore=memoryRecovery(),edited=boot(true,editedStore);await until(()=>edited.ui.canStartNative());await edited.click();const recorder=edited.devices.at(-1);
+ edited.preparation().onPartial('A wrong opening');
+ assert.equal(edited.ui.pauseEditing(),true);await Promise.resolve();
+ edited.ui.editDraft('A corrected opening');
+ edited.preparation().onPartial('A wrong opening');
+ assert.equal(edited.transcripts.at(-1).active,true);
+ assert.equal(edited.ui.ownsSend(),true,'Editing retains recording ownership');
+ assert.equal(edited.nodes.get('#conversation-voice-continue').hidden,false);
+ assert(edited.timers.filter(t=>t.ms===1000).every(t=>t.closed),'Editing pauses the visible countdown');
+ assert.equal(await edited.ui.continueEditing(),true);
+ edited.preparation().onPartial('A wrong opening and a new ending');
+ assert.equal(edited.transcripts.at(-1).text,'A corrected opening and a new ending','New speech appends after the human edit');
+ recorder.preparedText='A wrong opening and a new ending';
+ edited.ui.submit();await until(()=>edited.received.length===1);
+ assert.equal(edited.received[0].text,'A corrected opening and a new ending');
+ assert.equal(edited.received[0].files.length,2,'The original and automatic transcript accompany the human text');
+ assert.equal(edited.uploads.filter(u=>u.route.includes('/voice')).length,0,'The edited text must never replay the audio as another instruction');
+ const attached=edited.uploads.filter(u=>u.route==='api/interaction/files');assert.equal(attached.length,2);
+ assert.equal(await attached[1].body.text(),'Automatic transcript from the same recording:\nA wrong opening and a new ending');
+ assert.equal(edited.received[0].files[0].sha256,Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await attached[0].body.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join(''));
+ const uncertainStore=memoryRecovery(),uncertain=boot(true,uncertainStore);await until(()=>uncertain.ui.canStartNative());await uncertain.click();uncertain.preparation().onPartial('Before edit');assert(uncertain.ui.pauseEditing());uncertain.ui.editDraft('After edit');uncertain.mode('before');uncertain.ui.submit();await until(()=>uncertainStore.values.get('pending')?.items?.[0]?.dictation);
+ assert.equal(uncertainStore.values.get('pending').schema,'telecodex.voice-recovery/v7','Old readers must refuse an edited original instead of sending its unedited transcript');
+ assert.equal(uncertainStore.values.get('pending').items[0].dictation.text,'After edit');
+ const restored=boot(true,uncertainStore,true);await until(()=>restored.state().includes('recovered'));restored.click();await until(()=>restored.received.length===1);assert.equal(restored.received[0].text,'After edit');assert.equal(restored.uploads.filter(v=>v.route.includes('/voice')).length,0,'Recovery retains the edited path and never replays ASR');
+ const double=boot(true);await double.click();double.preparation().onPartial('Words');assert(double.ui.pauseEditing());const outcomes=await Promise.all([double.ui.continueEditing(),double.ui.continueEditing()]);assert.equal(outcomes.filter(Boolean).length,1,'Double Continue resumes exactly once');
+ const lateContinue=boot(true);await lateContinue.click();const pauseHold=deferred();let resumedLate=0;lateContinue.devices.at(-1).pause=()=>pauseHold.promise;lateContinue.devices.at(-1).resume=async()=>{resumedLate++;};lateContinue.preparation().onPartial('Late words');assert(lateContinue.ui.pauseEditing());const resumeWait=lateContinue.ui.continueEditing();lateContinue.visibility(true);pauseHold.resolve();assert.equal(await resumeWait,false);assert.equal(resumedLate,0,'A pause completion cannot resume listening in a hidden tab');
+ const untouched=boot(true);await untouched.click();untouched.preparation().onPartial('Original untouched words');assert(untouched.ui.pauseEditing());assert(await untouched.ui.continueEditing());untouched.ui.submit();await until(()=>untouched.received.length===1);assert.equal(untouched.uploads.length,1);assert(untouched.uploads[0].route.includes('/voice'),'Pausing alone keeps the ordinary original-audio route');
+ const changed=boot(true);changed.visual({source_id:'kept-image',sha256:'a'.repeat(64)});await changed.click();changed.preparation().onPartial('Original picture words');assert(changed.ui.pauseEditing());changed.ui.editDraft('Human picture words');changed.ui.submit();await until(()=>changed.received.length===1);assert.equal(changed.received[0].visual.source_id,'kept-image');
+ const background=boot(true,memoryRecovery());await until(()=>background.ui.canStartNative());await background.click();background.preparation().onPartial('Background words');assert(background.ui.pauseEditing());background.ui.editDraft('Kept edited words');background.events.nativecapturebackground();await until(()=>background.nodes.get('#conversation-recording-review').hidden===false);assert.equal(background.uploads.length,0,'Background retains the edited original for explicit review');
+ const editingEnd=boot(true);await editingEnd.click();const endRecorder=editingEnd.devices.at(-1);endRecorder.pause=async()=>{endRecorder.state='paused';};endRecorder.resume=async()=>{endRecorder.state='recording';};
+ editingEnd.preparation().onPartial('Original words');assert(editingEnd.ui.pauseEditing());editingEnd.ui.editDraft('Human words');await Promise.resolve();
+ editingEnd.visibility(true);assert.equal(await editingEnd.ui.continueEditing(),false,'Hidden pages cannot resume listening');
+ editingEnd.timers.find(t=>t.ms===120000).fn();await until(()=>editingEnd.nodes.get('#conversation-recording-review').hidden===false);
+ assert.equal(editingEnd.uploads.length,0,'Physical expiry while editing retains the original without submission');
+ assert.equal(editingEnd.transcripts.at(-1).text,'Human words');
+ const slow=boot();await slow.click();const slowHold=slow.holdUpload();slow.click();await until(()=>slow.uploads.length===1);
+ for(const timer of slow.timers.filter(t=>!t.closed))timer.fn();
+ assert.equal(slow.uploads[0].signal.aborted,false,'No application timer may abort the recording transfer');
+ slowHold.resolve();await until(()=>slow.received.length===1);assert.equal(slow.uploads.length,1);
+ const openaiRecovery=memoryRecovery(),openai=boot(true,openaiRecovery);await until(()=>!openai.button().disabled);openai.profile('openai');
+ const openaiPermission=openai.permission(),openaiStarting=openai.click();openai.profile(undefined);openaiPermission.resolve(openai.media());await openaiStarting;
+ assert.equal(openai.preparation(),undefined,'OpenAI must never open a legacy Qwen/Gemini preview');
+ openai.mode('after');await openai.click();await until(()=>openai.uploads.length===1&&openai.state().includes('unconfirmed'));
+ assert.equal(openai.uploads[0].route,'api/interaction/voice/openai','Freeze provider before microphone permission');
+ const stored=openaiRecovery.values.get('pending');assert.equal(stored.schema,'telecodex.voice-recovery/v5');
+ assert.equal(stored.items[0].transcriptionProfile,'openai','Rollback reader must refuse unknown envelope rather than silently use legacy ASR');
+ await openai.click();await until(()=>openai.received.length===1);
+ assert.equal(openai.uploads[1].route,'api/interaction/voice/openai','Retry retains the same provider despite changed UI choice');
+ const preview=boot(true);await preview.click();
+ const previewStream=preview.preparation();
+ assert.equal(preview.transcripts.length,1);assert.equal(preview.transcripts[0].text,'');
+ previewStream.onPCM(new Int16Array([4000,-4000]).buffer);assert(preview.levels.at(-1)>0,'Recording PCM reaches the shared RMS feedback without another microphone request');assert.equal(preview.mediaRequests(),1);
+ previewStream.onPartial('Texto de la misma captura');
+ assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura');
+ assert.equal(preview.transcripts.at(-1).id,previewStream.id);
+ previewStream.onUnavailable();assert.equal(preview.levels.at(-1),0,'A failed live observer clears its measured feedback');assert.equal(preview.transcripts.at(-1).text,'Texto de la misma captura','Status is never inserted as recognized speech');
+ await preview.cancel();assert.equal(preview.transcripts.at(-1).active,false);
+ assert.equal(preview.levels.at(-1),0,'Stopping clears measured input feedback');const closedLevels=preview.levels.length;previewStream.onPCM(new Int16Array([4000,-4000]).buffer);assert.equal(preview.levels.length,closedLevels,'Late PCM cannot revive feedback after Stop');
+ const closedPreviewCount=preview.transcripts.length;previewStream.onPartial('Late words');
+ assert.equal(preview.transcripts.length,closedPreviewCount);assert.equal(preview.uploads.length,0);
+ const openaiCaptions=boot(true);openaiCaptions.profile('openai');openaiCaptions.ui.configure(true,false,'prepared',true);await openaiCaptions.click();
+ assert.equal(openaiCaptions.preparation().transcriptionProvider,'openai','The selected capture must use the dedicated OpenAI caption socket');
+ assert.equal(openaiCaptions.preparation().canonicalRecorder.mimeType,'audio/webm;codecs=opus','Live captions cannot replace the original recorder');
+ openaiCaptions.preparation().onPartial('Texto mientras hablás');assert.equal(openaiCaptions.state(),'Texto mientras hablás');
+ openaiCaptions.preparation().onUnavailable();assert.equal(openaiCaptions.state(),'Recording… Live text unavailable.');assert.equal(openaiCaptions.devices.at(-1).state,'recording','Preview failure must keep the acoustic original recording');
+ openaiCaptions.cancel();
+ const liveOnlyRecovery=memoryRecovery(),liveOnly=boot(true,liveOnlyRecovery);await until(()=>!liveOnly.button().disabled);liveOnly.profile('openai-live');liveOnly.ui.configure(true,false,'prepared',true);await liveOnly.click();
+ assert.equal(liveOnly.preparation().transcriptionProvider,'openai');assert.equal(liveOnly.preparation().canonicalRecorder,undefined,'Use the exact PCM live original, not another compressed interpretation');
+ liveOnly.devices.at(-1).preparedText='Same live words';liveOnly.mode('after');await liveOnly.click();await until(()=>liveOnly.uploads.length===1);
+ assert.equal(liveOnly.uploads[0].route,'api/interaction/voice/openai-live');
+ assert.equal(liveOnlyRecovery.values.get('pending').schema,'telecodex.voice-recovery/v6','Older readers must refuse live-only profiles rather than run file ASR');
+ const prepared=boot(true);await prepared.click();prepared.preparation().onPartial('Live caption without a prior error');
+ assert.equal(prepared.nodes.get('#conversation-voice-state')['data-live-caption'],'true');
+ prepared.devices[0].preparationTiming={provider_final_ms:123};
+ prepared.devices[0].preparedText='Final recognized sentence';const savedHold=prepared.holdUpload();
+ prepared.nodes.get('#conversation-send').handlers.click();await until(()=>prepared.uploads.length===1);
+ assert.equal(prepared.state(),'Final recognized sentence','Keep completed recognition visible during durable saving');
+ savedHold.resolve();await until(()=>prepared.received.length===1);
+ assert.equal(prepared.state(),'Final recognized sentence','Do not replace prepared text with a second-transcription claim');
+ prepared.ui.observe({...prepared.received[0],phase:'preparing'},'Confirming transcript…');assert.equal(prepared.state(),'Final recognized sentence');
+ prepared.ui.observe({...prepared.received[0],phase:'accepted'},'Sent');assert.equal(prepared.state(),'');
+ assert.equal(prepared.uploads.length,1);
+ assert.equal(prepared.timing.find(v=>v.stage==='prepared').detail.provider_final_ms,123,'Ordinary capture forwards only the exact recorder preparation observation');
+ const mediaHint={source:'native:7',revision:'a'.repeat(64),segment_offset:240,position_millis:3700,duration_millis:12000,state:'interrupted'};
+ const playCapture=boot();playCapture.playback(mediaHint);const heldPlayPermission=playCapture.permission();
+ const playingStart=playCapture.click();playCapture.playback({...mediaHint,position_millis:9900});heldPlayPermission.resolve(playCapture.media());await playingStart;
+ playCapture.mode('after');playCapture.click();await until(()=>playCapture.uploads.length===1&&playCapture.state().includes('unconfirmed'));
+ assert.deepEqual(JSON.parse(playCapture.uploads[0].headers['X-Playback-Context']),mediaHint,'Playback progress is frozen before microphone permission');
+ playCapture.playback(undefined);await playCapture.click();await until(()=>playCapture.received.length===1);
+ assert.equal(playCapture.uploads[0].headers['X-Playback-Context'],playCapture.uploads[1].headers['X-Playback-Context'],'An identical recording retry keeps its captured playback metadata');
+
+ const scoped=boot(true),known={['a'.repeat(32)]:'b'.repeat(64)};
+ scoped.questions(known);const scopePermission=scoped.permission(),scopeStarting=scoped.click();
+ known['c'.repeat(32)]='d'.repeat(64);scoped.questions({});scopePermission.resolve(scoped.media());await scopeStarting;
+ scoped.mode('after');scoped.click();await until(()=>scoped.uploads.length===1&&scoped.state().includes('unconfirmed'));
+ assert.deepEqual(JSON.parse(scoped.uploads[0].headers['X-Capture-Questions']),{['a'.repeat(32)]:'b'.repeat(64)},'Question limits are cloned before permission and live ASR');
+ scoped.questions({['c'.repeat(32)]:'d'.repeat(64)});await scoped.click();await until(()=>scoped.received.length===1);
+ assert.equal(scoped.uploads[1].headers['X-Capture-Questions'],scoped.uploads[0].headers['X-Capture-Questions'],'A recording retry cannot acquire later question versions');
+ const none=boot(true);none.questions({});await none.click();none.click();await until(()=>none.received.length===1);
+ assert.equal(none.uploads[0].headers['X-Capture-Questions'],'{}','An empty capture-time question set is an explicit restriction');
+ const live=boot(true);await live.click();const preparation=live.preparation();
+ assert(preparation.id&&preparation.binding==='original-binding');preparation.onPartial('unfinished words');
+ assert.equal(live.state(),'unfinished words');assert.equal(live.uploads.length,0,'Live recognition cannot dispatch the original');
+ live.nodes.get('#conversation-send').handlers.click();await until(()=>live.received.length===1);
+ assert.deepEqual(live.timing.map(event=>event.stage),['requested','started','partial','send','ended','ready','send','retained']);
+ assert(live.timing.every(event=>event.id===preparation.id),'Capture timing owns the same immutable original across finalization/upload');
+ assert.equal(live.uploads.length,1);assert.equal(live.uploads[0].headers['X-Input-Id'],preparation.id,'Streaming preparation and original admission must own the same capture UUID');assert.equal(live.uploads[0].body.type,'audio/wav');
  const hinted=boot();hinted.select({reference:{source:'delivery:11111111-1111-1111-1111-111111111111',revision:'a'.repeat(64),context_only:true},version:1});
  await hinted.click();hinted.click();await until(()=>hinted.received.length===1);
  assert.equal(hinted.uploads[0].headers['X-Reply-Source'],'context:delivery:11111111-1111-1111-1111-111111111111','Device context must not become an explicit destination during voice upload');
- const f=boot();await f.click();assert.equal(f.button().textContent,'Send voice');assert.equal(f.paused(),1);
+ const unified=boot();await unified.click();
+ assert.equal(unified.nodes.get('#conversation-voice-state')['data-attention'],'false','Routine recording status belongs to header, without a second visible line');
+ assert(unified.button().hidden,'Recording hides the redundant microphone/send control');
+ const send=unified.nodes.get('#conversation-send');assert.equal(send.type,'button');assert.equal(send['aria-label'],'Send voice message');assert(!send.disabled);
+ assert.equal(unified.nodes.get('#conversation-voice-discard').textContent,'×');assert(!unified.nodes.get('#conversation-voice-discard').hidden);
+ send.handlers.click();await until(()=>unified.received.length===1);assert.equal(unified.uploads.length,1);assert.equal(send.type,'submit');assert(!unified.button().hidden);
+ const cancelled=boot();await cancelled.click();cancelled.confirmation(false);cancelled.cancel();assert.equal(cancelled.devices[0].state,'recording','Declining confirmation must preserve the recording');assert.equal(cancelled.uploads.length,0);cancelled.confirmation(true);cancelled.cancel();assert.equal(cancelled.devices[0].state,'inactive');assert.equal(cancelled.nodes.get('#conversation-send').type,'submit');assert.equal(cancelled.uploads.length,0);assert.equal(cancelled.confirmations.length,2);assert.match(cancelled.confirmations[0],/deleted without sending/);
+ const f=boot();await f.click();assert.equal(f.button().textContent,'↑');assert.equal(f.paused(),1);
  assert.equal(f.uploads.length,0,'Partial recording cannot admit work');f.click();await until(()=>f.received.length===1);
  assert.equal(f.uploads.length,1);assert.equal(f.uploads[0].body.type,'audio/webm;codecs=opus');assert.equal(f.devices[0].stream.stopped,1);
- assert.equal(f.button().textContent,'Talk');assert(f.received[0].voice.audio_sha256);
+ assert.equal(f.button().textContent,'🎙');assert(f.received[0].voice.audio_sha256);
  assert.equal(f.activities.at(-1),true,'Audio replies wait until the transcript is ready');f.ui.observe({...f.received[0],phase:'accepted'},'Sent');assert.equal(f.activities.at(-1),false);
+ const originalFiles=[{file_id:'11111111-1111-4111-8111-111111111111',sha256:'a'.repeat(64),name:'scan.pdf',mime:'application/pdf',size:17}];
+ const withFiles=boot();withFiles.files(originalFiles);await withFiles.click();withFiles.click();await until(()=>withFiles.received.length===1);
+ assert.equal(withFiles.uploads.length,1,'Reordered server object keys cannot invalidate a receipt');
+ const changedFiles=boot();changedFiles.files(originalFiles);changedFiles.mode('files-changed');await changedFiles.click();changedFiles.click();await until(()=>changedFiles.state().startsWith('Recording unconfirmed'));assert.equal(changedFiles.received.length,0,'Changed original metadata must stay unconfirmed');
  const lost=boot();lost.mode('after');await lost.click();lost.click();await until(()=>lost.state().startsWith('Recording unconfirmed'));
  assert.equal(lost.originals.size,1);await lost.check();assert.equal(lost.uploads.length,1,'Status inspection must not upload again');assert.equal(lost.received.length,1);
+ const automatic=boot();automatic.captureState('accepted');automatic.mode('after');await automatic.click();automatic.click();await until(()=>automatic.state().startsWith('Recording unconfirmed'));
+ const recoveryTimer=automatic.timers.find(t=>!t.closed&&t.ms===1000);assert(recoveryTimer,'Lost acknowledgment must schedule bounded read-only delivery recovery');recoveryTimer.closed=true;recoveryTimer.fn();
+ await until(()=>automatic.received.length===1);assert.equal(automatic.received[0].phase,'accepted');assert.equal(automatic.uploads.length,1,'Automatic confirmation must not upload the original again');assert.equal(automatic.mediaRequests(),1,'Delivery recovery must not open another microphone');assert.equal(automatic.button()['aria-label'],'Record a voice message');
+
+ const retryStore=memoryRecovery(),autoRetry=boot(false,retryStore,true);await until(()=>!autoRetry.button().disabled);autoRetry.mode('before');await autoRetry.click();autoRetry.click();await until(()=>autoRetry.state().startsWith('Recording unconfirmed'));
+ const firstAttempt=autoRetry.uploads[0],retryTimer=autoRetry.timers.find(t=>!t.closed&&t.ms===1000);retryTimer.closed=true;retryTimer.fn();await until(()=>autoRetry.received.length===1);
+ assert.equal(autoRetry.uploads.length,2,'Confirmed absence permits one bounded automatic same-original retry');assert.equal(autoRetry.uploads[1].body,firstAttempt.body);assert.deepEqual(autoRetry.uploads[1].headers,firstAttempt.headers);assert.equal(autoRetry.mediaRequests(),1);assert.equal(retryStore.values.size,0);
+ const boundedRetry=boot(false,undefined,true);boundedRetry.mode('before');await boundedRetry.click();boundedRetry.click();await until(()=>boundedRetry.state().startsWith('Recording unconfirmed'));
+ for(let n=0;n<4;n++){boundedRetry.mode('before');const timer=boundedRetry.timers.find(t=>!t.closed&&[1000,3000,10000,30000].includes(t.ms));assert(timer);timer.closed=true;timer.fn();await until(()=>!boundedRetry.nodes.get('#conversation-voice-check').disabled);}
+ assert.equal(boundedRetry.uploads.length,3,'Initial upload plus at most two automatic retries');assert.equal(boundedRetry.statusReads.length,4);assert(boundedRetry.ui.ownsSend(),'Exhaustion preserves the original and manual recovery');
+
+ const legacyStore=memoryRecovery();legacyStore.values.set('pending',{id:crypto.randomUUID(),binding:'original-binding',mime:'audio/wav',blob:new Blob(['review only']),audio_sha256:'a'.repeat(64)});const legacy=boot(false,legacyStore,true);await until(()=>legacy.state().startsWith('An unfinished recording was recovered'));const legacyTimer=legacy.timers.find(t=>!t.closed&&t.ms===1000);legacyTimer.closed=true;legacyTimer.fn();await until(()=>legacy.statusReads.length===1&&!legacy.nodes.get('#conversation-voice-check').disabled);assert.equal(legacy.uploads.length,0,'Legacy or review-only recovery without Send intent cannot auto-submit');
+ const exhaustedStore=memoryRecovery();exhaustedStore.values.set('pending',{...legacyStore.values.get('pending'),submissionRequested:true,automaticRetries:2});const exhausted=boot(false,exhaustedStore,true);await until(()=>exhausted.state().startsWith('An unfinished recording was recovered'));const exhaustedTimer=exhausted.timers.find(t=>!t.closed&&t.ms===1000);exhaustedTimer.closed=true;exhaustedTimer.fn();await until(()=>exhausted.statusReads.length===1&&!exhausted.nodes.get('#conversation-voice-check').disabled);assert.equal(exhausted.uploads.length,0,'Reload cannot reset the persisted retry limit');
+ const ackStore=memoryRecovery(),beforeAckReload=boot(false,ackStore);await until(()=>!beforeAckReload.button().disabled);beforeAckReload.mode('after');await beforeAckReload.click();beforeAckReload.click();await until(()=>beforeAckReload.state().startsWith('Recording unconfirmed'));
+ const savedAck=[...beforeAckReload.originals.values()][0],restoredAck=boot(false,ackStore);restoredAck.originals.set(savedAck.id,savedAck);await until(()=>restoredAck.state().startsWith('An unfinished recording was recovered'));const restoredTimer=restoredAck.timers.find(t=>!t.closed&&t.ms===1000);assert(restoredTimer);restoredTimer.closed=true;restoredTimer.fn();await until(()=>restoredAck.received.length===1);assert.equal(ackStore.values.size,0);assert.equal(restoredAck.uploads.length,0);assert.equal(restoredAck.mediaRequests(),0);
+ const offlineRecovery=boot();offlineRecovery.mode('before');await offlineRecovery.click();offlineRecovery.click();await until(()=>offlineRecovery.state().startsWith('Recording unconfirmed'));offlineRecovery.online(false);
+ const beforeOnline=offlineRecovery.timers.find(t=>!t.closed&&t.ms===1000);beforeOnline.closed=true;beforeOnline.fn();assert.equal(offlineRecovery.statusReads.length,0,'Offline observation must wait for connectivity');
+ const upload=offlineRecovery.uploads[0],savedId=upload.headers['X-Input-Id'];offlineRecovery.originals.set(savedId,{id:savedId,phase:'accepted',voice:{audio_sha256:upload.headers['X-Audio-Sha256']}});offlineRecovery.online(true);offlineRecovery.events.online();const onlineTimer=offlineRecovery.timers.find(t=>!t.closed&&t.ms===0);assert(onlineTimer);onlineTimer.closed=true;onlineTimer.fn();await until(()=>offlineRecovery.received.length===1);assert.equal(offlineRecovery.uploads.length,1);
+ const bounded=boot();bounded.mode('before');await bounded.click();bounded.click();await until(()=>bounded.state().startsWith('Recording unconfirmed'));
+ for(const delay of [1000,3000,10000,30000]){const timer=bounded.timers.find(t=>!t.closed&&t.ms===delay);assert(timer);timer.closed=true;timer.fn();await until(()=>!bounded.nodes.get('#conversation-voice-check').disabled);}
+ assert.equal(bounded.statusReads.length,4);bounded.events.online();assert(!bounded.timers.some(t=>!t.closed&&[0,1000,3000,10000,30000].includes(t.ms)),'Automatic reads must stop at their per-original bound');assert.equal(bounded.uploads.length,1);assert(bounded.ui.ownsSend(),'Unconfirmed audio must remain available');
+ const storage=memoryRecovery(),beforeReload=boot(false,storage);
+ await until(()=>!beforeReload.button().disabled);beforeReload.mode('before');await beforeReload.click();beforeReload.click();
+ await until(()=>beforeReload.state().startsWith('Recording unconfirmed'));
+ assert.equal(storage.values.size,1);assert.equal(beforeReload.button().hidden,true,'Unconfirmed original hides the duplicate retry icon');assert.equal(beforeReload.nodes.get('#conversation-send').textContent,'Retry send');assert.equal(beforeReload.nodes.get('#conversation-send').disabled,false,'One labeled retry stays reachable');
+ assert.equal(beforeReload.nodes.get('#conversation-voice-discard').hidden,false,'Unconfirmed capture must have an exit without reloading');
+ const retained=storage.values.get('pending'),afterReload=boot(false,storage);
+ await until(()=>afterReload.state().startsWith('An unfinished recording was recovered'));
+ assert.equal(afterReload.uploads.length,0);assert.equal(afterReload.mediaRequests(),0,'Recovery does not capture, dispatch or retry');
+ await afterReload.check();assert.equal(afterReload.uploads.length,0);assert.match(afterReload.state(),/local audio is kept/);
+ await afterReload.click();await until(()=>afterReload.received.length===1);
+ assert.equal(afterReload.uploads[0].headers['X-Input-Id'],retained.id);assert.equal(afterReload.uploads[0].body,retained.blob);
+ assert.equal(storage.values.size,0,'Only a matching receipt retires local recovery');
+ // The continuous owner uses the ordinary original writer and bounded store.
+ const continuousStore=memoryRecovery(),continuous=boot(true,continuousStore);
+ await until(()=>continuous.ui.canStartContinuous());continuous.ui.continuousOwner(true);
+ const second=await continuous.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',mime:'audio/wav',blob:new Blob(['second'],{type:'audio/wav'}),capture_started:2000,preparedText:'Second'});
+ const first=await continuous.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',mime:'audio/wav',blob:new Blob(['first'],{type:'audio/wav'}),capture_started:1000,preparedText:'First',captureQuestions:{['a'.repeat(32)]:'b'.repeat(64)},playback:mediaHint});
+ const bundle=continuousStore.values.get('pending');assert.equal(bundle.schema,'telecodex.voice-recovery/v2');assert.deepEqual(Array.from(bundle.items,v=>v.id),[first.id,second.id]);
+ await assert.rejects(continuous.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',mime:'audio/wav',blob:new Blob(['third'])}));
+ assert.equal(continuousStore.values.get('pending').items.length,2,'Capacity refusal cannot mutate either retained original');
+ await assert.rejects(continuous.ui.retainContinuous({...first,blob:new Blob(['changed'])}));
+ assert.equal(continuousStore.values.get('pending').items[0].audio_sha256,first.audio_sha256);
+ const before=await continuous.ui.commitContinuous(first);assert(before.confirmed);assert.equal(before.value.id,first.id);
+ assert.equal(continuous.uploads[0].headers['X-Input-Id'],first.id);assert.deepEqual(JSON.parse(continuous.uploads[0].headers['X-Capture-Questions']),first.captureQuestions);
+ assert.equal(continuous.uploads[0].headers['X-Playback-Context'],JSON.stringify(mediaHint));
+ assert.equal(continuousStore.values.get('pending').id,second.id,'One receipt leaves the other exact original in the legacy single-item shape');
+ continuous.ui.continuousOwner(false);await until(()=>continuous.state().startsWith('An unfinished recording was recovered'));
+ assert.equal(continuous.uploads.length,1,'Leaving or restoring never retries a retained original');
+ await continuous.click();await until(()=>continuous.received.length===2);assert.equal(continuous.uploads[1].headers['X-Input-Id'],second.id);assert.equal(continuousStore.values.size,0);
+
+ // A lost continuous upload response must recover only that accepted original.
+ const lostPairStore=memoryRecovery(),lostPair=boot(true,lostPairStore);
+ await until(()=>lostPair.ui.canStartContinuous());lostPair.ui.continuousOwner(true);
+ const acceptedPair=await lostPair.ui.retainContinuous({...first,id:crypto.randomUUID()});
+ const unsentPair=await lostPair.ui.retainContinuous({...second,id:crypto.randomUUID()});
+ lostPair.mode('after');const uncertainPair=await lostPair.ui.commitContinuous(acceptedPair);
+ assert.equal(uncertainPair.confirmed,false);assert.equal(lostPair.uploads.length,1);
+ assert.equal(lostPairStore.values.get('pending').items.length,2);
+ const pairReload=boot(true,lostPairStore);
+ pairReload.originals.set(acceptedPair.id,lostPair.originals.get(acceptedPair.id));
+ await until(()=>pairReload.state().startsWith('An unfinished recording was recovered'));
+ await pairReload.check();
+ assert.equal(pairReload.uploads.length,0,'Receipt recovery after reload never resends the accepted original');
+ assert.equal(pairReload.mediaRequests(),0,'Receipt recovery never reopens capture');
+ assert.equal(lostPairStore.values.get('pending').id,unsentPair.id,'The distinct next continuous fragment remains recoverable');
+ assert.equal(lostPairStore.values.get('pending').audio_sha256,unsentPair.audio_sha256);
+ assert.equal(pairReload.received[0].id,acceptedPair.id);
+
+ const nativeRecovery=memoryRecovery(),nativeCopy=boot(true,nativeRecovery);
+ await until(()=>!nativeCopy.button().disabled);
+ const nativeOriginal=await nativeCopy.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),blob:new Blob(['synthetic native WAV original']),mime:'audio/wav'});
+ await nativeCopy.ui.reviewContinuous([nativeOriginal]);
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,foreground_dialogue:nativeOriginal.foreground_dialogue,phase:'foreground_captured',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ await nativeCopy.check();
+ assert.equal(nativeRecovery.values.size,1,'A retained native WAV without a completed interpretation keeps its local recovery copy');
+ assert.equal(nativeCopy.received.length,0);assert.equal(nativeCopy.uploads.length,0);
+ await nativeCopy.click();await until(()=>nativeCopy.uploads.length===1);
+ assert.equal(nativeCopy.uploads[0].route,'api/interaction/voice/recover');
+ assert.equal(nativeCopy.uploads[0].headers['X-Input-Id'],nativeOriginal.id);
+ assert.equal(nativeCopy.uploads[0].headers['X-Foreground-Dialogue'],nativeOriginal.foreground_dialogue);
+ assert.equal(nativeRecovery.values.size,1,'Preparing recovery keeps the local original');
+
+ nativeCopy.originals.set(nativeOriginal.id,{id:nativeOriginal.id,foreground_dialogue:nativeOriginal.foreground_dialogue,phase:'foreground',text:'Completed native interpretation',voice:{audio_sha256:nativeOriginal.audio_sha256}});
+ await nativeCopy.check();await until(()=>nativeCopy.received.length===1);
+ assert.equal(nativeRecovery.values.size,0);assert.equal(nativeCopy.uploads.length,1,'Checking completed recovery never resends or reinterprets it');
+
+ const missingStore=memoryRecovery(),missing=boot(true,missingStore);
+ await until(()=>missing.ui.canStartContinuous());
+ const local=await missing.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),blob:new Blob(['local Avatar original']),mime:'audio/wav'});
+ await missing.ui.reviewContinuous([local]);await missing.click();
+ await until(()=>missing.originals.has(local.id));
+ assert.equal(missing.uploads[0].route,'api/interaction/voice/recover','Local-only recovery uses the same native original identity');
+ assert.equal(missingStore.values.size,1,'Local-only original survives until interpretation completes');
+ // Native review keeps exact local bytes and uses a versioned bounded queue.
+ const reviewStore=memoryRecovery(),reviewOwner=boot(true,reviewStore);
+ await until(()=>reviewOwner.ui.canStartContinuous());reviewOwner.ui.continuousOwner(true);
+ const dialogue=crypto.randomUUID(),reviewed=[];
+ const makeReview=()=>({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:dialogue,mime:'audio/wav',blob:new Blob(['review original'])});
+ for(let n=0;n<3;n++){
+   const original=await reviewOwner.ui.retainContinuous(makeReview());reviewed.push(original);
+   await assert.rejects(reviewOwner.ui.reviewNativeContinuous({...original,audio_sha256:'0'.repeat(64)}));
+   await reviewOwner.ui.reviewNativeContinuous(original);
+ }
+ assert.equal(reviewStore.values.get('pending').schema,'telecodex.voice-recovery/v3');
+ assert.equal(reviewStore.values.get('pending').items.length,3);
+ assert.equal(reviewOwner.uploads.length,0,'Review never submits an original');
+ const reviewReload=boot(false,reviewStore,true);
+ await until(()=>reviewReload.state().startsWith('An unfinished recording was recovered'));
+ assert.equal(reviewReload.uploads.length,0);assert.equal(reviewReload.mediaRequests(),0);
+ assert.equal(reviewStore.values.get('pending').items.length,3,'Reload cannot retire a review original');
+ await assert.rejects(reviewOwner.ui.retainContinuous({...makeReview(),blob:new Blob([new Uint8Array(20*1024*1024)])}));
+ assert.equal(reviewStore.values.get('pending').items.length,3,'Combined byte refusal preserves all records');
+ await reviewOwner.ui.releaseContinuous(reviewed[0],reviewed[0].audio_sha256);
+ assert.equal(reviewStore.values.get('pending').schema,'telecodex.voice-recovery/v2','Compatible shape returns after matching completion');
+ assert.deepEqual(Array.from(reviewStore.values.get('pending').items,v=>v.id),reviewed.slice(1).map(v=>v.id));
+ for(let n=2;n<128;n++){const original=await reviewOwner.ui.retainContinuous(makeReview());await reviewOwner.ui.reviewNativeContinuous(original);}
+ await assert.rejects(reviewOwner.ui.retainContinuous(makeReview()));
+ assert.equal(reviewStore.values.get('pending').items.length,128,'Reviewed recordings retain an explicit record ceiling');
+
+ const discardStore=memoryRecovery();discardStore.values.set('pending',{schema:'telecodex.voice-recovery/v2',items:[first,second]});
+ const queueReview=boot(false,discardStore);await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));
+ queueReview.cancel();await until(()=>queueReview.state().startsWith('An unfinished recording was recovered'));
+ await queueReview.click();await until(()=>queueReview.received.length===1);
+ assert.equal(queueReview.uploads[0].headers['X-Input-Id'],second.id,'Discard exposes the next retained original without reload');
+ assert.equal(queueReview.mediaRequests(),0);assert.equal(discardStore.values.size,0);
+ const discarded=boot();discarded.mode('before');await discarded.click();discarded.click();await until(()=>discarded.state().startsWith('Recording unconfirmed'));
+ discarded.confirmation(false);discarded.cancel();assert.equal(discarded.nodes.get('#conversation-voice-check').hidden,false);
+ discarded.confirmation(true);discarded.cancel();assert.equal(discarded.ui.ownsSend(),false);assert.equal(discarded.button()['aria-label'],'Record a voice message');
+ assert.equal(discarded.uploads.length,1,'Discard of an uncertain local copy cannot resend or cancel server work');
+ assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,false);
+ assert.equal(discarded.nodes.get('#conversation-voice-discard')['aria-label'],'Dismiss recording notice');
+ const priorConfirmations=discarded.confirmations.length;discarded.cancel();
+ assert.equal(discarded.state(),'');assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,true);
+ assert.equal(discarded.confirmations.length,priorConfirmations,'Dismissing feedback is not another discard');
+ assert.equal(discarded.uploads.length,1,'Dismissing feedback never changes server work');
+
+ const blockedStore=memoryRecovery(),blocked=boot(false,blockedStore,true);await until(()=>!blocked.button().disabled);
+ blocked.mode('retention-full');await blocked.click();blocked.click();await until(()=>blocked.state().startsWith('Audio storage is full'));
+ assert.equal(blocked.originals.size,0);assert.equal(blockedStore.values.get('pending').retentionBlocked,true);
+ const blockedId=blocked.uploads[0].headers['X-Input-Id'];
+ await blocked.nodes.get('#conversation-voice-check').handlers.click();
+ assert(blocked.state().includes('storage is still blocked'));assert.equal(blocked.uploads.length,1,'Check cannot retry a storage refusal');
+ await blocked.click();await until(()=>blocked.received.length===1);
+ assert.equal(blocked.uploads[1].headers['X-Input-Id'],blockedId,'Explicit retry after repair keeps exact identity');
  const offline=boot();offline.mode('before');await offline.click();offline.click();await until(()=>offline.state().startsWith('Recording unconfirmed'));
  assert.equal(offline.originals.size,0);await offline.click();await until(()=>offline.received.length===1);
  assert.equal(offline.uploads.length,2);assert.deepEqual(offline.uploads[0].headers,offline.uploads[1].headers);assert.equal(offline.uploads[0].body,offline.uploads[1].body,'Explicit retry preserves the exact original bytes');
+ // Switching browser tabs must not discard an explicitly started voice message.
+ for(const live of [false,true]){
+  const tabs=boot(live);await tabs.click();const recording=tabs.devices.at(-1);
+  tabs.visibility(true);assert.equal(recording.state,'recording','An ordinary message keeps recording in another tab');
+  assert.equal(recording.stream.stopped,0);assert.equal(tabs.uploads.length,0);
+  tabs.visibility(false);await tabs.click();await until(()=>tabs.received.length===1);
+  assert.equal(tabs.uploads.length,1,'Returning and Send submit one original only');
+ }
+ const backgroundSend=boot();await backgroundSend.click();const transfer=backgroundSend.holdUpload();backgroundSend.click();await until(()=>backgroundSend.uploads.length===1);
+ backgroundSend.visibility(true);assert.equal(backgroundSend.uploads[0].signal.aborted,false,'Switching tabs must not abort an in-flight original');
+ transfer.resolve();await until(()=>backgroundSend.received.length===1);assert.equal(backgroundSend.uploads.length,1);
+ const hiddenPermission=boot(),pendingPermission=hiddenPermission.permission(),pendingStart=hiddenPermission.click();
+ hiddenPermission.visibility(true);const hiddenMedia=hiddenPermission.media();pendingPermission.resolve(hiddenMedia);await pendingStart;
+ assert.equal(hiddenMedia.stopped,1,'A late permission result cannot start capture in a hidden tab');assert.equal(hiddenPermission.devices.length,0);
+ const directTabs=boot(true);await directTabs.ui.startConversation();directTabs.visibility(true);
+ await until(()=>directTabs.devices.at(-1).state==='inactive');assert.equal(directTabs.uploads.length,0,'Avatar/alternating voice still holds rather than capturing in background');
  const hidden=boot();await hidden.click();hidden.events.pagehide();await until(()=>hidden.devices[0].state==='inactive');assert.equal(hidden.uploads.length,0);assert.equal(hidden.devices[0].stream.stopped,1);
+ // Phone background/page teardown keeps the same original instead of Discard.
+ for(const live of [false,true])for(const event of ['pagehide','nativecapturebackground']){
+  const store=memoryRecovery(),phone=boot(live,store);await until(()=>phone.ui.canStartNative());
+  await phone.click();const id=phone.devices.at(-1).captureId;
+  phone.events[event]();phone.events[event]();
+  await until(()=>phone.nodes.get('#conversation-recording-review').hidden===false);
+  const kept=store.values.get('pending');assert.equal(kept.id,id);assert(kept.blob.size>0);
+  assert.equal(phone.uploads.length,0);assert.equal(phone.mediaRequests(),1);
+  phone.events[event]();assert.equal(store.values.get('pending').id,id,'Repeated background does not discard a finalized original');
+  const reopened=boot(live,store);await until(()=>reopened.nodes.get('#conversation-voice-check').hidden===false);
+  assert.equal(reopened.mediaRequests(),0,'Recovery never restarts the microphone');
+  await reopened.click();await until(()=>reopened.received.length===1);
+  assert.equal(reopened.uploads[0].headers['X-Input-Id'],id);
+  assert.equal(await reopened.uploads[0].body.text(),await kept.blob.text());
+ }
+ const awake=boot(),locks=[];
+ awake.wakeLock({async request(kind){assert.equal(kind,'screen');const lock={releases:0,release(){this.releases++;return Promise.resolve();},addEventListener(){}};locks.push(lock);return lock;}});
+ await awake.click();await until(()=>locks.length===1);awake.visibility(true);await until(()=>locks[0].releases===1);
+ awake.visibility(false);await until(()=>locks.length===2);awake.ui.hold();await until(()=>locks[1].releases===1);
+ const lateLock=boot(),lockReply=deferred(),orphan={releases:0,release(){this.releases++;}};
+ lateLock.wakeLock({request:()=>lockReply.promise});await lateLock.click();await Promise.resolve();lateLock.events.pagehide();lockReply.resolve(orphan);
+ await until(()=>orphan.releases===1);assert.equal(lateLock.uploads.length,0,'A late wake lock cannot restart or submit capture');
+ const deniedLock=boot();deniedLock.wakeLock({request:async()=>{throw Error('Denied');}});await deniedLock.click();
+ await Promise.resolve();await Promise.resolve();assert.equal(deniedLock.devices[0].state,'recording');deniedLock.ui.hold();
  const delayed=boot(),permission=delayed.permission();const starting=delayed.click();delayed.cancel();const lateMedia=delayed.media();permission.resolve(lateMedia);await starting;assert.equal(lateMedia.stopped,1);assert.equal(delayed.devices.length,0);
- const limit=boot();await limit.click();limit.timers.find(t=>t.ms===120000).fn();await until(()=>limit.button().textContent==='Send recording');assert.equal(limit.uploads.length,0,'Duration limit cannot silently commit speech');limit.click();await until(()=>limit.received.length===1);
+ for(const live of [false,true]){
+  const cues=boot(live,undefined,false,true);await cues.click();
+  const tick=ms=>{cues.advance(ms);cues.timers.find(t=>t.ms===1000&&!t.closed).fn();};
+  tick(110000);tick(0);tick(5000);tick(2000);tick(1000);tick(1000);
+  assert.deepEqual(cues.cueTones,[808,1010,1212,1212,1212],'One warning at10,5,3,2,1seconds; no duplicate tick');
+  cues.cancel();assert.equal(cues.cueContexts[0].state,'closed');
+  assert.equal(cues.uploads.length,0,'Warnings never submit audio');
+  await cues.click();tick(118000);
+  assert.deepEqual(cues.cueTones,[808,1010,1212,1212,1212,1212],'Throttled timer plays only current warning, never a catch-up burst');
+  cues.cancel();assert.equal(cues.cueContexts[1].state,'closed');
+ }
+ const counter=boot(true);await counter.click();const remaining=counter.nodes.get('#conversation-voice-remaining');
+ assert.equal(remaining.textContent,'2:00 left');assert.equal(remaining.hidden,false);
+ counter.preparation().onPartial('Revisable words');counter.advance(105000);counter.timers.find(t=>t.ms===1000&&!t.closed).fn();
+ assert.equal(remaining.textContent,'0:15 left');assert.equal(remaining['data-near-limit'],'true');assert.equal(counter.state(),'Revisable words','Counter never replaces live captions');
+ counter.cancel();assert.equal(remaining.hidden,true);assert(counter.timers.filter(t=>t.ms===1000).every(t=>t.closed),'Discard retires the countdown timer');
+ const limit=boot();await limit.click();limit.timers.find(t=>t.ms===120000).fn();await until(()=>limit.button()['aria-label']==='Send recording');assert.equal(limit.uploads.length,0,'Duration limit cannot silently commit speech');limit.click();await until(()=>limit.received.length===1);assert.equal(limit.uploads[0].route,'api/interaction/voice/limited');assert.equal(limit.received[0].voice.capture_stop,'duration_limit');
+ const flushReview=boot(true);await flushReview.click();flushReview.devices[0].captureStop='audio_flush_unconfirmed';flushReview.click();
+ await until(()=>flushReview.button()['aria-label']==='Send recording');assert.equal(flushReview.uploads.length,0,'A flush timeout requires explicit review even after the first Send');
+ assert(flushReview.state().includes('final audio buffer'));assert(!flushReview.state().includes('2:00'),'A flush failure must not be mislabeled as a duration limit');
+ flushReview.click();await until(()=>flushReview.received.length===1);assert.equal(flushReview.received[0].voice.capture_stop,'audio_flush_unconfirmed');assert.equal(flushReview.uploads[0].route,'api/interaction/voice/limited');
+ const reviewStorage=memoryRecovery(),storedReview=boot(true,reviewStorage);await until(()=>!storedReview.button().disabled);await storedReview.click();storedReview.devices[0].captureStop='audio_flush_unconfirmed';storedReview.click();
+ await until(()=>storedReview.button()['aria-label']==='Send recording');assert.equal(storedReview.uploads.length,0);assert.equal(reviewStorage.values.size,1,'A fragment awaiting explicit review survives reload');
+ const loadedReview=boot(false,reviewStorage);await until(()=>loadedReview.state().startsWith('An unfinished recording was recovered'));assert(loadedReview.state().includes('ending may be missing'));assert.equal(loadedReview.uploads.length,0,'Reload never sends the fragment');
+ await loadedReview.click();await until(()=>loadedReview.received.length===1);assert.equal(loadedReview.received[0].voice.capture_stop,'audio_flush_unconfirmed');assert.equal(reviewStorage.values.size,0);
+ const racedLimit=boot(true);await racedLimit.click();racedLimit.devices[0].captureStop='duration_limit';racedLimit.click();await until(()=>racedLimit.received.length===1);assert.equal(racedLimit.received[0].voice.capture_stop,'duration_limit','Send racing a streaming limit cannot erase the stop reason');
+ const limitStorage=memoryRecovery(),limitedRecovery=boot(true,limitStorage);await until(()=>!limitedRecovery.button().disabled);await limitedRecovery.click();limitedRecovery.devices[0].preparedText='The complete captured fragment';limitedRecovery.timers.find(t=>t.ms===120000).fn();await until(()=>limitedRecovery.button()['aria-label']==='Send recording');limitedRecovery.mode('before');limitedRecovery.click();await until(()=>limitedRecovery.uploads.length===1&&limitedRecovery.state().includes('unconfirmed'));const restoredLimited=boot(false,limitStorage);await until(()=>restoredLimited.state().startsWith('An unfinished recording was recovered'));await restoredLimited.click();await until(()=>restoredLimited.received.length===1);assert.equal(restoredLimited.received[0].voice.capture_stop,'duration_limit');assert.equal(restoredLimited.uploads[0].headers['X-Input-Id'],limitedRecovery.uploads[0].headers['X-Input-Id']);assert.equal(limitStorage.values.size,0);
  for(const [phase,retired,phrase] of [['answered',false,'answer recorded'],['retained_unsent',false,'no work was submitted'],['preparation_unconfirmed',false,'transcription unconfirmed'],['preparing',true,'no longer eligible']]){
   const saved=boot();saved.captureState(phase,retired);await saved.click();saved.click();await until(()=>saved.received.length===1);assert(saved.state().includes(phrase),'A receipt must show actual preparation eligibility');
+ }
+ for(const [name,message] of [['NotAllowedError','permission was denied'],['NotFoundError','could not find an accessible microphone'],['NotReadableError','may be busy'],['NotSupportedError','not supported']]){
+  const failed=boot();failed.microphoneFailure(name);await failed.click();
+  assert(failed.state().includes(message));assert(!failed.state().includes('private platform details'));
+  assert.equal(failed.uploads.length,0);assert.equal(failed.devices.length,0);assert(!failed.ui.ownsSend());
  }
  const denied=boot();denied.mode('denied');await denied.click();denied.click();await until(()=>denied.unauthorized()===1);assert(denied.nodes.get('#conversation-voice').hidden);
  // A late status read from an old binding cannot clear a newer upload latch.
@@ -64,7 +461,7 @@ function boot(){
  assert(race.button().disabled,'An old receipt read must not unlock a newer upload');assert.equal(race.received.length,0);uploading.resolve();await until(()=>race.received.length===1);
  const progress=boot();await progress.click();progress.click();await until(()=>progress.received.length===1);
  const saved=progress.received[0];progress.ui.observe({...saved,phase:'routed'},'#Alpha: sent to this session. Work may continue.');
- assert.equal(progress.state(),'Recording saved. #Alpha: sent to this session. Work may continue.','Later canonical metadata must replace stale ASR preparation feedback');
+ assert.equal(progress.state(),'','The input card owns saved/delivery status; do not duplicate it above the composer');
  await progress.click();const recordingState=progress.state();
  progress.ui.observe(saved,'Old receipt');assert.equal(progress.state(),recordingState,'An earlier receipt cannot overwrite a new recording');
  progress.cancel();const discardedState=progress.state();progress.ui.observe(saved,'Old receipt');
@@ -73,13 +470,13 @@ function boot(){
  focused.select({reference,version:1});const focusPermission=focused.permission(),focusStart=focused.click();
  focused.select({reference:{source:'input:newer',revision:'b'.repeat(64)},version:2});
  focusPermission.resolve(focused.media());await focusStart;focused.timers.find(t=>t.ms===120000).fn();
- await until(()=>focused.button().textContent==='Send recording');focused.mode('before');focused.click();
+ await until(()=>focused.button()['aria-label']==='Send recording');focused.mode('before');focused.click();
  await until(()=>focused.state().startsWith('Recording unconfirmed'));await focused.click();await until(()=>focused.received.length===1);
  assert.equal(focused.uploads[0].headers['X-Reply-Source'],reference.source);
  assert.equal(focused.uploads[0].headers['X-Reply-Revision'],reference.revision);
  assert.deepEqual(focused.uploads[0].headers,focused.uploads[1].headers,'Permission delays, duration review and retries must retain the original reply focus');
  const missingVisual=boot();missingVisual.failVisual();await missingVisual.click();
- assert.equal(missingVisual.mediaRequests(),0,'Unready visual context cannot silently acquire a microphone');assert.equal(missingVisual.uploads.length,0);assert.match(missingVisual.state(),/Selected image unavailable/);
+ assert.equal(missingVisual.mediaRequests(),0,'Unready visual context cannot silently acquire a microphone');assert.equal(missingVisual.uploads.length,0);assert.match(missingVisual.state(),/Selected image unavailable/);assert.equal(missingVisual.nodes.get('#conversation-voice-state')['data-attention'],'true','Actionable errors remain readable');
  const oldVisual={source_id:'original-view',point:{x:20,y:30}},newVisual={source_id:'later-view',point:{x:80,y:40}};
  const refused=boot();refused.visual(oldVisual);refused.mode('visual-refusal');await refused.click();refused.click();await until(()=>refused.state().startsWith('This attempt did not submit'));
  refused.visual(newVisual);await refused.click();await until(()=>refused.received.length===1);
@@ -90,5 +487,71 @@ function boot(){
  await unknownVisual.click();await until(()=>unknownVisual.received.length===1);
  assert.equal(new Set(unknownVisual.uploads.map(v=>v.headers['X-Input-Id'])).size,1,'A later pre-submission refusal cannot settle an earlier unknown attempt or replace its UUID');
  assert(unknownVisual.uploads.every(v=>JSON.stringify(JSON.parse(v.headers['X-Visual-Reference']))===JSON.stringify(oldVisual)),'Uncertain retry cannot adopt a newly selected image');
- console.log('Microphone UI: finalized one-button capture, playback pause, source hashing, explicit identical retry, receipt-only recovery, hidden/cancel/late permission cleanup, duration-limit review and binding reset passed; zero models.');
+ const pair=[oldVisual,newVisual],frozenPair=boot();frozenPair.visual(pair);const heldPermission=frozenPair.permission();const startingPair=frozenPair.click();frozenPair.visual([newVisual]);heldPermission.resolve(frozenPair.media());await startingPair;frozenPair.click();await until(()=>frozenPair.received.length===1);
+ assert.deepEqual(JSON.parse(frozenPair.uploads[0].headers['X-Visual-Reference']),pair,'Permission delays retain both original images in order');
+ const streamingPair=boot(true);streamingPair.visual(pair);const streamingPermission=streamingPair.permission(),streamingStart=streamingPair.click();
+ streamingPair.visual([newVisual]);streamingPermission.resolve(streamingPair.media());await streamingStart;
+ const streamingCapture=streamingPair.preparation();streamingCapture.onPartial('two images, still speaking');assert.equal(streamingPair.uploads.length,0);
+ streamingPair.mode('after');streamingPair.nodes.get('#conversation-send').handlers.click();await until(()=>streamingPair.state().startsWith('Recording unconfirmed'));
+ streamingPair.visual([oldVisual]);await streamingPair.check();await until(()=>streamingPair.received.length===1);
+ assert.equal(streamingPair.uploads.length,1,'Lost streaming-upload acknowledgment is recovered without another admission');
+ assert.equal(streamingPair.uploads[0].headers['X-Input-Id'],streamingCapture.id);
+ assert.deepEqual(JSON.parse(streamingPair.uploads[0].headers['X-Visual-Reference']),pair,'Streaming capture retains both frozen images across permission delay, caption updates and lost acknowledgment');
+ const changedPair=boot();changedPair.visual(pair);changedPair.mode('visual-extra');await changedPair.click();changedPair.click();await until(()=>changedPair.state().startsWith('Recording unconfirmed'));
+ assert.equal(changedPair.received.length,0,'A receipt with an extra image must not consume the frozen recording');assert.equal(changedPair.uploads.length,1);
+ changedPair.originals.values().next().value.visual=pair;await changedPair.check();await until(()=>changedPair.received.length===1);assert.equal(changedPair.uploads.length,1,'Correct receipt observation does not resend audio');
+ const direct=boot(true);direct.select({reference:{source:'worker-source',revision:'worker-revision'}});direct.files([{file_id:'draft-file'}]);direct.visual({reference:'draft-image'});
+ await direct.ui.startConversation();assert.equal(direct.preparation().turnDetection,true);
+ direct.preparation().onEndpoint();assert.equal(direct.uploads.length,0,'No automatic Send before recognized speech');
+ direct.preparation().onPartial('Una intervención terminada');direct.preparation().onEndpoint();
+ await until(()=>direct.received.length===1);
+ assert.equal(direct.uploads.length,1);assert.equal(direct.uploads[0].headers['X-Reply-Source'],undefined,'Direct voice cannot inherit a worker reply destination');
+ assert.equal(direct.uploads[0].headers['X-Original-Files'],undefined);assert.equal(direct.uploads[0].headers['X-Visual-Reference'],undefined);
+ direct.preparation().onEndpoint();assert.equal(direct.uploads.length,1,'A late endpoint cannot admit another original');
+ const leaving=boot(true);await leaving.ui.startConversation();leaving.ui.hold();
+ await until(()=>leaving.state().startsWith('Voice mode ended.'));
+ assert.equal(leaving.uploads.length,0,'Leaving preserves review without dispatch');
+ leaving.click();await until(()=>leaving.received.length===1);
+ assert.equal(leaving.uploads[0].headers['X-Recording-Stop'],undefined,'Leaving voice mode is not a duration-limit cutoff');
+ const failure=boot(true);await failure.ui.startConversation();failure.preparation().onDetectionUnavailable();
+ await until(()=>failure.state().startsWith('Voice mode ended.'));assert.equal(failure.uploads.length,0,'Detector failure retains the recording for review');
+ const reconnectStore=memoryRecovery(),reconnectMic=boot(true,reconnectStore);
+ await until(()=>reconnectMic.ui.canStartContinuous());reconnectMic.ui.continuousOwner(true);
+ const pendingOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['local only'])});
+ await assert.rejects(reconnectMic.ui.prepareReconnect([{...pendingOriginal,audio_sha256:'changed'}]));
+ await reconnectMic.ui.prepareReconnect([pendingOriginal]);
+ const retainedReview=reconnectStore.values.get('pending');assert.equal(retainedReview.reconnect_review,true);assert.notEqual(retainedReview.native_review,true,'A local reconnect review is never a server-retention receipt');
+ assert(reconnectMic.ui.canStartContinuous());
+ const freshOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['new capture'])});
+ assert.equal(reconnectStore.values.get('pending').items.length,2);assert.equal(reconnectMic.uploads.length,0,'Reconnect preparation never sends pending audio');
+ await reconnectMic.ui.releaseContinuous(freshOriginal,freshOriginal.audio_sha256);
+ assert.equal(reconnectStore.values.get('pending').id,pendingOriginal.id,'Confirmation of a new capture preserves the older review');
+ const sharedRecovery=memoryRecovery(),storageWindow={indexedDB:sharedRecovery};
+ vm.runInNewContext(fs.readFileSync('dashboard/web/microphone.js','utf8'),{window:storageWindow,Blob,setTimeout,clearTimeout});
+ const ordinaryStorage=storageWindow.VoiceInput.recoveryStore(),nativeStorage=storageWindow.VoiceInput.recoveryStore('codex_voice');
+ const sharedOriginal={id:crypto.randomUUID(),binding:'same',audio_sha256:'a'.repeat(64),blob:new Blob([new Uint8Array(12*1024*1024)])};
+ await ordinaryStorage.put(sharedOriginal);
+ await assert.rejects(()=>nativeStorage.put({...sharedOriginal,id:crypto.randomUUID(),blob:new Blob([new Uint8Array(10*1024*1024)])}),/limit reached/);
+ assert.equal(sharedRecovery.values.size,1,'Separate native key cannot double the shared20MiB budget');
+ const smallNative={...sharedOriginal,id:crypto.randomUUID(),blob:new Blob(['same native original'])};
+ await nativeStorage.put(smallNative);assert.equal(sharedRecovery.values.size,2);
+ await ordinaryStorage.remove(sharedOriginal);assert.equal((await nativeStorage.list())[0].id,smallNative.id);
+  await nativeStorage.remove(smallNative);
+  const group=crypto.randomUUID(),visit=crypto.randomUUID(),fragments=[0,1].map(n=>({id:crypto.randomUUID(),binding:'same',codex_visit:visit,ordinal:0,native_review:true,native_fragment:true,fragment_group:group,fragment_offset:n*32000,audio_sha256:String(n).repeat(64),blob:new Blob([new Uint8Array(32044)])}));
+  for(const value of fragments)await nativeStorage.put(value,true);
+  assert.equal(sharedRecovery.values.get('codex_voice').schema,'telecodex.voice-recovery/v4','Older readers must refuse fragment envelopes instead of uploading fragments as originals');
+  const sealed={id:group,binding:'same',codex_visit:visit,ordinal:0,native_review:true,blob:new Blob([new Uint8Array(64044)]),audio_sha256:'f'.repeat(64),captureStop:'interrupted_prefix'};
+  assert.throws(()=>ordinaryStorage.sealNative(sealed,fragments));
+  await assert.rejects(()=>nativeStorage.sealNative(sealed,[{...fragments[0],audio_sha256:'e'.repeat(64)},fragments[1]]));
+  assert.equal((await nativeStorage.list()).length,2,'Changed fragment selection preserves every original fragment');
+  const later={...fragments[1],id:crypto.randomUUID(),fragment_offset:64000};await nativeStorage.put(later,true);
+  await assert.rejects(()=>nativeStorage.sealNative(sealed,fragments));
+  await assert.rejects(()=>nativeStorage.discardNative(fragments));
+  assert.equal((await nativeStorage.list()).length,3,'A stale cross-tab snapshot cannot orphan newly committed fragments');
+  fragments.push(later);sealed.blob=new Blob([new Uint8Array(96044)]);
+  await nativeStorage.sealNative(sealed,fragments);assert.equal(sharedRecovery.values.get('codex_voice').id,group,'Sealing atomically removes only the exact fragments and returns to the compatible original format');
+  await assert.rejects(()=>nativeStorage.put({...later,id:crypto.randomUUID()},true));
+  await assert.rejects(()=>nativeStorage.put({...sealed,audio_sha256:'e'.repeat(64)},true));
+  await assert.rejects(()=>nativeStorage.discardNative(fragments));assert.equal((await nativeStorage.list())[0].audio_sha256,sealed.audio_sha256,'Stale fragment discard cannot delete a sealed original');
+ console.log('Microphone UI: finalized one-button capture, playback pause, source hashing, explicit identical retry, receipt-only recovery, hidden/cancel/late permission cleanup, duration-limit review, binding reset and combined native/ordinary storage bound passed; zero models.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

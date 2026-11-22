@@ -105,7 +105,15 @@ def qualify(binary):
         assert len(answers)==2,answers
         beta_answer=next(item for item in answers if item['target']['thread_id']==8)
         assert len(beta_answer['request_ids'])==2,beta_answer
+        for original_id in (beta['id'],unknown['id']):
+            shared=client.get('/api/interaction/inputs/'+original_id+'/trace',headers=headers)
+            assert shared.status_code==200,shared.text
+            covered=shared.json()['routes'][0]['results'][0]
+            assert covered['instruction_covered']
+            assert covered['source']==beta_answer['id'] and covered['revision']==beta_answer['revision']
         source=next(item for item in sources.json()['items'] if item['kind']=='worker_result' and item['target']['thread_id']==7)
+        assert result_trace[0]['source']==source['id']
+        assert result_trace[0]['revision']==source['revision']
         _,followup=submit('Continue this completed result.',{'source':source['id'],'revision':source['revision']})
         j.wait(lambda:len(j.instructions(7))==3 and j.instructions(7)[2][1]=='accepted')
         assert json.loads(j.instructions(7)[2][2])['relation']=={'kind':'amends','requests':first['requests']}
@@ -220,11 +228,21 @@ def telegram_monitor(binary):
         old=client.get(base+'?before='+str(correction),headers=headers).json()['items'][0]
         assert old['id']==item['id'] and old['ordering_unknown'] and old['capture_order'] is None
         assert old['retired'] and client.get(url,headers=headers).json()['text']==trace['text']
-        grant_file=j.root/'monitor-device.json';Grants(config,Provider(config)).enroll('Monitor read scope',grant_file,60)
+        # An interaction grant is another surface of this exact conversation.
+        # A label never turns that grant into a read-only monitor.
+        interaction_file=j.root/'interaction-device.json'
+        Grants(config,Provider(config)).enroll('Interaction read scope',interaction_file,60)
+        interaction_credential=json.loads(interaction_file.read_text())
+        interaction_device={'origin':config['origin'],'authorization':interaction_credential['authorization']}
+        assert client.get(base,headers=interaction_device).status_code==200
+        assert client.get(url,headers=interaction_device).status_code==200
+        grant_file=j.root/'monitor-device.json';Grants(config,Provider(config)).enroll('Monitor read scope',grant_file,60,scope='monitor_readonly')
         credential=json.loads(grant_file.read_text())
         device={'origin':config['origin'],'authorization':credential['authorization']}
-        assert client.get(base,headers=device).status_code==403
-        assert client.get(url,headers=device).status_code==403
+        assert client.get(base,headers=device).status_code==200
+        assert client.get(url,headers=device).status_code==200
+        assert client.post('/api/interaction/inputs',headers=device,json={}).status_code==403
+        assert client.get('/api/interaction/requests',headers=device).status_code==403
         assert j.calls()==calls==[digest] and j.row('SELECT count(*) FROM turns')==before
         assert len(j.instructions(7))==2 and len(j.instructions(8))==1
         print('PASS Telegram monitor: actual HTTP/owner/SQLite/native text and committed voice, two routes and exact selector stripping, pending/retired/legacy originals, bounded cursor paging, owner/entry/device isolation; reads cause no ASR, model or native dispatch.')
@@ -232,6 +250,45 @@ def telegram_monitor(binary):
         if client:client.close()
         j.close()
 
+def trace_result_pages(binary):
+    """Actual native reader over more than eight canonical outputs, zero models."""
+    j=CanonicalRouting(str(Path(binary).resolve()))
+    try:
+        j.start()
+        for topic in (7,8,1):
+            j.admit('Seed owned trace context',topic=topic)
+            j.wait(lambda:j.has('Initial goal turn delivered.',topic));j.idle()
+        j.stop();j.config.write_text(j.config.read_text()+j.target_config)
+        j.start();j.wait_control_socket(j.socket);j.routing=True
+        binding=j.read('presentation','list','0','0')['result']['binding']
+        original,_=j.submit(binding,'#Alpha Return the complete sequence.')
+        j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
+        instruction=j.instructions(7)[0][0]
+        for n in range(10):
+            j.answer_worker(7,'Canonical part '+str(n),item='trace-page-'+str(n),finish=n==9)
+            j.wait(lambda:j.row('SELECT count(*) FROM interaction_deliveries')==[(n+1,)])
+        turns=j.row('SELECT count(*) FROM turns')
+        first=j.read('input','trace',original['id'])['result']
+        route=first['routes'][0]
+        assert first['result_pages']=='v1' and route['more_results'] and len(route['results'])==8
+        older=j.read('input','trace-results',original['id'],instruction,str(route['results_cursor']))['result']
+        assert older['entry_binding']==first['entry_binding'] and len(older['routes'])==1
+        page=older['routes'][0]
+        assert page['instruction']==instruction and not page['more_results'] and len(page['results'])==2
+        assert not {r['source'] for r in route['results']} & {r['source'] for r in page['results']}
+        result=page['results'][-1]
+        exact=j.read('input','trace-result',original['id'],result['source'])['result']
+        assert exact['routes'][0]['results']==[result]
+        assert result['instruction_covered'] and result['current'] and result['revision']
+        j.read('input','trace-results',original['id'],str(uuid.uuid4()),'0',ok=False)
+        j.read('input','trace-results',original['id'],instruction,'-1',ok=False)
+        j.read('input','trace-result',original['id'],'native:1',ok=False)
+        assert j.row('SELECT count(*) FROM turns')==turns
+        assert len(j.instructions(7))==1 and not j.packets
+        print('PASS actual native original-scoped result pages: ten canonical outputs, exact older association/revision, bounded continuation, foreign instruction and invalid cursor refusals; zero new work/model/ASR.')
+    finally:j.close()
+
 if __name__=='__main__':
     qualify(sys.argv[1])
     telegram_monitor(sys.argv[1])
+    trace_result_pages(sys.argv[1])

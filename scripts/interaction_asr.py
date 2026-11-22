@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import io
 import math
 import os
 from pathlib import Path
@@ -15,7 +16,10 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import wave
+import uuid
+from contextlib import nullcontext
 
 from speech_render import (RenderError, atomic, canonical, directory, lock,
                            private_bytes, sync_directory)
@@ -23,6 +27,10 @@ from speech_render import (RenderError, atomic, canonical, directory, lock,
 MAX_SOURCE = 20 * 1024 * 1024
 MAX_JOB = 32 * 1024 * 1024
 DEFAULT_BUDGET = 128 * 1024 * 1024
+PREPARED_BUDGET = 64 * 1024 * 1024
+PREPARED_RECORD = 65536
+LIVE_MODELS = ('qwen-audio-3.0-realtime-plus', 'gemini-3.5-transcribe-live',
+               'gemini-3.8-live', 'gpt-live-transcribe')
 
 
 def digest(data):
@@ -60,14 +68,65 @@ def probe_duration(source):
 def config(binding):
     value = json.loads(private_bytes(binding, 16384))
     if (not isinstance(value, dict)
-            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes'}
+            or set(value) - {'schema', 'helper', 'route_binding', 'cache_root', 'max_cache_bytes', 'streaming_cache_root', 'provider', 'key_file', 'model', 'models'}
             or value.get('schema') != 'telecodex.interaction-asr/v1'
             or any(not isinstance(value.get(k), str) or not Path(value[k]).is_absolute()
-                   for k in ('helper', 'route_binding', 'cache_root'))
+                   for k in (('cache_root','streaming_cache_root') if value.get('provider')=='live-result' else ('key_file', 'cache_root') if value.get('provider') == 'openai' else ('helper', 'route_binding', 'cache_root')))
             or type(value.get('max_cache_bytes', DEFAULT_BUDGET)) is not int
             or not MAX_JOB <= value.get('max_cache_bytes', DEFAULT_BUDGET) <= 1024**3):
         raise RenderError('invalid-interaction-asr-binding')
+    if value.get('provider')=='live-result':
+        models=value.get('models')
+        if (not isinstance(models,list) or not 1<=len(models)<=4
+                or any(model not in LIVE_MODELS for model in models)
+                or len(set(models))!=len(models)
+                or any(k in value for k in ('helper','route_binding','key_file','model'))):
+            raise RenderError('live-result-reader-cannot-run-another-recognizer')
+    elif value.get('provider') is not None:
+        if (value['provider'] != 'openai' or value.get('model') != 'gpt-transcribe'
+                or any(k in value for k in ('helper', 'route_binding', 'streaming_cache_root','models'))):
+            raise RenderError('invalid-explicit-openai-route-no-fallback')
+    elif any(k in value for k in ('key_file', 'model','models')):
+        raise RenderError('invalid-explicit-openai-route-no-fallback')
+    if 'streaming_cache_root' in value and (not isinstance(value['streaming_cache_root'],str) or not Path(value['streaming_cache_root']).is_absolute()):
+        raise RenderError('invalid-streaming-cache-binding')
     return value
+
+
+def streaming_result(cfg, source, source_hash):
+    root = cfg.get('streaming_cache_root')
+    if root is None:
+        return None
+    try:
+        ident = str(uuid.UUID(Path(source).name))
+    except ValueError:
+        return None  # Legacy source names retain the ordinary file-ASR path.
+    if ident != Path(source).name:
+        return None
+    directory(root)
+    try:
+        record = json.loads(private_bytes(Path(root)/(ident+'.json'),65536))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(record,dict) or record.get('schema') != 'telecodex.streaming-transcript/v1'
+            or record.get('capture_id') != ident or record.get('source_sha256') != source_hash
+            or record.get('final') is not True
+            or record.get('model') not in cfg.get('models',LIVE_MODELS[:-1])
+            or not re.fullmatch('[a-f0-9]{64}',str(record.get('binding','')))
+            or not isinstance(record.get('text'),str) or not record['text'].strip()
+            or len(record['text'].encode()) > 16000):
+        raise RenderError('invalid-completed-streaming-transcript')
+    try:
+        with wave.open(io.BytesIO(private_bytes(source,MAX_SOURCE)),'rb') as audio:
+            if (audio.getnchannels(),audio.getsampwidth(),audio.getframerate(),audio.getcomptype()) != (1,2,16000,'NONE'):
+                raise ValueError('Exact captured PCM required')
+            pcm=audio.readframes(120*16000+1)
+    except (ValueError,wave.Error,EOFError):
+        raise RenderError('invalid-streaming-audio-original') from None
+    if (not pcm or len(pcm)>120*32000 or digest(pcm)!=record.get('pcm_sha256')
+            or len(pcm)*1000//32000 != record.get('audio_millis')):
+        raise RenderError('streaming-audio-original-changed')
+    return {'text':record['text'],'streaming_model':record['model']}
 
 
 def payload_bytes(root):
@@ -82,13 +141,68 @@ def payload_bytes(root):
     return total
 
 
+def prepared_capacity(root):
+    # Share the existing prepared-text quota with the web writer, including
+    # recovery records and identity locks. Never evict an original or outcome.
+    files = list(root.iterdir())
+    total = 0
+    for path in files:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise RenderError('unsafe-prepared-cache-artifact')
+        total += info.st_size
+    if len(files) >= 32768 or total + PREPARED_RECORD > PREPARED_BUDGET:
+        raise RenderError('prepared-transcription-storage-full')
+
+
+def checked_directory(path):
+    path = Path(path)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise RenderError('unsafe-asr-cache-directory')
+    return path
+
+
+def verified_state(state, identity):
+    if (not isinstance(state, dict) or any(state.get(k) != v for k, v in identity.items())
+            or state.get('phase') != 'completed'
+            or state.get('result_sha256') != digest(canonical(state.get('result')))):
+        raise RenderError('retained-asr-outcome-no-automatic-retry')
+    return state
+
+
+def final_result(state, preparation_deleted, include_retention):
+    result = {'text': state['result']['text'], 'final': True}
+    if state.get('preparation_kind') == 'streaming':
+        model = state['result'].get('streaming_model')
+        if model not in LIVE_MODELS:
+            raise RenderError('invalid-completed-streaming-transcript')
+        if model=='gpt-live-transcribe':
+            # The existing native reader rejects unknown streaming_model names.
+            # Its dedicated, pinned OpenAI-live profile records the configured
+            # model; the exact actual model remains in the verified receipt.
+            # Never mislabel this result as a supported Qwen/Gemini engine.
+            result['live_model']=model
+        else:
+            result['streaming_model'] = model
+    if include_retention:
+        result['preparation_audio_deleted'] = preparation_deleted
+    return result
+
+
 def reserve(root, job, state, limit):
     with lock(root / '.budget.lock'):
         used = 0
         for other in root.iterdir():
             if not re.fullmatch('[a-f0-9]{64}', other.name):
                 continue
-            directory(other)
+            # Accounting reads retained jobs. directory() establishes a durable
+            # name and fsyncs its parent even when it already exists; repeating
+            # that barrier for every past note delays the next provider call.
+            info = other.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077):
+                raise RenderError('unsafe-asr-cache-directory')
             actual = payload_bytes(other)
             try:
                 previous = json.loads(private_bytes(other / 'state.json', 2*1024*1024))
@@ -103,6 +217,8 @@ def reserve(root, job, state, limit):
 
 def retire_preparation(job, state):
     """Only media listed by this completed helper's manifest is disposable."""
+    if state.get('preparation_kind') == 'streaming':
+        return  # This completed path retained text only, never raw preparation.
     draft = Path(state['result']['draft_path'])
     preparation = job / 'preparation'
     if draft != draft.resolve() or '..' in draft.parts:
@@ -138,8 +254,99 @@ def retire_preparation(job, state):
         sync_directory(path.parent)
 
 
-def process(source, binding, include_retention=False):
+def openai_recognizer(key_file):
+    # Same custody reader and single-attempt HTTP implementation as Avatar.
+    # Imports are deferred so the unchanged legacy CLI keeps its dependencies.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from dashboard.openai_live_transcription import OriginalTranscription
+    return OriginalTranscription(key_file)
+
+
+def process_openai(source, binding, cfg, include_retention, completed_only):
+    binding_bytes = private_bytes(binding, 16384)
+    source_hash = digest(private_bytes(source, MAX_SOURCE))
+    identity = {'schema': 'telecodex.interaction-asr-result/v1',
+                'source_sha256': source_hash, 'route_sha256': digest(binding_bytes),
+                'helper_sha256': digest(Path(__file__).read_bytes())}
+    root = directory(cfg['cache_root'])
+    job = directory(root / digest(canonical(identity)))
+    state_path = job / 'state.json'
+    with lock(job / '.lock'):
+        if state_path.exists() or state_path.is_symlink():
+            state = verified_state(json.loads(private_bytes(state_path, 2*1024*1024)), identity)
+        else:
+            if completed_only:
+                raise RenderError('no-completed-transcript-no-asr-attempted')
+            recognizer = openai_recognizer(cfg['key_file'])
+            _, pcm = probe_duration(source)
+            if pcm is None:
+                pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(source),
+                    '-t', '121', '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1'],
+                    timeout=15, stderr=subprocess.DEVNULL)
+            if not pcm or len(pcm) % 2 or len(pcm) > 120*32000:
+                raise RenderError('interaction-asr-duration-bound')
+            output = io.BytesIO()
+            with wave.open(output, 'wb') as audio:
+                audio.setnchannels(1); audio.setsampwidth(2); audio.setframerate(16000)
+                audio.writeframes(pcm)
+            # No derivative audio is written. Preserve the caller's exact raw
+            # original, its intent and outcome under the existing cache quota.
+            state = {**identity, 'phase': 'intent', 'preparation_kind': 'openai',
+                     'model': cfg['model'], 'audio_millis': len(pcm)*1000//32000}
+            reserve(root, job, state, cfg.get('max_cache_bytes', DEFAULT_BUDGET))
+            started = time.monotonic()
+            try:
+                text = recognizer.transcribe(output.getvalue())
+                if (not isinstance(text, str) or not text.strip() or '\0' in text
+                        or len(text.encode()) > 16000
+                        or private_bytes(binding, 16384) != binding_bytes
+                        or digest(private_bytes(source, MAX_SOURCE)) != source_hash):
+                    raise RenderError('invalid-final-interaction-transcript')
+                result = {'text': text.strip()}
+                state.update(phase='completed', result=result, result_sha256=digest(canonical(result)),
+                             transcription_millis=int((time.monotonic()-started)*1000))
+                atomic(state_path, canonical(state))
+            except Exception:
+                state['phase'] = 'unconfirmed'
+                atomic(state_path, canonical(state))
+                raise RenderError('asr-unconfirmed-no-automatic-retry') from None
+        return final_result(state, True, include_retention)
+
+
+def process_live_result(source, binding, cfg, include_retention):
+    """Read one completed live recognition; no key/helper/provider/fallback API.
+
+    Missing or uncertain completion stays held. A later exact receipt can be
+    adopted on a status/retry read without retranscribing any acoustic original.
+    """
+    binding_bytes=private_bytes(binding,16384)
+    source_hash=digest(private_bytes(source,MAX_SOURCE))
+    identity={'schema':'telecodex.interaction-asr-result/v1',
+              'source_sha256':source_hash,'route_sha256':digest(binding_bytes),
+              'helper_sha256':digest(Path(__file__).read_bytes())}
+    root=directory(cfg['cache_root']);job=directory(root/digest(canonical(identity)))
+    with lock(job/'.lock'):
+        state_path=job/'state.json'
+        if state_path.exists() or state_path.is_symlink():
+            state=verified_state(json.loads(private_bytes(state_path,2*1024*1024)),identity)
+        else:
+            prepared=streaming_result(cfg,source,source_hash)
+            if prepared is None:
+                raise RenderError('live-transcript-not-complete-no-second-asr')
+            if private_bytes(binding,16384)!=binding_bytes:
+                raise RenderError('live-transcript-binding-changed')
+            state={**identity,'phase':'completed','preparation_kind':'streaming',
+                   'result':prepared,'result_sha256':digest(canonical(prepared))}
+            reserve(root,job,state,cfg.get('max_cache_bytes',DEFAULT_BUDGET))
+        return final_result(state,True,include_retention)
+
+
+def process(source, binding, include_retention=False, completed_only=False):
     cfg = config(binding)
+    if cfg.get('provider')=='live-result':
+        return process_live_result(source,binding,cfg,include_retention)
+    if cfg.get('provider') == 'openai':
+        return process_openai(source, binding, cfg, include_retention, completed_only)
     source_hash = digest(private_bytes(source, MAX_SOURCE))
     route_bytes = private_bytes(cfg['route_binding'], 16384)
     selected_route = json.loads(route_bytes)
@@ -151,59 +358,113 @@ def process(source, binding, include_retention=False):
     identity = {'schema': 'telecodex.interaction-asr-result/v1',
                 'source_sha256': source_hash, 'route_sha256': digest(route_bytes),
                 'helper_sha256': helper_hash}
+    if cfg.get('streaming_cache_root'):
+        key = digest(canonical(identity))
+        legacy_root = Path(cfg['cache_root'])
+        if not legacy_root.exists() and not legacy_root.is_symlink():
+            directory(legacy_root)  # Establish configured ancestors once.
+        checked_directory(legacy_root)
+        legacy_job = legacy_root / key
+        legacy_job.mkdir(mode=0o700, exist_ok=True)
+        checked_directory(legacy_job)
+        # Reuse the exact existing identity lock, including with an older helper
+        # already running. A lock name needs no durability barrier; paid file-ASR
+        # still establishes its namespace/intent durably in process_cached().
+        with lock(legacy_job / '.lock'):
+            state_path = legacy_job / 'state.json'
+            legacy_uncertain = False
+            if state_path.exists() or state_path.is_symlink():
+                previous = json.loads(private_bytes(state_path, 2*1024*1024))
+                # An explicit completed-only read may adopt a late streaming
+                # receipt without retrying or rewriting the uncertain provider job.
+                legacy_uncertain = (completed_only and isinstance(previous, dict)
+                    and previous.get('phase') == 'unconfirmed'
+                    and all(previous.get(k) == v for k, v in identity.items()))
+                if not legacy_uncertain:
+                    return process_cached(source, cfg, identity, route_bytes, helper, include_retention, completed_only, locked=True)
+            prepared_root = directory(cfg['streaming_cache_root'])
+            mirror = prepared_root / ('asr-' + key + '.json')
+            retained = mirror.exists() or mirror.is_symlink()
+            if retained:
+                state = verified_state(json.loads(private_bytes(mirror, PREPARED_RECORD)), identity)
+                if state.get('preparation_kind') != 'streaming':
+                    raise RenderError('invalid-completed-streaming-transcript')
+                return final_result(state, not legacy_uncertain, include_retention)
+            prepared = streaming_result(cfg, source, source_hash)
+            if prepared is not None:
+                state = {**identity, 'phase':'completed', 'preparation_kind':'streaming',
+                         'result':prepared, 'result_sha256':digest(canonical(prepared))}
+                data = canonical(state)
+                if len(data) > PREPARED_RECORD:
+                    raise RenderError('prepared-transcription-record-bound')
+                with lock(prepared_root / '.lock'):
+                    prepared_capacity(prepared_root)
+                    atomic(mirror, data)
+                return final_result(state, not legacy_uncertain, include_retention)
+            return process_cached(source, cfg, identity, route_bytes, helper, include_retention, completed_only, locked=True)
+    return process_cached(source, cfg, identity, route_bytes, helper, include_retention, completed_only)
+
+
+def process_cached(source, cfg, identity, route_bytes, helper, include_retention, completed_only, locked=False):
+    source_hash, helper_hash = identity['source_sha256'], identity['helper_sha256']
+    selected_route = json.loads(route_bytes)
     root = directory(cfg['cache_root'])
     job = directory(root / digest(canonical(identity)))
     state_path = job / 'state.json'
-    with lock(job / '.lock'):
+    with nullcontext() if locked else lock(job / '.lock'):
         if state_path.exists() or state_path.is_symlink():
-            state = json.loads(private_bytes(state_path, 2*1024*1024))
-            if (any(state.get(k) != v for k, v in identity.items())
-                    or state.get('phase') != 'completed'
-                    or state.get('result_sha256') != digest(canonical(state.get('result')))):
-                raise RenderError('retained-asr-outcome-no-automatic-retry')
+            state = verified_state(json.loads(private_bytes(state_path, 2*1024*1024)), identity)
         else:
-            _, pcm = probe_duration(source)
-            state = {**identity, 'phase': 'intent'}
-            reserve(root, job, state, cfg.get('max_cache_bytes', DEFAULT_BUDGET))
-            preparation = directory(job / 'preparation')
-            helper_source = Path(source)
-            if pcm is not None:
-                helper_source = preparation / 'input.wav'
-                with wave.open(str(helper_source), 'wb') as output:
-                    output.setnchannels(1)
-                    output.setsampwidth(2)
-                    output.setframerate(16000)
-                    output.writeframes(pcm)
-                state['prepared_source_sha256'] = digest(private_bytes(helper_source, MAX_SOURCE))
-                atomic(state_path, canonical(state))
-            local_route = {**selected_route, 'cache_root': str(preparation)}
-            atomic(job / 'route.json', canonical(local_route))
-            # Same helper/provider behavior, isolated disposable preparation root.
-            sys.path.insert(0, str(helper.parent))
-            try:
-                spec = importlib.util.spec_from_file_location('selected_voice_note', helper)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                result = module.process(helper_source, job / 'route.json')
-                if (not isinstance(result.get('text'), str) or not result['text'].strip()
-                        or len(result['text'].encode()) > 16000
-                        or digest(helper.read_bytes()) != helper_hash
-                        or private_bytes(cfg['route_binding'], 16384) != route_bytes
-                        or digest(private_bytes(source, MAX_SOURCE)) != source_hash):
-                    raise RenderError('invalid-final-interaction-transcript')
-                # The generic helper declares completeness in its retained draft.
-                draft = Path(result['draft_path'])
-                draft.relative_to(preparation)
-                report = json.loads(private_bytes(draft, 2*1024*1024))
-                if report.get('processing_complete') is not True:
-                    raise RenderError('incomplete-interaction-transcript')
-                state.update(phase='completed', result=result, result_sha256=digest(canonical(result)))
-                atomic(state_path, canonical(state))
-            except Exception:
-                # Never turn an ambiguous provider operation into an automatic retry.
-                state['phase'] = 'unconfirmed'
-                atomic(state_path, canonical(state))
-                raise RenderError('asr-unconfirmed-no-automatic-retry') from None
+            prepared = streaming_result(cfg,source,source_hash)
+            if prepared is not None:
+                state = {**identity, 'phase':'completed', 'preparation_kind':'streaming',
+                         'result':prepared, 'result_sha256':digest(canonical(prepared))}
+                reserve(root,job,state,cfg.get('max_cache_bytes',DEFAULT_BUDGET))
+            else:
+                if completed_only:
+                    raise RenderError("no-completed-transcript-no-asr-attempted")
+                _, pcm = probe_duration(source)
+                state = {**identity, 'phase': 'intent'}
+                reserve(root, job, state, cfg.get('max_cache_bytes', DEFAULT_BUDGET))
+                preparation = directory(job / 'preparation')
+                helper_source = Path(source)
+                if pcm is not None:
+                    helper_source = preparation / 'input.wav'
+                    with wave.open(str(helper_source), 'wb') as output:
+                        output.setnchannels(1)
+                        output.setsampwidth(2)
+                        output.setframerate(16000)
+                        output.writeframes(pcm)
+                    state['prepared_source_sha256'] = digest(private_bytes(helper_source, MAX_SOURCE))
+                    atomic(state_path, canonical(state))
+                local_route = {**selected_route, 'cache_root': str(preparation)}
+                atomic(job / 'route.json', canonical(local_route))
+                # Same helper/provider behavior, isolated disposable preparation root.
+                sys.path.insert(0, str(helper.parent))
+                try:
+                    spec = importlib.util.spec_from_file_location('selected_voice_note', helper)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    result = module.process(helper_source, job / 'route.json')
+                    if (not isinstance(result.get('text'), str) or not result['text'].strip()
+                            or len(result['text'].encode()) > 16000
+                            or digest(helper.read_bytes()) != helper_hash
+                            or private_bytes(cfg['route_binding'], 16384) != route_bytes
+                            or digest(private_bytes(source, MAX_SOURCE)) != source_hash):
+                        raise RenderError('invalid-final-interaction-transcript')
+                    # The generic helper declares completeness in its retained draft.
+                    draft = Path(result['draft_path'])
+                    draft.relative_to(preparation)
+                    report = json.loads(private_bytes(draft, 2*1024*1024))
+                    if report.get('processing_complete') is not True:
+                        raise RenderError('incomplete-interaction-transcript')
+                    state.update(phase='completed', result=result, result_sha256=digest(canonical(result)))
+                    atomic(state_path, canonical(state))
+                except Exception:
+                    # Never turn an ambiguous provider operation into an automatic retry.
+                    state['phase'] = 'unconfirmed'
+                    atomic(state_path, canonical(state))
+                    raise RenderError('asr-unconfirmed-no-automatic-retry') from None
         preparation_deleted = False
         try:
             retire_preparation(job, state)
@@ -211,10 +472,7 @@ def process(source, binding, include_retention=False):
         except (OSError, ValueError, KeyError, TypeError, RenderError):
             # Durable text remains usable; a later exact read can finish cleanup.
             pass
-        result = {'text': state['result']['text'], 'final': True}
-        if include_retention:
-            result['preparation_audio_deleted'] = preparation_deleted
-        return result
+        return final_result(state, preparation_deleted, include_retention)
 
 
 def main():
@@ -222,10 +480,11 @@ def main():
     parser.add_argument('--binding', type=Path, required=True)
     parser.add_argument('source', type=Path)
     parser.add_argument('--retention-receipt', action='store_true', help='Report verified adapter-owned preparation deletion separately from final text')
+    parser.add_argument('--completed-only', action='store_true', help='Read verified completed text only; never prepare audio or call ASR')
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        print(json.dumps(process(args.source, args.binding, include_retention=args.retention_receipt), ensure_ascii=False))
+        print(json.dumps(process(args.source, args.binding, include_retention=args.retention_receipt, completed_only=args.completed_only), ensure_ascii=False))
         return 0
     except (OSError, ValueError, KeyError, TypeError, RenderError, subprocess.SubprocessError):
         print(json.dumps({'ok': False, 'error': 'interaction-asr-unavailable', 'automatic_retry': False}))

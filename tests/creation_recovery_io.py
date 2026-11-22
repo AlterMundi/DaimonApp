@@ -5,6 +5,8 @@ Every user, HTTP, SQLite and native/model peer is synthetic.
 import json
 import pathlib
 import sqlite3
+import signal
+import subprocess
 import sys
 from creation_io import Creation
 from semantic_routing_io import Semantic
@@ -16,15 +18,28 @@ class Recovery(Creation):
         self.fail_first=False
         self.inspect_resume=False
         self.reject_resume=False
+        # An old HTTP poll may outlive the deliberately crashed receiver.
+        # Reuse the fixture's Telegram offset ACK semantics: a lost response
+        # must not consume the new recovery message before durable admission.
+        self.acknowledged_updates=True
         super().__init__(binary)
 
     def wait(self,condition,seconds=15):
         try:return super().wait(condition,seconds)
-        except AssertionError:
-            if self.process and self.process.poll() is not None:
-                _,error=self.process.communicate(timeout=8)
-                raise AssertionError('Synthetic bridge terminated: '+error.replace('synthetic-question-token','[redacted]'))
-            raise
+        except AssertionError as failure:
+            # Preserve the actual failed boundary before the fixture is removed.
+            # Stop only this synthetic process; do not retry or relax the assertion.
+            diagnostic={}
+            if self.process:
+                if self.process.poll() is None:self.process.send_signal(signal.SIGINT)
+                output,error=self.process.communicate(timeout=8)
+                self.process=None
+                diagnostic['stdout_tail']=output[-4000:].replace('synthetic-question-token','[redacted]')
+                diagnostic['stderr_tail']=error[-4000:].replace('synthetic-question-token','[redacted]')
+            with sqlite3.connect(self.root/'state.sqlite') as db:
+                for table in ('incoming_updates','sessions','turns','interaction_creations'):
+                    diagnostic[table]=db.execute('SELECT * FROM '+table+' ORDER BY rowid DESC LIMIT 8').fetchall()
+            raise AssertionError(str(failure)+'; retained synthetic boundary='+json.dumps(diagnostic,default=str)) from failure
 
     def crash(self):
         # This fixture owns the loopback listener and synthetic native peers.
@@ -149,9 +164,40 @@ def retired_not_revived(binary):
     finally:j.close()
 
 
+def retained_service_receipt(binary):
+    j=Recovery(binary);j.unknown=True
+    try:
+        j.socket=j.root/'control.sock'
+        j.config.write_text(j.config.read_text().replace('[telegram]',f'[session_control]\nsocket_path="{j.socket}"\nhuman_id=100\n[telegram]'))
+        j.prepare()
+        original=j.admit('NATURAL-ROUTE Create a distinct Gamma task.',topic=1)
+        j.wait(lambda:len(j.creation_outputs)==4);j.idle()
+        operation=j.row('SELECT id FROM interaction_creations')[0][0]
+        assert j.row('SELECT phase,topic FROM interaction_creations')==[('uncertain',None)]
+        with j.lock:
+            j.sequence+=1;event=j.sequence
+            j.updates.append({'update_id':event,'message':{'message_id':event,'message_thread_id':77,'from':{'id':123,'is_bot':True,'first_name':'Fixture'},'chat':{'id':100,'type':'private'},'forum_topic_created':{'name':'Gamma','icon_color':7322096}}})
+        j.wait(lambda:j.row('SELECT status FROM incoming_updates WHERE update_id=?',(event,))==[('handled',)])
+        j.stop();j.start();j.wait_control_socket(j.socket)
+        def owner(*args):
+            result=subprocess.run([binary,'--control',str(j.config),'creation',*args],capture_output=True,text=True,timeout=15)
+            assert result.returncode==0,(result.stdout,result.stderr)
+            value=json.loads(result.stdout);assert value['ok'],value;return value['result']
+        assert owner('status',operation)['phase']=='uncertain'
+        result=owner('reconcile',operation,str(event));assert result['selector']=='t77'
+        j.wait(lambda:len(j.instructions(77))==1 and j.instructions(77)[0][1]=='accepted')
+        first=j.instructions(77)[0];assert json.loads(first[2])['origin']['message_id']==original
+        assert owner('reconcile',operation,str(event))['phase']=='ready'
+        assert j.instructions(77)[0][0]==first[0]
+        assert j.topic_calls==1 and j.row('SELECT count(*) FROM interaction_enrollments')==[(1,)]
+        print('PASS real owner CLI reconciles retained own-bot service evidence after restart, admits the original once and never recreates the topic')
+    finally:j.close()
+
+
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     known_unsent(binary)
     known_topic(binary)
     unknown_not_replayed(binary)
     retired_not_revived(binary)
+    retained_service_receipt(binary)

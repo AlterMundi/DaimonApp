@@ -1,12 +1,16 @@
 # Integrating conversation controller
 
+Product direction: [full roadmap and current continuous-voice plan](interaction-roadmap.md).
+Current execution: [milestone9](https://github.com/AlterMundi/telecodex/milestone/9).
+Remaining v0.2 obligations: [milestone8](https://github.com/AlterMundi/telecodex/milestone/8).
+
 ## Current repair direction — human correction, 2026-10-19
 
 The delivered pilot did not establish a coherent daily experience. The owner observed hidden progress in ordinary Telegram topics, repeated copies of shared answers and verbose relay packets. Prior completion records retain their bounded evidence but do not establish completion of the repaired product.
 
 The current MVP is a single **web conversation** for text and two-way voice, coordinating existing native work sessions. Ordinary Telegram work topics retain their native input, commentary, answers, controls and file handling. Destination discovery and observer summaries never authorize routing interception. Only actual integrator work uses its capacity quota; the existing per-session writer still coordinates concurrent ingress.
 
-`interaction.telegram_ingress` defaults to false. The optional legacy Telegram adapter applies only to the explicitly configured integrating entry. Even when enabled, ordinary work topics, replies and literal selectors bypass routing. The current receiving MVP uses the web client; do not silently enable the legacy adapter to make a test or deployment appear successful.
+`interaction.telegram_ingress` defaults to false. The optional Telegram adapter applies only to the explicitly configured integrating entry. Even when enabled, ordinary work topics, replies and literal selectors bypass routing. Enable it only for a human-selected integrating entry, never as a test/deployment convenience. With telegram_ingress and telegram_entry_projection selected, that one topic is another surface of the same conversation: committed app text/voice transcripts, integrator output, captured-scope worker progress and canonical results are projected without creating new input. Telegram originals remain their own messages and are not echoed again. Other work topics retain ordinary direct input. Existing per-source Telegram receipts and uncertainty prevent automatic replay; enabling the option does not backfill old messages.
 
 Independent `interaction.telegram_projection` enables attributed work-topic
 copies without changing ingress. It shares canonical event/destination identity
@@ -69,12 +73,84 @@ The ordinary Talk credential can inspect its canonical web input traces. The
 separate monitor can also read retained legacy Telegram routing originals and
 has no input, playback or session-control authority.
 
+The owner console also supports bounded original-scoped result continuation:
+`input trace-results ID INSTRUCTION BEFORE` and exact association readback with
+`input trace-result ID delivery:UUID`. Current traces advertise `result_pages=v1`
+and per-route `results_cursor`; the existing trace stays bounded to eight results
+per instruction. These are read-only native operations, not additional browser
+write grants or work admission. See the public-native voice guide for return
+cursor ownership and unchanged unknown-effect fences.
+
 The integrating conversation retains conversational continuity while independently
 running native sessions retain their own work. Native input identity, request
 relations, output identity and publication are distinct. An acknowledged steer
 proves admission; a worker's coverage declaration identifies what it reports
 addressing; behavior checks establish whether the requested change actually
 occurred. Finishing a physical turn does not complete all application requests.
+
+## Explicit coordination budget observation
+
+Matrix #312 owns finite coordination roots and their conserved call/charge
+allowances. The continuing Interaction integrator remains the conversation owner;
+I/O is an ingress/egress adapter, never a second reasoning session. This view
+adds no peer attention, executor, inference route or default spending allowance.
+
+When configured and granted, **Under the hood → Coordination budgets** reads the
+existing authoritative Matrix journal on opening or explicit Refresh. There is
+no polling, browser balance cache or second accounting database. Each card shows
+the exact approved objective, participants, expiry, queued/admitted work, and
+Tribe/being/episode available calls, spending, reservations and uncertainty.
+Per-route constraints remain diagnostic: one exhausted instruction does not imply
+that every route is exhausted. A retained allowance notice is historical; current
+balances may change when uncertain usage is reconciled. Refresh replaces the card
+rather than accumulating another notification.
+
+The owner selects at most eight existing roots in optional receiving configuration:
+
+```toml
+[coordination]
+enabled = true
+# Existing isolated Matrix operator prefix, with the owner's journal/trust options.
+command = ["/absolute/path/to/matrix-operator", "--existing-owner-options"]
+store_id = "00000000-0000-0000-0000-000000000001"
+principal = "selected-existing-principal"
+
+[[coordination.episodes]]
+account_id = "selected-existing-episode"
+instruction_file = "/absolute/private/existing-approved-instruction.json"
+task = "Exact task text whose SHA256 is in that approved instruction"
+```
+
+These are placeholders, not activation defaults. The command must support Matrix
+`episode-report -- ACCOUNT_ID` (PR431); it must address the single authoritative
+accounting domain, not an independent per-host balance. The app pins the exact
+instruction, checks its store/principal/task hash and report membership, and
+rechecks the binding before returning. Journal schema3 stays readable without a
+notice; the owning operator may explicitly enable reporting schema4, which adds
+one stable notice slot per existing episode and preserves signed originals.
+The app never migrates a journal, sets limits, reconciles usage or starts work.
+
+The authenticated GET `/api/interaction/coordination` accepts no account, command,
+path or trust selection from the browser. Existing full-owner access can read;
+shared-login and Companion conversation grants require explicit
+`coordination_access = true`, default false. The existing shared-auth identity
+checks remain in force. An owner can change an existing device grant with
+`python -m dashboard.companion --config CONFIG coordination GRANT_ID --allow`
+(or `--deny`), without re-enrollment or changing its credential. Read-only routing
+monitors cannot access this endpoint. Authorization is checked again after the
+read. No provider credentials belong in this configuration or browser response.
+
+Reads are single-flight, with at most two child processes, five seconds and2MiB
+per selected root; cancellation/timeout closes the owned process group. No shell
+or background task is installed. Unavailable/mismatched reports return a bounded
+503 without partial private data. Ship the whole dashboard Python package,
+including `coordination.py`, with the matching frontend; use the existing scoped
+receiving adoption and preserve concurrently selected voice/native software.
+
+This view is read-only unless the separately provisioned human control below is
+present. Integrating writer/return adoption, actual exclusive inference-route
+enforcement and real participant use remain distinct #312 delivery requirements. A UI fixture, merge or installed
+reader alone does not prove those effects or authorize autonomous activation.
 
 ## Configuration and explicit selection
 
@@ -92,6 +168,8 @@ topic_id = 7
 name = "Research"
 topic_id = 8
 ```
+
+At startup, an explicit integrating entry creates only its missing local session metadata for an already allowed owner. It performs no native/model request and preserves existing bindings and settings. An unallowed owner or another owner's existing entry is refused. No priming human message, model turn or manual database seed is required.
 
 Use actual existing owned bindings. The entry and targets cannot overlap the
 bounded I/O profile. One selected shared native App Server remains the owner.
@@ -433,6 +511,56 @@ source workers or authorize another query.
 
 ## Semantic destination selection through the integrating dialogue
 
+### Foreground routing context
+
+The ordinary integrating native turn receives a compact metadata snapshot from
+its existing receiving registry, plus the reference to the original that started
+that turn. This removes capabilities/inputs/inventory round trips solely to
+recover an already known original and clearly named destination. It introduces
+no extra model, native thread, registry, dispatcher or persistent writer.
+
+The snapshot is bounded to8192 JSON bytes of candidates. `complete` and `total`
+distinguish truncation or unavailable metadata from an empty registry. Stable
+topic selectors remain separate from untrusted display labels; neither labels
+nor eligibility prove relevance, readiness or completion. Contextual/ambiguous
+requests still need observer evidence or human clarification. A source reference
+is scoped to the **initial** turn input: later steered messages retain their own
+references and must never inherit that earlier message's routing decision.
+
+The foreground role keeps ordinary dialogue local and routes authorized long
+work to its owning session without waiting/polling for completion. It does not
+create a duplicate session because one is busy, rewrite human text, change the
+selected model, cancel a job or mutate a goal. All dispatches still use the
+existing exact-original controller with current owner/binding/generation checks.
+A stale snapshot cannot bypass those checks. Unknown controller operations still
+require capability discovery; this is an input hint, not a capability grant.
+
+`tests/semantic_routing_io.py` exercises the first provider-facing turn context,
+stable named dispatch without discovery calls, a fresh subsequent input while
+two workers remain active and their independent attributed returns. Synthetic
+native/model peers prove wiring and lifecycle, not actual model obedience or a
+latency improvement.
+
+A bounded source qualification on28October additionally exercised the actual
+selected Sol6.1/openai/medium foreground through this wrapper/controller/store:
+two synthetic canonical originals, two simulated worker peers and one ordinary
+internal result return. The model dispatched clearly named Alpha/Beta using the
+supplied original and stable selectors, ended its foreground reply without waiting,
+answered a separate local arithmetic question while both workers stayed active,
+and read/incorporated Alpha's exact later result before offering it in Conversation.
+Beta remained active; no repeated dispatch, workflow invention, production input,
+Telegram publication or worker-model execution occurred. The three-turn test
+context was observed terminal and archived, not reused for more work.
+
+The local follow-up's submit-to-visible-final observation was2.822seconds, including
+fixture HTTP/control observation. Initial dispatch plus foreground completion and
+both worker admissions took15.997seconds; that combined interval is not first
+response latency. These are single text observations under host load, not a
+controlled baseline comparison, provider distribution, useful sound, phone/hearing
+acceptance or complete stage3 delivery. Complete integrated voice/foreground
+acceptance remains in [#303](https://github.com/AlterMundi/telecodex/issues/303).
+
+
 New native integrating entries also declare the stable `interaction_controller`
 tool. Its `capabilities` operation returns the supported operations and schemas,
 so later controller features can evolve without replacing a native conversation's
@@ -596,8 +724,8 @@ Other titles use `#tID` directly, including titles that could impersonate a stab
 selector or collide with a Matrix target. Discovery does not change client grant
 scope or expiry. Changing the receiving configuration changes its binding bytes;
 existing companion credentials require the supported explicit owner
-reauthorization before they can use that binding. The shared 64-target limit
-still applies; an oversized profile is
+reauthorization before they can use that binding. The shared limit is 127 local targets plus the entry,
+within the existing 128-session reader; an oversized profile is
 rejected rather than silently omitting candidates. Native tool restoration for
 existing work threads follows the same existing enrolled-session lifecycle.
 
@@ -614,10 +742,44 @@ human input. Selected context does not authorize repeating source effects.
 An interaction profile may start with no enrolled targets; an empty inventory
 is not by itself a reason to create a session. One immutable creation intent
 reserves the original input before any topic RPC.
-The existing Telegram topic adapter waits for outbound capacity, revalidates
+When controller capability `create.after_dispatch="retained-source/v1"` is
+selected, an explicitly requested remaining distinct clause can create its one
+additional topic after another clause was dispatched. Preparation freezes the
+existing canonical source ID/hash. Enrollment reuses that exact source and adds
+only the confirmed creation topic; original targets, instructions, request IDs
+and source bytes stay unchanged. The receiving context identifies this additional
+scope and preserves existing work. Exact old dispatch retries remain readable;
+arbitrary target widening, changed source/intent, duplicate title and uncertain
+creation replay remain refused. Inspect the original's `creation_status` after
+failure; `not_found` permits correcting a known pre-admission refusal through the
+same controller, never a raw topic/store write or a replacement human original.
+A receiving worker without `create` authority returns the exact supported recovery
+to the existing integrator; it does not borrow the integrator's private grant.
+With `telegram.enabled=false`, creation reserves a receiver-local destination in
+the same SQLite transaction as its receipt. It reserves configured target IDs,
+stored sessions and retained creation destinations, including targets that have
+not initialized a session yet. No Telegram request or token is required. The
+existing initialization, enrollment and exact-original dispatch follow unchanged;
+these local destination IDs do not claim Telegram topic creation. Recover an
+interrupted known-unsent creation with `creation_resume` and its retained original,
+not a replacement input or a new creation ID.
+
+The enabled Telegram topic adapter waits for outbound capacity, revalidates
 original ownership, native binding and ingress generation, and marks the one
 mutation immediately before HTTP. A failed pre-send check is known unsent. A
 lost or invalid topic receipt is uncertain and is never retried automatically.
+Creation `name` is the human-visible Telegram/native title, including ordinary
+spaces (1-64 UTF-8 bytes, no surrounding whitespace, control/markup characters
+or reserved `tID` titles). A multiword title enrolls under the returned stable
+`tID` selector; it is never silently renamed into a single-token title. Existing
+single-token labels retain their selector. The store reserves the title across
+creation intents, including uncertain effects, to prevent duplicate creation.
+Fixed pre-admission title/argument failures return `creation_rejected` with a
+specific code and `stage=before_intent`; private error chains remain hidden.
+Inspect `creation_status` before correcting the same original's arguments:
+absence describes one read, not permission to replay a concurrent operation.
+Changing from dynamic tools to scoped CLI does not bypass the same controller.
+
 `creation_status` takes the original `input_update` reference to inspect the
 retained operation even when the original tool response was lost. A confirmed
 topic is retained if later initialization or admission fails; inspection is not
@@ -638,7 +800,7 @@ delivery and return path. Enrolled created destinations appear in observer
 inventory, explicit selectors and status without modifying the static config,
 and remain available across restarts. Creation cannot change an existing input's
 selected target plan or grant access to another human's sessions. Configured and
-created contexts share the existing 64-target bound; pending uncertain creation
+created contexts share the existing 127-local-target bound; pending uncertain creation
 intents reserve capacity. A new topic or native acceptance is not proof of
 incorporation or task completion.
 
@@ -679,13 +841,34 @@ a stable caller request ID, one existing unambiguous topic and at most 16,000
 bytes of session-authored text. It does not copy a transcript or create a topic.
 `session_requests` inspects the latest sixteen retained dependencies.
 
-Runtime context names the selected worker topic and separates its task from
-integrator-only clauses in the unchanged human message. For a continuing request,
+Runtime context names the selected worker topic and instructs it to distinguish
+its task from integrator-only clauses in the unchanged human message. This is
+model guidance, not a retained per-destination task partition. Dispatch stores
+the entire original for every destination; commentary about a split does not
+encode one. Follow [routing ownership](interaction-routing-ownership.md) for
+mixed requests and corrections. A local helper request does not transfer the
+original request, its owner or its human-facing return responsibility. For a continuing request,
 coverage declarations explicitly include earlier applicable instruction IDs whose
 constraints were actually carried forward, together with new incorporated context.
 A declaration covering only the most recent message does not establish cumulative
 coverage. Missing or unresolved constraints remain visible rather than being
 inferred from a prior answer or native history.
+
+Local requests, helper answers and return-only caller wakeups retain their original
+provenance but do not inherit permission to publish into that human conversation.
+The backend freezes an internal audience per canonical delivery. Such records
+remain available for dependency return/inspection, but are excluded from ordinary
+presentation reads, direct source reads and final transport reservation. Returning
+context does not publish a helper answer or request an unsolicited caller narration.
+A current covered human input in the caller's actual execution can still produce
+one ordinary human-facing answer incorporating that evidence. A genuinely deferred
+logical human task can also complete once across physical turns when its cumulative
+human/context coverage is current and complete; a previously completed human request
+is not re-announced merely because internal context arrived. Unreported or partial
+helper coverage stays internal and cannot reserve a completed return. Internal-only
+executions also do not inherit an older native progress return binding. Legacy
+records use retained session authorship/coverage without erasing any delivery or
+uncertain-send receipt. Later corrections keep their existing freshness semantics.
 
 A local dependency is a single level: another session's request or result cannot
 serve as a human parent. An accepted original human instruction can authorize at
@@ -800,6 +983,23 @@ rather than injecting it as new human speech. Native worker progress snapshots
 its web source at first observation. Duplicate native observations retain that
 original scope, and old progress without a recorded web source is not imported.
 
+Compact worker updates offer **Reply to this update** when the receiving native
+backend advertises `can_reply_updates`. The selection freezes that source ID and
+revision even when a later update replaces the preview. Native worker progress
+and final messages resolve through the same owned presentation source; direct
+work that never selected this web entry remains unavailable. The backend fences
+source revision, target ownership and current native binding, including changes
+during ASR preparation. The original text remains unchanged; the existing relay
+`selection.reply` provenance carries the compact reference. The receiving session
+can read only the needed exact-revision part with `conversation_part`. A reply to
+an update is neither completion of the previous task nor a request for workers
+to arbitrate its destination.
+
+For an interruption or reference to spoken text, `playback_context` reads only the
+selected original's frozen device report and a bounded exact-revision source
+window on demand. See [interrupted-source inspection](interaction-speech.md#on-demand-interrupted-source-inspection).
+This is advisory evidence, not a hearing receipt or an automatic resume command.
+
 ## Spoken conversation scheduling
 
 Talk enables new spoken replies when synthesis is available. The browser captures
@@ -848,3 +1048,637 @@ collector attachment; its missing tool is not repaired by replacing history.
 See [retained generated files](retained-artifacts.md) for the explicitly configured
 immutable artifact store, logical audiences, device file entitlement and recovery.
 File preparation runs independently of native conversation progress.
+
+### Long observer source turns
+
+The native source reader keeps a 48,000-byte history window. Individual turns
+use at most 32,000 bytes, retaining recent original statements and explicit
+omission markers when a long-running turn exceeds that allowance. UTF-8 text,
+role, native turn identity/status and provisional-versus-completed attribution
+remain intact; older completed context can still occupy the remaining window.
+A large current turn must not become an empty source merely because it cannot
+fit whole. Source-read failures emit fixed diagnostic categories, without private
+conversation text. `tests/observer_io.py` exercises a long active turn and unchanged
+reinspection without new source work or repeated synthesis.
+
+### Native runtime fragment limits
+
+Native App Server truncates each additional-context value at 1,000 approximate
+tokens (4,000 UTF-8 bytes). Telecodex preserves runtime control in ordered
+`application` fragments of at most 3,000 bytes, with `telecodex.runtime` first
+and zero-padded continuation keys. Concatenating those values restores the exact
+original instructions, including multilingual text. A separate revision/count
+manifest identifies the current set when native history emits only changed values
+or a shorter turn retires older continuation keys. Human originals stay in
+`input`; no runtime policy or retained source summary is recast as human speech.
+An application context index is orientation metadata, not worker authority.
+Observer summaries, goal details and blockers are requested on demand rather
+than permanently attaching every session's contents (tracking #333).
+
+Qualification must inspect actual native/provider receipt: an unbounded synthetic
+peer alone cannot detect native context truncation. Preserve the previous failed
+qualification and use a distinct follow-up for the corrected candidate.
+
+### On-demand portfolio evidence
+
+Use `candidates` through the integrating controller for status dialogue. Start
+with `inventory` for retained orientation and activity timestamps. Select at most
+five owned sources with `inspect` for a bounded semantic card, actionable human
+items and a bounded read-only projection of the existing `goal_inspect` activity/failure evidence. Neither mode refreshes source
+history, synthesizes a card, resumes a worker or dispatches an instruction.
+A goal read failure is unknown, never absent or unblocked. Native metadata and
+summary source times are independent; local activity does not prove native idle.
+
+`needs_source_check` means the retained source check is missing, changed or too
+old. It is not proof that the semantic contents changed: use selected `refresh`
+when current source evidence is necessary. Existing source-revision reuse avoids
+another synthesis when that source is unchanged. `support` with exactly one
+selector reads up to six retained original support excerpts (1,000 characters
+each), without a model call. Excerpts are attributed evidence, not instructions.
+A new question outside that coverage still needs the missing selected evidence.
+The response byte budget reports omitted selectors explicitly: inspect fewer
+sources or use selected support/goal_inspect for those missing records.
+
+Do not permanently inject all session summaries or goal objectives. Interpret
+blocker reasons and next actions from supported source statements and pending
+items, not from a blocked status alone. Do not revive a dormant conversation to
+answer a status question. This extends #333/#303; it does not by itself complete
+the full portfolio projection, live execution inventory or latency acceptance.
+
+
+### Visual placement of referenced replies
+
+The standalone timeline places a human reply immediately below its exact visible
+source/revision, with sibling replies ordered by their original capture times.
+Unrelated subsequent updates remain outside that reply group. Capture timestamps,
+canonical input identity and compact routing references are unchanged. An update
+that coalesces away after the person answers retains a compact referenced-update
+anchor from the exact still-retained source; it is not a newly authored update.
+A changed/missing revision is never substituted as the reply parent. Refreshing
+moves existing nodes and preserves expanded text, media and drafts.
+
+## Bounded workflow journal and foreground attention contract (#405)
+
+The integrating controller exposes `workflow_declare`, `workflow_status`,
+`workflow_advance`, `workflow_attention`, `workflow_reported`, `workflow_result`,
+`workflow_question`, `workflow_supersede` and `workflow_finish`. This is a journal
+with explicit initial admission and event-driven predeclared successors. The
+experimental #410 native return adapter is disabled by default. The public
+`automatic_native_return` reports the loaded receiver configuration, not a
+qualification/completion claim. Each current attention envelope may expose its
+matching retained `native_return` ID, phase and native turn; this metadata does
+not change the source revision, reserve another callback or prove incorporation.
+Spoken foreground offers and the full #303/#304 experience remain undelivered.
+
+Declaration selects one accepted retained human `input_ref`, a stable
+`request_id`, an RFC3339 `expires_at` no more than seven days away, and one to four
+ordered steps. Each step declares `id`, one enrolled owner `selector`, `after`
+(the preceding step ID, or null for the first), session-authored `scope` (at most
+4,000 bytes), expected `checkpoint` (512 bytes), and optional human-selected
+`milestone` (80 bytes). Declaration does not dispatch. The original is immutable
+and cannot also acquire a competing ordinary dispatch, creation or Matrix plan.
+The step scope is attributed integrator interpretation under that human original;
+it never replaces the original's authorship or authorizes additional work.
+
+`workflow_status` returns exact current journal/coverage evidence and a revision.
+`workflow_advance` selects that revision and reserves one ready step through the
+existing instruction journal and worker dispatch. Once started, a committed
+current completed predecessor result triggers the same integrator-owned advance
+primitive for its next predeclared step. The callback adds no scope and invokes no
+integrator model. It rechecks the exact source, original authority, deadline and
+current workflow revision transactionally; duplicate callbacks never resend an
+existing admission. A restart/uncertain dispatch still requires its owning
+known-unsent recovery instead of callback replay. A predecessor must have a
+current completed canonical result covering its cumulative instructions, including
+corrections. The successor pins that exact predecessor result revision. Its packet
+contains a source descriptor, not a copied result body: use `workflow_result`
+with workflow ID, predecessor step ID, source revision and optional character
+offset to read 4,000 characters at a time. Only the integrating entry and the
+admitted successor owner can read it. Workers cannot declare/progress a workflow
+or turn its internal step into another helper's human parent.
+
+New successor packets include `predecessor_reader`, with the exact
+`workflow_result` arguments, beside the unchanged canonical predecessor source.
+Use its plan-step key rather than confusing `source.id` (the canonical result
+UUID) with that key. Older admitted packets that expose only `source.id` may use
+that exact canonical ID and source revision in `step`: the existing reader
+resolves it only within this workflow's already-authorized dependencies and still
+checks current owner/native binding, canonical revision, completion and adjacency.
+This compatibility read changes no retained source hash/admission, creates no
+workflow, sends nothing, and never replays an uncertain step.
+
+Exact admission retries never dispatch an existing instruction. Queued,
+known-unsent, accepted and uncertain native operations retain the owning journal's
+phases and recovery path. Changed predecessor coverage/revisions expose
+`correction_pending` or `predecessor_changed`; an already admitted successor is
+retained for reconciliation, never silently replayed. Every required step must
+currently complete before `awaiting_integration`; only explicit `workflow_finish`
+with that current revision and a final integration checkpoint retains overall
+completion. A worker completing one step cannot complete the whole workflow.
+`workflow_supersede` requires a later accepted human original with retained ingress
+order. It withdraws future/definitely queued work and preserves accepted and
+uncertain effects. Existing scoped caller controls also withdraw future workflow
+admission. Entry binding/generation changes and expiry retire future progression.
+
+The existing presentation-list response includes `workflow_attention` with schema
+`telecodex.workflow-attention/v1`. Its `envelopes` contain workflow/step IDs, exact
+canonical result or question capture version, source session, current workflow
+revision, reason, optional reporting milestone, deadline and an exact envelope
+revision. Reasons include `reporting_milestone`, `successor_ready`,
+`integration_required`, `reconciliation_required`, `admission_attention_required`
+and `human_decision_required`.
+No source body is injected. Question offers are scoped to the step's exact native
+execution, exclude approvals and disappear when that version is no longer pending.
+`workflow_question` reads the exact offered capture version on demand; it cannot
+answer or approve. Existing human-selected question controls retain their own
+separate decision revision and admission requirements.
+
+The model-free projection reuses the existing presentation/event transport; it
+starts no polling model, coordinator, helper chain or integrating-native wakeup.
+Only a committed canonical result can trigger the bounded predeclared successor;
+progress events cannot create model work. At most
+16 active workflows per entry, four steps per workflow, one result envelope and
+two pending question envelopes per step can be exposed. There is one current
+offer acknowledgment per step/source slot, with no accumulating callback log or
+result-body copies. `workflow_reported` deduplicates an exact integrated offer
+across reconnect; it is neither proof of hearing nor a completion/publication
+receipt. Admission and canonical history remain retained by the existing durable
+request journal; expired/terminal workflows are tombstones needed for exact
+identity, not disposable caches. Active projection and acknowledgment growth are
+bounded independently of that required history. There is no existing automatic
+workflow-journal pruning route to claim as protection. Retention therefore has
+an additional hard stop: at most256 workflow rows for the entire listener store,
+and at most256KiB serialized JSON per row (64MiB of workflow payload in total,
+separate from existing canonical journals/SQLite overhead). Declaration reserves
+32KiB within its document for future step/checkpoint metadata. Capacity refusal
+is explicit as `workflow_capacity_reached`; exact retained retries and current
+workflow progression remain usable. Terminal/expired rows and originals are not
+automatically erased to create space. Further new workflow admission at capacity
+requires a separately authorized compatible journal archival/retirement route;
+until such a route exists, admission stops at the hard bound.
+
+All workflow results stay internal under the existing canonical audience rules.
+An attention envelope is evidence, never a human instruction, automatic publication
+grant, approval or permission to start an unplanned action. Native entry return
+must use an actual attributed internal-context seam, preserving the runtime's
+admission gates. The existing local-session return path ultimately submits an
+attributed text input to an enrolled worker; it does not establish that seam for
+the separately owned integrating Conversation. UI/audio adoption must route
+meaningful offers through its selected finite foreground and the existing
+Conversation player while internal tracks remain muted, without manufacturing
+human input or narrating every progress event.
+
+### Experimental native entry return (#410)
+
+`interaction.native_workflow_returns` defaults to `false`. When explicitly enabled,
+committed canonical results and newly retained pending questions select only the
+bounded meaningful attention envelopes already declared by the original human
+workflow. `successor_ready` is model-free progression and does not cause another
+entry model turn. There is no poller, timer or model rewrite of intermediate progress.
+An idle integrating entry uses its existing worker/admission queue; a live entry
+uses its current native execution. Both submit `turn/start` with `input:[]` and
+`toolOutput:{name,namespace:null,output,retain:true}`. No callback text is submitted
+as human speech or given a native user-message correlation ID. Ordinary direct
+human ingress keeps its existing path. Native admission, Stop, generation, writer
+ownership and maintenance fences remain authoritative.
+
+The retained return is in the same bounded workflow document: at most16 source
+revisions per workflow, each with an envelope of at most2,048 bytes, and capacity
+reserved for later step/final checkpoints. The existing document cap still applies.
+The existing execution journal supplies the local/native turn binding; a bounded
+index (at most32 returns per local execution) links it to the workflow receipt.
+These are transport receipts, not another queue or coordinator. Capacity leaves
+pending source evidence visible; it does not silently drop the workflow or grant
+new model work. Source text remains available through exact `workflow_result` and
+`workflow_question` reads.
+
+Before native submission the adapter retains intent and rechecks original authority,
+expiry, generation and the exact source revision. It records `submitting` at the
+native boundary, then distinguishes `accepted`, `rejected`, `uncertain` and
+`retained_unsent`. Restart changes an unsubmitted reservation to `retained_unsent`
+and an unresolved submission to `uncertain`. With the existing adapter explicitly
+enabled, the maintenance heartbeat can claim the same retained known-unsent intent
+again after2 then5 seconds, at most3 total attempts and4 claims per heartbeat.
+It rechecks current authority, binding, generation, expiry, unreported source and
+revision; it does not discover new events on startup. Submitting, uncertain,
+rejected and acknowledged returns are never retried automatically. Attempts and
+next eligible time remain visible in the existing workflow status. Asynchronous
+observations carry their frozen attempt, so a late earlier ACK cannot acquire a
+later attempt's collection or publication authority. Restart preserves the budget.
+Once retry metadata exists, rollback must retain a compatible journal writer;
+disable the adapter on that writer rather than restoring an older database or
+silently resetting attempt counts.
+An exact native ACK remains retained even if the local waiter later times out.
+For a live-return race whose ACK names a different native turn, the immutable ACK
+is `accepted_uncollected` with that actual turn ID. A distinct callback-only local
+observation row anchors exactly that physical turn; the old execution collector
+keeps its own identity and excludes the detached turn's events. The existing native
+recovery heartbeat observes this row without submitting input, changing goals or
+creating another attention loop. It does not claim live dynamic-tool collection.
+An observed terminal canonical final is imported through the existing canonical
+journal and changes the transport receipt to `accepted_reconciled`. The original
+submission local ID, new collection local ID and exact native ACK remain distinct.
+Receipts from the same submission that ACK the same detached physical turn share
+one observation row and reconcile atomically. A sibling with an unresolved native
+target keeps terminal import pending; an ACK is never guessed from another receipt.
+The canonical report freezes every incorporated receipt's current source grant.
+The helper result still cannot complete overall integration.
+
+Observation uses the existing bounded native turn-history API. On an actual
+unsupported-method response, it requests only the owned thread's metadata through
+`thread/read(includeTurns:false)` and reads the returned regular rollout path. No
+peer/controller argument selects a filesystem path and no other history is scanned.
+The first `session_meta` must name that exact native thread, and the selected
+physical `task_started` and terminal boundary must both be present. Persisted
+assistant IDs/phases are retained, without invented item identities or truncation.
+A header of at most256KiB and tail of at most8MiB bound each file snapshot; a missing
+start, partial terminal, oversized source or missing canonical final remains
+explicitly uncollected. Terminal import admits at most16 canonical items and64KiB
+of canonical text per return. At the existing256-workflow/16-return limits this
+bounds additional collection rows at4,096 and recovered canonical text at256MiB,
+separate from existing native journals and SQLite overhead. Rows retain the existing
+journal/explicit-removal lifecycle, never age-based deletion of authority or history.
+One shared filesystem-read permit remains held until the actual read ends, including
+after the8s caller deadline, so slow I/O cannot accumulate background readers.
+Original deadline, generation, binding, supersession and Stop/maintenance fences
+continue to govern observation; retirement retains the ACK and uncertainty. Turning
+off new native returns does not erase a previously accepted finite observation.
+
+ACK is not incorporation, a useful provider answer, reporting or hearing. An active
+human turn has no native per-input causal attribution for its assistant output;
+its ordinary publication lifetime remains governed by that human turn. For an idle
+callback-only turn, canonical text, response drafts and cached speech are fenced by
+the exact accepted source set and original reporting policies. A possibly submitted
+or stale sibling result/question cannot borrow a current offer's publication grant.
+Rejected/known-unsent context and an exact ACK into another physical collector do
+not widen that source set. Each canonical item freezes its own bounded set, so later
+inputs cannot change which sources authorized an earlier report. Existing
+`workflow_reported` acknowledgment of the exact current version explicitly
+supersedes an older accepted revision in that same workflow/attention slot; native
+ACK alone does not do so. An unresolved question sibling remains fenced. A question
+followed by a resolved final result in another slot has no implicit cross-slot
+coverage declaration: a mixed callback-only output can remain withheld. This
+integration/coverage gap stays explicit, without another journal or inferred grant.
+A withdrawn,
+expired or corrected source cannot publish newly generated callback-only output.
+Previously published canonical text remains historical evidence with `current:false`.
+A replacement collector for the same exact physical native turn inherits the
+retained source set atomically with its attachment receipt, including expired
+and uncertain siblings as negative publication fences. Observation ownership
+moves to the successor; the old collector cannot borrow its publication. The
+attachment bookkeeping prompt is not human speech. Real human/goal execution
+publication is preserved across replacement, and later accepted human originals
+retain ordinary publication authority. This changes no native input, attempt,
+ACK, workflow ownership or source deadline. Another physical turn inherits none
+of these bindings. A completed workflow permits the final integrating answer
+from its retained final-result offer.
+`workflow_reported` acknowledges evidence integration, and does not by itself prove
+human publication. Telegram requires its existing explicit projection selection;
+foreground audio still requires the human-selected Conversation surface/player.
+
+Idle-root and held-active native `toolOutput` seams have separate actual-native
+evidence of useful provider incorporation and retained internal history. These Core
+proofs do not qualify this adapter, its collector or receiver installation. Mock
+boundary tests qualify only the adapter contract. Keep the receiving
+`interaction.native_workflow_returns` configuration off until the wrapper's useful
+provider return and retained internal history are observed at the actual supported
+native boundary, and retain any active-turn qualification gap. The configured
+policy must remain observable even during qualification; do not hard-code a false
+status to represent missing acceptance. A native ACK, delivery uncertainty,
+source integration and human hearing remain different observations.
+
+CompAII receiving selection,28October2026: PR423/424 is installed and the existing
+adapter is enabled for **declared human workflows**. Full CI40725360141 passed.
+An actual Sol6.1/openai/medium callback-only Root received the source-bound internal
+return through this wrapper, called `workflow_result`, `workflow_reported`,
+`workflow_status` and `workflow_finish`, and published one canonical answer in the
+same Conversation. It contained no native human message or production test input;
+the test context was archived after observed completion. This qualifies that idle
+provider/controller/publication journey, not physical hearing, latency, arbitrary
+session awareness or the whole continuous-voice roadmap. Earlier active-seam
+provider evidence and synthetic active-wrapper coverage retain their own scope.
+
+For actual-provider fixtures, set and inspect the stored entry model/effort:
+changing default preferences does not update seeded synthetic sessions. Use the
+existing `thread/name/set` durability operation before disconnecting an empty
+paginated test context. Its rollout may exist before its metadata index row;
+that does not establish a model turn or justify replacing an uncertain context.
+Retain earlier unknown creation/submission outcomes; fix verifier-only failures
+without repeating model work. Source, installation, incorporation and hearing
+remain separate observations. Other receivers retain their explicit selection.
+
+Once a workflow has been declared, preserve `interaction_workflows`, all underlying
+instructions/results and session authorship during upgrades or rollback. A
+rollback listener must retain this reader and original-selection exclusion while
+workflows are active; an older binary unaware of workflow selections is not a
+compatible operational rollback. Scoped withdrawal/expiry stops future
+admission without deleting checkpoints, accepted work or uncertain operations.
+
+
+### Ordinary routed native attention (#426 / PR427)
+
+`interaction.native_routed_returns` defaults to false, independently of the
+qualified declared-workflow adapter. It extends that same native return transport
+for a current completed canonical result or pending canonical native question
+from actual human-routed work. Internal helper/workflow legs, direct-topic work
+and intermediate progress do not acquire this ordinary return path. No synthetic
+workflow, human input, execution queue or continuous model polling is created.
+
+The source row retains at most16KiB of return metadata and four question versions;
+source text remains in its original journal. Offers expire after15minutes. Current
+entry/native binding, Stop/maintenance epoch, retained original and semantic source
+revision are checked before admission and callback publication. Cosmetic carrier
+or artifact changes do not change the result's semantic revision.
+
+`source_text_complete` identifies a nonempty existing result preview of at most180
+characters whose raw UTF-8 SHA256 matches the full current canonical result.
+That exact text is already present in the envelope and needs no second source
+read. A mismatched/truncated preview or native question still uses the existing
+source reader. The `after_offer` controller call acknowledges only actual
+incorporation after useful output. These metadata hints retain the existing
+source/publication fences and add no stored text or authority; their effect on
+real-provider latency requires qualification.
+
+On-demand `attention_source` reads at most1600 characters; `attention_reported` records
+incorporation only, never hearing, task completion or an answer/approval.
+
+Committed result/question events reserve offers. The existing heartbeat recovers
+only retained known-unsent offers: at most4 claims per heartbeat across both
+adapters, at most3 attempts with2/5-second delays. Submitting/uncertain/acknowledged
+returns are never replayed. Each scoped recovery scan reads at most16 matching
+source rows per canonical table; startup normalization reads at most256 unresolved
+rows per table. No history discovery or replay occurs on enabling the flag.
+Callback source sets use `native-public-set` for ordinary/mixed sources and retain
+legacy workflow marker compatibility. Readers expose neutral `native_returns`
+without mislabelling ordinary sources as workflows. Rollback must keep this
+compatible reader/writer and preserve the journal; disabling the flag does not
+revoke or erase retained outcomes.
+
+Initial PR427/source4372cbdd activation (fullCI40743262608) is superseded by
+receiving-selected PR429/sourcec2c301ef, merge2713900e, fullCI40753163750.
+Its exact physical-turn collector replacement retains source publication fences;
+25 targeted and442 full local unit tests pass (one existing ignored), with strict
+clippy and full native/HTTP CI. CompAII keeps both native-return policies enabled.
+Web PR430/source8c7697f7, merge6c902d2b, applicableCI40757444581 is selected as
+**uic8496d676ec8** with exact local/public assets and health verified. It adds the
+bounded preparation intervals documented in interaction-streaming.md. Core,
+voice/model/configuration and two current native writers/goals/accounting were
+preserved; no native restart, human input replay, global Stop or peer adoption.
+
+Enabling these native-return flags also changes the web receiving-profile digest.
+Qualify all configured receiving constructors and their separate retained bindings
+before selecting a changed profile, even if the web code is unchanged. During this
+adoption, Alerts/Traffic rejected the exact old profile; same bot/human,
+endpoints/credentials and companion scope were verified, with only the two approved
+return flags differing. Fingerprint adoption preserved all4126 delivery attempts/
+receipts, menu selected/pending state and Traffic incidents/outbox. Never clear
+journals, weaken identity checks or recreate device grants to make startup pass.
+Shared-auth/browser/device and physical acceptance remain separate. The existing
+Shared Resources Interaction record owns receiving details and remaining gaps.
+Rollback retains the fixed429-compatible writer with new native admissions off,
+all later journals/receipts and prior web; older writers can lose collector fences.
+
+The synthetic active-result / idle-question / idle-result real-wrapper journey,
+known-unsent recovery, loaded-policy observation and default-off/no-backfill
+cases passed in final-tree CI. Twenty-one targeted store tests include ordinary
+source restart/correction, retained uncertainty, same-intent finite retries and
+stale-attempt fences. Earlier actual Core/Sol internal toolOutput evidence is
+reused at the unchanged native boundary; no provider or production work was
+replayed. The presentation reports loaded `automatic_routed_native_return`
+separately from retained receipt phases. Full stages2/3/required4, foreground
+speech/coalescing and real-device acceptance remain unfinished; this is not a
+whole-stage completion or hearing claim.
+
+
+## Explicit human coordination pause — Matrix #312 / Telecodex #529
+
+The existing budget card offers **Pause new coordination** / **Resume
+coordination** only when its configured operator and the authenticated person's
+actual control grant permit it. The displayed account revision is part of the
+request. Pausing fences new provider/native work; it does not certify an active
+process stopped, refund fuel/unknown charges or change a limit. Resume never
+starts or repeats work. Existing exact cancellation remains the active-process
+interruption path; global Stop still requires its own human consent.
+
+Normal `create_app` has no funding-control adapter. The owning trusted frontend
+may compose its EXISTING `HumanExecutionOperator` and external signer using
+`dashboard.coordination.HumanControl`; no key/trust loader, new login, signing
+service or balance store is provided here. Provision this only outside
+model-controlled processes/state, under the existing human-frontend isolation
+contract. Account authority, finite allowances, prices and inference selection
+remain actual owner decisions. A read grant never authorizes signing.
+
+```python
+# Illustrative host composition, not an activation configuration or new signer.
+# Existing bindings share the single authoritative journal/accounting domain.
+def operator_factory(authenticate):
+    return HumanExecutionOperator(
+        challenge_path=existing_challenge_journal,
+        bindings=existing_codex_hermes_bindings,
+        authenticate=authenticate,
+        signer=existing_external_signer,
+        challenge_id=existing_challenge_id,
+    )
+
+control = HumanControl(operator_factory, human=selected_human_id,
+    principal=existing_funding_principal, store_id=existing_journal_id,
+    runner_type=selected_existing_runner)
+app = create_app(existing_config, existing_provider, coordination_control=control)
+```
+
+The adapter binds the actual authenticated HTTP invocation into the existing
+human challenge frontend. Its authentication predicate checks exact invocation
+identity and revalidates the current web grant at the frontend boundaries;
+peer/model-shaped metadata cannot satisfy it. The factory must use that predicate,
+retain its existing trust/signing custody and provide the actual matching store.
+The budget configuration pins at most eight existing episode roots, their exact
+instructions and objective hashes. No browser value selects a path, command,
+principal, signer, journal or new account.
+
+Shared login requires the separate explicit
+`shared_auth.coordination_control_access = true`; it includes budget reading.
+An existing Companion device can receive or lose the same operation permission
+without re-enrollment using the existing command:
+`python -m dashboard.companion --config CONFIG coordination GRANT_ID --control --allow`
+(or `--deny`). Revoking its ordinary coordination read permission also revokes
+control. Monitors remain ineligible. Even a permitted device cannot control
+funding without the actual matching host operator binding. Full-owner HTTP
+access likewise requires that binding; credentials are never shown to models
+or placed in browser storage by this integration.
+
+`POST /api/interaction/coordination/control` accepts only the exact configured
+`account_id`, `expected_revision`, boolean `paused` and bounded action `nonce`.
+Existing authentication, Origin/CSRF and before/after-I/O grant checks remain.
+There is one application action slot per configured root/person, at most eight,
+inside the existing `actions` journal. Exact duplicate HTTP requests return the
+same retained result; changed reuse is rejected. A lost/uncertain commit blocks
+another action, including one carrying a new nonce. The client checks the same
+original action after a lost return; it never auto-resumes or retries model work.
+An owned write completes and retains its outcome even if the HTTP caller leaves.
+
+The canonical signed control history remains in Matrix. Terminal UI slots for
+roots removed from configuration can be retired by this adapter while uncertain
+slots remain protected; reaching the eight-slot bound requires inspecting the
+retained original operator outcome before admitting another root. No snapshot,
+per-click archive, periodic reader or background task is installed. An uncertain
+slot is not proof of a stopped process or permission to resend the control.
+Publishing/deploying these source APIs with no configured binding leaves them
+disabled. Actual selected authority, receiving operation and human device use
+must be recorded separately.
+
+
+## Funded Matrix return integration
+
+The host adapter now separates a stable human-approved purpose from the exact
+later SDK-verified original and requires the existing funded source queue for
+that explicit mode. Signed results return through the same canonical Matrix
+callback and remain passive. See [the adapter contract](interaction-matrix.md#funded-selected-original-replies--matrix-312--telecodex-532).
+I/O is another ingress/egress of this continuing integrator, never a second
+reasoning owner. Production peer activation still needs the selected authority,
+limits and enforceable inference route; source and model-free integration tests
+do not enable it.
+
+
+## Incremental attributed subtasks under one original (#577)
+
+`input_ref` identifies actual retained human authority; `request_id` identifies
+one integrator-selected bounded subtask plan, not the entire lifetime of that
+original. `workflow_declare` can admit genuinely additional authorized work with
+a different stable request_id under the same original. Each plan remains
+immutable, at most four ordered steps with a finite deadline. Existing retained
+workflow IDs, original texts and native effects are preserved. Old per-original
+workflows still resolve by their retained request_id after upgrade/restart.
+No schema rewrite, duplicate goal engine or new input transport is involved.
+
+Use this path for a later selected destination or integrator-authored handoff of
+relevant peer evidence. Scope/checkpoint text is attributed session context,
+never a new human message or independent permission from the peer. Preserve
+source/session/revision attribution and restrictions in that bounded scope;
+ordered dependent steps retain the existing exact predecessor reader. Workers
+cannot declare another workflow or expand the original human's authority.
+
+A confirmed creation can use the same incremental path only after its original
+instruction is genuinely accepted in the enrolled current native destination.
+Supply that exact `parent_instruction`. Declaration revalidates the ready
+creation, its original entry/native/source, enrolled primary and existing
+Stop/maintenance/epoch and interview exclusions. A topic receipt or ready phase
+alone is insufficient; uncertain/unaccepted creations remain refused. This does
+not resume creation, replay its input or admit the new subtask: the coordinator
+still advances the declared plan separately. A different human original is not
+a workaround for a refused continuation.
+
+For a second distinct subtask after a confirmed creation, original revalidation
+uses the retained owning original rather than the initial no-workflow guard.
+The existing sibling workflow is not a competing original selection. Competing
+Matrix/goal selections, source identity, accepted enrolled primary, current
+binding and Stop/maintenance checks still apply. No creation, enrollment or
+primary submission is repeated, and whole-original dispatch stays excluded.
+
+For an exact retry, reuse the same request_id and the entire frozen plan. Inspect
+workflow_status, instruction/acceptance and uncertainty first. A new key is not
+a recovery operation: an identical selected owner/scope is rejected
+rather than replayed, even if its checkpoint changes. Changing wording is not permission to repeat completed,
+accepted or uncertain work. A conflicting plan under the same key returns
+`workflow_plan_conflict`; duplicated scope returns
+`workflow_scope_already_selected`, with the retained workflow ID. A whole-original
+`dispatch` after workflow selection returns `workflow_selected`: continue the
+existing plan, or declare only the genuinely additional attributed subtask.
+Explicit withdrawal/supersession retires that original's ability to gain new
+workflow plans (`workflow_original_retired`). Owner/native/original, delegation,
+admission epoch, Stop/maintenance, competing goal/Matrix/direct plans and the
+existing 16-active/256-retained workflow capacity remain enforced. No automatic
+cleanup or capacity replenishment is introduced. Arbitrary internal failures
+still use the non-sensitive generic diagnostic, not raw exception strings.
+
+Declaration is metadata only. `workflow_advance` uses the existing attributed
+instruction journal/native dispatch once; exact repeated advancement cannot
+retransmit an admitted step. Results, integration and public presentation keep
+their existing independent receipts. This extension must never replay the
+production inventory/Weaver handoffs that exposed the defect.
+
+
+Collector recovery for the shared integrating entry must classify the actual
+physical execution, not its configured Tribu conversation label. A submitted
+nonterminal bounded I/O admission with the selected native/physical identity
+(or an unresolved receipt that could still be that writer) retains its deadline/
+reconciliation fence. Ordinary web/native work in the same conversation uses the
+existing exact `attach-active` route; this starts no turn and changes no goal.
+A successful software selection is not receiving continuity until those actual
+collectors, or their terminal native outcomes, are observed. Never repeat a
+queued attachment or software selection to repair a missing observation.
+
+### Shared browser access recovery
+
+A rejected shared-session GET rechecks the existing Home identity once and repeats
+only that read when identity remains valid. A second resource rejection is an
+unavailable observation, not a global sign-out. POSTs never repeat: accepted or
+uncertain input retains its original outcome. After actual access rejection, the
+client can restore current access without a page reload; returning to the tab,
+coming online or the explicit Sign in button rechecks the same remembered session.
+Only the existing shared sign-in client can initiate login when that check fails.
+Malformed identity-service responses return503, not a fabricated expired session.
+No new identity store, token refresh mechanism, capture reopening or work replay.
+
+
+## Restart before worker submission
+
+A retained attention-workflow step can be recovered after listener startup when
+its old-process document is still queued, has no local execution or physical
+native turn, and retains the same owned native target. Startup changes only the
+SQL phase to `retained_unsent`; requiring a heartbeat execution receipt here
+would strand a step that never obtained an execution. Same-process phase labels,
+changed bindings, partial submissions and uncertain outcomes do not qualify.
+Existing workflow source, owner generation, expiry and Stop/maintenance checks
+still apply. Recovery preserves the instruction and original resource account.
+
+An authenticated owner can inspect `telecodex --control CONFIG workflow status ID`
+and call `telecodex --control CONFIG workflow recover ID REVISION` with that
+exact current revision. This operation recovers only a retained-unsent step;
+it cannot admit a new ready step, resume a goal or invent a human message.
+Inspect the instruction/native receipt after submission uncertainty. The general
+conversation can use its existing `workflow_status`/`workflow_advance` path.
+`workflow_recovery_proof_missing` now names missing non-submission evidence rather
+than collapsing that refusal into generic routing unavailability.
+
+## Reconcile an uncertain Telegram creation from retained service evidence
+
+`telecodex --control CONFIG creation status ID` inspects the same retained
+creation. An authenticated operator can select
+`creation reconcile ID SERVICE_UPDATE_ID` when the original topic RPC was
+uncertain but this receiver retained its own bot's `forum_topic_created` event.
+The writer validates the original human/entry/native binding, later service
+update, exact explicit title, unique matching event and intent, unused target,
+current configured-bot identity, and Stop/maintenance. It atomically associates
+an immutable hash-linked service receipt and the existing topic, then uses the
+ordinary creation resume, initialization, enrollment and original dispatch.
+It never calls `createForumTopic` again or changes the retained original/context.
+The evidence is an operator-selected unique service correlation, not a recovered
+HTTP response or a new human confirmation; the audit records that distinction.
+
+Exact repeated reconciliation inspects the existing receipt without dispatching
+again. If initialization stopped after the receipt, `creation resume ID` can
+continue only an existing `retained_topic`; it cannot start another external
+creation. Existing instruction receipts govern any downstream delivery recovery.
+Retired authority, changed bindings, conflicting topics, other bots and ambiguous
+service events refuse. A missing event is missing evidence, never permission to
+fill a topic ID manually or replay an uncertain API call. The receipt table is
+bounded by the existing creation-intent capacity and compatible with old readers.
+
+Native admission, a visible topic/message in Telegram and the paired human's
+actual ability to open it are separate observations. Do not claim human access
+from a service event or operator-command success. Telegram remains an optional
+projection; standalone creation continues using its existing local allocation.
+
+### Historical cumulative workflow evidence
+
+Workflow status may resolve an exact explicit `covered` instruction from a later
+canonical result by the same retained owner/native binding even when that old
+request has no return-delivery membership. Coverage is evidence, not a transport
+reservation or completion. The result's own completion list is evaluated for the
+old instruction's requests; completion of another subtask is never borrowed.
+The owning integrating entry can read current partial evidence using its exact
+workflow source revision. A successor still requires completed, current evidence.
+Source bodies, claims, delivery membership and original admissions remain
+immutable; reading or linking does not replay, publish, advance or retire work.
+
+The owner-local equivalent is `telecodex --control CONFIG workflow result ID STEP REVISION OFFSET`; it uses the configured integrating entry and the same scoped reader, without a model lease or source mutation.

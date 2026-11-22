@@ -23,6 +23,7 @@ impl Store {
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS native_input_receipts(update_id INTEGER PRIMARY KEY REFERENCES incoming_updates(update_id),native_thread TEXT NOT NULL,native_turn TEXT NOT NULL,observed_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS native_collections(local_turn INTEGER PRIMARY KEY REFERENCES turns(id),anchor TEXT NOT NULL,first_turn TEXT NOT NULL,client_id TEXT,phase TEXT NOT NULL DEFAULT 'open',checked_at TEXT NOT NULL DEFAULT '',detail TEXT NOT NULL DEFAULT '');
+             CREATE INDEX IF NOT EXISTS native_collection_physical ON native_collections(first_turn,local_turn);
              CREATE TABLE IF NOT EXISTS native_recovery_baseline(native_thread TEXT NOT NULL,native_turn TEXT NOT NULL,item_id TEXT NOT NULL,PRIMARY KEY(native_thread,native_turn,item_id));"
         )?;
         if !baseline_exists {
@@ -220,6 +221,7 @@ impl Store {
                 params![selected.local, first["id"].as_str()],
             )?;
         }
+        super::workflows::native_reconcile_on(&tx, selected.local, turns)?;
         for turn in turns {
             let id = turn["id"]
                 .as_str()
@@ -246,6 +248,22 @@ impl Store {
                             item["phase"].as_str(),
                             text,
                         )?;
+                        if item["delivery"] == "async"
+                            && let Some(questions) = item.get("questions")
+                            && super::interactions::native_async_questions_on(
+                                &tx,
+                                selected.local,
+                                &selected.native,
+                                id,
+                                item["id"].as_str().context("Native async item missing")?,
+                                questions,
+                            )
+                            .is_err()
+                        {
+                            tracing::warn!(
+                                "Recovered async question presentation unavailable; native source preserved"
+                            );
+                        }
                     }
                 }
             }
@@ -272,6 +290,8 @@ impl Store {
                 },
                 if terminal && goal_active {
                     "Goal active; waiting for observed native continuation"
+                } else if !terminal && super::workflows::native_only_on(&tx, selected.local)? {
+                    "Exact workflow turn active; terminal canonical result pending"
                 } else {
                     "Native output reconciled"
                 }
@@ -535,6 +555,27 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+    #[test]
+    fn recovered_async_question_enters_existing_pending_ledger_once() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (_local, key) = start(&s);
+        let selected = s.native_collection_next().unwrap().unwrap();
+        let mut turn = snapshot("first", "completed", "Choose Luna or Estrella");
+        turn["items"][0]["delivery"] = json!("async");
+        turn["items"][0]["questions"] = json!([{"title":"Choose","options":["Luna","Estrella"]}]);
+        s.native_collection_observed(&selected, &[turn.clone()], true)
+            .unwrap();
+        let pending = s.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(pending.pending_total, 1);
+        let id = pending.items[0].id.clone();
+        s.native_collection_observed(&selected, &[turn], true)
+            .unwrap();
+        let pending = s.interactions_page(key, 100, 0, false).unwrap();
+        assert_eq!(pending.pending_total, 1);
+        assert_eq!(pending.items[0].id, id);
+    }
+
     #[test]
     fn active_history_is_not_published_as_a_completed_item_and_goal_gap_stays_observed() {
         let file = tempfile::NamedTempFile::new().unwrap();
