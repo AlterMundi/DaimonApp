@@ -28,6 +28,7 @@ def selected(paths, previous=None):
                 isinstance(target, ast.Name)
                 and target.id
                 in {
+                    "model_migration",
                     "native_handoff",
                     "avatar_model_tests",
                     "voice_templates",
@@ -98,6 +99,13 @@ class MatrixHostScope(unittest.TestCase):
         self.assertEqual(selected([helper,'Cargo.toml']),{'text','audio','activity'})
         self.assertEqual(selected([helper+'-unknown']),{'text','audio','activity'})
         self.assertIn('python -B tests/dashboard_voice_admission.py',WORKFLOW.read_text())
+
+    def test_owner_model_migration_uses_activity_without_native_rebuild(self):
+        for path in ('scripts/model_migration.py', 'tests/model_migration_io.py'):
+            self.assertEqual(selected([path]), {'activity'})
+            self.assertIn('text', selected([path, 'src/app.rs']))
+        activity = WORKFLOW.read_text().split('  activity:\n', 1)[1].split('  text:\n', 1)[0]
+        self.assertIn('python3 -B tests/model_migration_io.py -v', activity)
 
     def test_native_operator_uses_always_run_process_boundary_gate(self):
         paths = ['scripts/native_package_handoff.py', 'tests/native_package_handoff.py',
