@@ -137,7 +137,7 @@ impl Store {
             let (original, _) =
                 producer::purpose_source(&conn, human, entry, native, &task.purpose)?;
             let text = serde_json::to_string(
-                &json!({"task":task,"original_human_purpose":original,"new_human_input":false,"publication_grant":false}),
+                &json!({"task":task,"occurrence_utc":offer.evidence["occurrence_utc"],"original_human_purpose":original,"new_human_input":false,"publication_grant":false}),
             )?;
             let total = text.chars().count();
             anyhow::ensure!(offset <= total, "Periodic offset exceeds source");

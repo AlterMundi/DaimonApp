@@ -9,9 +9,9 @@ import uuid
 from heartbeat_io import HeartbeatJourney
 
 
-def qualify(binary, production=False, periodic=False, projection=False, repair=False):
+def qualify(binary, production=False, periodic=False, projection=False, repair=False, daily=False):
     assert not repair or (projection and periodic), "Repair uses the existing fixed-action journey"
-    task_id = "matrix-alerts" if repair else "bitacora"
+    task_id = "sysops" if daily else "matrix-alerts" if repair else "bitacora"
     operation = "alerts_repair" if repair else "private_projection"
     assert not projection or periodic, "Projection requires the existing periodic Reports fixture"
     j = HeartbeatJourney(str(Path(binary).resolve()))
@@ -104,9 +104,11 @@ else:
         if periodic:
             before_task=j.read('heartbeat','status')['result']
             task=dict(id=task_id,purpose=review['purpose'],purpose_revision='',instructions='Reconcile institutional intake with persistent cursors; preserve originals before cache cleanup; no publication.')
+            if daily:
+                task.update(cadence='daily_utc', instructions='Run the bounded synthetic Sysops operator binding.')
             task_selected=j.read('heartbeat','select-review-task',generation,json.dumps(task))['result']
             expected=task_selected['producer']['finite_review']['periodic_tasks'][0]['revision']
-            task['instructions'] += ' Refresh the same private viewer only after meaningful changes.'
+            task['instructions'] += ' Read the retained operation outcome.'
             task_selected=j.read('heartbeat','replace-review-task',generation,expected,json.dumps(task))['result']
             assert task_selected['producer']['finite_review']['periodic_tasks'][0]['revision'] != expected
             assert task_selected['resources']==before_task['resources']
@@ -146,7 +148,12 @@ else:
             task_offer=next(o for o in packet['evidence']['offers'] if o['key']=='review-task:'+task_id)
             reader=task_offer['evidence']['reader']
             task_read=j.call('route-periodic',reader['operation'],dict(reader['arguments'],return_id=packet['return_id']))
-            assert 'Reconcile institutional intake' in task_read['text'] and purpose_text in task_read['text']
+            task_source=json.loads(task_read['text'])
+            assert task_source['task']['instructions']==task['instructions'] and purpose_text in task_read['text']
+            if daily:
+                day=task_offer['evidence']['occurrence_utc']
+                assert datetime.fromisoformat(day).date()==datetime.now(timezone.utc).date()
+                assert task_source['occurrence_utc']==day
         if projection:
             reconciliation.write_text(json.dumps({'latest_check':{'heartbeat_return':packet['return_id'],'partial':False}}))
             action=dict(action='run',return_id=packet['return_id'],batch_revision=packet['evidence']['revision'],
@@ -219,7 +226,7 @@ else:
         report.write_text(json.dumps({'milestone':'synthetic checkpoint A','clock':2}))
         j.row("UPDATE bot_state SET value=json_set(value,'$.next_check_ms',0,'$.review.next_check_ms',0) WHERE key LIKE 'heartbeat_producer:%'")
         j.wait(lambda:j.read('heartbeat','status')['result']['producer']['finite_review']['checks']>=2,seconds=45)
-        if periodic:
+        if periodic and not daily:
             j.wait(lambda:len(j.bounded)==2,seconds=45)
             second=json.loads(j.bounded[1]['turn']['toolOutput']['output'])
             assert [o['key'] for o in second['evidence']['offers']]==['review-task:'+task_id], 'Unchanged ordinary report must remain quiet'
@@ -240,7 +247,9 @@ else:
         status=j.read('heartbeat','status')['result']
         assert status['producer']['finite_review']['state']==('configured' if production else 'expired')
         assert status['resources']==funding and status['producer']['mode']=='continuous'
-        assert len(j.bounded)==(2 if periodic else 1)
+        assert len(j.bounded)==(2 if periodic and not daily else 1)
+        if daily:
+            assert restarted['producer']['finite_review']['periodic_tasks'][0]['cadence']=='daily_utc'
         if periodic:assert restarted['producer']['finite_review']['periodic_tasks'][0]['id']==task_id
         if production:
             assert j.goals[j.web_thread]==goal, 'Heartbeat handoff changed native goal or accounting'
@@ -249,7 +258,9 @@ else:
         j.close()
 
 if __name__ == '__main__':
-    if '--repair' in sys.argv[2:]:
+    if '--daily' in sys.argv[2:]:
+        qualify(sys.argv[1],production=True,periodic=True,daily=True)
+    elif '--repair' in sys.argv[2:]:
         qualify(sys.argv[1],True,True,True,True)
     elif '--projection' in sys.argv[2:]:
         qualify(sys.argv[1],True,True,True)
