@@ -456,7 +456,7 @@ def observe_native_family(config_path, metadata, target, *, initial_hash=None):
 
 
 class NativeDefaultWriter(Metadata):
-    methods = Metadata.methods | {'config/value/write'}
+    methods = Metadata.methods | {'config/batchWrite'}
 
 
 def qualified_family_candidate(evidence, current):
@@ -531,9 +531,11 @@ def apply_native_family(config_path, metadata, target, evidence, intent_path, *,
         os.fsync(directory)
     finally:
         os.close(directory)
-    response = metadata.rpc('config/value/write', {
-        'filePath': str(config_file), 'keyPath': 'model', 'value': candidate,
-        'mergeStrategy': 'replace', 'expectedVersion': revision,
+    response = metadata.rpc('config/batchWrite', {
+        'filePath': str(config_file),
+        'edits': [{'keyPath': 'model', 'value': candidate, 'mergeStrategy': 'replace'}],
+        'expectedVersion': revision,
+        'reloadUserConfig': False,
     })
     after = metadata.rpc('config/read', {'includeLayers': False, 'cwd': cwd})['config']
     availability.confirm_account()
