@@ -52,3 +52,32 @@ runtime loading unobserved. Use the receiving maintenance path to adopt the
 candidate while preserving active writers, then verify loaded defaults and the
 next ordinary use separately. This command makes no config, account, goal or
 service changes.
+
+A null bridge model is not proof that an existing native conversation follows
+the current global default. After a native-default upgrade, inspect its bound
+thread. For this case prepare with `--include-inherited`: the plan freezes the
+actual observed native model and maps that role to its successor. It never
+assumes a model from a missing native observation. Application rechecks that
+native selection as well as the bridge's null model, workspace, binding, effort
+and revision; a later native choice refuses before the SQLite transaction.
+The write pins only the qualified next-turn model. Busy state, current captured
+turn, provider, effort, original input and history remain untouched. v3 plans
+carry `inherited_source_models`; old draft/v2 plans must not be replayed.
+
+For explicit saved model choices whose native thread has not been bound yet,
+`--include-unbound` qualifies the selected workspace/provider, active hosted
+account, target catalog and effort without creating a thread. It preserves
+force-fresh state and exclusions, and freezes the absent binding in the ordinary
+session compare-and-swap. A null unbound model remains unknown and is deferred.
+The option is retained in v4 plans; older plans keep their original executor.
+
+A configured provider alias can use the native OpenAI catalog only when it has
+the same hosted ChatGPT account, OpenAI name, Responses wire API, required OpenAI
+auth and no endpoint, credential, header, catalog, capability or other override.
+Transport booleans do not change this account/catalog equivalence. Any other
+provider remains deferred. Neither alias qualification nor migration changes a
+provider, endpoint, account or reasoning choice. A changed built-in OpenAI
+endpoint/catalog, a local catalog file or a non-default ChatGPT origin also
+prevents alias equivalence. Inherited qualification compares the frozen model
+against the same thread observation used for provider qualification; this is
+not an atomic lock on a concurrently operated native thread.

@@ -22,7 +22,7 @@ MAPPING = {
     'gpt-6.1-sol': 'gpt-6.2-sol', 'gpt-6-sol': 'gpt-6.2-sol',
     'gpt-6-astra': 'gpt-6.2-astra', 'gpt-6.1-astra': 'gpt-6.2-astra',
 }
-SCHEMA = 'telecodex.owner-model-migration/v2'
+SCHEMA = 'telecodex.owner-model-migration/v4'
 LIMIT = 512
 SELECTION = ('id', 'chat_id', 'thread_id', 'creator_user_id', 'codex_thread_id',
              'force_fresh_thread', 'cwd', 'model', 'reasoning_effort', 'updated_at')
@@ -127,11 +127,35 @@ class Availability:
                 'config/read', {'includeLayers': False, 'cwd': cwd})['config']
         return self.native_configs[cwd]
 
-    def check(self, config, target, effort, cwd, thread_id=None):
+    def catalog_matches_provider(self, native, provider):
+        if provider == 'openai':
+            return True
+        # A closed OpenAI alias with the same hosted account/default endpoint
+        # uses the same native catalog. Any routing/auth/header override refuses.
+        providers = native.get('model_providers', {})
+        builtin = providers.get('openai', {})
+        if (native.get('openai_base_url') is not None or native.get('model_catalog_json') is not None
+                or builtin.get('base_url') is not None or builtin.get('model_catalog_url') is not None
+                or native.get('chatgpt_base_url') not in (None, 'https://chatgpt.com',
+                       'https://chatgpt.com/', 'https://chatgpt.com/backend-api/')):
+            return False
+        info = providers.get(provider)
+        if self.account.get('type') != 'chatgpt' or not isinstance(info, dict):
+            return False
+        active = {key: value for key, value in info.items() if value is not None}
+        allowed = {'name', 'wire_api', 'requires_openai_auth',
+                   'supports_websockets', 'supports_standalone_web_search'}
+        return (not set(active) - allowed and active.get('name') == 'OpenAI'
+                and active.get('wire_api') == 'responses'
+                and active.get('requires_openai_auth') is True
+                and all(type(active[key]) is bool for key in
+                        ('supports_websockets', 'supports_standalone_web_search') if key in active))
+
+    def check(self, config, target, effort, cwd, thread_id=None, expected_native_model=None):
         # model/list is the active OpenAI catalog, not a custom provider probe.
         native = self.effective_config(cwd)
         provider = native.get('model_provider') or 'openai'
-        if provider != 'openai':
+        if not self.catalog_matches_provider(native, provider):
             return 'provider_specific_availability_unverified'
         if target not in self.catalog:
             return 'target_not_advertised'
@@ -139,7 +163,9 @@ class Availability:
             thread = self.metadata.rpc('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
             if thread.get('id') != thread_id:
                 raise ValueError('native_thread_mismatch')
-            if thread.get('modelProvider') != provider:
+            if expected_native_model is not None and thread.get('model') != expected_native_model:
+                raise ValueError('inherited_native_selection_changed')
+            if not self.catalog_matches_provider(native, thread.get('modelProvider')):
                 return 'provider_specific_availability_unverified'
         # Existing rows pass their nullable effort directly. The bridge
         # default is copied only when creating/resetting a session.
@@ -169,15 +195,17 @@ def check_mapping(mapping):
         raise ValueError('invalid_model_mapping')
 
 
-def check_row(row, config, availability, target, excluded):
+def check_row(row, config, availability, target, excluded, *, include_unbound=False, expected_native_model=None):
     if row['codex_thread_id'] in excluded:
         return 'explicitly_preserved_workload'
     if not row['codex_thread_id'] or row['force_fresh_thread']:
-        return 'native_thread_not_bound'
-    return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'])
+        if not include_unbound or row['model'] is None:
+            return 'native_thread_not_bound'
+        return availability.check(config, target, row['reasoning_effort'], row['cwd'])
+    return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'], expected_native_model)
 
 
-def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None):
+def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None, include_inherited=False, include_unbound=False):
     mapping = MAPPING if mapping is None else mapping
     check_mapping(mapping)
     config, binding = snapshot(config_path)
@@ -187,36 +215,63 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
         rows = db.execute(f'SELECT {COLUMNS} FROM sessions ORDER BY id LIMIT ?', (LIMIT + 1,)).fetchall()
     if len(rows) > LIMIT:
         raise ValueError('session_bound_exceeded')
-    changes, deferred = [], []
+    changes, deferred, inherited = [], [], {}
     for row in rows:
-        target = mapping.get(row['model'])
+        source_model = row['model']
+        if source_model is None and include_inherited:
+            if row['codex_thread_id'] in excluded:
+                deferred.append({'id': row['id'], 'reason': 'explicitly_preserved_workload'})
+                continue
+            if not row['codex_thread_id'] or row['force_fresh_thread']:
+                deferred.append({'id': row['id'], 'reason': 'native_thread_not_bound'})
+                continue
+            native_thread = metadata.rpc('thread/read', {'threadId': row['codex_thread_id'], 'includeTurns': False})['thread']
+            if native_thread.get('id') != row['codex_thread_id']:
+                raise ValueError('native_thread_mismatch')
+            source_model = native_thread.get('model')
+            if not isinstance(source_model, str):
+                deferred.append({'id': row['id'], 'reason': 'inherited_native_model_unobserved'})
+                continue
+        target = mapping.get(source_model)
         if target is None:
             continue
-        reason = check_row(row, config, availability, target, excluded)
+        reason = check_row(row, config, availability, target, excluded, include_unbound=include_unbound,
+                           expected_native_model=source_model if row['model'] is None else None)
         if reason:
             deferred.append({'id': row['id'], 'reason': reason})
         else:
             changes.append({**dict(row), 'target': target})
+            if row['model'] is None:
+                inherited[str(row['id'])] = source_model
     availability.confirm_account()
     read_binding(config_path, binding)
     return {'schema': SCHEMA, **binding, 'mapping': mapping,
-            'changes': changes, 'deferred': deferred}
+            'changes': changes, 'deferred': deferred, 'inherited_source_models': inherited,
+            'include_unbound': include_unbound}
 
 
 def validate_plan(plan):
-    if plan.get('schema') != SCHEMA or not isinstance(plan.get('mapping'), dict):
+    if (plan.get('schema') != SCHEMA or not isinstance(plan.get('mapping'), dict)
+            or type(plan.get('include_unbound')) is not bool):
         raise ValueError('invalid_model_plan')
     check_mapping(plan['mapping'])
     changes = plan['changes']
     if not isinstance(changes, list) or len(changes) > LIMIT:
         raise ValueError('invalid_model_plan')
+    inherited = plan.get('inherited_source_models')
+    if not isinstance(inherited, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in inherited.items()):
+        raise ValueError('invalid_inherited_model_plan')
     ids = set()
     for row in changes:
         if (set(row) != set(SELECTION) | {'target'} or type(row['id']) is not int
                 or row['id'] in ids or not isinstance(row['target'], str)
-                or plan['mapping'].get(row['model']) != row['target']):
+                or plan['mapping'].get(inherited.get(str(row['id'])) if row['model'] is None else row['model']) != row['target']):
             raise ValueError('invalid_model_plan')
+        if (row['model'] is None) != (str(row['id']) in inherited):
+            raise ValueError('invalid_inherited_model_plan')
         ids.add(row['id'])
+    if set(inherited) - {str(i) for i in ids}:
+        raise ValueError('invalid_inherited_model_plan')
 
 
 def read_binding(config_path, plan):
@@ -259,7 +314,9 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
             return result
     availability = Availability(metadata)
     for change in changes:
-        reason = check_row(change, config, availability, change['target'], excluded)
+        reason = check_row(change, config, availability, change['target'], excluded,
+                           include_unbound=plan['include_unbound'],
+                           expected_native_model=plan['inherited_source_models'].get(str(change['id'])))
         if reason:
             raise ValueError('live_qualification_lost: ' + reason)
     availability.confirm_account()
@@ -271,7 +328,7 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
         revision = datetime.now(timezone.utc).isoformat(timespec='microseconds')
         for change in changes:
             affected = db.execute(
-                'UPDATE sessions SET model=?, updated_at=? WHERE id=? AND model=? AND updated_at=?',
+                'UPDATE sessions SET model=?, updated_at=? WHERE id=? AND model IS ? AND updated_at=?',
                 (change['target'], revision, change['id'], change['model'], change['updated_at']))
             if affected.rowcount != 1:
                 raise ValueError('concurrent_model_selection_preserved')
@@ -308,6 +365,8 @@ def main():
     mode.add_argument('--apply', action='store_true')
     mode.add_argument('--verify-default', metavar='MODEL')
     parser.add_argument('--plan', type=Path)
+    parser.add_argument('--include-unbound', action='store_true', help='Qualify explicit saved models for rows without a bound native thread')
+    parser.add_argument('--include-inherited', action='store_true', help='Qualify the actual bound native model when the bridge selection is null')
     parser.add_argument('--replace', action='append', metavar='OLD=NEW', default=[])
     parser.add_argument('--exclude-native-thread', action='append', default=[])
     args = parser.parse_args()
@@ -333,7 +392,7 @@ def main():
             mapping = dict(pairs) if pairs else None
             if pairs and len(pairs) != len(mapping):
                 raise ValueError('duplicate_model_mapping')
-            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash)
+            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash, include_inherited=args.include_inherited, include_unbound=args.include_unbound)
             with args.plan.open('x') as output:
                 json.dump(plan, output, indent=2)
             result = {'state': 'prepared', 'changes': len(plan['changes']), 'deferred': plan['deferred']}
