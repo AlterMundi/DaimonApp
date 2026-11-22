@@ -22,7 +22,7 @@ MAPPING = {
     'gpt-6.1-sol': 'gpt-6.2-sol', 'gpt-6-sol': 'gpt-6.2-sol',
     'gpt-6-astra': 'gpt-6.2-astra', 'gpt-6.1-astra': 'gpt-6.2-astra',
 }
-SCHEMA = 'telecodex.owner-model-migration/v3'
+SCHEMA = 'telecodex.owner-model-migration/v4'
 LIMIT = 512
 SELECTION = ('id', 'chat_id', 'thread_id', 'creator_user_id', 'codex_thread_id',
              'force_fresh_thread', 'cwd', 'model', 'reasoning_effort', 'updated_at')
@@ -127,11 +127,28 @@ class Availability:
                 'config/read', {'includeLayers': False, 'cwd': cwd})['config']
         return self.native_configs[cwd]
 
+    def catalog_matches_provider(self, native, provider):
+        if provider == 'openai':
+            return True
+        # A closed OpenAI alias with the same hosted account/default endpoint
+        # uses the same native catalog. Any routing/auth/header override refuses.
+        info = native.get('model_providers', {}).get(provider)
+        if self.account.get('type') != 'chatgpt' or not isinstance(info, dict):
+            return False
+        active = {key: value for key, value in info.items() if value is not None}
+        allowed = {'name', 'wire_api', 'requires_openai_auth',
+                   'supports_websockets', 'supports_standalone_web_search'}
+        return (not set(active) - allowed and active.get('name') == 'OpenAI'
+                and active.get('wire_api') == 'responses'
+                and active.get('requires_openai_auth') is True
+                and all(type(active[key]) is bool for key in
+                        ('supports_websockets', 'supports_standalone_web_search') if key in active))
+
     def check(self, config, target, effort, cwd, thread_id=None):
         # model/list is the active OpenAI catalog, not a custom provider probe.
         native = self.effective_config(cwd)
         provider = native.get('model_provider') or 'openai'
-        if provider != 'openai':
+        if not self.catalog_matches_provider(native, provider):
             return 'provider_specific_availability_unverified'
         if target not in self.catalog:
             return 'target_not_advertised'
@@ -139,7 +156,7 @@ class Availability:
             thread = self.metadata.rpc('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
             if thread.get('id') != thread_id:
                 raise ValueError('native_thread_mismatch')
-            if thread.get('modelProvider') != provider:
+            if not self.catalog_matches_provider(native, thread.get('modelProvider')):
                 return 'provider_specific_availability_unverified'
         # Existing rows pass their nullable effort directly. The bridge
         # default is copied only when creating/resetting a session.
@@ -169,15 +186,17 @@ def check_mapping(mapping):
         raise ValueError('invalid_model_mapping')
 
 
-def check_row(row, config, availability, target, excluded):
+def check_row(row, config, availability, target, excluded, *, include_unbound=False):
     if row['codex_thread_id'] in excluded:
         return 'explicitly_preserved_workload'
     if not row['codex_thread_id'] or row['force_fresh_thread']:
-        return 'native_thread_not_bound'
+        if not include_unbound or row['model'] is None:
+            return 'native_thread_not_bound'
+        return availability.check(config, target, row['reasoning_effort'], row['cwd'])
     return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'])
 
 
-def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None, include_inherited=False):
+def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None, include_inherited=False, include_unbound=False):
     mapping = MAPPING if mapping is None else mapping
     check_mapping(mapping)
     config, binding = snapshot(config_path)
@@ -207,7 +226,7 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
         target = mapping.get(source_model)
         if target is None:
             continue
-        reason = check_row(row, config, availability, target, excluded)
+        reason = check_row(row, config, availability, target, excluded, include_unbound=include_unbound)
         if reason:
             deferred.append({'id': row['id'], 'reason': reason})
         else:
@@ -217,11 +236,13 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
     availability.confirm_account()
     read_binding(config_path, binding)
     return {'schema': SCHEMA, **binding, 'mapping': mapping,
-            'changes': changes, 'deferred': deferred, 'inherited_source_models': inherited}
+            'changes': changes, 'deferred': deferred, 'inherited_source_models': inherited,
+            'include_unbound': include_unbound}
 
 
 def validate_plan(plan):
-    if plan.get('schema') != SCHEMA or not isinstance(plan.get('mapping'), dict):
+    if (plan.get('schema') != SCHEMA or not isinstance(plan.get('mapping'), dict)
+            or type(plan.get('include_unbound')) is not bool):
         raise ValueError('invalid_model_plan')
     check_mapping(plan['mapping'])
     changes = plan['changes']
@@ -287,7 +308,7 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
             thread = metadata.rpc('thread/read', {'threadId': change['codex_thread_id'], 'includeTurns': False})['thread']
             if thread.get('id') != change['codex_thread_id'] or thread.get('model') != plan['inherited_source_models'][str(change['id'])]:
                 raise ValueError('inherited_native_selection_changed')
-        reason = check_row(change, config, availability, change['target'], excluded)
+        reason = check_row(change, config, availability, change['target'], excluded, include_unbound=plan['include_unbound'])
         if reason:
             raise ValueError('live_qualification_lost: ' + reason)
     availability.confirm_account()
@@ -336,6 +357,7 @@ def main():
     mode.add_argument('--apply', action='store_true')
     mode.add_argument('--verify-default', metavar='MODEL')
     parser.add_argument('--plan', type=Path)
+    parser.add_argument('--include-unbound', action='store_true', help='Qualify explicit saved models for rows without a bound native thread')
     parser.add_argument('--include-inherited', action='store_true', help='Qualify the actual bound native model when the bridge selection is null')
     parser.add_argument('--replace', action='append', metavar='OLD=NEW', default=[])
     parser.add_argument('--exclude-native-thread', action='append', default=[])
@@ -362,7 +384,7 @@ def main():
             mapping = dict(pairs) if pairs else None
             if pairs and len(pairs) != len(mapping):
                 raise ValueError('duplicate_model_mapping')
-            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash, include_inherited=args.include_inherited)
+            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash, include_inherited=args.include_inherited, include_unbound=args.include_unbound)
             with args.plan.open('x') as output:
                 json.dump(plan, output, indent=2)
             result = {'state': 'prepared', 'changes': len(plan['changes']), 'deferred': plan['deferred']}

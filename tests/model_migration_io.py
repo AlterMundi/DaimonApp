@@ -242,5 +242,73 @@ class InheritedCases(unittest.TestCase):
         self.assertIn({'id':1,'reason':'inherited_native_model_unobserved'},plan['deferred'])
 
 
+
+class RemainingSelections(unittest.TestCase):
+    setUp = Cases.setUp
+    apply = Cases.apply
+
+    def test_unbound_explicit_selection_requires_opt_in(self):
+        self.c.execute('UPDATE sessions SET codex_thread_id=NULL WHERE id=1');self.c.commit()
+        self.assertFalse(migration.prepare(self.config,Metadata(),['pinned'])['changes'])
+        plan=migration.prepare(self.config,Metadata(),['pinned'],include_unbound=True)
+        self.assertEqual([row['id'] for row in plan['changes']],[1])
+        self.assertEqual(self.apply(plan)['state'],'selected-for-next-turn')
+        self.assertEqual(self.c.execute('SELECT codex_thread_id,busy,history FROM sessions WHERE id=1').fetchone(),(None,1,'original'))
+
+    def test_new_binding_after_unbound_preparation_is_preserved(self):
+        self.c.execute('UPDATE sessions SET codex_thread_id=NULL WHERE id=1');self.c.commit()
+        plan=migration.prepare(self.config,Metadata(),['pinned'],include_unbound=True)
+        self.c.execute('UPDATE sessions SET codex_thread_id="new-choice" WHERE id=1');self.c.commit()
+        with self.assertRaisesRegex(ValueError,'binding_changed'):self.apply(plan)
+
+    def test_unknown_unbound_inherited_model_still_refuses(self):
+        self.c.execute('UPDATE sessions SET codex_thread_id=NULL,model=NULL WHERE id=1');self.c.commit()
+        plan=migration.prepare(self.config,Metadata(),['pinned'],include_unbound=True,include_inherited=True)
+        self.assertFalse(plan['changes'])
+        self.assertIn({'id':1,'reason':'native_thread_not_bound'},plan['deferred'])
+
+    def test_forced_fresh_preserves_exclusions_and_requires_saved_model(self):
+        self.c.execute('UPDATE sessions SET force_fresh_thread=1 WHERE id IN (1,3)');self.c.commit()
+        plan=migration.prepare(self.config,Metadata(),['pinned'],include_unbound=True)
+        self.assertEqual([row['id'] for row in plan['changes']],[1])
+        self.assertEqual(self.apply(plan)['count'],1)
+        self.assertEqual(self.c.execute('SELECT force_fresh_thread FROM sessions WHERE id=1').fetchone()[0],1)
+
+    def alias(self, **overrides):
+        class Alias(Metadata):
+            def rpc(self,method,params):
+                response=super().rpc(method,params)
+                if method=='config/read':
+                    response['config']['model_providers']={'openai_http':{
+                        'name':'OpenAI','wire_api':'responses','requires_openai_auth':True,
+                        'supports_websockets':True,'base_url':None,**overrides}}
+                if method=='thread/read' and params['threadId']=='one':
+                    response['thread']['modelProvider']='openai_http'
+                return response
+        return Alias()
+
+    def test_hosted_openai_alias_keeps_same_provider_and_account(self):
+        plan=migration.prepare(self.config,self.alias(),['pinned'])
+        self.assertEqual([row['id'] for row in plan['changes']],[1])
+        self.assertEqual(self.apply(plan,self.alias())['count'],1)
+
+    def test_alias_auth_route_headers_catalog_or_capabilities_are_not_assumed(self):
+        for values in [dict(base_url='https://other.test/v1'),dict(auth={}),
+                       dict(http_headers={'X-Route':'different'}),dict(model_catalog_url='https://other.test/models'),
+                       dict(requires_openai_auth=False),dict(capabilities={})]:
+            with self.subTest(values=values):
+                self.assertFalse(migration.prepare(self.config,self.alias(**values),['pinned'])['changes'])
+        with self.assertRaisesRegex(ValueError,'live_qualification_lost'):
+            self.apply(migration.prepare(self.config,self.alias(),['pinned']),self.alias(base_url='https://later.test/v1'))
+
+    def test_alias_api_key_account_requires_its_own_catalog(self):
+        base=self.alias()
+        class APIKey:
+            def rpc(self,method,params):
+                if method=='account/read':return {'account':{'type':'apiKey'}}
+                return base.rpc(method,params)
+        self.assertFalse(migration.prepare(self.config,APIKey(),['pinned'])['changes'])
+
+
 if __name__ == '__main__':
     unittest.main()

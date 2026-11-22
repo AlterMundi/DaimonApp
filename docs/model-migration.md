@@ -63,3 +63,17 @@ and revision; a later native choice refuses before the SQLite transaction.
 The write pins only the qualified next-turn model. Busy state, current captured
 turn, provider, effort, original input and history remain untouched. v3 plans
 carry `inherited_source_models`; old draft/v2 plans must not be replayed.
+
+For explicit saved model choices whose native thread has not been bound yet,
+`--include-unbound` qualifies the selected workspace/provider, active hosted
+account, target catalog and effort without creating a thread. It preserves
+force-fresh state and exclusions, and freezes the absent binding in the ordinary
+session compare-and-swap. A null unbound model remains unknown and is deferred.
+The option is retained in v4 plans; older plans keep their original executor.
+
+A configured provider alias can use the native OpenAI catalog only when it has
+the same hosted ChatGPT account, OpenAI name, Responses wire API, required OpenAI
+auth and no endpoint, credential, header, catalog, capability or other override.
+Transport booleans do not change this account/catalog equivalence. Any other
+provider remains deferred. Neither alias qualification nor migration changes a
+provider, endpoint, account or reasoning choice.
