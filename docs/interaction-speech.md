@@ -726,3 +726,13 @@ captures on the separately qualified OpenAI profile. Completed-only live-result
 readers already have no recognizer or fallback; preserving old model names in
 those retained receipts does not activate a provider. Do not clear uncertain
 attempts or rewrite old source IDs to hide incomplete recognition.
+
+`tests/conversation_pcm_browser.py` exercises the real canonical shell and player
+with controlled Spanish source parts and finite PCM transport. It checks exact
+source offsets, nonzero browser output for each part and next-part preparation
+before the current part ends. The existing180ms within-reply pacing remains;
+measured source qualification produced roughly245ms between parts including
+playback scheduling. This is a software continuity check, not provider latency
+or physical hearing acceptance. `tests/pcm_speech_browser.py` separately covers
+pause silence, resume, cancellation, prepared-player bounds and exact-byte WAV
+recovery. Neither fixture opens a microphone or calls a provider.
