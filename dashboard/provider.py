@@ -30,7 +30,10 @@ class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
     pass
 
 
-def receiving_authority(receiver):
+OBSERVER_SYNTHESIS_KEYS = {'observer_model', 'observer_reasoning_effort'}
+
+
+def receiving_authority(receiver, observer_synthesis_binding=None):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
     interaction = receiver.get('interaction')
@@ -40,6 +43,12 @@ def receiving_authority(receiver):
         transport = {key: value for key, value in interaction['matrix_transport'].items()
                      if key != 'native_host_restrictions'}
         interaction = {**interaction, 'matrix_transport': transport}
+    if observer_synthesis_binding is not None and isinstance(interaction, dict):
+        # Keep the previously bound synthesis settings in the legacy digest.
+        # Telecodex remains the owner of the actual operational selection.
+        interaction = {key: value for key, value in interaction.items()
+                       if key not in OBSERVER_SYNTHESIS_KEYS}
+        interaction.update(observer_synthesis_binding)
     return json.dumps({
         'db_path': receiver.get('db_path'),
         'session_control': receiver.get('session_control'),
@@ -138,7 +147,16 @@ class Provider:
         self.receiver_path = Path(config['receiver_config'])
         self.receiver_bytes = self.receiver_path.read_bytes()
         self.receiver = tomllib.loads(self.receiver_bytes.decode())
-        self.binding_bytes = receiving_authority(self.receiver)
+        self.observer_synthesis_binding = config.get('observer_synthesis_binding')
+        if self.observer_synthesis_binding is not None:
+            pinned = self.observer_synthesis_binding
+            if (not isinstance(pinned, dict) or pinned.keys() - OBSERVER_SYNTHESIS_KEYS
+                    or any(not isinstance(value, str) or not value or len(value.encode()) > 128
+                           or not value.isprintable() or any(char.isspace() for char in value)
+                           for value in pinned.values())):
+                raise ValueError('Select only the bound observer model and effort')
+            self.observer_synthesis_binding = dict(pinned)
+        self.binding_bytes = receiving_authority(self.receiver, self.observer_synthesis_binding)
         self.human = int(self.receiver['session_control']['human_id'])
         self.native_home = Path(config.get('native_home', Path.home() / '.codex'))
         self.native = None
@@ -149,7 +167,8 @@ class Provider:
 
     def assert_binding(self):
         try:
-            current = receiving_authority(tomllib.loads(self.receiver_path.read_text()))
+            current = receiving_authority(tomllib.loads(self.receiver_path.read_text()),
+                                          self.observer_synthesis_binding)
         except (OSError, ValueError):
             raise ProviderUnavailable('Receiving configuration unavailable') from None
         if current != self.binding_bytes:

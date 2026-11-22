@@ -467,6 +467,19 @@ qualify the exact previous and subsequent bindings and dependent journals.
 If the web constructor depends on those bindings, prepare requalification before
 restarting it.
 
+For observer model and reasoning changes only, an operator can keep the existing
+web binding by setting the optional top-level
+`[observer_synthesis_binding]` table in the dashboard config. Copy only the
+`observer_model` and `observer_reasoning_effort` values that the current web
+binding already reflects. Leave absent values absent. Compare the resulting
+binding bytes with the selected receiver before adopting the dashboard config.
+Install this table while that receiver is healthy, or use the exact verified
+preimage of the deployed web binding during recovery. The native synthesis
+setting remains in the native receiver config. Keep the pinned table across
+restarts and rollback until a compatible web rollback has been verified.
+Actor, route, account, voice and other policy changes still require the same
+authority checks and explicit requalification when applicable.
+
 Use the probe's stable receiver and state in the existing Alerts projection,
 clearing the incident only when a fresh probe verifies recovery. A
 `receiver_binding_changed` or `alerts_binding_changed` observation identifies
