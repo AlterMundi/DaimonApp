@@ -1525,3 +1525,11 @@ clears it so the existing explicit reconnect control can return. This is a
 presentation signal only: no ICE restart, provider call, capture permission,
 renewal authorization or original replay is added. Physical sustained voice and
 hearing acceptance remain separate.
+
+On a trusted Avatar activation, the native browser transport reads the current
+entry offer before requesting microphone permission. A valid offer for a
+known-created, capture-ended visit can be used on that same click or keyboard
+activation to start one new call with a fresh identity. The server takes the
+existing owner lease and rechecks the exact predecessor revision. An uncertain
+creation, stale offer or rejected admission never triggers another automatic
+attempt. The previous audio, work and unconfirmed final usage remain recorded.

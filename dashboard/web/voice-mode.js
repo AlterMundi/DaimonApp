@@ -109,14 +109,15 @@ window.ConversationVoiceMode=(()=>{
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
       entryState();lastClose=onLeave();portrait.focus();return lastClose;
     }
-    function open(){
+    function open(event){
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
       opened=true;untilStop=false;audioPaused=false;audioEnabled=true;reconnecting=false;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();attention(getAttention());
-      armClose();status.textContent='Opening microphone…';caption.textContent='';speak.hidden=true;onSpeak();
+      armClose();status.textContent='Opening microphone…';caption.textContent='';speak.hidden=true;
+      onSpeak({avatarEntry:event?.isTrusted===true});
     }
     function maybeRearm(){
       clearTimeout(rearm);
@@ -174,7 +175,7 @@ window.ConversationVoiceMode=(()=>{
       maybeRearm();
     }
     portrait.addEventListener('click',open);
-    portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
+    portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open(event);}});
     review.addEventListener('click',()=>{if(opened&&typeof onReview==='function')onReview(()=>{if(!opened)return false;(review.hidden?back:review).focus();return true;});});
     back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
     speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});

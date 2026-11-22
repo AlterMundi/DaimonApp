@@ -19,12 +19,14 @@ function boot({suspend=false,reconnect,onReview,getAttention,leaveResult,bridge=
  if(bridge){window.DaimonAudio={postMessage(){}};vm.runInNewContext(fs.readFileSync('clients/android/app/src/main/assets/native-audio.js','utf8'),{window,navigator:{mediaDevices:{}},Event});}
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-mode.js','utf8'),{window,document,setTimeout:(fn,ms)=>{const timer={fn,ms};timers.push(timer);return timer;},clearTimeout:t=>{if(t)t.cancelled=true;}});
  let starts=0,enters=0,leaves=0,suspends=0,resumes=0,canStart=true,canEnter=true;
- const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;return leaveResult;},onSpeak:()=>starts++,onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
- return {mode,portrait,header,nodes,timers,document,listeners,window,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
+ const explicitEntries=[];
+ const mode=window.ConversationVoiceMode.mount({portrait,onReview,getAttention,...(reconnect?{onReconnect:reconnect}:{}),...(suspend?{onSuspend:()=>suspends++}:{}),onEnter:()=>{enters++;},onLeave:()=>{leaves++;return leaveResult;},onSpeak:entry=>{starts++;explicitEntries.push(entry?.avatarEntry===true);},onResumeAudio:()=>resumes++,canStart:()=>canStart,canEnter:()=>canEnter});
+ return {mode,portrait,header,nodes,timers,document,listeners,window,explicitEntries,counts:()=>({starts,enters,leaves}),suspends:()=>suspends,resumes:()=>resumes,canStart:value=>canStart=value,canEnter:value=>canEnter=value};
 }
 const f=boot();f.mode.configure(false);f.portrait.events.click();assert.equal(f.counts().starts,0);
 f.mode.configure(true);f.canEnter(false);f.portrait.events.click();assert.equal(f.counts().starts,0,'An unfinished original prevents opening');
 f.canEnter(true);f.portrait.events.click();assert(f.mode.active);assert.equal(f.counts().starts,1);assert.notEqual(f.portrait.parent,f.header);
+assert.deepEqual(f.explicitEntries,[false],'Synthetic open cannot consume an ended-visit offer');
 f.mode.update({capture:'recording',message:'Live words'});assert.equal(f.nodes.find(n=>n.className==='voice-mode-state').textContent,'Listening');
 f.mode.update({capture:'idle',pending:false,sent:true});assert.equal(f.counts().starts,1,'Receipt alone does not reopen the microphone over the response');
 f.mode.update({playback:'playing'});f.mode.update({playback:undefined});
@@ -33,7 +35,8 @@ f.canStart(true);f.mode.update({playback:'playing'});f.mode.update({playback:und
 f.mode.update({capture:'ready',pending:true});assert.equal(f.nodes.find(n=>n.className==='voice-mode-state').textContent,'Recording needs review');
 f.nodes.find(n=>n.tag==='dialog'&&n.open).events.cancel({preventDefault(){}});
 assert(!f.mode.active);assert.equal(f.portrait.parent,f.header);assert.deepEqual(f.counts(),{starts:2,enters:1,leaves:1});
-f.portrait.events.keydown({key:'Enter',preventDefault(){}});assert(f.mode.active);
+f.portrait.events.keydown({key:'Enter',isTrusted:true,preventDefault(){}});assert(f.mode.active);
+assert.deepEqual(f.explicitEntries,[false,false,true],'A trusted keyboard activation can open the next voice connection');
 f.document.hidden=true;f.listeners.visibilitychange();assert(!f.mode.active);assert.equal(f.portrait.parent,f.header);
 f.document.hidden=false;f.portrait.events.click();f.timers.findLast(t=>t.ms===300000&&!t.cancelled).fn();assert(!f.mode.active,'Foreground opt-in has a five-minute stop path');
 f.mode.close();assert.equal(f.counts().leaves,3,'Repeated teardown is inert');

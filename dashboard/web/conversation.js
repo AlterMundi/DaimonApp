@@ -2496,7 +2496,9 @@ window.Conversation = (() => {
         if(continuousEnabled)microphone.continuousOwner(true);
         conversationOnly=true;stop();audioFilterChanged();enableVoice();sound?.update({conversationOnly:true});
       },
-      onSpeak:()=>voiceModePrevious?.continuous?voiceSession?.start():microphone?.startConversation(),
+      onSpeak:({avatarEntry=false}={})=>voiceModePrevious?.continuous?
+        (voiceSession===publicLiveSession?publicLiveSession?.start({avatarEntry}):voiceSession?.start()):
+        microphone?.startConversation(),
       canReconnect:()=>nativeEnabled,
       onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous())return voiceSession?.start();},
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
