@@ -53,6 +53,16 @@ candidate while preserving active writers, then verify loaded defaults and the
 next ordinary use separately. This command makes no config, account, goal or
 service changes.
 
+Inventory `interaction.observer_model` and
+`interaction.observer_reasoning_effort` on the configuration selected by the
+running listener. These settings apply to observer synthesis independently of
+the bridge default and source-thread model. An explicit observer selection
+needs its own model and effort check against the receiving account and the
+effective provider used for the temporary synthesis workspace. When updating
+it, retain the selected effort, existing summaries and in-flight work. A
+listener that freezes this configuration at startup still needs compatible
+runtime adoption. Use the next ordinary observer request to verify use.
+
 For receiving qualification, identify the executable of the actual running
 native daemon and confirm that it resolves to the currently selected package
 in that receiver's Codex home. Run as the same owner, with the same effective
@@ -89,6 +99,13 @@ selection and verify the next ordinary turn through its native metadata.
 A cold thread can still report its previous model before admission.
 Keep its history and goal state intact and use the normal receiving surface
 for adoption.
+
+A direct terminal client can keep a predecessor selection in an already
+loaded thread even when the same thread's bridge row has moved. Read the
+native origin, status and model, and verify the latest ordinary turn on the
+surface that admitted it. Preserve an active turn. Reconcile the native
+selection when the owning surface can change future turns safely, and confirm
+its subsequent ordinary use.
 
 A null bridge model is not proof that an existing native conversation follows
 the current global default. After a native-default upgrade, inspect its bound
