@@ -336,7 +336,12 @@ window.Conversation = (() => {
       const tasks=window.HumanTaskControls?.mount({api:scopedApi,getBinding:()=>binding,setCsrf,unauthorized:failed,prefix:"internal"});
       const panel=$("#internal-attention");panel.hidden=false;
       $("#conversation-attention").append(panel);
-      internalAttentionItems=()=>[...requests.attentionItems(),...(tasks?.attentionItems()||[])].map(item=>({...item,id:`internal:${item.id}`}));
+      // A routed task can appear in both readers. Keep its ledger identity so
+      // For you uses the Conversation card when available, with its reply control.
+      internalAttentionItems=()=>[
+        ...requests.attentionItems().map(item=>({...item,id:`internal:${item.id}`})),
+        ...(tasks?.attentionItems()||[])
+      ];
       internalControls={refresh:()=>Promise.all([requests.refresh(),tasks?.refresh()]),reset:()=>{pendingNavigation?.close(false);requests.reset();tasks?.reset();}};
     }
     if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({

@@ -398,7 +398,7 @@ window.GoalControls = (() => {
       try{const page=await api(`interaction/goals?before=${cursor}`);if(owned===generation)await observe(page);}
       catch(_){if(owned===generation)message.textContent="Older controls unavailable. Nothing changed; refresh to reconnect.";}
       finally{if(owned===generation){reading=false;more.disabled=false;}}});
-    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
+    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view?.current&&c.view.can_confirm&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
   }
   return {mount};
 })();

@@ -197,6 +197,22 @@ explicit review, and unsent drafts remain available under previous drafts. Reque
 cards survive ordinary reply refreshes. Pending requests do not prevent new text
 input or steering to the integrating conversation and its workers.
 
+The standalone **For you** panel combines the conversation-scoped native
+requests and durable tasks, the owner's other work-session requests, and
+current goal proposals that can still be confirmed. Compare durable tasks by
+ledger ID. A routed task can appear in both readers; the panel shows it once
+and prefers its Conversation card, which can draft a reply. Old goal outcomes
+remain available for review without adding to the pending count.
+
+For an owner-local comparison, page the current receiver's supported
+`requests list CURSOR`, `requests tasks list CURSOR`,
+`requests internal list CURSOR`, and `presentation goals list CURSOR` commands
+via `telecodex --control CONFIG`, starting each cursor at zero. The native
+`human_tasks` controller is narrower: it covers durable tasks in the current
+owned conversation and, for the integrating entry, tasks from its routed work.
+Use the owner reader to inspect other owned work without inferring withdrawal
+or decision authority from visibility.
+
 A lost decision acknowledgment retains the exact revision and action in memory.
 Check decision reads the immutable receipt without another POST. Explicit retry
 uses the same frozen decision; no automatic retry, approval or replay occurs.
