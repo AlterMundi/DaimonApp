@@ -337,7 +337,7 @@ impl Store {
                 && control
                     .lanes
                     .get(&HeartbeatLane::Reports)
-                    .is_some_and(|l| l.paused),
+                    .map_or(control.paused, |l| l.paused),
             "Pause the exact Reports lane before task selection"
         );
         anyhow::ensure!(
