@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -234,13 +235,16 @@ def selected_models(db, changes):
     states = []
     for change in changes:
         row = db.execute(f'SELECT {COLUMNS} FROM sessions WHERE id=?', (change['id'],)).fetchone()
-        if row is None or any(row[key] != change[key] for key in SELECTION if key != 'model'):
+        if row is None or any(row[key] != change[key] for key in SELECTION
+                              if key not in ('model', 'updated_at')):
             raise ValueError('session_binding_changed')
-        states.append(row['model'])
-    if all(model == change['target'] for model, change in zip(states, changes)):
+        states.append(row)
+    if all(row['model'] == change['target'] for row, change in zip(states, changes)):
         return False
-    if any(model != change['model'] for model, change in zip(states, changes)):
+    if any(row['model'] != change['model'] for row, change in zip(states, changes)):
         raise ValueError('concurrent_model_selection_preserved')
+    if any(row['updated_at'] != change['updated_at'] for row, change in zip(states, changes)):
+        raise ValueError('session_binding_changed: settings_revision')
     return True
 
 
@@ -264,9 +268,11 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
         read_binding(config_path, plan)
         if not selected_models(db, changes):
             return result
+        revision = datetime.now(timezone.utc).isoformat(timespec='microseconds')
         for change in changes:
-            affected = db.execute('UPDATE sessions SET model=? WHERE id=? AND model=?',
-                                  (change['target'], change['id'], change['model']))
+            affected = db.execute(
+                'UPDATE sessions SET model=?, updated_at=? WHERE id=? AND model=? AND updated_at=?',
+                (change['target'], revision, change['id'], change['model'], change['updated_at']))
             if affected.rowcount != 1:
                 raise ValueError('concurrent_model_selection_preserved')
         db.commit()

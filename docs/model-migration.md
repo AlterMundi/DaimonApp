@@ -5,9 +5,8 @@ configuration as its running shared App Server bridge. The command is for
 shared OpenAI receivers. It reads account identity, rate-limit metadata, the
 advertised model catalogue and exact native thread bindings. Native config is
 resolved in the topic's saved workspace, or the bridge default workspace for
-new sessions. Catalogue checks
-establish selection compatibility; actual inference can still be subject to
-provider availability and limits.
+new sessions. Catalogue checks establish selection compatibility. Inference
+remains subject to provider availability and limits.
 
 For an ordinary single topic, use its existing `/model` control. For a scheduled
 migration of persisted selections, prepare a fresh private plan and inspect the
@@ -29,9 +28,10 @@ disposable plan through the owning operation after verifying its outcome. Plans
 from earlier draft schemas must not be applied with the maintained command.
 
 Application rechecks native compatibility for each planned change and fails
-the transaction if the config, database identity, binding, workspace, settings revision, reasoning effort or model selection
-changed. A repeat with every target already selected returns
-`already-selected`. The only mutated column is `sessions.model`. A turn that
+the transaction if the config, database identity, binding, workspace, settings
+revision, reasoning effort or model selection changed. A repeat with every
+target already selected returns `already-selected`. The migration advances the
+ordinary settings timestamp alongside `sessions.model` to invalidate old plans. A turn that
 already captured its settings keeps them. Observe a later ordinary turn before
 claiming the new selection was used. A deferred row stays available for a new
 scope decision; a failed plan must not overwrite a concurrent selection.
