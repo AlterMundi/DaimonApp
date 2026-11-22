@@ -22,7 +22,7 @@ MAPPING = {
     'gpt-6.1-sol': 'gpt-6.2-sol', 'gpt-6-sol': 'gpt-6.2-sol',
     'gpt-6-astra': 'gpt-6.2-astra', 'gpt-6.1-astra': 'gpt-6.2-astra',
 }
-SCHEMA = 'telecodex.owner-model-migration/v2'
+SCHEMA = 'telecodex.owner-model-migration/v3'
 LIMIT = 512
 SELECTION = ('id', 'chat_id', 'thread_id', 'creator_user_id', 'codex_thread_id',
              'force_fresh_thread', 'cwd', 'model', 'reasoning_effort', 'updated_at')
@@ -177,7 +177,7 @@ def check_row(row, config, availability, target, excluded):
     return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'])
 
 
-def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None):
+def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None, include_inherited=False):
     mapping = MAPPING if mapping is None else mapping
     check_mapping(mapping)
     config, binding = snapshot(config_path)
@@ -187,9 +187,24 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
         rows = db.execute(f'SELECT {COLUMNS} FROM sessions ORDER BY id LIMIT ?', (LIMIT + 1,)).fetchall()
     if len(rows) > LIMIT:
         raise ValueError('session_bound_exceeded')
-    changes, deferred = [], []
+    changes, deferred, inherited = [], [], {}
     for row in rows:
-        target = mapping.get(row['model'])
+        source_model = row['model']
+        if source_model is None and include_inherited:
+            if row['codex_thread_id'] in excluded:
+                deferred.append({'id': row['id'], 'reason': 'explicitly_preserved_workload'})
+                continue
+            if not row['codex_thread_id'] or row['force_fresh_thread']:
+                deferred.append({'id': row['id'], 'reason': 'native_thread_not_bound'})
+                continue
+            native_thread = metadata.rpc('thread/read', {'threadId': row['codex_thread_id'], 'includeTurns': False})['thread']
+            if native_thread.get('id') != row['codex_thread_id']:
+                raise ValueError('native_thread_mismatch')
+            source_model = native_thread.get('model')
+            if not isinstance(source_model, str):
+                deferred.append({'id': row['id'], 'reason': 'inherited_native_model_unobserved'})
+                continue
+        target = mapping.get(source_model)
         if target is None:
             continue
         reason = check_row(row, config, availability, target, excluded)
@@ -197,10 +212,12 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
             deferred.append({'id': row['id'], 'reason': reason})
         else:
             changes.append({**dict(row), 'target': target})
+            if row['model'] is None:
+                inherited[str(row['id'])] = source_model
     availability.confirm_account()
     read_binding(config_path, binding)
     return {'schema': SCHEMA, **binding, 'mapping': mapping,
-            'changes': changes, 'deferred': deferred}
+            'changes': changes, 'deferred': deferred, 'inherited_source_models': inherited}
 
 
 def validate_plan(plan):
@@ -210,13 +227,20 @@ def validate_plan(plan):
     changes = plan['changes']
     if not isinstance(changes, list) or len(changes) > LIMIT:
         raise ValueError('invalid_model_plan')
+    inherited = plan.get('inherited_source_models')
+    if not isinstance(inherited, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in inherited.items()):
+        raise ValueError('invalid_inherited_model_plan')
     ids = set()
     for row in changes:
         if (set(row) != set(SELECTION) | {'target'} or type(row['id']) is not int
                 or row['id'] in ids or not isinstance(row['target'], str)
-                or plan['mapping'].get(row['model']) != row['target']):
+                or plan['mapping'].get(inherited.get(str(row['id'])) if row['model'] is None else row['model']) != row['target']):
             raise ValueError('invalid_model_plan')
+        if (row['model'] is None) != (str(row['id']) in inherited):
+            raise ValueError('invalid_inherited_model_plan')
         ids.add(row['id'])
+    if set(inherited) - {str(i) for i in ids}:
+        raise ValueError('invalid_inherited_model_plan')
 
 
 def read_binding(config_path, plan):
@@ -259,6 +283,10 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
             return result
     availability = Availability(metadata)
     for change in changes:
+        if change['model'] is None:
+            thread = metadata.rpc('thread/read', {'threadId': change['codex_thread_id'], 'includeTurns': False})['thread']
+            if thread.get('id') != change['codex_thread_id'] or thread.get('model') != plan['inherited_source_models'][str(change['id'])]:
+                raise ValueError('inherited_native_selection_changed')
         reason = check_row(change, config, availability, change['target'], excluded)
         if reason:
             raise ValueError('live_qualification_lost: ' + reason)
@@ -271,7 +299,7 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
         revision = datetime.now(timezone.utc).isoformat(timespec='microseconds')
         for change in changes:
             affected = db.execute(
-                'UPDATE sessions SET model=?, updated_at=? WHERE id=? AND model=? AND updated_at=?',
+                'UPDATE sessions SET model=?, updated_at=? WHERE id=? AND model IS ? AND updated_at=?',
                 (change['target'], revision, change['id'], change['model'], change['updated_at']))
             if affected.rowcount != 1:
                 raise ValueError('concurrent_model_selection_preserved')
@@ -308,6 +336,7 @@ def main():
     mode.add_argument('--apply', action='store_true')
     mode.add_argument('--verify-default', metavar='MODEL')
     parser.add_argument('--plan', type=Path)
+    parser.add_argument('--include-inherited', action='store_true', help='Qualify the actual bound native model when the bridge selection is null')
     parser.add_argument('--replace', action='append', metavar='OLD=NEW', default=[])
     parser.add_argument('--exclude-native-thread', action='append', default=[])
     args = parser.parse_args()
@@ -333,7 +362,7 @@ def main():
             mapping = dict(pairs) if pairs else None
             if pairs and len(pairs) != len(mapping):
                 raise ValueError('duplicate_model_mapping')
-            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash)
+            plan = prepare(args.config, native, args.exclude_native_thread, mapping, initial_hash=initial_hash, include_inherited=args.include_inherited)
             with args.plan.open('x') as output:
                 json.dump(plan, output, indent=2)
             result = {'state': 'prepared', 'changes': len(plan['changes']), 'deferred': plan['deferred']}

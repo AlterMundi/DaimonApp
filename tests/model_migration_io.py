@@ -201,5 +201,46 @@ class Cases(unittest.TestCase):
             self.apply(plan)
 
 
+
+
+
+class InheritedCases(unittest.TestCase):
+    setUp = Cases.setUp
+    apply = Cases.apply
+    def inherited(self, model='gpt-6.1-sol'):
+        class Own(Metadata):
+            def rpc(self, method, params):
+                response=super().rpc(method,params)
+                if method=='thread/read':response['thread']['model']=model
+                return response
+        return Own()
+
+    def test_null_is_not_implicitly_migrated(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        self.assertFalse(migration.prepare(self.config,self.inherited(),['pinned'])['changes'])
+
+    def test_actual_native_model_is_frozen_and_null_cas_applies(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        plan=migration.prepare(self.config,self.inherited(),['pinned'],include_inherited=True)
+        self.assertEqual(plan['inherited_source_models'],{'1':'gpt-6.1-sol'})
+        self.assertIsNone(plan['changes'][0]['model'])
+        result=self.apply(plan,self.inherited())
+        self.assertEqual(result['state'],'selected-for-next-turn')
+        self.assertEqual(self.c.execute('SELECT model,reasoning_effort,busy,history FROM sessions WHERE id=1').fetchone(),('gpt-6.2-sol','medium',1,'original'))
+
+    def test_newer_native_choice_is_preserved(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        plan=migration.prepare(self.config,self.inherited(),['pinned'],include_inherited=True)
+        with self.assertRaisesRegex(ValueError,'inherited_native_selection_changed'):
+            self.apply(plan,self.inherited('gpt-6-astra'))
+        self.assertIsNone(self.c.execute('SELECT model FROM sessions WHERE id=1').fetchone()[0])
+
+    def test_missing_native_source_does_not_assume_a_default(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        plan=migration.prepare(self.config,Metadata(),['pinned'],include_inherited=True)
+        self.assertFalse(plan['changes'])
+        self.assertIn({'id':1,'reason':'inherited_native_model_unobserved'},plan['deferred'])
+
+
 if __name__ == '__main__':
     unittest.main()

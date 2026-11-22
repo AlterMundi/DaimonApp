@@ -52,3 +52,14 @@ runtime loading unobserved. Use the receiving maintenance path to adopt the
 candidate while preserving active writers, then verify loaded defaults and the
 next ordinary use separately. This command makes no config, account, goal or
 service changes.
+
+A null bridge model is not proof that an existing native conversation follows
+the current global default. After a native-default upgrade, inspect its bound
+thread. For this case prepare with `--include-inherited`: the plan freezes the
+actual observed native model and maps that role to its successor. It never
+assumes a model from a missing native observation. Application rechecks that
+native selection as well as the bridge's null model, workspace, binding, effort
+and revision; a later native choice refuses before the SQLite transaction.
+The write pins only the qualified next-turn model. Busy state, current captured
+turn, provider, effort, original input and history remain untouched. v3 plans
+carry `inherited_source_models`; old draft/v2 plans must not be replayed.
