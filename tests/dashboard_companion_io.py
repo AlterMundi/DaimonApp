@@ -692,7 +692,7 @@ class Companion(unittest.TestCase):
             'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR',
             'credential_file':str(self.root/'unused-key'),'cache_root':str(self.root/'openai-cache')}))
         binding.chmod(0o600)
-        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True}
+        self.config['speech_openai']={'binding':str(binding),'incremental_segments':True,'live_response':True,'streaming_output':True}
         self.client.close();self.client=self.client_for()
         self.config['openai_live']={'api_key_file':str(self.root/'studio-key')}
         profile={'provider':'openai','api':'gpt-live','model':'gpt-live-1','voice':'willow'}
@@ -727,7 +727,13 @@ class Companion(unittest.TestCase):
             self.assertGreater(len(rendered_parts[-1]['text']),240)
             self.assertLessEqual(len(rendered_parts[-1]['text']),640)
             self.assertEqual(provisional.headers['x-presentation-lookahead-offset'],'')
-        self.assertEqual(len(engines),2)
+            streamed=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai','stream':True},headers=self.headers)
+            self.assertEqual(streamed.status_code,200,streamed.text)
+            self.assertTrue(streamed.headers['content-type'].startswith('audio/wav'))
+            self.assertEqual(engines[-1].receiving_route()['voice'],'willow')
+            self.assertFalse(engines[-1].streaming)
+
+        self.assertEqual(len(engines),3)
 
     def test_revocation_during_actual_synthesis_prevents_private_audio(self):
         self.speech.hold=True

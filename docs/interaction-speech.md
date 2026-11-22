@@ -451,7 +451,9 @@ playback recovery. User-gesture unlocking is separate from provider completion;
 a browser refusing output offers the existing Play action rather than hanging.
 Saved GPT-Live voice readings keep their frozen nonstreaming route until their
 own progressive adapter is qualified; enabling the default stream cannot
-silently read a selected voice through the default voice.
+silently read a selected voice through the default voice. A progressive transport
+request for that trusted saved choice returns its existing WAV before any
+provider attempt; this is not a provider fallback or a retry after failure.
 
 The renderer opens one Realtime socket, verifies `session.updated`, and creates
 one out-of-band audio response with no tools, microphone input or conversation

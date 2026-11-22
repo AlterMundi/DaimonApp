@@ -5,8 +5,8 @@ window.SpeechStream=(()=>{
   const available=encoding=>encoding==="pcm_s16le"?!!window.PcmSpeech?.available():encoding==="mp3"?nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg"):!!window.PcmSpeech?.available()||nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg");
   const digest=async bytes=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(n=>n.toString(16).padStart(2,"0")).join("");
   function open(response,signal){
-    const encoding=response.headers.get("x-audio-encoding")||"mp3";
-    if(!available(encoding))throw Error("Progressive audio unavailable");
+    const encoding=response.headers?.get?.("x-audio-encoding")||"mp3";
+    if(!["mp3","pcm_s16le"].includes(encoding)||!available(encoding))throw Error("Progressive audio unavailable");
     const pcm=encoding==="pcm_s16le";
     const native=pcm?window.PcmSpeech?.open():nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
     if(pcm&&!native)throw Error("PCM audio playback unavailable");

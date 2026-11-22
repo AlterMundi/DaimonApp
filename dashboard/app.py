@@ -1333,7 +1333,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         except (ProviderUnavailable, OSError, ValueError, KeyError, SpeechUnavailable, RenderError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)
-        if body.get('stream'):
+        # Stream is a transport preference. A trusted saved Live choice keeps
+        # its exact existing buffered voice, before any attempt, rather than
+        # streaming the default route or retrying after a provider failure.
+        buffered_choice = getattr(engine, 'frozen_route', None) is not None and not engine.streaming
+        if body.get('stream') and not buffered_choice:
             if not engine.streaming or selected.get('kind')=='native_question':
                 raise HTTPException(409,'Streaming speech unavailable; use the ordinary reader')
             async def audio_frames():
