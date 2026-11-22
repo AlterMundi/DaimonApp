@@ -183,8 +183,11 @@ The command re-reads the canonical hosted catalog and compares the receiver,
 route, account-bound contract and exact predecessor revision. It refuses a
 missing or stale qualification, ambiguous latest version, inherited reasoning
 effort or an effective model selected outside the native user layer. The native
-writer changes only the model key with its actual user-layer version fence.
-The command then verifies the effective configuration and account. Saved bridge
+writer changes only the model key with its actual user-layer version fence
+through a defaults-only batch with reload disabled. Codex serializes these
+configuration RPCs within the same app server. Coordinate any direct file
+editor or separate server that writes the same user file before selecting a
+successor. The command then verifies the effective configuration and account. Saved bridge
 sessions, loaded turns, provider calls and schedules are outside this operation.
 A selected default still needs a subsequent ordinary native usage receipt.
 

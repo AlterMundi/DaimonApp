@@ -451,11 +451,11 @@ class FamilyWriter(Metadata):
                 'origins': {'model': {'name': {'type': 'user', 'file': str(self.origin)},
                                       'version': self.revision}},
             }
-        if method == 'config/value/write':
+        if method == 'config/batchWrite':
             self.writes.append(params)
             if self.concurrent_edit:
                 raise ValueError('config_version_conflict')
-            self.model = params['value']
+            self.model = params['edits'][0]['value']
             return {'status': 'ok'}
         return super().rpc(method, params)
 
@@ -487,8 +487,9 @@ class FamilySelection(unittest.TestCase):
         result = self.apply()
         self.assertEqual(result['state'], 'selected-for-new-native-work')
         self.assertEqual(self.native.writes, [{
-            'keyPath': 'model', 'value': 'gpt-6.3-sol', 'filePath': str(self.native_file),
-            'mergeStrategy': 'replace', 'expectedVersion': FamilyWriter.revision,
+            'edits': [{'keyPath': 'model', 'value': 'gpt-6.3-sol', 'mergeStrategy': 'replace'}],
+            'filePath': str(self.native_file), 'expectedVersion': FamilyWriter.revision,
+            'reloadUserConfig': False,
         }])
         self.assertEqual(result['model'], json.loads(self.intent.read_text())['model'])
         self.assertEqual(result['new_turns'], 0)
