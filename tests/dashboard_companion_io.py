@@ -178,6 +178,69 @@ class Companion(unittest.TestCase):
         receiver['telegram']['enabled']=False
         self.assertNotEqual(receiving_authority(receiver),expected)
 
+    def test_observer_synthesis_change_preserves_existing_access_across_restart(self):
+        self.web_only()
+        receiver_path = self.root / 'receiver.toml'
+        database_path = self.root / 'users.sqlite'
+        with sqlite3.connect(database_path) as database:
+            database.execute('CREATE TABLE users(tg_user_id INTEGER,allowed INTEGER)')
+            database.execute('INSERT INTO users VALUES(100,1)')
+        initial = ('db_path=' + json.dumps(str(database_path)) +
+                   '\n[session_control]\nhuman_id=100\n[telegram]\nenabled=false\n'
+                   '[interaction]\nobserver_model="baseline"\nobserver_reasoning_effort="low"\n')
+        receiver_path.write_text(initial)
+        self.config['receiver_config'] = str(receiver_path)
+        legacy = Provider(self.config)
+        grant = Grants(self.config, legacy)
+        output = self.root / 'prior-device.json'
+        with patch.object(legacy, 'presentation_list', return_value={'items': []}):
+            grant.enroll('Existing connection', output, 3600)
+        token = read_json(output)['authorization'].split(' ', 1)[1]
+        self.config['observer_synthesis_binding'] = {
+            'observer_model': 'baseline', 'observer_reasoning_effort': 'low',
+        }
+        current = Provider(self.config)
+        self.assertEqual(legacy.binding_bytes, current.binding_bytes)
+        headers = {'Host': 'example.test', 'Origin': self.config['origin'],
+                   'Cookie': '__Host-home=' + 'h' * 43}
+        identity = {'contract': 'dm.home-session/v1', 'origin': self.config['origin'],
+                    'expires': int(time.time()) + 3600,
+                    'actor': {'kind': 'human', 'ref': 'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response', return_value=identity):
+            with TestClient(create_app(self.config, current), base_url=self.config['origin']) as client:
+                before = client.get('/api/interaction/access', headers=headers)
+                self.assertEqual(before.status_code, 200)
+                changed = initial.replace('"baseline"', '"successor"').replace('"low"', '"medium"')
+                receiver_path.write_text(changed)
+                with self.assertRaises(ProviderUnavailable):
+                    legacy.assert_binding()
+                after = client.get('/api/interaction/access', headers=headers)
+                self.assertEqual(after.status_code, 200)
+                self.assertEqual(after.json()['csrf'], before.json()['csrf'])
+            restarted = Provider(self.config)
+            self.assertEqual(restarted.receiver['interaction']['observer_model'], 'successor')
+            self.assertEqual(restarted.binding_bytes, legacy.binding_bytes)
+            self.assertIsNotNone(Grants(self.config, restarted).authenticate(token))
+            with TestClient(create_app(self.config, restarted), base_url=self.config['origin']) as client:
+                after_restart = client.get('/api/interaction/access', headers=headers)
+                self.assertEqual(after_restart.status_code, 200)
+                self.assertEqual(after_restart.json()['csrf'], before.json()['csrf'])
+                self.assertEqual(client.get('/api/interaction/access', headers={'Host': 'example.test'}).status_code, 401)
+                with patch('dashboard.home_auth.identity_response', return_value={
+                        **identity, 'actor': {'kind': 'human', 'ref': 'human:telegram:101'}}):
+                    self.assertEqual(client.get('/api/interaction/access', headers=headers).status_code, 403)
+                receiver_path.write_text(changed.replace('human_id=100', 'human_id=101'))
+                self.assertEqual(client.get('/api/interaction/access', headers=headers).status_code, 503)
+                self.assertIsNone(Grants(self.config, restarted).authenticate(token))
+
+    def test_observer_synthesis_binding_cannot_override_access_policy(self):
+        receiver = self.root / 'receiver.toml'
+        receiver.write_text('[session_control]\nhuman_id=100\n[interaction]\n')
+        for invalid in [[], {'human_id': '101'}, {'observer_model': 'two words'},
+                        {'observer_reasoning_effort': True}]:
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                Provider({'receiver_config': str(receiver), 'observer_synthesis_binding': invalid})
+
     def test_native_physical_policy_preserves_dashboard_access_identity(self):
         receiver={'db_path':'owned.sqlite','session_control':{'human_id':100},
             'telegram':{'api_base':'https://example.test','bot_token_file':'owned-token'},
