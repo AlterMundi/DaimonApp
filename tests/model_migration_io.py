@@ -310,5 +310,57 @@ class RemainingSelections(unittest.TestCase):
         self.assertFalse(migration.prepare(self.config,APIKey(),['pinned'])['changes'])
 
 
+
+class ReviewRegressions(unittest.TestCase):
+    setUp = Cases.setUp
+    apply = Cases.apply
+
+    def test_newer_choice_in_prepare_qualification_is_not_ignored(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        class Switch(Metadata):
+            reads=0
+            def rpc(self,method,params):
+                response=super().rpc(method,params)
+                if method=='thread/read' and params['threadId']=='one':
+                    self.reads+=1;response['thread']['model']='gpt-6.1-sol' if self.reads==1 else 'gpt-6-astra'
+                return response
+        with self.assertRaisesRegex(ValueError,'inherited_native_selection_changed'):
+            migration.prepare(self.config,Switch(),['pinned'],include_inherited=True)
+        self.assertIsNone(self.c.execute('SELECT model FROM sessions WHERE id=1').fetchone()[0])
+
+    def test_apply_uses_one_checked_native_model_observation(self):
+        self.c.execute('UPDATE sessions SET model=NULL WHERE id=1');self.c.commit()
+        old=InheritedCases.inherited(self)
+        plan=migration.prepare(self.config,old,['pinned'],include_inherited=True)
+        class Count(Metadata):
+            reads=0
+            def rpc(self,method,params):
+                response=super().rpc(method,params)
+                if method=='thread/read':
+                    self.reads+=1;response['thread']['model']='gpt-6-astra'
+                return response
+        changed=Count()
+        with self.assertRaisesRegex(ValueError,'inherited_native_selection_changed'):self.apply(plan,changed)
+        self.assertEqual(changed.reads,1)
+
+    def test_catalog_side_overrides_do_not_qualify_default_endpoint_alias(self):
+        for override in [dict(openai_base_url='https://other.test/v1'),
+                         dict(model_catalog_json='/fixture/catalog.json'),
+                         dict(chatgpt_base_url='https://gov.chatgpt.com/backend-api/'),
+                         {'model_providers':{'openai':{'model_catalog_url':'https://chatgpt.com/backend-api/codex/models'}}},
+                         {'model_providers':{'openai':{'base_url':'https://other.test/v1'}}}]:
+            with self.subTest(override=override):
+                base=RemainingSelections.alias(self)
+                class Override:
+                    def rpc(self,method,params):
+                        r=base.rpc(method,params)
+                        if method=='config/read':
+                            for k,v in override.items():
+                                if k=='model_providers':r['config'].setdefault(k,{}).update(v)
+                                else:r['config'][k]=v
+                        return r
+                self.assertFalse(migration.prepare(self.config,Override(),['pinned'])['changes'])
+
+
 if __name__ == '__main__':
     unittest.main()

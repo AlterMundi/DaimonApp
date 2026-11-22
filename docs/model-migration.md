@@ -76,4 +76,8 @@ the same hosted ChatGPT account, OpenAI name, Responses wire API, required OpenA
 auth and no endpoint, credential, header, catalog, capability or other override.
 Transport booleans do not change this account/catalog equivalence. Any other
 provider remains deferred. Neither alias qualification nor migration changes a
-provider, endpoint, account or reasoning choice.
+provider, endpoint, account or reasoning choice. A changed built-in OpenAI
+endpoint/catalog, a local catalog file or a non-default ChatGPT origin also
+prevents alias equivalence. Inherited qualification compares the frozen model
+against the same thread observation used for provider qualification; this is
+not an atomic lock on a concurrently operated native thread.

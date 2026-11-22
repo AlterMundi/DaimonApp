@@ -132,7 +132,14 @@ class Availability:
             return True
         # A closed OpenAI alias with the same hosted account/default endpoint
         # uses the same native catalog. Any routing/auth/header override refuses.
-        info = native.get('model_providers', {}).get(provider)
+        providers = native.get('model_providers', {})
+        builtin = providers.get('openai', {})
+        if (native.get('openai_base_url') is not None or native.get('model_catalog_json') is not None
+                or builtin.get('base_url') is not None or builtin.get('model_catalog_url') is not None
+                or native.get('chatgpt_base_url') not in (None, 'https://chatgpt.com',
+                       'https://chatgpt.com/', 'https://chatgpt.com/backend-api/')):
+            return False
+        info = providers.get(provider)
         if self.account.get('type') != 'chatgpt' or not isinstance(info, dict):
             return False
         active = {key: value for key, value in info.items() if value is not None}
@@ -144,7 +151,7 @@ class Availability:
                 and all(type(active[key]) is bool for key in
                         ('supports_websockets', 'supports_standalone_web_search') if key in active))
 
-    def check(self, config, target, effort, cwd, thread_id=None):
+    def check(self, config, target, effort, cwd, thread_id=None, expected_native_model=None):
         # model/list is the active OpenAI catalog, not a custom provider probe.
         native = self.effective_config(cwd)
         provider = native.get('model_provider') or 'openai'
@@ -156,6 +163,8 @@ class Availability:
             thread = self.metadata.rpc('thread/read', {'threadId': thread_id, 'includeTurns': False})['thread']
             if thread.get('id') != thread_id:
                 raise ValueError('native_thread_mismatch')
+            if expected_native_model is not None and thread.get('model') != expected_native_model:
+                raise ValueError('inherited_native_selection_changed')
             if not self.catalog_matches_provider(native, thread.get('modelProvider')):
                 return 'provider_specific_availability_unverified'
         # Existing rows pass their nullable effort directly. The bridge
@@ -186,14 +195,14 @@ def check_mapping(mapping):
         raise ValueError('invalid_model_mapping')
 
 
-def check_row(row, config, availability, target, excluded, *, include_unbound=False):
+def check_row(row, config, availability, target, excluded, *, include_unbound=False, expected_native_model=None):
     if row['codex_thread_id'] in excluded:
         return 'explicitly_preserved_workload'
     if not row['codex_thread_id'] or row['force_fresh_thread']:
         if not include_unbound or row['model'] is None:
             return 'native_thread_not_bound'
         return availability.check(config, target, row['reasoning_effort'], row['cwd'])
-    return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'])
+    return availability.check(config, target, row['reasoning_effort'], row['cwd'], row['codex_thread_id'], expected_native_model)
 
 
 def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=None, include_inherited=False, include_unbound=False):
@@ -226,7 +235,8 @@ def prepare(config_path, metadata, excluded=(), mapping=None, *, initial_hash=No
         target = mapping.get(source_model)
         if target is None:
             continue
-        reason = check_row(row, config, availability, target, excluded, include_unbound=include_unbound)
+        reason = check_row(row, config, availability, target, excluded, include_unbound=include_unbound,
+                           expected_native_model=source_model if row['model'] is None else None)
         if reason:
             deferred.append({'id': row['id'], 'reason': reason})
         else:
@@ -304,11 +314,9 @@ def apply(config_path, plan, metadata, excluded=(), *, initial_hash=None):
             return result
     availability = Availability(metadata)
     for change in changes:
-        if change['model'] is None:
-            thread = metadata.rpc('thread/read', {'threadId': change['codex_thread_id'], 'includeTurns': False})['thread']
-            if thread.get('id') != change['codex_thread_id'] or thread.get('model') != plan['inherited_source_models'][str(change['id'])]:
-                raise ValueError('inherited_native_selection_changed')
-        reason = check_row(change, config, availability, change['target'], excluded, include_unbound=plan['include_unbound'])
+        reason = check_row(change, config, availability, change['target'], excluded,
+                           include_unbound=plan['include_unbound'],
+                           expected_native_model=plan['inherited_source_models'].get(str(change['id'])))
         if reason:
             raise ValueError('live_qualification_lost: ' + reason)
     availability.confirm_account()
