@@ -104,10 +104,10 @@ window.ConversationVoiceMode=(()=>{
     // Each physical engine keeps its own capture budget. An explicitly admitted
     // renewing native dialogue owns the logical lifetime until human Stop.
     function armClose(){clearTimeout(timer);timer=undefined;if(continuous&&untilStop)return;timer=setTimeout(close,(continuous?10:5)*60*1000);}
-    function close(){
+    function close({returnToText=false}={}){
       if(!opened)return lastClose;clearSignal();opened=false;clearTimeout(timer);clearTimeout(rearm);
       marker.replaceWith(portrait);marker=undefined;dialog.close();document.body.classList.remove('direct-voice-open');
-      entryState();lastClose=onLeave();portrait.focus();return lastClose;
+      entryState();lastClose=onLeave({returnToText});portrait.focus();return lastClose;
     }
     function open(event){
       if(opened || !available || document.hidden || !canEnter())return;
@@ -177,7 +177,8 @@ window.ConversationVoiceMode=(()=>{
     portrait.addEventListener('click',open);
     portrait.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open(event);}});
     review.addEventListener('click',()=>{if(opened&&typeof onReview==='function')onReview(()=>{if(!opened)return false;(review.hidden?back:review).focus();return true;});});
-    back.addEventListener('click',close);dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
+    back.addEventListener('click',()=>close({returnToText:true}));
+    dialog.addEventListener('cancel',event=>{event.preventDefault();close({returnToText:true});});
     speak.addEventListener('click',()=>{if(!opened)return;if(canResumeAudio()){onResumeAudio();return;}if(continuous&&!listening&&!preparing&&typeof onReconnect==='function'&&canReconnect()){armClose();onReconnect();return;}if(canStart()){waiting=false;heard=false;speak.hidden=true;onSpeak();}});
     function suspend(){
       if(!opened)return;clearSignal();

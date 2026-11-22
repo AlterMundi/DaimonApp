@@ -2508,14 +2508,24 @@ window.Conversation = (() => {
       onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous())return voiceSession?.start();},
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
-      onLeave:()=>{
+      onLeave:({returnToText=false}={})=>{
+        const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration;
         let held;
-        if(voiceModePrevious?.continuous){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
+        if(direct){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
         else held=microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
         if(voiceModePrevious?.enabled){voiceSuspended=voiceModePrevious.suspended;voiceStatus();}
         else disableVoice();
         voiceModePrevious=undefined;presentState({outputLevel:0},false);audioFilterChanged();companion?.update({});
         if(voiceEngine)voiceEngine.disabled=!!voiceSession?.active;
+        if(returnToText&&direct){
+          const reconcile=()=>{
+            if(binding===owner&&inputGeneration===observed&&!document.hidden&&!voiceMode?.active)void refresh(true);
+          };
+          // Show received voice work immediately, then pick up anything that
+          // settled during close. These are reads and do not hold the draft.
+          reconcile();
+          if(typeof held?.then==='function')void held.then(reconcile,reconcile);
+        }
         return held;
       }
     });
