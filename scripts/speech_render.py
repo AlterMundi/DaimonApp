@@ -151,10 +151,31 @@ def lock(path):
         yield
 
 
+def render_job(config, ident):
+    """Bound receipt/lock/directory growth before creating another source ID."""
+    root = directory(config['cache_root']);job = root/ident
+    if job.exists() or job.is_symlink():return directory(job)
+    with lock(root/'.audio-budget.lock'):
+        if job.exists() or job.is_symlink():return directory(job)
+        limit = config.get('audio_cache_max_entries',32768)
+        count = 0
+        for item in root.iterdir():
+            if re.fullmatch(r'[a-f0-9]{64}',item.name):
+                count += 1
+                if count >= limit:raise RenderError('speech-cache-capacity-text-remains-available')
+        return directory(job)
+
+
+def write_state(path, value):
+    data = canonical(value)
+    if len(data)>32768:raise RenderError('speech-receipt-bound-no-automatic-retry')
+    atomic(path,data)
+
+
 def route(path):
     value = json.loads(canonical(path)) if isinstance(path,dict) else json.loads(private_bytes(path, 16384))
     allowed = {'schema', 'provider', 'cache_root', 'env_file', 'voice', 'language',
-               'endpoint', 'timeout_seconds', 'audio_retention_seconds', 'audio_cache_max_bytes',
+               'endpoint', 'timeout_seconds', 'audio_retention_seconds', 'audio_cache_max_bytes', 'audio_cache_max_entries',
                'credential_file', 'model', 'instruction', 'rate', 'pitch', 'ssml_breaks', 'purpose'}
     if (not isinstance(value, dict) or set(value) - allowed or value.get('schema') != SCHEMA
             or value.get('provider') not in ('nvidia-magpie', 'qwen-tts', 'openai-realtime', 'openai-live')
@@ -215,6 +236,8 @@ def route(path):
         raise RenderError('invalid-synthesis-deadline')
     if (type(value.get('audio_retention_seconds', 3600)) is not int
             or not 300 <= value.get('audio_retention_seconds', 3600) <= 7 * 86400
+            or type(value.get('audio_cache_max_entries',32768)) is not int
+            or not 1 <= value.get('audio_cache_max_entries',32768) <= 32768
             or type(value.get('audio_cache_max_bytes', 256 * 1024 * 1024)) is not int
             or not MAX_AUDIO <= value.get('audio_cache_max_bytes', 256 * 1024 * 1024) <= 1024 * 1024 * 1024):
         raise RenderError('invalid-audio-retention')
@@ -253,7 +276,7 @@ def _prune_audio(config, *, exclude=None, now=None):
                     if sha(data) != state['audio_sha256']:
                         continue  # Changed/uncertain media is never disposable cache.
                     state.update(phase='audio_expired', audio_expired_at=now)
-                    atomic(job / 'state.json', canonical(state))
+                    write_state(job / 'state.json', state)
                     audio.unlink()
                     sync_directory(job)
                     remaining -= size
@@ -330,7 +353,7 @@ def reserve_audio(config, state_file, state):
                               exclude=state_file.parent.name)
         if report['accounted_audio_bytes'] > headroom:
             raise RenderError('audio-cache-capacity-text-remains-available')
-        atomic(state_file, canonical(state))
+        write_state(state_file, state)
 
 
 def credential(path):
@@ -445,7 +468,7 @@ def render_plan(binding, request):
 
 def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None):
     config, fields, ident = render_plan(binding, request)
-    job = directory(directory(config['cache_root']) / ident)
+    job = render_job(config, ident)
     state_file, audio_file = job / 'state.json', job / 'audio.wav'
     with lock(job / '.lock'):
         generation = 1
@@ -462,7 +485,7 @@ def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None)
                 if sha(data) != state['audio_sha256'] or info != state['format']:
                     raise RenderError('retained-render-integrity-failed')
                 state['last_used_at'] = time.time()
-                atomic(state_file, canonical(state))
+                write_state(state_file, state)
                 if on_pcm:
                     with wave.open(io.BytesIO(data), 'rb') as cached:
                         if cached.getparams()[:3] != (1, 2, 24000):
@@ -511,7 +534,7 @@ def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None)
                     import openai_live_speech
                 def progress(value):
                     state['provider_receipt']=value
-                    atomic(state_file,canonical(state))
+                    write_state(state_file,state)
                 data,receipt=openai_live_speech.render(config,fields,token,MAX_AUDIO,progress=progress,cancel=cancel)
                 state['provider_receipt']={'stage':'session_closed',**receipt}
             elif config['provider']=='openai-realtime':
@@ -523,7 +546,7 @@ def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None)
                     import openai_speech
                 def progress(value):
                     state['provider_receipt']=value
-                    atomic(state_file,canonical(state))
+                    write_state(state_file,state)
                 data,receipt=openai_speech.render(config,fields,token,MAX_AUDIO,progress=progress,on_pcm=on_pcm)
                 state['provider_receipt']={'stage':'response_completed',**receipt}
             elif config['provider'] == 'qwen-tts':
@@ -546,13 +569,13 @@ def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None)
         except HTTPError as error:
             state.update(phase='rejected', http_status=error.code)
             error.close()
-            atomic(state_file, canonical(state))
+            write_state(state_file, state)
             raise RenderError('synthesis-rejected-no-automatic-retry') from None
         except Exception:
             state['phase'] = 'unconfirmed'
-            atomic(state_file, canonical(state))
+            write_state(state_file, state)
             raise RenderError('synthesis-unconfirmed-no-automatic-retry') from None
-        atomic(state_file, canonical(state))
+        write_state(state_file, state)
         return result(state, audio_file, False)
 
 
@@ -760,7 +783,7 @@ def stream_render(binding, request, emit):
         identity['source_text_sha256'] = sha(request['text'].encode())
         identity['text_projection'] = 'markdown-v1'
     ident = sha(canonical(identity))
-    job = directory(directory(config['cache_root']) / ident)
+    job = render_job(config, ident)
     state_file = job / 'state.json'; audio_file = job / 'audio.mp3'
     sequence = 0; accumulated = bytearray(); sentences = []; alignment = None
     def sentence_end(value):
@@ -789,7 +812,7 @@ def stream_render(binding, request, emit):
             if not data or sha(data) != state.get('audio_sha256'):
                 raise RenderError('retained-stream-integrity-failed')
             alignment = state.get('alignment')
-            state['last_used_at'] = time.time(); atomic(state_file, canonical(state))
+            state['last_used_at'] = time.time(); write_state(state_file, state)
             for offset in range(0,len(data),32768):send(data[offset:offset+32768])
         else:
             if audio_file.exists() or audio_file.is_symlink():
@@ -818,9 +841,9 @@ def stream_render(binding, request, emit):
                              format={'encoding':'mp3','sample_rate_hz':24000,'channels':1})
                 if alignment is not None:
                     state['alignment'] = alignment
-                atomic(state_file,canonical(state))
+                write_state(state_file,state)
             except Exception:
-                state['phase']='unconfirmed';atomic(state_file,canonical(state))
+                state['phase']='unconfirmed';write_state(state_file,state)
                 raise RenderError('streamed-speech-unconfirmed-no-automatic-retry') from None
         terminal = {'type':'end', 'audio_bytes':len(accumulated), 'audio_sha256':sha(accumulated)}
         if request.get('timing') and alignment is not None:

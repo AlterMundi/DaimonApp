@@ -76,6 +76,8 @@ def config(binding):
             or type(value.get('max_cache_bytes', DEFAULT_BUDGET)) is not int
             or not MAX_JOB <= value.get('max_cache_bytes', DEFAULT_BUDGET) <= 1024**3):
         raise RenderError('invalid-interaction-asr-binding')
+    if 'completed_only' in value and value.get('provider') is not None:
+        raise RenderError('retirement-policy-is-only-for-retained-legacy-helper')
     if value.get('provider')=='live-result':
         models=value.get('models')
         if (not isinstance(models,list) or not 1<=len(models)<=4

@@ -716,8 +716,8 @@ the base `[speech]` configuration at the canonical OpenAI route so a compatible
 software rollback cannot reactivate the retired vendor. Enable PCM streaming
 only with its qualified server/browser package.
 
-Native file-capture compatibility uses the existing ASR adapter's optional hot
-`completed_only:true` receiving binding field. It has the same restricting effect
+Retired legacy file-capture compatibility uses the existing ASR adapter's optional
+hot `completed_only:true` receiving binding field (legacy helper bindings only). It has the same restricting effect
 as `--completed-only`, preserving the original cache identity and exact completed
 text. Missing/uncertain results stay held with their original recording; the
 retired helper is never probed or called. Install that compatible reader before
@@ -736,3 +736,28 @@ playback scheduling. This is a software continuity check, not provider latency
 or physical hearing acceptance. `tests/pcm_speech_browser.py` separately covers
 pause silence, resume, cancellation, prepared-player bounds and exact-byte WAV
 recovery. Neither fixture opens a microphone or calls a provider.
+
+
+For operational rollback of progressive playback, keep the new compatible
+server/ASR policy/fence and set both canonical speech sections'
+`streaming_output=false`. The same OpenAI renderer/cache then supplies its WAV;
+no account/voice switch or new original identity is implied. Retain the previous
+software selector for recovery, but do not blindly restore a package that cannot
+read the selected retirement policy or re-enable a former provider. The hot flag
+is deliberately rejected on explicit OpenAI/live-result bindings: OpenAI's
+receipt namespace includes exact binding/helper bytes, and retirement must not
+fork an original's identity. Existing completed-only CLI readers remain the
+compatible way to retire legacy static helper commands on another receiver.
+
+
+Receipt growth is bounded independently of disposable audio. Each receiving
+route may set `audio_cache_max_entries` (1..32768, default32768); a new source
+identity must reserve a directory under the same budget lock before any receipt,
+lock file or provider attempt. Each speech state is bounded to32KiB, matching its
+existing reader. Full capacity refuses new identities without creating empty
+per-source directories or replaying old ones; verified cache reads and retained
+uncertain outcomes remain usable. Completed/unknown receipts are never silently
+deleted to regain capacity. For newly enabled child readers,4096entries bounds
+receipt payloads to128MiB plus bounded directory/lock overhead, separately from
+the64MiB disposable audio budget. Existing irreplaceable receipts remain protected
+when changing a limit; measured receiving occupancy must be recorded.

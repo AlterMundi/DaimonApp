@@ -279,6 +279,20 @@ class Render(unittest.TestCase):
         self.assertLessEqual(result['accounted_audio_bytes'],speech.MAX_AUDIO)
         self.assertEqual(len(self.calls),2)
 
+    def test_receipt_capacity_refuses_growth_before_new_directories_or_provider_calls(self):
+        self.config['audio_cache_max_entries']=2
+        self.binding.write_text(json.dumps(self.config))
+        first=self.render()
+        second=self.render({**self.request,'scope':'second-source'})
+        root=self.root/'cache';before={p.name for p in root.iterdir()}
+        with self.assertRaisesRegex(speech.RenderError,'speech-cache-capacity'):
+            self.render({**self.request,'scope':'refused-third-source'})
+        self.assertEqual({p.name for p in root.iterdir()},before)
+        self.assertEqual(len(self.calls),2)
+        self.assertTrue(self.render()['cache_hit'])
+        self.assertEqual(speech.sha(Path(first['audio_path']).read_bytes()),first['audio_sha256'])
+        self.assertTrue(Path(second['audio_path']).exists())
+
     def test_completed_cache_read_does_not_inspect_unrelated_receipts(self):
         first = self.render()
         unrelated = speech.directory(self.root/'cache'/('e'*64))

@@ -290,6 +290,16 @@ class Retention(unittest.TestCase):
         self.cfg['completed_only']='false';self.write_config()
         with self.assertRaises(asr.RenderError):self.run_asr()
 
+    def test_retirement_flag_cannot_fork_openai_or_live_result_cache_identities(self):
+        for provider in ('openai','live-result'):
+            self.cfg={'schema':'telecodex.interaction-asr/v1','provider':provider,
+                'cache_root':str(self.root/'cache'),'completed_only':True}
+            if provider=='openai':self.cfg.update(model='gpt-transcribe',key_file=str(self.root/'key'))
+            else:self.cfg.update(models=['gpt-live-transcribe'],streaming_cache_root=str(self.root/'streaming'))
+            self.write_config()
+            with self.assertRaisesRegex(asr.RenderError,'retirement-policy-is-only'):asr.config(self.binding)
+        self.assertEqual(self.calls(),0)
+
     def test_completed_only_reader_never_probes_or_calls_provider(self):
         with self.assertRaises(asr.RenderError):
             asr.process(self.source,self.binding,completed_only=True)
