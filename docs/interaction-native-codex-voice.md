@@ -1601,10 +1601,13 @@ actor and entry binding remain verified. A changed binding, unreadable visit,
 or uncertain provider append still stops the return lane. Do not retry a held
 append or treat a successful injection as playback.
 
-A valid browser close before the WebRTC offer ends the prepared visit and
-releases its app lease. The visit records the bounded browser reason and
-confirms startup ended without a provider creation or final usage claim.
-The browser keeps the local reason it already displayed.
+A valid browser close can end the visit while the fresh integrating context
+is still being read, or while waiting for the WebRTC offer. The browser reason
+is recorded immediately. A pending context read can finish, but a stopped
+visit does not open a new context producer from that read or create a provider
+session. Already-issued operations retain their exact outcome; the app lease
+and startup-ended acknowledgment wait for settlement. The browser keeps the
+local reason it already displayed.
 
 When matching the current Conversation reader, each manual native Avatar
 entry or reconnect reads the current OpenAI reading delivery instructions.
