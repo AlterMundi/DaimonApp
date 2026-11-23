@@ -102,6 +102,7 @@ def main(argv=None):
     parser.add_argument('--observer-preimage',type=Path)
     parser.add_argument('--receiver-sha256',help='Exact planned native configuration digest')
     parser.add_argument('--observer-receipt',type=Path,help='One owner-private receipt per prepared repair')
+    parser.add_argument('--observer-if-needed',action='store_true',help='Accept healthy readback for a scheduled pinned repair')
     parser.add_argument('command',nargs=argparse.REMAINDER)
     args=parser.parse_args(argv)
     command=args.command[1:] if args.command[:1]==['--'] else args.command
@@ -113,6 +114,8 @@ def main(argv=None):
     repair=args.observer_preimage is not None
     if args.observer_receipt is not None and (not repair or not args.observer_receipt.is_absolute()):
         parser.error('Select an absolute receipt path for the exact observer repair')
+    if args.observer_if_needed and args.observer_receipt is None:
+        parser.error('A scheduled observer repair requires its retained receipt path')
     if (repair != (args.receiver_sha256 is not None) or repair and (
             not re.fullmatch(r'[a-f0-9]{64}',args.receiver_sha256)
             or url.hostname not in ('127.0.0.1','::1') or url.path!='/health' or not args.require_speech)):
@@ -153,20 +156,33 @@ def main(argv=None):
             preimage=private_config(args.observer_preimage,args.owner_uid)
             observer_transition(preimage,current,args.receiver_sha256)
             receipt_path=args.observer_receipt
-            if receipt_path is not None and (receipt_path.exists() or receipt_path.is_symlink()):
+            retained=receipt_path is not None and (receipt_path.exists() or receipt_path.is_symlink())
+            if retained and not args.observer_if_needed:
                 print('Observer repair has a retained attempt. Inspect that receipt.',file=sys.stderr)
                 return 80
             opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
             access_url=urllib.parse.urlunsplit((url.scheme,url.netloc,'/api/interaction/access','',''))
-            if access_state(opener,access_url) not in BINDING_FAILURES.values():
-                raise ValueError('No matching Conversation binding fault is present')
+            observed=access_state(opener,access_url)
             if (private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw
                     or private_config(args.observer_preimage,args.owner_uid)!=preimage):
                 raise ValueError('Selected receiver changed before maintenance')
+            receipt=dict(schema='daimonapp.observer-repair-attempt/v1',state='attempt_claimed',
+                receiver_sha256=args.receiver_sha256,preimage_sha256=hashlib.sha256(preimage).hexdigest(),
+                config_sha256=hashlib.sha256(raw).hexdigest())
+            if retained:
+                expected={**receipt,'state':'recovery_verified','access_status':401}
+                if (observed=='anonymous_refused' and not receipt_path.is_symlink()
+                        and json.loads(private_config(receipt_path,os.getuid()))==expected):
+                    print('Conversation remains available after the retained repair.')
+                    return 0
+                print('Observer repair has a retained attempt. Inspect that receipt.',file=sys.stderr)
+                return 80
+            if args.observer_if_needed and observed=='anonymous_refused':
+                print('Conversation is available. No observer repair was needed.')
+                return 0
+            if observed!='receiver_binding_changed':
+                raise ValueError('No matching Conversation receiver binding fault is present')
             if receipt_path is not None:
-                receipt=dict(schema='daimonapp.observer-repair-attempt/v1',state='attempt_claimed',
-                    receiver_sha256=args.receiver_sha256,preimage_sha256=hashlib.sha256(preimage).hexdigest(),
-                    config_sha256=hashlib.sha256(raw).hexdigest())
                 try:
                     claim_observer_repair(receipt_path,receipt)
                 except FileExistsError:
