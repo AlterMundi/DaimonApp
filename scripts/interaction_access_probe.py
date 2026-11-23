@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 import json
 import re
+import secrets
 import signal
 import time
 import urllib.error
@@ -53,13 +54,17 @@ def read_response(opener, url, accept, limit):
     return status, media, body
 
 
-def read_probe_response(opener, url, accept, limit, deadline, *, prefix_only=False):
+def read_probe_response(opener, url, accept, limit, deadline, *, prefix_only=False, synthetic_session=False):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError
     headers = {"Accept": accept, "Cache-Control": "no-cache"}
     if prefix_only:
         headers["Range"] = f"bytes=0-{limit - 1}"
+    if synthetic_session:
+        # An unissued token exercises the App-to-Home path. Never read or
+        # send existing credentials, and never follow a redirect with it.
+        headers["Cookie"] = "__Host-home=" + secrets.token_urlsafe(32)
     request = urllib.request.Request(url, headers=headers)
     try:
         response = opener.open(request, timeout=min(5, remaining))
@@ -89,9 +94,10 @@ def entry_ready(opener, origin, body, deadline):
 
 
 def sign_in_ready(opener, origin, deadline):
-    def read(path, expected_status):
+    def read(path, expected_status, *, synthetic_session=False):
         status, media, body, _ = read_probe_response(
-            opener, origin + path, "application/json", 4096, deadline)
+            opener, origin + path, "application/json", 4096, deadline,
+            synthetic_session=synthetic_session)
         if status != expected_status or media != "application/json" or len(body) > 4096:
             return {}
         try:
@@ -108,6 +114,9 @@ def sign_in_ready(opener, origin, deadline):
     identity = read("/access/identity", 401)
     if identity.get("detail") != "human_browser_required":
         return "identity_unavailable"
+    rejected = read(ACCESS, 401, synthetic_session=True)
+    if rejected.get("detail") != "Sign in to your conversation":
+        return "app_identity_unavailable"
     return "ready"
 
 
