@@ -820,7 +820,17 @@ window.Conversation = (() => {
 
     const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
-    const composerNotice=(text,attention=true)=>{sendState.textContent=text;sendState.setAttribute('data-attention',String(attention));};
+    const sendFeedback = $("#conversation-send-feedback");
+    const composerDismiss = $("#conversation-send-dismiss");
+    let noticeId, noticeAttention=false;
+    function composerNotice(text,attention=true){
+      if(noticeId!==latestComposerId || sendState.textContent!==text)sendFeedback.hidden=false;
+      noticeId=latestComposerId;
+      noticeAttention=attention&&!!text;
+      if(sendState.textContent!==text)sendState.textContent=text;
+      sendState.setAttribute('data-attention',String(attention));
+      syncComposerRecovery();
+    }
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     const inputNotice=value=>composerNotice(phaseText(value),savedWaiting(value) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
@@ -921,7 +931,12 @@ window.Conversation = (() => {
       const checkable=value&&(savedWaiting(value)||!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
       composerCheck.hidden=readOnly||posting||!checkable||value.binding!==binding;
       composerCheck.disabled=!!card?.checking;
+      composerDismiss.hidden=readOnly||(!noticeAttention&&composerCheck.hidden);
     }
+    composerDismiss.addEventListener('click',()=>{
+      sendFeedback.hidden=true;
+      send.focus?.({preventScroll:true});
+    });
     composerCheck?.addEventListener('click',async()=>{
       const card=inputs.get(latestComposerId);
       if(!card||posting||card.value.binding!==binding||card.checking)return;
