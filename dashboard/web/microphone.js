@@ -117,13 +117,16 @@ window.VoiceInput = (() => {
             !item.foreground_dialogue||item.foreground_dialogue!==value.foreground_dialogue)throw Error('Original review changed');
         item.native_review=true;storeRecords(store,items);
       }),
-      reconnect:(values,binding)=>operation('readwrite',(store,old)=>{
+      reconnect:(values,binding,conversation=false)=>operation('readwrite',(store,old)=>{
         const items=records(old);
         if(items.some(v=>v.binding!==binding))throw Error('Reconnect recovery binding changed');
         for(const value of values){
           const item=items.find(v=>v.id===value.id);
-          if(!item||!item.foreground_dialogue||item.foreground_dialogue!==value.foreground_dialogue||
-              item.binding!==value.binding||item.audio_sha256!==value.audio_sha256||!value.audio_sha256)throw Error('Reconnect recording changed');
+          if(!item||item.binding!==value.binding||item.audio_sha256!==value.audio_sha256||!value.audio_sha256)throw Error('Reconnect recording changed');
+          const eligible=conversation
+            ?item.transcriptionProfile==='openai-live'&&!item.foreground_dialogue&&!item.submissionRequested&&!item.uncertainSubmission
+            :item.foreground_dialogue&&item.foreground_dialogue===value.foreground_dialogue;
+          if(!eligible)throw Error('Reconnect recording changed');
           item.reconnect_review=true; // Local review only; never a server receipt.
         }
         if(items.some(v=>v.native_review!==true&&v.reconnect_review!==true)||items.length>=128)throw Error('Review retained recordings before reconnecting');
@@ -534,9 +537,9 @@ window.VoiceInput = (() => {
       if(!recovery||original.binding!==getBinding())throw Error('Original review binding changed');
       await recovery.review(original);
     }
-    async function prepareReconnect(originals){
+    async function prepareReconnect(originals,conversation=false){
       if(!recovery||originals.some(v=>v.binding!==getBinding()))throw Error('Reconnect recording binding changed');
-      await recovery.reconnect(originals,getBinding());recoveryFree=true;
+      await recovery.reconnect(originals,getBinding(),conversation);recoveryFree=true;
     }
     async function releaseContinuous(original,hash){
       if(original.binding!==getBinding()||original.audio_sha256!==hash)throw Error('Original confirmation changed');

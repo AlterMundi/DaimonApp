@@ -1641,3 +1641,13 @@ for the visit, retains unfinished recordings, and uses the existing
 Conversation playback and interruption path. Recognized words can interrupt
 playback only while the detector confirms speech. The speech-only route
 does not identify the speaker.
+
+
+After a connection or capture pause, **Reconnect voice** starts a distinct
+foreground capture on the same Conversation. A finished, unsent recording
+remains in local review with its original identity and bytes; reconnect
+never submits it. A recording still being saved or with unconfirmed
+submission remains in the existing review flow. Reconnect requires the
+same Conversation binding and does not silently switch speech profiles.
+Conversation voice does not show a per-recording countdown. The existing
+recording and foreground visit safety limits still apply.
