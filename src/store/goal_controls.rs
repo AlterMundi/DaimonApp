@@ -294,6 +294,38 @@ pub(super) fn record_attempt_on(
     Ok(())
 }
 
+// The native CAS already checks the new clear's current precondition. A prior
+// partial edit can be passed only with a retained receipt for its exact
+// attempt proving the metadata committed and the activation never started.
+fn partial_edit_allows_clear(clear: &Value, old: &Value, result: &Value, retained: &Value) -> bool {
+    let edit = &old["plan"];
+    let receipt = &result["native_receipt"];
+    let Some(thread) = clear["target_binding"][2].as_str() else {
+        return false;
+    };
+    let Ok(snapshot) = serde_json::from_value::<NativeGoalSnapshot>(receipt.clone()) else {
+        return false;
+    };
+    clear["plan"]["action"] == "clear"
+        && clear["proposal"] == false
+        && clear["delegation"].is_null()
+        && clear["target_binding"] == old["target_binding"]
+        && clear["plan"]["expected"]["goal"]["threadId"] == thread
+        && edit["action"] == "edit"
+        && edit["followup"].is_null()
+        && edit["expected"]["goal"]["threadId"] == thread
+        && result == retained
+        && result["automatic_retry"] == false
+        && result["replacement_clear"].is_null()
+        && receipt["activation"] == json!({
+            "kind": "notStarted",
+            "reason": "Native activation not submitted: NotIdle"
+        })
+        && !snapshot.revision.is_empty()
+        && receipt["revision"] != edit["expected"]["revision"]
+        && snapshot.goal.is_some_and(|goal| goal.thread_id == thread)
+}
+
 pub(super) fn claim_on(
     conn: &Connection,
     instance: &str,
@@ -320,8 +352,33 @@ pub(super) fn claim_on(
         let value = read_on(conn, human, entry, id)?;
         return Ok((value, false));
     }
-    let conflict:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_goal_controls WHERE human_id=?1 AND target_chat=?2 AND target_topic=?3 AND phase IN ('submitted','uncertain','partial'))",params![human,d["target"]["chat_id"].as_i64(),d["target"]["thread_id"].as_i64()],|r|r.get(0))?;
-    if conflict {
+    let mut conflicts = conn.prepare(
+        "SELECT c.phase, c.doc, c.result, r.result
+         FROM interaction_goal_controls c LEFT JOIN goal_control_attempt_receipts r
+           ON r.control_id=c.id AND r.attempt=json_extract(c.doc,'$.attempt') AND r.phase=c.phase
+         WHERE c.human_id=?1 AND c.target_chat=?2 AND c.target_topic=?3
+           AND c.phase IN ('submitted','uncertain','partial')",
+    )?;
+    let mut rows = conflicts.query(params![
+        human,
+        d["target"]["chat_id"].as_i64(),
+        d["target"]["thread_id"].as_i64()
+    ])?;
+    while let Some(row) = rows.next()? {
+        let phase: String = row.get(0)?;
+        let result: Option<String> = row.get(2)?;
+        let retained: Option<String> = row.get(3)?;
+        if let ("partial", Some(result), Some(retained)) = (phase.as_str(), result, retained) {
+            let old: String = row.get(1)?;
+            if partial_edit_allows_clear(
+                d,
+                &serde_json::from_str(&old)?,
+                &serde_json::from_str(&result)?,
+                &serde_json::from_str(&retained)?,
+            ) {
+                continue;
+            }
+        }
         bail!("Target has an unconfirmed goal-control outcome; inspect it before another mutation");
     }
     let mut claimed = d.clone();
@@ -874,6 +931,35 @@ impl Store {
 #[cfg(test)]
 mod objective_repair_tests {
     use super::*;
+
+    #[test]
+    fn only_confirmed_unstarted_edit_allows_explicit_clear() {
+        let goal = json!({"threadId":"native-thread","objective":"Existing goal","status":"active",
+            "tokenBudget":100,"tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1});
+        let binding = json!(["entry",28,"native-thread","epoch"]);
+        let edit = json!({"target_binding":binding,"plan":{"action":"edit","followup":null,
+            "expected":{"goal":goal,"revision":"before"}}});
+        let clear = json!({"target_binding":binding,"proposal":false,"delegation":null,
+            "plan":{"action":"clear","expected":{"goal":goal,"revision":"current"}}});
+        let result = json!({"automatic_retry":false,"replacement_clear":null,"native_receipt":{
+            "goal":goal,"revision":"committed","activation":{"kind":"notStarted",
+                "reason":"Native activation not submitted: NotIdle"}}});
+        assert!(partial_edit_allows_clear(&clear, &edit, &result, &result));
+        let mut other = clear.clone();
+        other["plan"]["action"] = json!("edit");
+        assert!(!partial_edit_allows_clear(&other, &edit, &result, &result));
+        other = clear.clone();
+        other["target_binding"][3] = json!("wrong epoch");
+        assert!(!partial_edit_allows_clear(&other, &edit, &result, &result));
+        let mut unknown = result.clone();
+        unknown["native_receipt"]["activation"]["kind"] = json!("unknown");
+        assert!(!partial_edit_allows_clear(&clear, &edit, &unknown, &unknown));
+        assert!(!partial_edit_allows_clear(&clear, &edit, &result, &unknown));
+        unknown = result.clone();
+        unknown["native_receipt"]["revision"] = json!("before");
+        assert!(!partial_edit_allows_clear(&clear, &edit, &unknown, &unknown));
+        assert!(!partial_edit_allows_clear(&clear, &edit, &result, &Value::Null));
+    }
 
     #[test]
     fn unicode_limit_and_exact_effect_free_legacy_rejection() {
