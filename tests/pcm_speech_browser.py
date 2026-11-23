@@ -15,6 +15,7 @@ async def main():
         await page.goto('http://localhost/')
         for name in ('pcm-speech.js','speech-stream.js'):
             await page.add_script_tag(content=(ROOT/'dashboard/web'/name).read_text())
+        await page.evaluate('(source)=>window.fixturePcmSource=source',(ROOT/'dashboard/web/pcm-speech.js').read_text())
         result=await page.evaluate('''async()=>{
           const assert=(ok,text)=>{if(!ok)throw Error(text);};
           const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -51,7 +52,35 @@ async def main():
           const abort=new AbortController(),pending=SpeechStream.open(waiting,abort.signal);abort.abort();await pending.done;
           assert(closed,'Cancel did not close original stream');
           source.disconnect();for(const track of capture.getTracks())track.stop();await observed.close();
-          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:.4,cancellation:true,prepared_players_max:3,hardware_hearing:'not_observed'};
+          // Drive the scheduler clock deterministically after verifying the
+          // actual output graph. A late but still timely block must stay
+          // contiguous; a true underrun must retain its scheduling lead.
+          let clock=0;const starts=[],scheduled=[];
+          class FixtureContext {
+            get currentTime(){return clock;}
+            destination={};
+            async resume(){}
+            async suspend(){}
+            createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
+            createBuffer(_channels,count){return {getChannelData:()=>new Float32Array(count)};}
+            createBufferSource(){return {connect(){},disconnect(){},stop(){},start(at){starts.push(at);}};}
+          }
+          const NativeContext=window.AudioContext;
+          window.AudioContext=FixtureContext;
+          const id=setInterval;window.setInterval=fn=>{scheduled.push(fn);return 0;};
+          try{
+            const script=document.createElement('script');
+            script.textContent=window.fixturePcmSource;document.head.append(script);
+            const boundary=PcmSpeech.open(),block=new Uint8Array(4800);
+            boundary.append(block);await boundary.play();
+            clock=.130;boundary.append(block);
+            clock=.320;boundary.append(block);
+            assert(starts.length===3,'Expected exactly three scheduled blocks');
+            assert(Math.abs(starts[0]-.040)<.001 && Math.abs(starts[1]-.140)<.001,'A ready successor must not introduce a gap');
+            assert(Math.abs(starts[2]-.345)<.001,'Only a real underrun uses fresh lead time');
+            boundary.cancel();
+          }finally{window.AudioContext=NativeContext;window.setInterval=id;}
+          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:.4,cancellation:true,contiguous_pcm_boundary:true,prepared_players_max:3,hardware_hearing:'not_observed'};
         }''')
         print(json.dumps(result,indent=2));await browser.close()
 asyncio.run(main())
