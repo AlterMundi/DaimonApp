@@ -1583,3 +1583,8 @@ The return reader continues checking other owned delegations while the same
 actor and entry binding remain verified. A changed binding, unreadable visit,
 or uncertain provider append still stops the return lane. Do not retry a held
 append or treat a successful injection as playback.
+
+A valid browser close before the WebRTC offer ends the prepared visit and
+releases its app lease. The visit records the bounded browser reason and
+confirms startup ended without a provider creation or final usage claim.
+The browser keeps the local reason it already displayed.

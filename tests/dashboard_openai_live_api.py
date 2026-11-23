@@ -179,6 +179,28 @@ class Mounted(unittest.TestCase):
         install(app,config,self.owner,authorize,['https://example.test'])
         return app
 
+    def test_close_before_offer_releases_native_visit_without_provider_attempt(self):
+        with TestClient(self.renewal_app()) as client:
+            socket=lambda:client.websocket_connect('/api/interaction/voice/gpt-live',
+                headers={'origin':'https://example.test'})
+            with socket() as ws:
+                ws.send_json(self.meta)
+                self.prepared(ws)
+                ws.send_json({'type':'close','reason':'activation_failed'})
+                self.assertEqual(ws.receive_json(),{'type':'startup_ended','id':self.ident})
+                value=self.read()
+                self.assertEqual(value['state'],'not_created')
+                self.assertEqual(value['client_close_reason'],'activation_failed')
+                self.assertNotIn('startup_failure',value)
+                self.assertNotIn('request_sha256',value)
+                self.assertEqual(sum(c.creations for c in Client.instances),0)
+                self.ident=str(uuid.uuid4())
+                self.meta={**self.meta,'id':self.ident}
+                with socket() as retry:
+                    self.start(retry)
+                    self.close(retry)
+                self.assertEqual(sum(c.creations for c in Client.instances),1)
+
     def test_cold_native_entry_auth_failure_never_initializes(self):
         calls=[]
         self.owner.prepare_native_voice=lambda binding:calls.append(binding)
