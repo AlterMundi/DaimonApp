@@ -810,12 +810,13 @@ window.Conversation = (() => {
     const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
     const composerNotice=(text,attention=true)=>{sendState.textContent=text;sendState.setAttribute('data-attention',String(attention));};
-    const inputNotice=value=>composerNotice(phaseText(value),['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
+    const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
+    const inputNotice=value=>composerNotice(phaseText(value),savedWaiting(value) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
-      : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved; waiting to send.", queued:"Saved; waiting to send.",
+      : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Message saved. Waiting for Conversation to pick it up.", queued:"Message saved. Waiting for Conversation to pick it up.",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
           accepted:"Sent to your conversation. Work may continue.", matrix_requested:"Saved for the selected daimon; awaiting its authorized execution and reply.",
           reselection:"This attempt did not submit the message. Select the image again, then send.", answered:"Answer recorded for the selected question. Work may continue.",
@@ -897,8 +898,8 @@ window.Conversation = (() => {
     function syncComposerRecovery(){
       if(!composerCheck)return;
       const card=inputs.get(latestComposerId),value=card?.value;
-      const unconfirmed=value&&(!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
-      composerCheck.hidden=readOnly||posting||!unconfirmed||value.binding!==binding;
+      const checkable=value&&(savedWaiting(value)||!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
+      composerCheck.hidden=readOnly||posting||!checkable||value.binding!==binding;
       composerCheck.disabled=!!card?.checking;
     }
     composerCheck?.addEventListener('click',async()=>{

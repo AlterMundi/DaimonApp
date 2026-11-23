@@ -1316,7 +1316,7 @@ html[data-style-policy="authored"] .standalone-conversation #conversation-compos
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose:has(#conversation-voice-discard:not([hidden])) #conversation-send {grid-row:4;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-voice-discard {width:auto;min-width:100px;font-size:14px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose .native-share-offer {grid-column:1/-1;grid-row:5;}
-html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-send-check {grid-column:1/-1;grid-row:6;}
+html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-send-feedback {grid-row:6;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose #conversation-codex-recovery {grid-column:1/-1;grid-row:7;}
 html[data-style-policy="authored"] .standalone-conversation :is(button,a,summary):focus-visible {outline:2px solid var(--accent);outline-offset:3px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-message:focus-visible {outline:0;box-shadow:inset 2px 0 var(--accent);background:linear-gradient(90deg,#70def30a,transparent 55%);}
@@ -1357,6 +1357,10 @@ html[data-style-policy="authored"] .standalone-conversation .pending-carousel .p
 
 /* Notices float above the composer; changing text never resizes its input. */
 #conversation-compose {position:relative;}
+#conversation-send-feedback {grid-column:1/-1;line-height:1.4;font-size:14px;}
+#conversation-send-feedback:not(:has([data-attention="true"]:not(:empty),button:not([hidden]))) {display:none;}
+#conversation-send-feedback p {margin:4px 0;color:var(--ink);}
+#conversation-send-feedback button:not([hidden]) {margin-block:2px 4px;}
 #conversation-compose-notices {position:absolute;right:4px;bottom:calc(100% + 2px);z-index:12;}
 #conversation-compose-notices:not(:has([data-attention="true"]:not(:empty),#conversation-recording-review:not([hidden]),#conversation-codex-recovery:not([hidden]),#conversation-public-live-recovery:not([hidden]),#conversation-voice-remaining:not([hidden]))) {display:none;}
 #conversation-compose-notices>summary {list-style:none;display:flex;align-items:center;justify-content:center;gap:4px;width:44px;min-height:44px;cursor:pointer;color:var(--warn);font-size:14px;}
