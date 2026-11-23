@@ -423,14 +423,10 @@ python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_
 python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_ID --deny
 ```
 
-New explicit device enrollment also accepts `--workspace-access`. Selecting
-a session by name opens its messages in Conversation and pins the existing
-composer to that session. Back returns to the general timeline while keeping the
-pin. Selecting the general Conversation or clearing the pin restores its input
-destination. Raw is a separate toggle for the same session's technical history.
-The ordinary view shows messages with Conversation styling and suppresses native
-input envelopes. The exact session binding still governs reading and sending.
-Read-only monitors never gain this permission. It grants neither Sessions
+New explicit device enrollment also accepts `--workspace-access`. The
+[session workspace](interaction-session-workspace.md) keeps the conversation,
+input pin and Raw view within the same exact session binding. Read-only monitors
+never gain this permission. It grants neither Sessions
 administration, Stop/Resume nor funding controls. Expiry, actor and receiving
 binding checks continue to apply. Inventory reads recheck permission after I/O.
 
