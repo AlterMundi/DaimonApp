@@ -61,6 +61,23 @@
     if(id==='messaging' && caps.conditional_lane===true && caps.actions?.includes('set_lane_paused') && lane?.supported===true && typeof lane.paused==='boolean' && Number.isSafeInteger(lane.generation) && lane.generation>=0)return {action:'set_lane_paused',lane:'messaging',paused:!lane.paused,generation:lane.generation,global_generation:value.generation};
     return null;
   }
+  function reviewTasks(value) {
+    if(value?.schema!=='telecodex.heartbeat-control/v1' || value.lanes?.reports?.supported!==true)return [];
+    const review=value.producer?.finite_review;
+    if(!Array.isArray(review?.periodic_tasks))return [];
+    const labels=[
+      ['bitacora-intake','Bitácora'],
+      ['matrix-alerts','Matrix alerts'],
+      ['dmk-learning-health','Sleep · consolidation checks'],
+      ['sysops','Sysops'],
+    ];
+    return labels.map(([id,label])=>{
+      const selected=review.periodic_tasks.some(task=>task?.id===id && task.state==='selected');
+      const paused=value.admission_paused===true || value.lanes.reports.paused===true;
+      const status=!selected?'Not scheduled':paused?'Paused':review.state==='configured'?'Scheduled':'Checks unavailable';
+      return {label,status};
+    });
+  }
   function mount({api,authenticated,canControl=()=>true,root=document,clock=()=>Date.now()}) {
     const button=root.querySelector('#heartbeat-toggle'),menu=root.querySelector('#heartbeat-menu');
     if(!button || !menu)return;
@@ -88,6 +105,13 @@
           const status=root.createElement('span');status.textContent=paused?'Paused':'Enabled';row.append(status);
         }
         lanes.append(row);
+        if(id==='reports'){
+          for(const task of reviewTasks(value)){
+            const item=root.createElement('div'),name=root.createElement('span'),status=root.createElement('span');
+            name.textContent=task.label;status.textContent=task.status;
+            item.append(name,status);lanes.append(item);
+          }
+        }
       }
       position();
     }
@@ -134,5 +158,5 @@
     window.visualViewport?.addEventListener('resize',position);window.visualViewport?.addEventListener('scroll',position);
     render(null);return {refresh,reset};
   }
-  window.InteractionHeartbeat={mount,state,action,observation,presentation};
+  window.InteractionHeartbeat={mount,state,action,observation,presentation,reviewTasks};
 })();

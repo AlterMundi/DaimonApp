@@ -800,3 +800,10 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+The heart's Scheduled reviews section shows the known purposes in its live
+owner-console status: Bitácora, Matrix alerts, Sleep consolidation checks and
+Sysops. “Scheduled” means selected on configured Reports; it is not proof of
+execution. Sleep shows the check, not the underlying consolidation worker.
+An absent selection is displayed as “Not scheduled” only when the server has
+supplied the actual periodic task list. These rows add no controls.
