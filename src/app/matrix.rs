@@ -1,7 +1,7 @@
 //! Retained cross-body requests and explicitly configured technical submission.
 //! This path neither starts receiving inference nor runs a Matrix inbox consumer.
 use super::*;
-use crate::interaction::MatrixDestination;
+use crate::{interaction::MatrixDestination, store::MatrixInboxReadFailure as InboxFailure};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -468,28 +468,31 @@ pub(super) async fn read_inbox(
     crate::store::MatrixInboxSelection,
     crate::store::MatrixInboxPage,
 )> {
-    let cfg = super::routing::profile(&app.shared)?;
+    let cfg =
+        super::routing::profile(&app.shared).context(InboxFailure::OwnerSelectionUnavailable)?;
     anyhow::ensure!(
         cfg.human_id == human && cfg.entry() == entry,
-        "Inbox integrating owner differs"
+        InboxFailure::OwnerSelectionUnavailable
     );
-    inbox_matches(&cfg, source)?;
-    let selected = app.shared.store.matrix_inbox_selection(
-        human,
-        entry,
-        source.source.clone(),
-        &source.channel_id,
-    )?;
+    inbox_matches(&cfg, source).context(InboxFailure::OwnerSelectionUnavailable)?;
+    let selected = app
+        .shared
+        .store
+        .matrix_inbox_selection(human, entry, source.source.clone(), &source.channel_id)
+        .context(InboxFailure::OwnerSelectionUnavailable)?;
     let input = json!({"source":selected.owner,"channel_id":selected.channel,"after":selected.after,"limit":3});
     let raw = host_command_mode(
         cfg.matrix_transport
             .as_ref()
-            .context("Inbox host unavailable")?,
+            .context(InboxFailure::OwnerSelectionUnavailable)?,
         &input,
         Some("--inbox"),
     )
     .await?;
-    Ok((selected, serde_json::from_value(raw)?))
+    Ok((
+        selected,
+        serde_json::from_value(raw).context(InboxFailure::InvalidAdapterResponse)?,
+    ))
 }
 
 pub(super) async fn refresh_heartbeat_response_receipt(
@@ -608,9 +611,7 @@ async fn host_command_mode(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .context("Configured Matrix host unavailable")?;
+    let mut child = command.spawn().context(InboxFailure::AdapterUnavailable)?;
     let group = OwnedMatrixCommand(child.id().context("Missing Matrix host process")?);
     let mut stdin = child.stdin.take().context("Missing Matrix host input")?;
     let mut stdout = child
@@ -630,16 +631,24 @@ async fn host_command_mode(
             stdout.read_to_end(&mut output).await?;
             Ok::<_, std::io::Error>(())
         };
-        tokio::try_join!(write, read)?;
-        if output.len() > 65536 || !child.wait().await?.success() {
-            bail!("Matrix host outcome unconfirmed");
+        tokio::try_join!(write, read).context(InboxFailure::AdapterOutcomeUnconfirmed)?;
+        if output.len() > 65536 {
+            bail!(InboxFailure::InvalidAdapterResponse);
         }
-        Ok(serde_json::from_slice(&output)?)
+        if !child
+            .wait()
+            .await
+            .context(InboxFailure::AdapterOutcomeUnconfirmed)?
+            .success()
+        {
+            bail!(InboxFailure::AdapterOutcomeUnconfirmed);
+        }
+        serde_json::from_slice(&output).context(InboxFailure::InvalidAdapterResponse)
     })
     .await;
     drop(group);
     let _ = child.wait().await;
-    result.context("Matrix host deadline expired; no automatic retry")?
+    result.context(InboxFailure::AdapterDeadline)?
 }
 
 #[cfg(not(unix))]
@@ -716,7 +725,11 @@ mod tests {
             native_funding_binding: None,
             native_host_restrictions: None,
         };
-        assert!(host_send(&config, &json!({}), &source).await.is_err());
+        let error = host_send(&config, &json!({}), &source).await.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<InboxFailure>(),
+            Some(&InboxFailure::AdapterDeadline)
+        );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         assert!(!marker.exists());
     }

@@ -115,6 +115,8 @@ struct CheckObservation {
     completed_at_unix_ms: Option<i64>,
     outcome: String,
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    matrix_inbox_failure: Option<crate::store::MatrixInboxReadFailure>,
 }
 
 /// Most recent failed authenticated Matrix inbox observation and its first
@@ -1166,6 +1168,7 @@ impl Store {
             completed_at_unix_ms: None,
             outcome: "in_progress".into(),
             error: None,
+            matrix_inbox_failure: None,
         });
         // A failed source read still consumes this finite observation. It must
         // not roll back the cadence/counter and spin on the same failure.
@@ -1252,24 +1255,41 @@ impl Store {
             return Ok(None);
         };
         let (human, entry, session) = (c.human, c.entry, c.session);
-        if let Some(source) = &c.matrix_inbox {
-            // Roll back all partial event/cursor writes before retaining a
-            // failed observation. The check/cadence remains consumed.
-            let retained = match read {
+        use crate::store::MatrixInboxReadFailure as InboxFailure;
+        let inbox_failure = if let Some(source) = &c.matrix_inbox {
+            // Roll back partial event/cursor writes before keeping the failed
+            // observation. Retain only typed evidence, never raw adapter errors.
+            let failure = match read {
                 Some(Ok((selected, page))) if selected.belongs(human, entry, source) => {
                     let savepoint = tx.savepoint()?;
-                    match super::super::matrix::inbox::retain_on(&savepoint, &selected, page) {
-                        Ok(_) => {
-                            savepoint.commit()?;
-                            true
-                        }
-                        Err(_) => false,
+                    if super::super::matrix::inbox::retain_on(&savepoint, &selected, page).is_ok() {
+                        savepoint.commit()?;
+                        None
+                    } else {
+                        Some(InboxFailure::LocalPageUnretained)
                     }
                 }
-                _ => false,
+                Some(Ok(_)) => Some(InboxFailure::OwnerSelectionUnavailable),
+                Some(Err(error)) => Some(
+                    error
+                        .downcast_ref::<InboxFailure>()
+                        .copied()
+                        .unwrap_or(InboxFailure::Unknown),
+                ),
+                None => Some(InboxFailure::Unknown),
             };
-            p.inbox_state = Some(if retained { "available" } else { "unavailable" }.into());
-        }
+            p.inbox_state = Some(
+                if failure.is_some() {
+                    "unavailable"
+                } else {
+                    "available"
+                }
+                .into(),
+            );
+            failure
+        } else {
+            None
+        };
         // Reports are observed even while native work is busy. Retain one
         // known-unsent metadata batch; the existing idle recovery owns dispatch.
         let mut report_offers =
@@ -1301,6 +1321,7 @@ impl Store {
             }
             .into();
             observation.error = error.clone();
+            observation.matrix_inbox_failure = inbox_failure;
             if c.matrix_inbox.is_some() {
                 if observation.error.as_deref() == Some("matrix_inbox_unavailable") {
                     p.matrix_inbox_recovery = Some(MatrixInboxRecovery {
@@ -3062,7 +3083,10 @@ mod inbox_tests {
         assert!(
             s.heartbeat_finish_check(
                 &c,
-                Some(Err(anyhow::anyhow!("synthetic source unavailable"))),
+                Some(Err(anyhow::anyhow!("synthetic source unavailable")
+                    .context(
+                        crate::store::MatrixInboxReadFailure::AdapterDeadline
+                    ))),
             )
             .unwrap()
             .is_none()
@@ -3074,6 +3098,10 @@ mod inbox_tests {
             "matrix_inbox_unavailable"
         );
         assert_eq!(&failed["producer"]["last_success_at_unix_ms"], last_success);
+        assert_eq!(
+            failed["producer"]["last_check"]["matrix_inbox_failure"],
+            "adapter_deadline"
+        );
         assert!(!failed.to_string().contains("synthetic source unavailable"));
         assert_eq!(
             failed["producer"]["matrix_inbox_recovery"]["failure"],
@@ -3106,9 +3134,11 @@ mod inbox_tests {
         let recovery = &status["producer"]["matrix_inbox_recovery"];
         assert_eq!(recovery["failure"]["sequence"], 3);
         assert_eq!(recovery["failure"]["error"], "matrix_inbox_unavailable");
+        assert_eq!(recovery["failure"]["matrix_inbox_failure"], "unknown");
         assert_eq!(recovery["recovery"]["sequence"], 4);
         assert_eq!(recovery["recovery"]["outcome"], "succeeded");
         assert!(recovery["recovery"]["error"].is_null());
+        assert!(recovery["recovery"].get("matrix_inbox_failure").is_none());
         assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert!(status["producer"]["last_check"]["error"].is_null());
         assert!(

@@ -140,10 +140,13 @@ The owner status also retains `producer.matrix_inbox_recovery`, the most recent
 failed Matrix inbox check and the first subsequent successful authenticated read.
 It survives later successful checks, other lanes, and restarts of the same
 producer. It retains the original activation and times for both observations.
-A later failure replaces this pair. The typed failure does not distinguish a
-broken reader from a network disconnection, and the first successful read does
-not prove recipient delivery or model execution. This evidence consumes no
-additional check or model turn.
+A later failure replaces this pair. New failures also retain the bounded
+`matrix_inbox_failure` stage for local owner selection, adapter startup,
+deadline, unconfirmed adapter outcome, malformed adapter response, or a page
+that could not be retained. Older failed observations may omit it. The stage
+does not identify a network root cause or include adapter exception text.
+The first successful read is source recovery evidence. Recipient delivery and
+model execution have separate receipts. This evidence uses the existing check.
 
 The owner can independently renew an expired observation deadline:
 
