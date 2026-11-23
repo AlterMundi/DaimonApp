@@ -13,7 +13,7 @@ function boot(fail){
  const contexts=[],sockets=[],worklets=[],timers=[];
  class Node{constructor(){this.links=[];this.disconnected=false;}connect(to){if(fail==='connect')throw Error('Preview connect unavailable');this.links.push(to);}disconnect(){this.disconnected=true;}}
  class Context{
-  constructor(){this.destination={};this.closed=false;this.audioWorklet={addModule:async path=>{assert.equal(path,'assets/voice-pcm.js');if(fail==='module')throw Error('Module unavailable');}};contexts.push(this);}
+  constructor(){this.destination={};this.closed=false;this.audioWorklet={addModule:async path=>{assert.equal(path,'assets/voice-pcm.js');if(fail==='module')throw Error('Module unavailable');if(fail==='module-stalled')await new Promise(()=>{});}};contexts.push(this);}
   createMediaStreamSource(media){assert.equal(media.kind,'synthetic-media');this.source=new Node();return this.source;}
   createBiquadFilter(){if(fail==='filter')throw Error('Graph unavailable');this.filter=new Node();this.filter.frequency={value:0};return this.filter;}
   createGain(){this.mute=new Node();this.mute.gain={value:1};return this.mute;}
@@ -37,6 +37,15 @@ function boot(fail){
  return {window,contexts,sockets,worklets,timers,captions,events,async create(canonicalRecorder,options={}){const recorder=await window.StreamingVoice.create({kind:'synthetic-media'},{id:uuid,binding,canonicalRecorder,headers:()=>({'X-Dashboard-CSRF':'synthetic-csrf',Authorization:'Bearer synthetic-session'}),onPartial:value=>captions.push(value),...options});recorder.addEventListener('dataavailable',e=>events.push({type:'data',data:e.data}));recorder.addEventListener('stop',()=>events.push({type:'stop'}));return recorder;}};
 }
 (async()=>{
+ const stalledModule=boot('module-stalled'),stalledModuleOpening=stalledModule.create();
+ assert.equal(stalledModule.sockets.length,0);
+ const deadline=stalledModule.timers.find(t=>t.ms===6000&&!t.cleared);
+ assert(deadline,'A hung browser worklet must have a bounded startup');
+ deadline.fn();
+ await assert.rejects(stalledModuleOpening,/Audio capture is still unavailable/);
+ assert(stalledModule.contexts[0].closed);
+ assert.equal(stalledModule.sockets.length,0,'Audio startup failure opens no transcription connection');
+
  // Resampling counts and cross-block continuity at common mobile capture rates.
  for(const rate of [16000,44100,48000]){
   const run=step=>{const w=worklet(rate);for(let i=0;i<rate;i+=step){const size=Math.min(step,rate-i),block=Float32Array.from({length:size},(_,j)=>Math.sin((i+j)*2*Math.PI*230/rate));assert.equal(w.processor.process([[block]]),true);}w.processor.port.onmessage({data:'finish'});assert.equal(w.processor.process([[new Float32Array(128)]]),false);assert(w.messages.at(-1).finished);return Buffer.concat(w.messages.filter(m=>m.pcm).map(m=>Buffer.from(m.pcm)));};
