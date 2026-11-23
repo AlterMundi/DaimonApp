@@ -75,10 +75,12 @@ def reconsider_queued_steer(binary):
     class RecoveringSteer(Inputs):
         refused = None
         mismatched = None
+        held_refusals = frozenset()
 
         def handle_extra_rpc(self, message, send):
             params = message.get('params', {})
-            if message.get('method') == 'turn/steer' and params.get('clientUserMessageId') == self.refused:
+            selected = params.get('clientUserMessageId')
+            if message.get('method') == 'turn/steer' and (selected == self.refused or selected in self.held_refusals):
                 self.refused = None
                 self.packets.append(('turn/steer', params))
                 send({'id': message['id'], 'error': {'code': -32602, 'message': 'Synthetic definitive refusal'}})
@@ -128,7 +130,29 @@ def reconsider_queued_steer(binary):
         journey.finish(journey.web_thread, active)
         journey.idle()
         assert sum(method == 'turn/start' for method, _ in journey.packets) == 1
-        print('PASS definitively refused older input is steered before later input exactly once, and the stale turn entry is skipped')
+
+        # The next native turn itself triggers reconsideration, even without
+        # another inbound message once the original floor closes.
+        second, _ = journey.submit(binding, 'Hold a second native turn open.')
+        journey.wait(lambda: phase(second['id']) == 'accepted')
+        before = journey.web_turn
+        first_queued, next_queued = str(uuid.uuid4()), str(uuid.uuid4())
+        journey.held_refusals = {'conversation:' + ident for ident in (first_queued, next_queued)}
+        journey.submit(binding, 'An earlier input ready for the next turn.', first_queued)
+        journey.wait(lambda: phase(first_queued) == 'queued')
+        journey.submit(binding, 'Another saved input ready for reconsideration.', next_queued)
+        journey.wait(lambda: phase(first_queued) == phase(next_queued) == 'queued')
+        journey.held_refusals = frozenset()
+        journey.finish(journey.web_thread, before)
+        journey.wait(lambda: phase(first_queued) == phase(next_queued) == 'accepted')
+        assert journey.web_turn != before
+        assert any(method == 'turn/steer' and packet.get('expectedTurnId') == journey.web_turn
+                   and packet['clientUserMessageId'] in {'conversation:' + first_queued, 'conversation:' + next_queued}
+                   for method, packet in journey.packets)
+        assert sum(packet['clientUserMessageId'] == journey.mismatched for _, packet in journey.packets) == 1
+        journey.finish(journey.web_thread, journey.web_turn)
+        journey.idle()
+        print('PASS queued steer after a later arrival and a new native turn; stale queue entries and unknown acknowledgements cause no replay')
     finally:
         journey.close()
 
