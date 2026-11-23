@@ -22,7 +22,11 @@ the menu shows the last source-check outcome/time and the previous successful
 source-check time after a failure. Different or unconfirmed global/lane generations are labeled.
 An unfinished source check states that completion was not observed; it does not
 claim that an old process is still running. These source timestamps never prove
-native action, reply delivery or current operational readiness.
+native action, reply delivery or current operational readiness. Reports and
+other lanes leave the preceding Messaging observation available to the existing
+readiness check. Its loop, generation and freshness constraints still apply.
+A newer Messaging check supersedes it, including when it fails or is still
+running.
 
 Selected per-body receiving state belongs in the owning current service record.
 An older backend without conditional capabilities leaves control rows disabled
