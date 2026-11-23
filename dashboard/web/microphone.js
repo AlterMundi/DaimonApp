@@ -37,7 +37,7 @@ window.VoiceInput = (() => {
       if(!old)return [];
       if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)){
         if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(!old.schema.endsWith('/v5')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
-        if(old.items.some(v=>v.avatarInterrupt!==undefined&&(!old.schema.endsWith('/v8')||v.avatarInterrupt!==true||v.transcriptionProfile!=='openai-live'||v.dictation||v.foreground_dialogue)))throw Error('Interruption recovery is malformed');
+        if(old.items.some(v=>v.avatarInterrupt!==undefined&&(!old.schema.endsWith('/v8')||v.avatarInterrupt!==true||v.transcriptionProfile!=='openai-live'||v.dictation||v.foreground_dialogue||v.captureStop)))throw Error('Interruption recovery is malformed');
         for(const item of old.items.filter(v=>v.dictation)){
           const d=item.dictation;
           if(!['telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
@@ -99,7 +99,7 @@ window.VoiceInput = (() => {
       put:(value,parallel=false)=>{
         const {blob,...meta}=value;
         if(value.native_fragment===true&&(key!=='codex_voice'||!value.fragment_group||!Number.isSafeInteger(value.fragment_offset)))return Promise.reject(Error('Invalid native recording fragment'));
-        if(value.avatarInterrupt!==undefined&&(value.avatarInterrupt!==true||value.transcriptionProfile!=='openai-live'||value.dictation||value.foreground_dialogue))return Promise.reject(Error('Invalid interruption recording'));
+        if(value.avatarInterrupt!==undefined&&(value.avatarInterrupt!==true||value.transcriptionProfile!=='openai-live'||value.dictation||value.foreground_dialogue||value.captureStop))return Promise.reject(Error('Invalid interruption recording'));
         if(!blob || blob.size>20*1024*1024 || new Blob([JSON.stringify(meta)]).size>65536)return Promise.reject(Error('Recording recovery limit reached'));
         return operation('readwrite',(store,old,other)=>{
           const items=records(old),index=items.findIndex(v=>v.id===value.id);
@@ -422,7 +422,7 @@ window.VoiceInput = (() => {
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
             'X-Audio-Sha256':frozen.audio_sha256,'X-Foreground-Dialogue':frozen.foreground_dialogue,
             ...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{})},body:frozen.blob
-        }):await fetch(route+(frozen.captureStop&&!frozen.avatarInterrupt?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
+        }):await fetch(route+(frozen.captureStop?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),...(frozen.reply?{'X-Reply-Source':(frozen.reply.context_only?'context:':'')+frozen.reply.source,'X-Reply-Revision':frozen.reply.revision}:{}),...(frozen.visual?{'X-Visual-Reference':JSON.stringify(frozen.visual)}:{}),...(frozen.playback?{'X-Playback-Context':JSON.stringify(frozen.playback)}:{}),...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{}),...(frozen.captureStop?{'X-Recording-Stop':frozen.captureStop}:{}),...(frozen.files?.length?{'X-File-References':encodeURIComponent(JSON.stringify(frozen.files))}:{}),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,'X-Audio-Sha256':frozen.audio_sha256},body:frozen.blob});
         const value=await response.json();
         if(!response.ok){const error=new Error('Recording not confirmed');error.status=response.status;if(response.status===507)error.retentionFull=true;if(value.code==='visual_reselection'&&value.submission_attempted===false)error.visualReselection=true;throw error;}

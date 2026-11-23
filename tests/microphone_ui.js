@@ -529,7 +529,8 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  await until(()=>interruptMic.ui.canStartContinuous());
  interruptMic.ui.continuousOwner(true);
  const interruptOriginal={id:crypto.randomUUID(),binding:'original-binding',transcriptionProfile:'openai-live',
-  avatarInterrupt:true,captureStop:'duration_limit',mime:'audio/wav',blob:new Blob(['same captured original'])};
+  avatarInterrupt:true,mime:'audio/wav',blob:new Blob(['same captured original'])};
+ await assert.rejects(()=>interruptMic.ui.retainContinuous({...interruptOriginal,captureStop:'duration_limit'}),/Invalid interruption recording/);
  await interruptMic.ui.retainContinuous({...interruptOriginal,avatarInterrupt:undefined});
  assert.equal(interruptStore.values.get('pending').schema,'telecodex.voice-recovery/v6');
  const interrupted=await interruptMic.ui.retainContinuous(interruptOriginal);
@@ -540,7 +541,6 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  const preparing=await interruptMic.ui.commitContinuous(interrupted);
  assert(preparing.confirmed);
  assert.equal(interruptMic.uploads.at(-1).route,'api/interaction/voice/openai-live/interrupt');
- assert.equal(interruptMic.uploads.at(-1).headers['X-Recording-Stop'],'duration_limit');
  assert.equal(interruptStore.values.get('pending').items[0].id,interrupted.id,'Preparing receipt must preserve the local original');
  interruptMic.ui.observe({...preparing.value,phase:'accepted',voice:{...preparing.value.voice,audio_sha256:'other'}});
  await new Promise(yes=>setTimeout(yes,5));
