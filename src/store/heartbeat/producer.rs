@@ -1171,6 +1171,67 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(check_on(&conn, c)?.is_some())
     }
+    /// Claim the one daily fixed Cluster operation on a still-current Reports check.
+    /// Persist before dispatch. An ambiguous handoff does not authorize another start.
+    pub(crate) fn heartbeat_claim_sysops(&self, c: &Check) -> Result<Option<String>> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if c.activation.lane != HeartbeatLane::Reports || check_on(&tx, c)?.is_none() {
+            return Ok(None);
+        }
+        let day = Utc::now().date_naive().to_string();
+        let key = format!("heartbeat_sysops:{}:{}", c.human, c.session);
+        let claimed = tx.execute(
+            "INSERT INTO bot_state(key,value) VALUES(?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value
+             WHERE substr(bot_state.value,1,10)<excluded.value",
+            params![key, day],
+        )?;
+        tx.commit()?;
+        Ok((claimed == 1).then_some(day))
+    }
+
+    pub(crate) fn heartbeat_sysops_dispatch(&self, c: &Check, day: &str, ack: bool) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let outcome = if ack {
+            "dispatch_acknowledged"
+        } else {
+            "dispatch_unconfirmed"
+        };
+        conn.execute(
+            "UPDATE bot_state SET value=?3 WHERE key=?1 AND value=?2",
+            params![
+                format!("heartbeat_sysops:{}:{}", c.human, c.session),
+                day,
+                format!("{day}:{outcome}")
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn heartbeat_sysops_status(&self, human: i64, entry: SessionKey) -> Result<Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, _) = crate::store::presentation::entry_on(&conn, human, entry)?;
+        let receipt: Option<String> = conn
+            .query_row(
+                "SELECT value FROM bot_state WHERE key=?1",
+                [format!("heartbeat_sysops:{human}:{session}")],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(
+            match receipt
+                .as_deref()
+                .map(|r| r.split_once(':').unwrap_or((r, "dispatch_unconfirmed")))
+            {
+                None => json!({"state":"scheduled"}),
+                Some((day, state)) => {
+                    json!({"state":"scheduled","last_occurrence_utc":day,"dispatch":state})
+                }
+            },
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn heartbeat_finish_check(
         &self,
@@ -1519,6 +1580,70 @@ mod inbox_tests {
             .unwrap();
         (f, s, e, source)
     }
+    #[test]
+    fn preventive_sysops_claim_is_reports_only_paused_and_retained() {
+        let (file, s, entry, _) = setup();
+        let messaging = s.heartbeat_begin_check(100, entry).unwrap().unwrap();
+        assert!(s.heartbeat_claim_sysops(&messaging).unwrap().is_none());
+        {
+            let conn = s.conn.lock().unwrap();
+            let mut parent = load(&conn, 100, messaging.session).unwrap().unwrap();
+            parent.contract.matrix_inbox = None;
+            parent
+                .contract
+                .reports
+                .push(super::super::HeartbeatReportSource {
+                    id: "existing-report".into(),
+                    path: "/unused-for-claim.json".into(),
+                    pointers: vec!["/state".into()],
+                });
+            save(&conn, &parent).unwrap();
+        }
+        due(&s, entry);
+        let reports = s.heartbeat_begin_check(100, entry).unwrap().unwrap();
+        assert_eq!(reports.activation.lane, HeartbeatLane::Reports);
+        s.heartbeat_control(
+            100,
+            entry,
+            H::PauseLane {
+                lane: HeartbeatLane::Reports,
+            },
+        )
+        .unwrap();
+        assert!(s.heartbeat_claim_sysops(&reports).unwrap().is_none());
+        let status = s.heartbeat_control(100, entry, H::Status).unwrap();
+        let generation = status["lanes"]["reports"]["generation"].as_u64().unwrap();
+        s.heartbeat_control(
+            100,
+            entry,
+            H::ResumeLane {
+                lane: HeartbeatLane::Reports,
+                generation,
+            },
+        )
+        .unwrap();
+        due(&s, entry);
+        let reports = s.heartbeat_begin_check(100, entry).unwrap().unwrap();
+        let day = s.heartbeat_claim_sysops(&reports).unwrap().unwrap();
+        assert_eq!(
+            s.heartbeat_sysops_status(100, entry).unwrap()["dispatch"],
+            "dispatch_unconfirmed"
+        );
+        assert!(s.heartbeat_claim_sysops(&reports).unwrap().is_none());
+        s.heartbeat_sysops_dispatch(&reports, &day, true).unwrap();
+        drop(s);
+        let reopened = Store::open(file.path(), &[100], &crate::store::tests::defaults()).unwrap();
+        assert_eq!(
+            reopened.heartbeat_sysops_status(100, entry).unwrap()["dispatch"],
+            "dispatch_acknowledged"
+        );
+        assert!(reopened.heartbeat_claim_sysops(&reports).unwrap().is_none());
+        assert_eq!(
+            reopened.heartbeat_control(100, entry, H::Status).unwrap()["resources"]["reserved_provider_attempts"],
+            0
+        );
+    }
+
     #[test]
     fn owner_resume_recovers_only_exact_proved_unsubmitted_refusals() {
         for invalid in [

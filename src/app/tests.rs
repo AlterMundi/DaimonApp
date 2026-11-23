@@ -292,6 +292,7 @@ impl Drop for CodexHomeGuard {
 
 fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
     Config {
+        heartbeat_preventive_sysops: false,
         goal_recovery: crate::config::GoalRecoveryConfig::default(),
         voice: None,
         interaction: None,

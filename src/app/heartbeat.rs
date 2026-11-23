@@ -96,6 +96,9 @@ pub(super) async fn execute(
     value["executions"] =
         serde_json::to_value(app.shared.store.heartbeat_executions(human, entry, false)?)?;
     value["cancellation_observations"] = serde_json::to_value(observations)?;
+    if app.shared.config.heartbeat_preventive_sysops {
+        value["sysops"] = app.shared.store.heartbeat_sysops_status(human, entry)?;
+    }
     readiness::annotate(app, human, entry, &mut value).await;
     Ok(value)
 }
@@ -326,6 +329,11 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     else {
         return Ok(());
     };
+    if app.shared.config.heartbeat_preventive_sysops
+        && let Err(error) = dispatch_sysops(app, &check).await
+    {
+        tracing::warn!(%error, "Fixed Sysops admission remains unconfirmed");
+    }
     let read = if let Some(source) = &check.matrix_inbox {
         if !app.shared.store.heartbeat_check_current(&check)? {
             return Ok(());
@@ -391,6 +399,37 @@ pub(super) async fn tick(app: &App) -> Result<()> {
         );
         super::goals::attach_active(app, cfg.human_id, &args).await?;
     }
+    Ok(())
+}
+
+async fn dispatch_sysops(app: &App, check: &crate::store::HeartbeatCheck) -> Result<()> {
+    if app.shared.shutdown.is_cancelled() {
+        return Ok(());
+    }
+    let Some(day) = app.shared.store.heartbeat_claim_sysops(check)? else {
+        return Ok(());
+    };
+    // Only this known unit can be admitted. No report, model, or native input
+    // supplies arguments. The owning finite Cluster job retains its own effects.
+    let start = tokio::process::Command::new("/usr/bin/systemctl")
+        .args([
+            "--user",
+            "start",
+            "--no-block",
+            "daimon-cluster-preventive-sysops.service",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    let ack = tokio::time::timeout(std::time::Duration::from_secs(5), start)
+        .await
+        .is_ok_and(|result| result.is_ok_and(|status| status.success()));
+    app.shared
+        .store
+        .heartbeat_sysops_dispatch(check, &day, ack)?;
+    anyhow::ensure!(ack, "Cluster service start acknowledgement unavailable");
     Ok(())
 }
 
