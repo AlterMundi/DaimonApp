@@ -1569,3 +1569,11 @@ original, interrupting its owner, or treating a spoken acknowledgment as
 evidence a lookup is running. Fresh startup context is bounded, so an older
 fact may need an explicit same-conversation lookup even when the app can show
 the older message in history.
+
+Send empty `session.thinking.append` immediately for each trusted native
+client delegation, using its original delegation ID. This is GPT-Live's quiet
+acknowledgment while the backend works. The voice visit records the intent
+before sending and correlates only its exact provider acknowledgment. An
+unconfirmed send is never retried. Source seals, native submission, the actual
+answer, and hearing remain separate. Quiet progress does not expedite a
+native turn that is already queued.
