@@ -18,9 +18,7 @@ def _current_context_message(context):
     text=('These are source windows of our same general conversation across text and voice, not another being or conversation. '
         'Current native conversation and retained source windows read for this voice entry. '
         'Each window preserves its own source chronology and timestamps. '
-        'Merge this with the earlier voice continuity by source chronology, not by input-message order. '
-        'A freshly read native item may predate the last voice conversation: keep that voice context when it '
-        'is newer. When the integrator advanced after voice, use those newer advances and corrections. '
+        'Use source chronology and the newest corrections, including when changing between text and voice. '
         'Integrating sources include originals and '
         'canonical returns not yet incorporated into the native history. Preserve original capture order, newer '
         'corrections and the current topic; '
@@ -102,9 +100,9 @@ class PublicLiveSessionContext:
             await asyncio.to_thread(self.history.context_phase,record,'closing')
         return await self.producer.resume_context(ident,on_preparing=notice,recheck=recheck)
 
-    async def prepare(self,spec,*,notice=None,recheck=None):
+    async def prepare(self,spec,*,notice=None,recheck=None,prior_visit_context=True):
         value=await asyncio.to_thread(self.visits.read,self.visit,self.human,self.frozen)
-        previous=value.get('native_continuation_from')
+        previous=value.get('native_continuation_from') if prior_visit_context else None
         chain=[];seen={self.visit};parent=previous
         for _ in range(self.max_ancestors):
             if parent is None:break

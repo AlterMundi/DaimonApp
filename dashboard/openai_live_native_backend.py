@@ -267,7 +267,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
     return None
 
 
-def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None):
+def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None,prior_visit_context=True):
     """One owned foreground task alternates current work and historical origins.
 
     Discovery and native reads stay outside the browser-control loop. The
@@ -281,13 +281,13 @@ def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,
     ready=[key for key,work in value['delegations'].items()
            if work.get('native_work',{}).get('state')=='observed']
     previous=None
-    if not ready or cycle%2:
+    if prior_visit_context and (not ready or cycle%2):
         previous=history.native_return_origin(ident,human,owner)
     if stopped is not None and stopped.is_set():return None
     if previous:
         return return_one_native_part(history,ident,human,owner,previous['delegation'],provider,
                                       sideband,stopped=stopped,source_visit=previous['visit'])
     if ready:
-        return return_one_native_part(history,ident,human,owner,ready[(cycle//2)%len(ready)],
+        return return_one_native_part(history,ident,human,owner,ready[(cycle//2 if prior_visit_context else cycle)%len(ready)],
                                       provider,sideband,stopped=stopped)
     return None

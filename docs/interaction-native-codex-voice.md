@@ -1533,3 +1533,13 @@ activation to start one new call with a fresh identity. The server takes the
 existing owner lease and rechecks the exact predecessor revision. An uncertain
 creation, stale offer or rejected admission never triggers another automatic
 attempt. The previous audio, work and unconfirmed final usage remain recorded.
+
+For a receiver that wants Avatar to use the current integrating conversation's
+native model and effort, select `openai_live.backend_mode = "native"` with
+`default_native = true`. Remove the unused Responses backend model, tools,
+options and separate Responses context reader. Delegated reasoning follows the
+existing native conversation's selection on each turn. GPT-Live still provides
+the audio transport. With `prior_visit_context = false`, startup sends the
+current integrating context, without the previous physical visit's transcript
+or automatic delivery of earlier visits' results into the new voice session.
+Original recordings, transcripts and delivered native work remain readable.

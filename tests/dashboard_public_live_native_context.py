@@ -165,6 +165,26 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.visits.read(current,100,self.frozen)['native_context_seed']['resume'],opens[0]['resume'])
         await context.close()
 
+    async def test_integrator_only_start_does_not_seed_previous_voice_visit(self):
+        self.prepare()
+        old=self.dialogue
+        self.event('Unrelated previous voice topic')
+        self.visits.observe_closed(old,100,self.frozen,{'type':'session.closed','event_id':'closed',
+            'reason':'close_requested','session':{'id':'live:synthetic'}})
+        current=str(uuid.uuid4())
+        self.visits.prepare(current,100,self.frozen,backend_mode='native')
+        context=PublicLiveSessionContext(self.history,self.visits,self.provider,100,current,self.frozen,self.owner)
+        prepared=await context.prepare({'model':'gpt-live-1','instructions':'Synthetic owner identity',
+            'delegation':{'type':'client'}},prior_visit_context=False)
+        startup=json.dumps(prepared['input'])
+        self.assertIn('Latest integrator correction: Saturday.',startup)
+        self.assertNotIn('Unrelated previous voice topic',startup)
+        self.assertEqual(len(prepared['input']),1)
+        self.assertIsNone(self.visits.read(current,100,self.frozen)['native_context_seed']['resume'])
+        self.assertEqual(self.visits.source_page(old,100,self.binding)['items'][0]['event']['delta'],
+                         'Unrelated previous voice topic')
+        await context.close()
+
     async def retained_scope_fixture(self):
         context,_=await self.active_context();self.event('Exact retained correction: Friday.')
         self.history.retain(100,self.dialogue,self.binding,str(uuid.uuid4()),'Retained canonical reply.',
