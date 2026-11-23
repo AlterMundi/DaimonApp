@@ -995,6 +995,22 @@ window.Conversation = (() => {
         finally{more.disabled=false;}
       });
     }
+    const avatarVoiceAdmissions = new Map();
+    function updateAvatarAdmission(value, track = false) {
+      if (voiceChoice !== 'conversation' || !voiceMode?.active || value.binding !== undefined && value.binding !== binding
+          || (!track && !avatarVoiceAdmissions.has(value.id))) return;
+      const phase = value.routing?.phase || value.phase;
+      if (value.retired || ['accepted','answered','cancelled','rejected'].includes(phase))
+        avatarVoiceAdmissions.delete(value.id);
+      else {
+        const waiting = ['retained','queued','preparing','sending','steering','submitting'].includes(phase);
+        avatarVoiceAdmissions.set(value.id, waiting ? 'waiting' : 'review');
+        if(avatarVoiceAdmissions.size > 128)avatarVoiceAdmissions.delete(avatarVoiceAdmissions.keys().next().value);
+      }
+      const outcomes = [...avatarVoiceAdmissions.values()];
+      voiceMode.update({admissionNotice:outcomes.includes('review') ? 'Check your recording in Conversation.'
+        :outcomes.includes('waiting') ? 'Recording saved. Waiting for Conversation.' : ''});
+    }
     function inputCard(value, observed = ++inputObservation) {
       timing?.input(value);
       const followingLive=atTimelineEnd();
@@ -1107,7 +1123,8 @@ window.Conversation = (() => {
         renderInputText(card);
         card.status.textContent = phaseText(card.value);
         microphone?.observe(card.value,phaseText(card.value));
-      taskControls?.observeInput?.(card.value);
+        updateAvatarAdmission(card.value);
+        taskControls?.observeInput?.(card.value);
         renderRetry(card);
         if (card.value.id === latestComposerId) inputNotice(card.value);
         renderRoute(card);graph?.input(card.value);inputActivity();return card;
@@ -1139,6 +1156,7 @@ window.Conversation = (() => {
       renderInputText(card);
       card.status.textContent = phaseText(card.value);
       microphone?.observe(card.value,phaseText(card.value));
+      updateAvatarAdmission(card.value);
       if(card.value.phase && card.value.focusVersion===focusVersion)clearFocus();
       if (card.value.id === latestComposerId) inputNotice(card.value);
       renderRetry(card);
@@ -2410,6 +2428,9 @@ window.Conversation = (() => {
       prepareReconnect:originals=>microphone.prepareReconnect(originals,true),
       getPlayback:()=>playbackContext(true),retain:original=>microphone.retainContinuous(original),commit:original=>microphone.commitContinuous(original),
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);if(stage==='handoff')voiceMode?.update({handoff:{...detail,id}});},
+      onSent:(value,sourceBinding)=>{
+        if(sourceBinding===binding)updateAvatarAdmission(inputs.get(value.id)?.value || value,true);
+      },
       onReview:originals=>{void microphone.reviewContinuous(originals);},
       onState:value=>{
         if(!voiceModePrevious?.continuous)return;
@@ -2532,6 +2553,7 @@ window.Conversation = (() => {
       portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation'))),
       canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation')):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
+        avatarVoiceAdmissions.clear();
         if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};
         if(continuousEnabled)microphone.continuousOwner(true);
@@ -2548,6 +2570,7 @@ window.Conversation = (() => {
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:({returnToText=false}={})=>{
+        avatarVoiceAdmissions.clear();
         const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration;
         let held;
         if(direct){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}

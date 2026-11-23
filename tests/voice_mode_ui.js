@@ -58,6 +58,11 @@ assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textConten
 direct.mode.update({continuousState:{playback:'idle',audioPaused:false,audioEnabled:true}});
 assert.equal(direct.nodes.find(n=>n.className==='voice-mode-state').textContent,'Recording needs review','Partial audio state cannot clear retained review');
 assert.match(direct.nodes.find(n=>n.className==='voice-mode-caption').textContent,/Voice analysis stopped/);
+direct.mode.update({admissionNotice:'Recording saved. Waiting for Conversation.'});
+const admission=direct.nodes.find(n=>n.id==='voice-mode-admission');
+assert(!admission.hidden);assert.match(admission.textContent,/Waiting for Conversation/);
+direct.mode.update({caption:'Next phrase'});assert(!admission.hidden,'Listening does not clear waiting original');
+direct.mode.update({admissionNotice:''});assert(admission.hidden);
 const badge=direct.nodes.find(n=>n.className==='voice-mode-detection');
 direct.mode.update({handoff:{id:'first',gate:'waiting_speech',captured_ms:37000,analyzed_ms:6200,words:true}});
 assert.equal(badge.textContent,'Waiting for speech','A detector snapshot cannot assert that the microphone is active');assert(!badge.textContent.includes('analysis'));assert.equal(badge.dataset.warning,'false');assert.equal(badge.hidden,false);

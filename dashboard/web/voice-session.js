@@ -156,7 +156,7 @@ window.ContinuousConversation=(()=>{
           try{
             const result=await commit(slot.original);
             if(!result?.confirmed||result.value?.id!==slot.id||result.value?.voice?.audio_sha256!==slot.original.audio_sha256){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording confirmation is missing. Check its status before retrying.');review();return;}
-            handoff(slot,'confirmed');slots.delete(slot.id);onSent(result.value);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
+            handoff(slot,transcriptionProvider==='openai'&&result.value.phase!=='accepted'?'foreground_saved':'confirmed');slots.delete(slot.id);onSent(result.value,slot.original.binding);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
           }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording unconfirmed. Your originals are kept.');review();return;}
         }
       }finally{dispatching=false;}
