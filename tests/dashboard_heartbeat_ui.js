@@ -94,7 +94,11 @@ assert.deepEqual(Array.from(reviewTasks(reports), row=>[row.label,row.status]),[
 ]);
 assert.equal(reviewTasks({...reports,admission_paused:true})[0].status,'Paused');
 assert.equal(reviewTasks({...reports,lanes:{reports:{supported:true,paused:true}}})[0].status,'Paused');
-assert.equal(reviewTasks({...reports,producer:{finite_review:{state:'expired',periodic_tasks:[
+assert.equal(reviewTasks({...reports,producer:{finite_review:{state:'configured',periodic_tasks:[
   {id:'sysops',state:'selected'},
-]}}})[3].status,'Checks unavailable');
+]}}})[3].status,'Not scheduled');
+const fixedSysops={...reports,sysops:{state:'scheduled',dispatch:'dispatch_acknowledged'}};
+assert.equal(reviewTasks(fixedSysops)[3].status,'Scheduled');
+assert.equal(reviewTasks({...fixedSysops,admission_paused:true})[3].status,'Paused');
+assert.equal(reviewTasks({...fixedSysops,producer:{finite_review:{state:'expired',periodic_tasks:[]}}})[3].status,'Checks unavailable');
 assert.equal(reviewTasks({...reports,producer:{}}).length,0);

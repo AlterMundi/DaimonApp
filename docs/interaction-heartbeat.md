@@ -805,5 +805,7 @@ The heart's Scheduled reviews section shows the known purposes in its live
 owner-console status: Bitácora, Matrix alerts, Sleep consolidation checks and
 Sysops. “Scheduled” means selected on configured Reports; it is not proof of
 execution. Sleep shows the check, not the underlying consolidation worker.
+Sysops uses the fixed operation status from the listener; an unrelated
+model-reviewed task with the same label does not schedule that operation.
 An absent selection is displayed as “Not scheduled” only when the server has
 supplied the actual periodic task list. These rows add no controls.

@@ -72,7 +72,8 @@
       ['sysops','Sysops'],
     ];
     return labels.map(([id,label])=>{
-      const selected=review.periodic_tasks.some(task=>task?.id===id && task.state==='selected');
+      const selected=id==='sysops'?value.sysops?.state==='scheduled':
+        review.periodic_tasks.some(task=>task?.id===id && task.state==='selected');
       const paused=value.admission_paused===true || value.lanes.reports.paused===true;
       const status=!selected?'Not scheduled':paused?'Paused':review.state==='configured'?'Scheduled':'Checks unavailable';
       return {label,status};
