@@ -27,10 +27,11 @@ native action, reply delivery or current operational readiness.
 Selected per-body receiving state belongs in the owning current service record.
 An older backend without conditional capabilities leaves control rows disabled
 with explanations; a compatible selected backend enables the explicit controls
-below. Configuration never activates resources. Messaging is the initial lane;
-Issues, Sensory, Tasks and Bitácora remain unsupported/off until separately
-qualified. Missing operational proof keeps the pulse unavailable, independently
-of whether conditional controls are supported.
+below. Configuration never activates resources. Messaging and Reports have
+separate lane states. Bitácora and the sleep health check are scheduled purposes
+within Reports. The menu reads their selections and the fixed Sysops schedule
+from the receiver. Missing operational proof keeps the pulse unavailable,
+independently of whether conditional controls are supported.
 
 Matrix owns the shared generation-aware global/lane control contract and receiving
 activation. Once selected, the App can bind those actual commands and observed
