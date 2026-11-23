@@ -33,8 +33,10 @@ argument with the process executable's resolved identity and qualified digest;
 conditionally replace that actual argument, rather than searching the unit for
 the resolved target pathname. Keep source-manifest cache exclusions identical at
 preparation and selection: ordinary `__pycache__`/`.pyc` files do not change the
-qualified package, while every selected source/asset must still match. Retain
-failed preflight receipts and use a separate known-unsent continuation. After a
+qualified package, while every selected source/asset must still match. A
+web-only overlay must preserve the replaced asset's owner and mode. Read the
+qualified bytes as the actual web service user before selecting the overlay.
+Retain failed preflight receipts and use a separate known-unsent continuation. After a
 selection times out during observation, inspect that original installed outcome;
 never rerun selection just to obtain a successful verifier exit.
 
