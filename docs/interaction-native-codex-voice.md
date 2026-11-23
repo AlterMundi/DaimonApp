@@ -1651,3 +1651,10 @@ submission remains in the existing review flow. Reconnect requires the
 same Conversation binding and does not silently switch speech profiles.
 Conversation voice does not show a per-recording countdown. The existing
 recording and foreground visit safety limits still apply.
+
+
+A truncated or invalid progressive speech stream holds the rest of that
+reply for explicit playback. The reader retains the verified playback
+position and continues with already queued independent replies; it does
+not automatically synthesize the failed part again or skip over it within
+the same reply. Text stays visible and input admission is independent.

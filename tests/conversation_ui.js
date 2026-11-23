@@ -220,7 +220,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},reconnect(){if(hooks.canReconnect())return hooks.onReconnect();},resumeAudio(){hooks.onResumeAudio?.();},close(options){if(!this.active)return;this.active=false;hooks.onLeave(options);}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
-    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
+    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(fn){this.transportError=fn;}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
   }};
   if(options.liveSpeech)vm.runInContext(fs.readFileSync("dashboard/web/live-speech.js", "utf8"), context);
   if(options.timingEvents)context.window.ConversationTiming={mount:()=>Object.fromEntries(["bind","mark","input","source","pauseApplied"].map(name=>[name,(...args)=>options.timingEvents.push([name,...args])]))};
@@ -1284,6 +1284,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.match(outage.nodes.get('#conversation-state').textContent,/Synthetic TTS outage|replies available/);
   outage.clock.fire(450);await until(()=>outage.audioCalls.length===2&&!outage.nodes.get('#conversation-audio').paused);
   assert.equal(outage.audioCalls[1].source,'native:10','A failed TTS segment cannot strand the next independent reply');outage.ui.stop();
+
+  const truncated=boot(false,true,{clock:true,incremental:true,progressive:true,followStorage:new Map()});
+  truncated.audio();truncated.replyTexts.set('native:9','A retained sentence. '.repeat(45));await truncated.ui.refresh();
+  truncated.nodes.get('#conversation-voice-replies').handlers.click();truncated.addReplies(2);await truncated.ui.refresh();
+  const truncatedPlayer=truncated.nodes.get('#conversation-audio');
+  await until(()=>truncated.audioCalls.length===2&&!truncatedPlayer.paused&&!truncatedPlayer.muted);
+  const [badStream,failedTail]=truncated.streamedTransports;
+  badStream.transportError(new Error('EOF before confirmation'));
+  assert(failedTail.signal.aborted,'The unread tail of the failed reply cannot overtake its missing audio');
+  assert(truncatedPlayer.paused);
+  await until(()=>truncated.clock.pending().includes(450));truncated.clock.fire(450);
+  await until(()=>truncated.audioCalls.some(call=>call.source==='native:10')&&!truncatedPlayer.paused&&!truncatedPlayer.muted);
+  badStream.transportError(new Error('Late duplicate notification'));
+  assert.equal(truncatedPlayer.paused,false,'A stale failure cannot stop a new reply');
+  assert.deepEqual(truncated.audioCalls.filter(call=>call.source==='native:9').map(call=>call.offset),[0,120]);
+  assert.equal(truncated.nativePosts.length,0,'Speech recovery never posts any input');truncated.ui.stop();
 
   const submittedClips=[],recordingId='same-recording';
   const dismissWhileRecording=boot(false,true,{capture:true,ownsVoice:true,voiceSubmit:()=>submittedClips.push(recordingId)});
