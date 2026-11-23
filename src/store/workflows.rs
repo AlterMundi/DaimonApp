@@ -16,6 +16,7 @@ pub(super) use native_returns::{
     transfer_collection_on as native_transfer_collection_on, visible_on as native_visible_on,
 };
 
+const MAX_ACTIVE_WORKFLOWS: i64 = 16;
 const MAX_RETAINED_WORKFLOWS: i64 = 256;
 const MAX_WORKFLOW_DOCUMENT_BYTES: usize = 256 * 1024;
 pub(crate) const WORKFLOW_CAPACITY_ERROR: &str = "Workflow journal capacity reached; retain existing history and finish or inspect current workflows";
@@ -50,14 +51,19 @@ pub(crate) fn rejection(error: &anyhow::Error) -> Option<Value> {
         "workflow_recovery_proof_missing" => {
             "This retained step lacks exact pre-submission evidence. Preserve its original identity and inspect the owning execution; accepted or uncertain effects must not be retried."
         }
+        "workflow_active_capacity" => {
+            "All active workflow slots are occupied for this conversation. Inspect the current plans and finish only work whose current result has been received and incorporated. This plan was not admitted. Once a slot opens, reuse its original input, request_id and unchanged plan."
+        }
         "workflow_selected" => {
             "This original already has attributed workflow work. Inspect the retained workflow. For genuinely additional authorized work, declare a separate bounded workflow with the same input_ref and its own stable request_id and scope; do not dispatch the entire original again or replay an existing subtask."
         }
         _ => return None,
     };
-    Some(
-        json!({"kind":"routing_rejected","code":e.code,"workflow":e.workflow,"admitted":false,"effect":"This call made no new workflow or native submission; earlier effects remain retained.","recovery":recovery}),
-    )
+    let mut value = json!({"kind":"routing_rejected","code":e.code,"workflow":e.workflow,"admitted":false,"effect":"This call made no new workflow or native submission; earlier effects remain retained.","recovery":recovery});
+    if e.code == "workflow_active_capacity" {
+        value["max_active_workflows"] = json!(MAX_ACTIVE_WORKFLOWS);
+    }
+    Some(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -823,8 +829,8 @@ impl Store {
             bail!("Workflow lifetime must be finite and at most seven days");
         }
         let count:i64=tx.query_row("SELECT count(*) FROM interaction_workflows WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND phase='active' AND julianday(json_extract(doc,'$.plan.expires_at'))>julianday('now')",params![human,entry.chat_id,entry.thread_id],|r|r.get(0))?;
-        if count >= 16 {
-            bail!("Active workflow bound reached");
+        if count >= MAX_ACTIVE_WORKFLOWS {
+            return Err(refusal("workflow_active_capacity", None));
         }
         for step in &plan.steps {
             owner_on(&tx, human, step.owner)?;
@@ -1572,6 +1578,50 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn active_workflow_capacity_returns_known_unsent_without_changing_existing_plans() {
+        let (_file, s, entry, plan) = setup();
+        let first = declare(&s, &entry, plan.clone());
+        for index in 1..MAX_ACTIVE_WORKFLOWS {
+            let mut other = plan.clone();
+            other.request_id = format!("work-{index}");
+            other.steps[0].scope = format!("Independent selected scope {index}");
+            other.steps[1].scope = format!("Verify selected scope {index}");
+            declare(&s, &entry, other);
+        }
+        let mut rejected = plan.clone();
+        rejected.request_id = "deferred-work".into();
+        rejected.steps.truncate(1);
+        rejected.steps[0].scope = "Retain the unsent diagnostic report".into();
+        let error = s
+            .interaction_workflow_declare(
+                100,
+                entry.key,
+                "native-1",
+                "conversation",
+                rejected,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+        let outcome = rejection(&error).unwrap();
+        assert_eq!(outcome["code"], "workflow_active_capacity");
+        assert_eq!(outcome["admitted"], false);
+        assert_eq!(outcome["max_active_workflows"], MAX_ACTIVE_WORKFLOWS);
+        assert_eq!(declare(&s, &entry, plan), first);
+        let conn = s.conn.lock().unwrap();
+        let retained: i64 = conn
+            .query_row("SELECT count(*) FROM interaction_workflows", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let submitted: i64 = conn
+            .query_row("SELECT count(*) FROM interaction_instructions", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!((retained, submitted), (MAX_ACTIVE_WORKFLOWS, 0));
+    }
+
     fn status(s: &Store, e: &SessionRecord, id: &str) -> Value {
         s.interaction_workflow_status(100, e.key, "native-1", id)
             .unwrap()
