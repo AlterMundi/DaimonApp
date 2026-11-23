@@ -750,7 +750,7 @@ window.Conversation = (() => {
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
       }else {
-        card.check.textContent="Check status / read message";
+        card.check.textContent="Check status";
         card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
       }
     }
@@ -1108,9 +1108,10 @@ window.Conversation = (() => {
             const result = await api(`interaction/inputs/${encodeURIComponent(value.id)}`);
             if (owned !== inputGeneration || inputs.get(value.id) !== card) return;
             inputCard(result, observation);
+            if(savedWaiting(card.value))status.textContent="Still in queue · waiting for a turn";
           } catch (e) {
             if (owned !== inputGeneration) return;
-            if (observation >= card.observed) status.textContent = phaseText(card.value) + " Status check unavailable; no resend was made.";
+            if (observation >= card.observed) status.textContent = phaseText(card.value) + " Status check unavailable.";
             if (e.status === 401 || e.status === 403) failed(e);
           } finally { card.checking=false;check.disabled = false;syncComposerRecovery(); }
         };
@@ -1198,7 +1199,9 @@ window.Conversation = (() => {
       const container = $("#conversation-inputs");
       const following = [...container.children].find(item => item !== card.box
         && Number(item.dataset.sequence) < Number(card.box.dataset.sequence));
-      card.box.dataset.replySource=card.value.reply?.source||"";card.box.dataset.replyRevision=card.value.reply?.revision||"";
+      const replySource=card.value.reply?.source||"",replyRevision=card.value.reply?.revision||"";
+      const replyChanged=card.box.dataset.replySource!==replySource||card.box.dataset.replyRevision!==replyRevision;
+      card.box.dataset.replySource=replySource;card.box.dataset.replyRevision=replyRevision;
       if(timeline){
         const original=cards.get(card.value.reply?.source)?.source;
         card.box.children[0].textContent=card.value.reply?`You · reply to ${original?.kind?.startsWith("integrator_")?"Conversation":original?.label||"earlier message"}`:"You";
@@ -1209,8 +1212,13 @@ window.Conversation = (() => {
         const next=[...container.children].find(item=>item!==card.trace&&Number(item.dataset.sequence)<Number(card.trace.dataset.sequence));
         container.insertBefore(card.trace,next||null);
       }
-      if(timeline)placeInTimeline(card.box,`input:${card.value.id}`,card.value.received_at || (card.value.origin_kind==="telegram"?"1970-01-01T00:00:00Z":undefined),followingLive);
-      else container.insertBefore(card.box, following || null);
+      if(timeline){
+        const received=card.value.received_at || (card.value.origin_kind==="telegram"?"1970-01-01T00:00:00Z":undefined);
+        if(card.box.parentNode!==timeline || card.timelineReceived!==received || replyChanged){
+          card.timelineReceived=received;
+          placeInTimeline(card.box,`input:${card.value.id}`,received,followingLive);
+        }else if(followingLive)timeline.scrollTop=timeline.scrollHeight;
+      }else container.insertBefore(card.box, following || null);
       card.box.dataset.inputId=card.value.id;textObserver?.observe(card.box);queueText(card);
       graph?.input(card.value);
       inputActivity();
@@ -2041,20 +2049,36 @@ window.Conversation = (() => {
       }
       return value;
     }
-    let refreshAgain = false, questionRefreshPending = false;
+    let refreshAgain = false, questionRefreshPending = false, inputRefresh;
+    function refreshSavedInputs() {
+      if(!binding)return;
+      if(inputRefresh)return inputRefresh;
+      const owned=inputGeneration;
+      inputRefresh=(async()=>{
+        try {
+          if(!inputBinding)await inputPage();
+          else {
+            let more=true;
+            for(let n=0;n<4 && more && owned===inputGeneration;n++){
+              const result=await inputPage(inputNewest,"after");
+              more=!!result?.more;
+            }
+            if(owned===inputGeneration)await inputPage(0,"before",false);
+          }
+        }catch(error){
+          if(owned===inputGeneration && [401,403].includes(error.status))failed(error);
+        }
+      })().finally(()=>{inputRefresh=undefined;});
+      return inputRefresh;
+    }
     async function refresh(force = false) {
+      if (!enabled || !ready || (!playbackAllowed() && !force)) return;
       if(reading){
         refreshAgain ||= force;
-        // Reuse the saved-status reader while a slow reply/question snapshot is
-        // in flight. Confirmation must not wait for a model's response to finish.
-        if(!readOnly&&!document.hidden)for(const card of [...inputs.values()].filter(card=>card.value.voice&&card.value.phase==="preparing"&&!card.value.retired&&!card.value.read_only).slice(0,2)){
-          card.confirmUntil ??= Date.now()+30000;
-          if(card.checking||(card.confirmChecks||0)>=4||Date.now()>card.confirmUntil||Date.now()<(card.confirmNextAt||0))continue;
-          card.confirmNextAt=Date.now()+2000;card.confirmChecks=(card.confirmChecks||0)+1;void card.checkStatus();
-        }
+        void refreshSavedInputs();
         return;
       }
-      if (!enabled || !ready || (!playbackAllowed() && !force)) return;
+      let saved=refreshSavedInputs();
       drainText();
       reading = true;questionRefreshPending=!readOnly;
       $("#conversation-refresh").disabled = true;
@@ -2074,6 +2098,9 @@ window.Conversation = (() => {
           }
           if (enabled && playbackAllowed()) await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before", false);
         }
+        // Saved input receipts and transcripts have their own bounded reader.
+        // Sound, questions and presentation must not hold their readback.
+        saved ||= refreshSavedInputs();
         void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input
         // history, Telegram and inspector reads do not gate useful playback.
@@ -2100,15 +2127,6 @@ window.Conversation = (() => {
         }
         $("#conversation-state").textContent = cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
           : "No replies yet. Work can continue while this view is closed.";
-        if (!inputBinding) await inputPage();
-        else {
-          let more = true;
-          for (let n=0; n<4 && more; n++) {
-            const result = await inputPage(inputNewest,"after"); more = !!result?.more;
-            if(n===3 && more)refreshAgain=true;
-          }
-          await inputPage(0,"before",false);
-        }
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
         void sound?.refresh({observeOnly:standalone || $("#conversation-diagnostics").open});
@@ -2124,6 +2142,7 @@ window.Conversation = (() => {
       finally { reading = false; $("#conversation-refresh").disabled = false; $("#conversation-older").disabled = false;
         if(refreshAgain){refreshAgain=false;setTimeout(()=>refresh(true),0);}
       }
+      await saved;
     }
 
     async function fallbackProgressive(selected,owned,position=audio.currentTime){

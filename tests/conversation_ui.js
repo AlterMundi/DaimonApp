@@ -1984,7 +1984,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   const lostRetry=findButton(lostRecovery.nodes.get('#conversation-inputs'),'Try again with #Alpha');await lostRetry.handlers.click();
   assert(lostRetry.disabled,'Unknown recovery response must require status before another action');
   await lostRetry.handlers.click();assert.equal(lostRecovery.recoveryPosts.length,1);
-  await findButton(lostRecovery.nodes.get('#conversation-inputs'),'Check status / read message').handlers.click();assert(lostRetry.hidden);assert.equal(lostRecovery.originals.size,1);lostRecovery.ui.stop();
+  await findButton(lostRecovery.nodes.get('#conversation-inputs'),'Check status').handlers.click();assert(lostRetry.hidden);assert.equal(lostRecovery.originals.size,1);lostRecovery.ui.stop();
   const readonlyRecovery=boot(true);seedRecovery(readonlyRecovery);await readonlyRecovery.ui.refresh();
   const deniedRetry=findButton(readonlyRecovery.nodes.get('#conversation-inputs'),'Try again with #Alpha');assert(deniedRetry.hidden);await deniedRetry.handlers.click();assert.equal(readonlyRecovery.recoveryPosts.length,0);readonlyRecovery.ui.stop();
 
@@ -2086,9 +2086,11 @@ function boot(readOnly=false,standalone=false,options={}) {
   let queuedWrites=0;
   const storeQueuedOriginal=composerState.originals.set.bind(composerState.originals);
   composerState.originals.set=(...args)=>{queuedWrites++;return storeQueuedOriginal(...args);};
+  await composerCard.children[2].children[0].handlers.click();
+  assert.equal(composerCard.children[1].textContent,"Still in queue · waiting for a turn");
   sent.phase="accepted";await composerCard.children[2].children[0].handlers.click();
   assert.match(composerState.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"Composer progress follows later native acceptance");
-  assert.equal(composerState.statusReads.length,1);
+  assert.equal(composerState.statusReads.length,2);
   assert.equal(queuedWrites,0,"Checking a queued original must not submit it again");
   assert.equal(queuedCheck.hidden,true);
   sent.phase="queued";await composerState.ui.refresh();
@@ -2153,37 +2155,24 @@ function boot(readOnly=false,standalone=false,options={}) {
   voiceHistory.originals.set("voice-original",{id:"voice-original",sequence:1,preview:"A finalized automatic transcript",phase:"accepted",voice:{audio_sha256:"a",transcription:{capture_id:"voice-original"}}});
   await voiceHistory.ui.refresh();
   assert.equal(voiceHistory.nodes.get("#conversation-inputs").children[0].children[0].textContent,"Automatic voice transcript:\nA finalized automatic transcript","Preparing empty text cannot hide the later history transcript preview");
-  // A slow response/question refresh must not keep a saved voice transcript in preparing.
+  // Text acknowledgements and committed mic transcripts must project even
+  // while a different read is blocked, without a status POST or extra reader.
   const confirming=boot();
   confirming.originals.set('confirmed-voice',{id:'confirmed-voice',sequence:1,text:'',phase:'preparing',voice:{audio_sha256:'owned'}});
+  confirming.originals.set('confirmed-text',{id:'confirmed-text',sequence:2,text:'Plain text original',phase:'queued'});
   await confirming.ui.refresh();
-  const slowQuestions=confirming.holdRequests(),slowRefresh=confirming.ui.refresh();await slowQuestions.entered;
+  const slowQuestions=confirming.holdRequests(),slowRefresh=confirming.ui.refresh();
+  await slowQuestions.entered;
   confirming.originals.set('confirmed-voice',{id:'confirmed-voice',sequence:1,text:'Already committed transcript',phase:'accepted',voice:{audio_sha256:'owned',transcription:{capture_id:'confirmed-voice'}}});
+  confirming.originals.set('confirmed-text',{id:'confirmed-text',sequence:2,text:'Plain text original',phase:'accepted'});
   try {
-    const statusHold=confirming.holdStatus();
-    await confirming.ui.refresh();await statusHold.entered;
-    await confirming.ui.refresh();assert.equal(confirming.statusReads.length,1,'One confirmation read at a time');
-    statusHold.release();
-    await until(()=>confirming.nodes.get('#conversation-inputs').children[0].children[0].textContent.includes('Already committed transcript'));
-    assert.equal(confirming.nativePosts.length,0,'Confirmation refresh must not submit native work');
-  } finally {slowQuestions.release();await slowRefresh;}
-  const lateConfirm=boot();
-  lateConfirm.originals.set('late-confirm',{id:'late-confirm',sequence:1,text:'',phase:'preparing',voice:{audio_sha256:'late'}});
-  await lateConfirm.ui.refresh();
-  const lateQuestions=lateConfirm.holdRequests(),lateRefresh=lateConfirm.ui.refresh();await lateQuestions.entered;
-  const lateStatus=lateConfirm.holdStatus();await lateConfirm.ui.refresh();await lateStatus.entered;
-  const oldInput=lateConfirm.holdInputs("before");lateQuestions.release();await oldInput.entered;
-  lateConfirm.originals.set('late-confirm',{id:'late-confirm',sequence:1,text:'Confirmed while a newer snapshot was stale',phase:'accepted',voice:{audio_sha256:'late',transcription:{capture_id:'late-confirm'}}});
-  oldInput.release();await lateRefresh;lateStatus.release();
-  await until(()=>lateConfirm.nodes.get('#conversation-inputs').children[0].children[0].textContent.includes('Confirmed while a newer snapshot was stale'));
-  const boundedOptions={confirmNow:Date.now()},boundedConfirm=boot(false,false,boundedOptions);
-  boundedConfirm.originals.set('still-preparing',{id:'still-preparing',sequence:1,text:'',phase:'preparing',voice:{audio_sha256:'bounded'}});
-  await boundedConfirm.ui.refresh();
-  const heldConfirm=boundedConfirm.holdRequests(),heldRefresh=boundedConfirm.ui.refresh();await heldConfirm.entered;
-  try {
-    for(let n=0;n<8;n++){await boundedConfirm.ui.refresh();await new Promise(setImmediate);if(n===0){await boundedConfirm.ui.refresh();assert.equal(boundedConfirm.statusReads.length,1,'Refresh bursts must not bypass confirmation pacing');}boundedOptions.confirmNow+=2000;}
-    assert.equal(boundedConfirm.statusReads.length,4,'Saved confirmation checks have a finite per-original budget');
-  } finally {heldConfirm.release();await heldRefresh;}
+    await confirming.ui.refresh();
+    await until(()=>confirming.nodes.get('#conversation-inputs').children.some(card=>card.children[0]?.textContent.includes('Already committed transcript')));
+    const textCard=confirming.nodes.get('#conversation-inputs').children.find(card=>card.children[0]?.textContent==='Plain text original');
+    assert.match(textCard.children[1].textContent,/Sent to your conversation/);
+    assert.equal(confirming.statusReads.length,0);
+    assert.equal(confirming.nativePosts.length,0);
+  } finally {slowQuestions.release();await slowRefresh;confirming.ui.stop();}
   const routed=boot();
   routed.originals.set("routing-original",{id:"routing-original",text:"#Unknown Work",sequence:1,phase:"awaiting_target"});
   await routed.ui.refresh();
