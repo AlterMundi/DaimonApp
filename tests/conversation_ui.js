@@ -491,7 +491,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     .find(card=>card.dataset.sourceId===`native:${n}`).children
     .find(child=>child.className==="reply-status").textContent;
   assert.equal(plainStatus(8),"Partly delivered");
-  assert.equal(plainStatus(7),"Sent","A sender copy does not count as recipient delivery");
+  assert.equal(plainStatus(7),"Sent · delivery unconfirmed","A sender copy does not count as recipient delivery");
   assert.equal(plainStatus(6),"Delivered");
   assert.equal(plainStatus(5),"Delivery not confirmed");
   deliveryCards.ui.stop();

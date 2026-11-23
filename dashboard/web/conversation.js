@@ -1867,7 +1867,7 @@ window.Conversation = (() => {
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
       card.status.textContent = visibility ? "Communication" : matrix ? (
         source.kind==="matrix_response" ? deliveryPhase==="recipient_copy_proved" ? "Delivered" :
-          partialDelivery ? "Partly delivered" : deliveryPhase==="submitted" ? "Sent" : "Delivery not confirmed" :
+          partialDelivery ? "Partly delivered" : deliveryPhase==="submitted" ? "Sent · delivery unconfirmed" : "Delivery not confirmed" :
           source.direction==="incoming" ? "Received" : "Message copy") : diagnosticStatus;
       if(matrix || visibility){
         if(!card.matrixDetails){
