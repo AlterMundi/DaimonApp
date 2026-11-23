@@ -48,6 +48,10 @@ resume a goal or replay a prompt. Paused/blocked goals and Stop/maintenance fenc
 remain intact. Routed secondary projection keeps its explicit opt-in; enabling
 direct durability does not enroll ordinary messages into the integrator.
 
+A startup notice about unfinished local collection leaves the original native
+execution and delivery outcomes unconfirmed. Inspect the retained native and
+delivery receipts for that original before retrying.
+
 First adoption atomically freezes pre-upgrade canonical item IDs so attaching
 to an existing writer cannot republish messages from its earlier presentation.
 Existing durable publication receipts retain their original outcomes.

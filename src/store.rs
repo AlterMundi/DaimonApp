@@ -304,7 +304,7 @@ impl Store {
         let interrupted_turns = conn.execute(
             "UPDATE turns
              SET status = 'failed',
-                 assistant_text = COALESCE(assistant_text, 'Telecodex restarted before this turn completed. Retry the request if it still matters.'),
+                 assistant_text = COALESCE(assistant_text, 'The listener restarted before local collection finished. Native execution and delivery are unconfirmed. Check the original outcome before retrying.'),
                  completed_at = ?1
              WHERE status = 'running' AND started_at < ?2",
             params![now, stale_cutoff],
@@ -2204,6 +2204,18 @@ mod tests {
             store.turn_status(turn_id).unwrap().as_deref(),
             Some("failed")
         );
+        let notice: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT assistant_text FROM turns WHERE id=?1",
+                params![turn_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(notice.contains("Native execution and delivery are unconfirmed."));
+        assert!(notice.contains("Check the original outcome before retrying."));
     }
 
     #[test]
