@@ -201,7 +201,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
   if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
-    context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);},release:id=>continuousCalls.push(['release',id])};}};
+    context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);return options.continuousHold?.();},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
       const driver=options.continuousDriver;
       context.window.crypto=context.crypto;
@@ -217,7 +217,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       const create=context.window.ContinuousConversation.create;
       context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession=create(hooks);}};
     }
-    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},resumeAudio(){hooks.onResumeAudio?.();},close(){if(!this.active)return;this.active=false;hooks.onLeave();}};}};
+    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},resumeAudio(){hooks.onResumeAudio?.();},close(options){if(!this.active)return;this.active=false;hooks.onLeave(options);}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
     const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
@@ -672,6 +672,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(direct.nativePosts.length,0,'Result playback cannot cancel or answer native work');
   await direct.ui.refresh();
   assert.equal(direct.audioCalls.length,interruptedCalls+1,'Repeated result observation cannot repeat speech or resume the interrupted old answer');
+  let settleExit;
+  const exitUI=boot(false,true,{...directOptions,continuousHold:()=>new Promise(resolve=>{settleExit=resolve;})});
+  exitUI.audio();await exitUI.ui.refresh();
+  const exit=exitUI.continuous(), exitDraft=exitUI.nodes.get('#conversation-message');
+  exitDraft.value='Keep this draft as voice closes';
+  exit.mode.open();
+  const forwardReads=()=>exitUI.requests.filter(v=>v.direction==='after').length;
+  let readsBefore=forwardReads();
+  exit.mode.close({returnToText:true});
+  await until(()=>forwardReads()>readsBefore);
+  readsBefore=forwardReads();
+  settleExit();
+  await until(()=>forwardReads()>readsBefore);
+  assert.equal(exitDraft.value,'Keep this draft as voice closes');
+  assert.equal(exitUI.nativePosts.length,0,'Both handoff observations are read-only');
+  exitUI.ui.stop();
   const floorDriver={},floorUI=boot(false,true,{capture:true,continuous:true,continuousDriver:floorDriver,immediateHash:true});
   floorUI.audio();await floorUI.ui.refresh();const floorBridge=floorUI.continuous();floorBridge.mode.open();await until(()=>floorDriver.ready);
   floorUI.addReplies(1);await floorUI.ui.refresh();const floorPlayer=floorUI.nodes.get('#conversation-audio');await until(()=>!floorPlayer.paused);
