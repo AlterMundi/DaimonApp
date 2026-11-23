@@ -501,7 +501,9 @@ with `--require-speech`. The existing fixed, same-actor requalification
 operator remains the command after `--`. This opt-in path compares the
 complete parsed configs with only `interaction.observer_model` excluded,
 pins the exact current file, requires the local serving voice fence and a
-known binding fault on the loopback access API, and runs the writer once.
+`receiver_binding_changed` fault on the loopback access API, and runs the writer
+once. An `alerts_binding_changed` fault belongs to its own reader and cannot
+select the observer-model writer.
 The writer verifies the already-held fence using
 `dashboard.voice_admission.inherited_maintenance(state_dir)` instead of
 opening a second lock. This reader rejects an unheld lock, an unrelated
@@ -521,5 +523,11 @@ exists and the writer did not run again. Read that receipt and the writer's
 own effects. An interrupted claim is unknown, even after a job restart.
 Keep one receipt per prepared transition, and retain it while its unit can
 still run or any associated effect is uncertain.
+Use `--observer-if-needed` in the pinned Sysops oneshot. A fresh expected
+anonymous refusal succeeds without claiming an attempt while the exact
+transition is still selected. After a repair, the same read succeeds only
+with the matching verified receipt and another healthy response. Unconfirmed
+receipts and recurring faults after a verified repair still require inspection
+and never launch the operator again. No user session is created by this check.
 An incident alone grants no write. Use the existing Alerts observer
 for a fresh public readback and separately retain real authenticated evidence.
