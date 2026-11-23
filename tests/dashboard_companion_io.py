@@ -214,9 +214,49 @@ class Companion(unittest.TestCase):
             with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
                 response=connection.return_value.getresponse.return_value
                 response.status=200;response.read.return_value=body
+                response.headers.get_content_type.return_value='application/json'
                 with self.assertRaises(OSError):
                     identity_response('https://home.example.test','h'*43)
                 connection.return_value.close.assert_called_once()
+
+    def test_shared_access_only_offers_sign_in_for_home_session_refusal(self):
+        self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
+        self.config['additional_origins']=['https://home.example.test']
+        self.client.close();self.client=self.client_for()
+        headers={'Host':'home.example.test','Cookie':'__Host-home='+'h'*43}
+        for raw_status, media, payload, expected in (
+            (401, 'application/json', b'{"detail":"human_browser_required"}', 401),
+            (401, 'application/json', b'{"detail":"upstream unavailable"}', 503),
+            (401, 'text/html', b'{"detail":"human_browser_required"}', 503),
+            (401, 'application/json', b'{', 503),
+            (401, 'application/json', b'{"detail":"human_browser_required"}' + b' ' * 8193, 503),
+            (503, 'application/json', b'{"detail":"human_browser_required"}', 503),
+        ):
+            with self.subTest(raw_status=raw_status, media=media, expected=expected), patch(
+                'dashboard.home_auth.http.client.HTTPSConnection'
+            ) as connection:
+                reply=connection.return_value.getresponse.return_value
+                reply.status=raw_status
+                reply.headers.get_content_type.return_value=media
+                reply.read.return_value=payload
+                response=self.client.get('/api/interaction/access',headers=headers)
+                self.assertEqual(response.status_code,expected,response.text)
+                if expected==503:
+                    self.assertEqual(response.json(),{'detail':'Shared authentication unavailable; retry shortly'})
+                connection.return_value.close.assert_called_once()
+        with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
+            reply=connection.return_value.getresponse.return_value
+            reply.status=200
+            reply.headers.get_content_type.return_value='application/json'
+            reply.read.return_value=json.dumps({
+                'contract':'dm.home-session/v1','origin':'https://home.example.test',
+                'expires':int(time.time())+3600,
+                'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'},
+            }).encode()
+            response=self.client.get('/api/interaction/access',headers=headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json()['actor_ref'],'human:telegram:100')
+            self.assertNotIn('h'*43,response.text)
 
     def test_shared_home_session_is_fileless_scoped_and_revalidated(self):
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
