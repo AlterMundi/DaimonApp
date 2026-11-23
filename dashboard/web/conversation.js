@@ -2092,14 +2092,23 @@ window.Conversation = (() => {
       const attempt=selected.fallbackPromise;
       try{return await attempt;}finally{if(selected.fallbackPromise===attempt)delete selected.fallbackPromise;}
     }
+    function stopFailedSpeech(selected,message){
+      if(active!==selected)return;
+      // An incomplete stream cannot establish a heard boundary. Hold the
+      // rest of this message for explicit playback and keep independent replies.
+      rememberSkipped(selected.source);
+      liveSpeech?.interrupt(selected.source);
+      for(let n=voiceQueue.length-1;n>=0;n--)if(sameMessage(voiceQueue[n],selected.source))removeQueued(n);
+      if(prefetched?.source&&!sameMessage(prefetched.source,selected.source))parkPrepared();
+      stop(message);
+      if(voiceEnabled && !voiceSuspended)void nextSpokenReply("reply",selected.source);
+    }
     async function audioDecodeFailed(selected=active){
       if(!selected || active!==selected)return;
       const owned=generation,position=audio.currentTime;
       if(await fallbackProgressive(selected,owned,position))return;
       if(active!==selected || generation!==owned)return;
-      liveSpeech?.interrupt(selected.source);
-      stop("Audio decoding stopped. Your text and playback position remain available.");
-      if(voiceEnabled && !voiceSuspended)nextSpokenReply("reply",selected.source);
+      stopFailedSpeech(selected,"Audio decoding stopped. Your text and playback position remain available.");
     }
     async function startPlayback() {
       const selected = active;
@@ -2283,7 +2292,7 @@ window.Conversation = (() => {
         if(active!==selected || generation!==owned)return;
         Object.assign(selected,metadata);
         blobUrl = selected.streaming?.url || URL.createObjectURL(blob);
-        selected.streaming?.onError(()=>{if(active===selected)stop("Speech stream ended. Your text remains available; no automatic retry.");});
+        selected.streaming?.onError(()=>stopFailedSpeech(selected,"This reply’s audio stopped. You can still read it or listen again."));
         selected.streaming?.onDecoderError?.(()=>{if(active===selected)void audioDecodeFailed(selected);});
         if(active!==selected)return;
         audio.src = blobUrl;
