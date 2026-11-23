@@ -2398,6 +2398,7 @@ window.Conversation = (() => {
     if(standalone&&!readOnly&&microphone)legacyVoiceSession=window.ContinuousConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
       getTranscriptionProvider:()=>voiceChoice==='conversation'?'openai':'current',
+      prepareReconnect:originals=>microphone.prepareReconnect(originals,true),
       getPlayback:()=>playbackContext(true),retain:original=>microphone.retainContinuous(original),commit:original=>microphone.commitContinuous(original),
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);if(stage==='handoff')voiceMode?.update({handoff:{...detail,id}});},
       onReview:originals=>{void microphone.reviewContinuous(originals);},
@@ -2530,8 +2531,11 @@ window.Conversation = (() => {
       onSpeak:({avatarEntry=false}={})=>voiceModePrevious?.continuous?
         (voiceSession===publicLiveSession?publicLiveSession?.start({avatarEntry}):voiceSession?.start()):
         microphone?.startConversation(),
-      canReconnect:()=>nativeEnabled,
-      onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous(voiceChoice==='conversation'))return voiceSession?.start();},
+      canReconnect:()=>nativeEnabled||voiceChoice==='conversation'&&!microphone.ownsSend()&&voiceSession?.canReconnect(),
+      onReconnect:()=>{
+        if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}
+        if(voiceChoice==='conversation'&&!microphone.ownsSend()&&voiceSession?.canReconnect())return voiceSession.reconnect();
+      },
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:({returnToText=false}={})=>{

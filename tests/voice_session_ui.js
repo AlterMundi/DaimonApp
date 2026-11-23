@@ -2,9 +2,9 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto').webcrypto;
 const tick=()=>new Promise(yes=>setImmediate(yes));
 const until=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(yes=>setTimeout(yes,5));}throw Error('Expected continuous voice transition');};
-const deferred=()=>{let resolve;return {promise:new Promise(yes=>resolve=yes),resolve};};
+const deferred=()=>{let resolve,reject;return {promise:new Promise((yes,no)=>{resolve=yes;reject=no;}),resolve,reject};};
 function boot(getTranscriptionProvider=()=> 'current'){
- const events={},timers=[],analyses=[],sources=[],recorders=[],medias=[],retained=[],commits=[],sent=[],reviews=[],states=[],captions=[],timings=[];
+ const events={},timers=[],analyses=[],sources=[],recorders=[],medias=[],retained=[],commits=[],sent=[],reviews=[],reconnects=[],states=[],captions=[],timings=[];
  let binding='a'.repeat(64),interrupts=0,permission,commitHold,retainHold,retentionCalls=0,questions={old:'v1'},playback={source:'synthetic-reply',position_millis:123};
  const document={hidden:false,addEventListener:(n,f)=>events[n]=f};
  const window={crypto,addEventListener:(n,f)=>events[n]=f,navigator:{mediaDevices:{async getUserMedia(options){
@@ -32,18 +32,20 @@ function boot(getTranscriptionProvider=()=> 'current'){
  };
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-session.js','utf8'),{window,document,AbortController,ArrayBuffer,JSON,Map,Promise,Infinity,setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.closed=true;}});
  const session=window.ContinuousConversation.create({headers:()=>({}),getBinding:()=>binding,getQuestions:()=>questions,getPlayback:()=>playback,getTranscriptionProvider,
+  async prepareReconnect(originals){reconnects.push(originals);},
   async retain(original){retentionCalls++;const v={...original,audio_sha256:Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex')};if(retainHold)await retainHold.promise;retained.push(v);return v;},
   async commit(original){commits.push(original);if(commitHold)return commitHold.promise;return {confirmed:true,value:{id:original.id,voice:{audio_sha256:original.audio_sha256}}};},
   onTiming:(id,stage,detail)=>timings.push({id,stage,detail}),onState:v=>states.push(v),onCaption:v=>captions.push(v),onInterrupt:()=>interrupts++,onSent:v=>sent.push(v),onReview:v=>reviews.push(v)
  });
  const activity=(generation,onset,endpoint)=>analyses.at(-1).emit({schema:'telecodex.turn-activity/v1',type:'activity',generation,audio_bytes:sources.at(-1).bytes,speech_seen:true,speaking:!endpoint,
   ...(onset?{onset:{generation,audio_bytes:sources.at(-1).bytes}}:{}),...(endpoint?{endpoint:{generation,audio_bytes:sources.at(-1).bytes,probability:.9,authority:'analysis_only'}}:{})});
- return {session,analyses,sources,recorders,medias,retained,commits,sent,reviews,states,captions,timings,document,events,timers,activity,interrupts:()=>interrupts,
+ return {session,analyses,sources,recorders,medias,retained,commits,sent,reviews,reconnects,states,captions,timings,document,events,timers,activity,interrupts:()=>interrupts,
   questions:v=>questions=v,playback:v=>playback=v,bind:v=>binding=v,permission:()=>{permission=deferred();return permission;},holdCommit:()=>{commitHold=deferred();return commitHold;},holdRetention:()=>{retainHold=deferred();return retainHold;},retentionCalls:()=>retentionCalls};
 }
 (async()=>{
  let preferred='openai';const direct=boot(()=>preferred);await direct.session.start();preferred='current';
  assert.equal(direct.analyses[0].options.transcriptionProvider,'openai');
+ assert.equal(direct.states.at(-1).remaining,undefined,'Conversation voice does not display its per-recording limit');
  assert.equal(direct.recorders[0].options.transcriptionProvider,'openai');
  direct.sources[0].emit(3200);direct.activity(1,true,false);
  assert.equal(direct.interrupts(),0,'Audio activity alone does not interrupt the canonical reply');
@@ -59,6 +61,29 @@ function boot(getTranscriptionProvider=()=> 'current'){
  noFinal.activity(1,true,false);noFinal.activity(1,false,true);await until(()=>noFinal.recorders.length===2);
  noFinal.recorders[0].complete();await until(()=>noFinal.reviews.length>0);
  assert.equal(noFinal.commits.length,0,'Missing final result remains in review without starting another recognizer');
+ const reconnect=boot(()=> 'openai'),denied=reconnect.permission(),first=reconnect.session.start();
+ await until(()=>reconnect.analyses.length===1);
+ denied.reject(new Error("Permission denied"));assert.equal(await first,false);
+ assert(reconnect.session.canReconnect(),'Failed startup offers a fresh visit');
+ assert(await reconnect.session.reconnect());assert.equal(reconnect.reconnects[0].length,0);
+ assert.notEqual(reconnect.analyses[0].options.id,reconnect.analyses[1].options.id);
+ reconnect.sources[0].emit(3200);reconnect.session.hold();
+ assert(!reconnect.session.canReconnect(),'Reconnect must wait for the original to finalize');
+ reconnect.recorders[0].complete();await until(()=>reconnect.session.canReconnect());
+ const oldCapture=reconnect.retained[0];assert(await reconnect.session.reconnect());
+ assert.equal(reconnect.reconnects[1][0].id,oldCapture.id);
+ assert.equal(reconnect.reconnects[1][0].audio_sha256,oldCapture.audio_sha256);
+ assert.notEqual(reconnect.recorders[0].options.id,reconnect.recorders[1].options.id);
+ assert.equal(reconnect.commits.length,0,'Reconnect never sends an older recording');
+ reconnect.session.hold();reconnect.recorders[1].complete();
+ const unknown=boot(()=> 'openai');await unknown.session.start();
+ unknown.sources[0].emit(3200);unknown.activity(1,true,false);unknown.activity(1,false,true);
+ await until(()=>unknown.recorders.length===2);
+ const unresolved=unknown.holdCommit();unknown.recorders[0].complete('Pregunta');
+ await until(()=>unknown.commits.length===1);unresolved.resolve({confirmed:false});
+ await until(()=>!unknown.session.active);
+ assert(!unknown.session.canReconnect());assert.equal(await unknown.session.reconnect(),false);
+ assert.equal(unknown.commits.length,1,'Unconfirmed work is never sent again on reconnect');
  const early=boot();await early.session.start();early.sources[0].emit(3200);early.activity(1,true,false);
  early.session.hold('Voice view closed.');
  await until(()=>early.retained.length===1);
