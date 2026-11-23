@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
+from threading import Event
 import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
@@ -14,7 +15,21 @@ from conversation_routing_io import CanonicalRouting
 
 
 def qualify(binary):
-    j=CanonicalRouting(str(Path(binary).resolve()));client=None
+    class DelayedFirstRoute(CanonicalRouting):
+        def __init__(self, path):
+            super().__init__(path)
+            self.waiting_for_ack = Event()
+            self.release_ack = Event()
+
+        def handle_extra_rpc(self, message, send):
+            if (self.routing and message.get('method') == 'turn/start'
+                    and message.get('params', {}).get('threadId') == 'native-topic-7'
+                    and not self.waiting_for_ack.is_set()):
+                self.waiting_for_ack.set()
+                assert self.release_ack.wait(timeout=15), 'Fixture never released native admission'
+            return super().handle_extra_rpc(message, send)
+
+    j=DelayedFirstRoute(str(Path(binary).resolve()));client=None
     try:
         j.start()
         for topic in (7,8,1):
@@ -45,6 +60,12 @@ def qualify(binary):
             assert response.status_code==code,response.text
             return response.json()
         original,result=submit('#Alpha Keep requirement13 exact.')
+        assert j.waiting_for_ack.wait(timeout=10)
+        preadmission=client.get('/api/interaction/inputs/'+original['id']+'/trace',headers=headers)
+        assert preadmission.status_code==200,preadmission.text
+        route_waiting=preadmission.json()['routes'][0]
+        assert not route_waiting['native_acceptance'] and 'active_execution' not in route_waiting
+        j.release_ack.set()
         j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
         result=read(original['id']);assert result['routing']['phase']=='accepted' and result['phase']=='routed'
         assert not j.packets,'An explicit human route unnecessarily called the front conversation'
@@ -68,6 +89,22 @@ def qualify(binary):
         assert step['forwarded_original']==second['text']==amendment['text']
         assert step['relation']==second['relation'] and step['native_acceptance']
         assert not step['results'] and j.row('SELECT count(*) FROM turns')==before_trace
+        assert step['active_execution']=={'status':'running','instruction':second['id'],'local_turn':second['local_turn']}
+        assert second['local_turn']==first['local_turn'] and second['native_turn']==j.workers['native-topic-7']
+        beta_trace=client.get('/api/interaction/inputs/'+beta['id']+'/trace',headers=headers).json()['routes'][0]
+        beta_instruction=json.loads(j.instructions(8)[0][2])
+        assert beta_trace['active_execution']=={'status':'running','instruction':beta_instruction['id'],'local_turn':beta_instruction['local_turn']}
+        assert beta_trace['active_execution']['local_turn']!=step['active_execution']['local_turn']
+        # A live handle by itself does not authorize a target whose persisted
+        # native binding no longer selects that execution.
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute('UPDATE sessions SET force_fresh_thread=1 WHERE thread_id=7')
+        rebound=client.get(trace_url,headers=headers)
+        assert rebound.status_code==200,rebound.text
+        assert rebound.json()['routes'][0]['native_acceptance']
+        assert 'active_execution' not in rebound.json()['routes'][0]
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute('UPDATE sessions SET force_fresh_thread=0 WHERE thread_id=7')
         assert client.get(trace_url).status_code==401
         assert client.get('/api/interaction/inputs/not-a-uuid/trace',headers=headers).status_code==400
         grant_file=j.root/'trace-device.json'
@@ -96,7 +133,9 @@ def qualify(binary):
         j.wait(lambda:j.row('SELECT count(*) FROM interaction_deliveries')==[(2,)])
         observed=client.get(trace_url,headers=headers)
         assert observed.status_code==200,observed.text
-        result_trace=observed.json()['routes'][0]['results']
+        completed_route=observed.json()['routes'][0]
+        assert completed_route['native_acceptance'] and 'active_execution' not in completed_route
+        result_trace=completed_route['results']
         assert result_trace and result_trace[0]['instruction_covered']
         assert result_trace[0]['completed'] and 'requirement17' in result_trace[0]['text_excerpt']
         sources=client.get('/api/interaction',headers=headers)
@@ -140,7 +179,10 @@ def qualify(binary):
             response=client.get('/api/interaction/inputs/'+long_input['id']+'/trace',headers=headers)
             assert response.status_code==200,response.text
             return response.json()
-        j.wait(lambda:len(long_trace()['routes'])==2)
+        def fanout_running():
+            routes=long_trace()['routes']
+            return len(routes)==2 and all(step['native_acceptance'] for step in routes)
+        j.wait(fanout_running)
         observation=long_trace()
         assert len(json.dumps(observation).encode())<262144
         before_read=j.row('SELECT count(*) FROM turns')
@@ -153,12 +195,14 @@ def qualify(binary):
             return part
         assert complete_text('original',observation['text'],observation['text_next_offset'])==long_text
         for step in observation['routes']:
+            assert 'active_execution' not in step, step['instruction']
             assert complete_text(step['instruction'],step['forwarded_original'],step['forwarded_next_offset'])==long_text
         assert j.row('SELECT count(*) FROM turns')==before_read
         assert j.row('SELECT count(*) FROM incoming_updates')==journal
         assert not j.messages,'Canonical direct routing fabricated Telegram publication'
         print('PASS actual HTTP/owner/SQLite/native direct selectors, busy-worker amendments, explicit override, immutable ambiguous choice, reversed results/reply, unavailable cancellation scope and ordinary integrator ingress; zero models.')
     finally:
+        j.release_ack.set()
         if client:client.close()
         j.close()
 

@@ -121,6 +121,68 @@ pub(super) fn session_inputs(
         .collect())
 }
 
+/// A side-effect-free execution observation for this owned, selected original.
+pub(super) fn active_conversation_turn(
+    shared: &AppShared,
+    human: i64,
+    entry: SessionKey,
+    original: &str,
+    instruction: &str,
+    target: SessionKey,
+) -> Result<Option<i64>> {
+    if uuid::Uuid::parse_str(original).is_err() {
+        return Ok(None);
+    }
+    let Some(selected) =
+        shared
+            .store
+            .conversation_active_route(human, entry, original, instruction, target)?
+    else {
+        return Ok(None);
+    };
+    let (Some(local), Some(thread), Some(physical)) = (
+        selected.local_turn,
+        selected.native_thread.as_deref(),
+        selected.native_turn.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    if !instruction_available(shared, &selected)
+        || !shared
+            .store
+            .conversation_pin_dispatch_allowed(human, instruction)?
+        || !shared
+            .store
+            .interaction_session_input_allowed(instruction, human)?
+        || !session_inputs(shared, target, human, thread, physical).is_ok_and(|inputs| {
+            inputs
+                .iter()
+                .any(|input| input.id == instruction && input.local_turn == Some(local))
+        })
+    {
+        return Ok(None);
+    }
+    // Recheck the live handle after the durable reads. Both the worker's
+    // physical turn and the routing observer can advance independently.
+    let runs = shared.routing_runs.lock().expect("routing mutex poisoned");
+    Ok(runs
+        .get(&target)
+        .filter(|run| {
+            run.native_turn.as_deref() == Some(physical)
+                && run.active.as_ref().is_some_and(|active| {
+                    active.turn_id == local
+                        && !active.sender.is_closed()
+                        && active
+                            .physical_turn
+                            .lock()
+                            .expect("native correlation mutex poisoned")
+                            .as_deref()
+                            == Some(physical)
+                })
+        })
+        .map(|_| local))
+}
+
 pub(super) fn retain_waiting(shared: &AppShared, key: SessionKey, human: i64) -> Result<()> {
     let ids = shared
         .routing_runs
