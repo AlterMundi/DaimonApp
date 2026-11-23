@@ -130,11 +130,14 @@ class SignedGroupClient:
         assert self.deadline_ns > time.monotonic_ns()
         assert self.timeout_seconds <= 1
         if method == "runtime.status":
-            assert params == {}
+            assert params in ({}, {"view": "receiving"})
             return {}, {
                 "ok": True,
                 "result": {
-                    "schema": "dm.runtime.status/v1",
+                    "schema": (
+                        "dm.runtime.receiving-status/v1" if params
+                        else "dm.runtime.status/v1"
+                    ),
                     "being_ref": self.group.lane.being_ref,
                     "local_origin": self.group.ledger.local_origin,
                 },
@@ -404,6 +407,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             [method for method, _ in calls], ["runtime.status", "messaging.inbox"]
         )
+        self.assertEqual(calls[0][1], {"view": "receiving"})
         self.assertEqual(len(set(deadlines)), 1)
         self.assertEqual(calls[-1][1], {"channel_id": "tribe", "after": 0, "limit": 3})
         self.assertEqual(page["schema"], "daimon.matrix-inbox-page/v1")
