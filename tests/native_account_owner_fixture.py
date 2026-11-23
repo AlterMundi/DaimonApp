@@ -56,9 +56,10 @@ try:
     def sign_synthetic_usage(request):
         params = request["observation"]
         observations.append(params)
-        usage = dict(schema="execution/usage/v1", store_id=state.store.store_id,
-                     principal=state.instruction.principal, cycle_id=owner._context.cycle.cycle_id,
-                     operation_id=params["attemptId"], actual=8)
+        usage = dict(schema="execution/usage/v2", store_id=request["store_id"],
+                     principal=request["principal"], cycle_id=request["cycle_id"],
+                     operation_id=request["operation_id"], instruction_sha256=request["instruction_sha256"],
+                     route=request["route"], unit=request["unit"], actual=8)
         return {"usage": usage, "proof": proof(state.key, "approve", usage,
             "receiving-usage-" + params["attemptId"])}
 
