@@ -12,7 +12,7 @@ window.PublicLiveConversation=(()=>{
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let captureLocks,releaseMicrophone;
-    let restored,restoring,historyBefore,historyGeneration=0,historyFailed;
+    let restored,restoring,historyBefore,historyGeneration=0,historyFailed,answeredVisit;
     let replacementReview,voiceContinuation,outputLevel=0,inputLevel=0;
     const inputMeter=window.ConversationVoiceMode?.meter?.(value=>{inputLevel=value;state();});
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -225,7 +225,7 @@ window.PublicLiveConversation=(()=>{
       if(pendingPermission){state('Finish the pending microphone permission before trying again.');return false;}
       if(renewal&&(logical!==logicalGeneration||!media||!unlock))return false;
       if(!renewal){logicalGeneration++;captureLocks=new Map();continuity=false;shortExpiries=0;}
-      starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();
+      starting=true;const owned=++epoch;binding=getBinding();visit=crypto.randomUUID();answeredVisit=undefined;
       completionMessage=undefined;
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
       usage({});
@@ -320,7 +320,7 @@ window.PublicLiveConversation=(()=>{
             else if(value.type==='context_preparing'){
               acceptReplacement(value);state('Preparing your conversation');
             }
-            else if(value.type==='answer')answerResolve(value);
+            else if(value.type==='answer'){if(value.id===visit)answeredVisit=visit;answerResolve(value);}
             else if(value.type==='startup_ended'&&value.id===visit&&closing){
               // A prepared visit that never opened WebRTC cannot be continued.
               if(voiceContinuation?.id===visit)voiceContinuation=priorVoiceContinuation;
@@ -501,16 +501,25 @@ window.PublicLiveConversation=(()=>{
         await wait(ready,15000);return true;
       }catch(error){if(owned===epoch&&!closing)await hold(error.name==='NotAllowedError'?'Microphone access was denied.':'Voice paused. Your original audio is kept.','activation_failed');return false;}
     }
-    async function restoreHistory(older=false,explicit=false){
+    async function reconcileHistory(){
+      const selected=binding,ended=answeredVisit,generation=historyGeneration;
+      const current=()=>ended&&visit===ended&&getBinding()===selected&&historyGeneration===generation&&!active&&!starting&&!closing;
+      if(!current())return;
+      if(restoring)try{await restoring;}catch{/* A fresh read can recover the exact ended visit. */}
+      if(current())await restoreHistory(false,true,ended);
+    }
+    async function restoreHistory(older=false,explicit=false,exactVisit){
       const selected=getBinding(),generation=historyGeneration;
-      if(!older&&restored===selected||historyFailed===selected&&!explicit)return;
+      const failed=historyFailed===selected;
+      if(failed&&!explicit||!older&&!exactVisit&&restored===selected&&!failed)return;
       if(restoring)return restoring;
       if(older&&(!historyBefore||restored!==selected))return;
       const cursor=older?historyBefore:undefined;
       const current=()=>getBinding()===selected&&historyGeneration===generation;
+      const deadline=exactVisit?AbortSignal.timeout(15000):undefined;
       const read=async path=>{
         const response=await fetch(new URL('api/interaction/voice/gpt-live/visits'+path,window.location.href),{
-          headers:{...headers(),'x-voice-binding':selected},signal:AbortSignal.timeout(15000)});
+          headers:{...headers(),'x-voice-binding':selected},signal:deadline||AbortSignal.timeout(15000)});
         if(!response.ok||!current())throw Error('Voice history unavailable');
         const value=await response.json();if(!current())throw Error('Voice history changed');return value;
       };
@@ -520,6 +529,7 @@ window.PublicLiveConversation=(()=>{
         void review().catch(()=>{});
         const page=await read(cursor?'?before='+encodeURIComponent(cursor):'');
         if(!Array.isArray(page.visits)||page.visits.length>1||page.more&&(!/^[a-f0-9-]{36}$/.test(page.before||'')||page.before===cursor))throw Error('Voice history cursor changed');
+        if(exactVisit&&page.visits[0]?.id!==exactVisit){onHistory({loading:false,more:!!historyBefore});return;}
         for(const entry of page.visits){
           if(!/^[a-f0-9-]{36}$/.test(entry.id)||!Number.isFinite(entry.created_at))throw Error('Voice history source changed');
           // The current connection already forwards this visit. Restoring its
@@ -546,14 +556,15 @@ window.PublicLiveConversation=(()=>{
           if(!current())throw Error('Voice history changed');
           onHistoryItems(items);
         }
-        historyBefore=page.more?page.before:undefined;restored=selected;
+        if(older||restored!==selected)historyBefore=page.more?page.before:undefined;
+        restored=selected;
         historyFailed=undefined;onHistory({loading:false,more:!!historyBefore});
       })();
       try{return await restoring;}
       catch(error){if(current()){historyFailed=selected;onHistory({loading:false,more:!!historyBefore,error:true,older});}throw error;}
       finally{restoring=undefined;}
     }
-    return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyFailed=undefined;onHistory({loading:false,more:false});},
+    return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,reconcileHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyFailed=answeredVisit=undefined;onHistory({loading:false,more:false});},
       retry:async value=>{
         if(value.native_fragment||value.downloadOnly)throw Error('Download the retained audio fragment for review');
         return withLock(value.voice_visit,()=>upload(value));

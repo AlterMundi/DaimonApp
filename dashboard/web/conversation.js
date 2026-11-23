@@ -2490,7 +2490,7 @@ window.Conversation = (() => {
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
       panel.setAttribute('aria-label','Voice audio recovery');$('#conversation-compose-notices .composer-notice-panel').prepend(panel);
       let speech;const retained=[];
-      function renderPublicTranscript(values,previous){
+      function renderPublicTranscript(values,previous,replaceVisit){
         const changed=new Map();
         let current=previous;
         for(const value of values){
@@ -2507,6 +2507,12 @@ window.Conversation = (() => {
             }
             const part=event.delta.slice(offset,offset+16000-current.text.length);offset+=part.length;current.text+=part;
             changed.set(current,observed);
+          }
+        }
+        if(replaceVisit&&changed.size){
+          for(let i=retained.length-1;i>=0;i--){
+            const card=retained[i];
+            if(card.visit===replaceVisit&&!changed.has(card)){card.box.remove();retained.splice(i,1);}
           }
         }
         let size=retained.reduce((n,v)=>n+v.text.length,0);
@@ -2526,7 +2532,10 @@ window.Conversation = (() => {
           publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onCaption:text=>{if(isPublicLive()&&voiceMode?.active)voiceMode.update({caption:text});},
         onItem:value=>{speech=renderPublicTranscript([value],speech);},
-        onHistoryItems:values=>renderPublicTranscript(values),
+        onHistoryItems:values=>{
+          const visit=values[0]?.visit;
+          if(renderPublicTranscript(values,undefined,visit)&&speech?.visit===visit)speech=undefined;
+        },
         onRecovery:values=>{
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
           panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
@@ -2571,7 +2580,7 @@ window.Conversation = (() => {
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:({returnToText=false}={})=>{
         avatarVoiceAdmissions.clear();
-        const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration;
+        const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration,publicVoice=voiceSession===publicLiveSession;
         let held;
         if(direct){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
         else held=microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
@@ -2581,7 +2590,10 @@ window.Conversation = (() => {
         if(voiceEngine)voiceEngine.disabled=!!voiceSession?.active;
         if(returnToText&&direct){
           const reconcile=()=>{
-            if(binding===owner&&inputGeneration===observed&&!document.hidden&&!voiceMode?.active)void refresh(true);
+            if(binding===owner&&inputGeneration===observed&&!document.hidden&&!voiceMode?.active){
+              void refresh(true);
+              if(publicVoice)void publicLiveSession?.reconcileHistory?.().catch(()=>{});
+            }
           };
           // Show received voice work immediately, then pick up anything that
           // settled during close. These are reads and do not hold the draft.
