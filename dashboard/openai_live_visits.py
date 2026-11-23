@@ -243,7 +243,7 @@ class LiveCreations:
                     'original_retained':any(r['ordinal']==ordinal for r in value['recordings'])}
                 self._write(value)
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False, conversation_delivery=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
@@ -323,6 +323,13 @@ class LiveCreations:
                     value['voice_continuation_from']=inherited['id']
                 elif voice_choice is not None or renewal is None:
                     value['voice_choice']=validate_choice(voice_choice)
+            if predecessor is not None:
+                conversation_delivery=predecessor.get('conversation_delivery')
+            if conversation_delivery is not None:
+                if (not isinstance(conversation_delivery,str) or len(conversation_delivery)>500
+                        or '\0' in conversation_delivery or not (select_current_voice or predecessor is not None)):
+                    raise ValueError('Select the exact shared Conversation delivery')
+                value['conversation_delivery']=conversation_delivery
             if resume_spec is not None:
                 value['continuity']='stored_fork'
                 value['configuration_sha256']=self._configuration(resume_spec)
@@ -350,7 +357,8 @@ class LiveCreations:
             self._write(value)
             return {'id':ident, 'remaining_seconds':seconds, 'max_input_pcm_bytes':seconds*32000,
                 'continuity':value.get('continuity','fresh'),'continued':value.get('continuation_from') is not None,
-                **({'voice_choice':value['voice_choice']} if 'voice_choice' in value else {})}
+                **({'voice_choice':value['voice_choice']} if 'voice_choice' in value else {}),
+                **({'conversation_delivery':conversation_delivery} if conversation_delivery is not None else {})}
 
 
     def ready_for_renewal(self,ident,human,frozen,*,allow_expired=False):
