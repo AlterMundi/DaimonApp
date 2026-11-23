@@ -494,6 +494,16 @@ owner/current-entry store only, with no Matrix transport I/O or new journal.
 The existing bounded projection retention still applies; this is not a complete
 archive of the SDK's canonical signed history.
 
+A successful Messaging check can inspect one existing response intent after its
+authoring deadline through the owner-selected Matrix adapter. The check uses
+the configured transport deadline and the existing authenticated outcome writer.
+It never submits a response, creates a return or takes an inference reservation.
+Unconfirmed intents are eligible again after ten minutes, then an hour,
+then at most once a day while their original record is retained. The last
+attempt and backoff survive restart. Missing or invalid receipts leave the
+current delivery state intact. A later positive receipt updates the same
+outgoing item, and the existing owner inspection remains available.
+
 Incoming `matrix-inbox:UUID` sources keep their original canonical revisions.
 Their direction and sender label are presentation metadata, not revised offers.
 Own `matrix-response:ORIGINAL_UUID` sources expose exact retained response text,

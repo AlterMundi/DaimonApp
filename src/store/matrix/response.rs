@@ -74,6 +74,9 @@ fn status(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Result<
             .context("Native original unavailable")?;
     let mut handling =
         load(conn, human, session, id)?.unwrap_or_else(|| json!({"phase":"pending"}));
+    if let Some(fields) = handling.as_object_mut() {
+        fields.remove("_receipt_checks");
+    }
     if handling["intent"].is_object() {
         let intent = &handling["intent"];
         handling["intent"] = json!({"send_id":intent["send_id"],"source":intent["source"],"channel_id":intent["channel_id"],"effect_not_after_ms":intent["effect_not_after_ms"]});
@@ -305,6 +308,7 @@ impl Store {
             previous["intent"]["send_id"] == send,
             "Response outcome belongs to another intent"
         );
+        let original = previous.clone();
         if let Some(result) = outcome {
             let intent = &previous["intent"];
             let parent = &intent["parent"];
@@ -355,7 +359,9 @@ impl Store {
         ) {
             previous["phase"] = json!("uncertain");
         }
-        save(&tx, human, session, id, &previous)?;
+        if previous != original {
+            save(&tx, human, session, id, &previous)?;
+        }
         let out = status(&tx, human, entry, id)?;
         tx.commit()?;
         Ok(out)
@@ -624,6 +630,64 @@ mod tests {
             "uncertain"
         );
     }
+    #[test]
+    fn heartbeat_response_receipt_claim_keeps_uncertainty_and_projection_revision() {
+        use super::super::inbox::claim_response_receipt_on;
+
+        let (file, store, entry, owner, id, revision) = setup();
+        let prepared = call(&store, entry, &owner, reply(&id, &revision)).unwrap();
+        let intent = &prepared["intent"];
+        let send = intent["send_id"].as_str().unwrap();
+        let deadline = intent["effect_not_after_ms"].as_i64().unwrap();
+        let selection = store
+            .matrix_inbox_selection(100, entry, owner.source.clone(), &owner.channel_id)
+            .unwrap();
+        let claim = |store: &Store, at| {
+            claim_response_receipt_on(&store.conn.lock().unwrap(), &selection, at).unwrap()
+        };
+        assert_eq!(claim(&store, deadline - 1), None);
+        store
+            .matrix_response_outcome(100, entry, &id, send, None)
+            .unwrap();
+        let status = |store: &Store| {
+            call(
+                store,
+                entry,
+                &owner,
+                Command::Status {
+                    message_id: id.clone(),
+                },
+            )
+            .unwrap()
+        };
+        let previous = status(&store);
+        assert_eq!(claim(&store, deadline), Some((id.clone(), intent.clone())));
+        assert_eq!(status(&store), previous);
+        assert_eq!(claim(&store, deadline + 599_999), None);
+        drop(store);
+        let store =
+            Store::open(file.path(), &[100, 101], &crate::store::tests::defaults()).unwrap();
+        assert_eq!(
+            claim(&store, deadline + 600_000),
+            Some((id.clone(), intent.clone()))
+        );
+        assert_eq!(claim(&store, deadline + 4_199_999), None);
+        assert_eq!(
+            claim(&store, deadline + 4_200_000),
+            Some((id.clone(), intent.clone()))
+        );
+        assert_eq!(claim(&store, deadline + 90_599_999), None);
+        assert_eq!(
+            claim(&store, deadline + 90_600_000),
+            Some((id.clone(), intent.clone()))
+        );
+        assert_eq!(status(&store), previous);
+        assert_eq!(
+            call(&store, entry, &owner, reply(&id, &revision)).unwrap()["submit"],
+            false
+        );
+    }
+
     #[test]
     fn response_intent_survives_uncertainty_restart_and_cannot_be_reauthored() {
         let (f, s, e, owner, id, revision) = setup();
