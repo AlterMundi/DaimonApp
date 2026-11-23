@@ -1586,3 +1586,15 @@ selection is captured per visit; it cannot suppress a prior in-flight cursor
 or reclassify a completed receipt. The default still projects ambient speech.
 This option does not implement or select side-query classification,
 ephemeral inference, or prioritized interruption.
+
+With both startup controls for prior visits and ambient projection disabled,
+an owner can select `side_questions = true`. An exact leading `/btw` or
+`/side` marker (or its explicitly spoken “barra” or “slash” form) selects one
+bounded read of the same Integration conversation. The result is a short
+source excerpt, not an independently reasoned native answer. It is offered to
+the current GPT-Live delegation with a recorded exact command identity; an
+unknown append is never repeated. A missing excerpt stays missing. This
+invokes no new native work or model turn. Normal unmarked utterances keep
+the existing native handoff. Hardware speech recognition of the spoken
+markers, automatic semantic route selection and prioritized interruption are
+separate acceptance work.

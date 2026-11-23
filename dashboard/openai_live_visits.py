@@ -530,15 +530,15 @@ class LiveCreations:
             if event['type'] in ('session.thinking.appended','session.commentary.appended'):
                 from .openai_live_native_results import observe_append
                 changed = observe_append(value, event)
-                if event['type'] == 'session.thinking.appended':
-                    for work in value['delegations'].values():
-                        quiet = work.get('quiet_progress')
-                        if (quiet is not None and quiet['state'] == 'intent'
-                                and quiet['event_id'] == event.get('client_event_id')):
-                            quiet.update(state='context_injected', ack_source=event['event_id'])
-                            quiet.pop('ack_reserve', None)
-                            changed = True
-                            break
+                field = 'quiet_progress' if event['type'] == 'session.thinking.appended' else 'side_question'
+                for work in value['delegations'].values():
+                    receipt = work.get(field)
+                    if (receipt is not None and receipt['state'] == 'intent'
+                            and receipt['event_id'] == event.get('client_event_id')):
+                        receipt.update(state='context_injected', ack_source=event['event_id'])
+                        receipt.pop('ack_reserve', None)
+                        changed = True
+                        break
             if event['type']=='session.delegation.created':
                 delegation=event.get('delegation',{});key=delegation.get('id')
                 if (not _text(key,1024) or key in value['delegations'] and

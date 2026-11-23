@@ -67,9 +67,12 @@ def install(app, config, provider, authorize, origins):
     project_voice_transcripts=selected.get('project_voice_transcripts',True)
     if type(project_voice_transcripts) is not bool:
         raise ValueError('Select whether Avatar projects ambient transcripts into the native conversation')
+    side_questions=selected.get('side_questions',False)
+    if type(side_questions) is not bool or side_questions and (project_voice_transcripts or prior_visit_context):
+        raise ValueError('Avatar side questions require isolated voice context')
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice','prior_visit_context','project_voice_transcripts'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice','prior_visit_context','project_voice_transcripts','side_questions'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
@@ -474,7 +477,7 @@ def install(app, config, provider, authorize, origins):
                                 # not a failure of current speech. Never resubmit
                                 # it: its native_pipeline already fences replay.
                                 await send({'type':'notice','code':'native_handoff_unconfirmed'})
-                            elif outcome['state']!='admitted' and not closing:
+                            elif outcome['state'] not in ('admitted','side_question') and not closing:
                                 native_failure=True;await begin_close()
                     if not closing:
                         value=await asyncio.to_thread(history.read,visit,human,owner)
@@ -499,7 +502,8 @@ def install(app, config, provider, authorize, origins):
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
                                         stopped=preparation_stopped,
-                                        before_delegate=before_delegate if project_voice_transcripts else None))
+                                        before_delegate=before_delegate if project_voice_transcripts else None,
+                                        sideband=sideband if side_questions else None))
                             if (native_context is not None and project_voice_transcripts and syncing is None and preparing is None
                                     and native_context.sync_due()):
                                 syncing=asyncio.create_task(synchronize_context())

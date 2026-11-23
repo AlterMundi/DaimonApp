@@ -10,6 +10,7 @@ import uuid
 from .codex_voice_history import history_lock
 from .openai_live_originals import enroll_original
 from .openai_live_window import freeze_input_window
+from .openai_live_side_read import return_side_question, side_question
 from .openai_live_native_work import delegate_native
 from .openai_live_native_results import return_native_part, _origin_returns
 from .provider import ProviderUnavailable
@@ -24,7 +25,7 @@ FORMULATION = (
 
 
 def prepare_native(history, ident, human, owner, delegation, provider, key_file,
-                   recognizer_factory=None, stopped=None,before_delegate=None):
+                   recognizer_factory=None, stopped=None,before_delegate=None,sideband=None):
     """Once per trusted sealed request; component intents own unknown effects."""
     def current(check_capture=True):
         if check_capture and stopped is not None and stopped.is_set():
@@ -78,6 +79,15 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
     result = {'state':'held','ordinals':ordinals,'work_completed':False,
         'meaning':'Preparation outcome needs review; originals and exact component intents are retained. Do not replay.'}
     try:
+        if sideband is not None:
+            if value.get('project_voice_transcripts') is not False:
+                raise ValueError('Voice side questions need an isolated transcript projection')
+            window=freeze_input_window(history,ident,human,owner,delegation)
+            question=side_question(window['text'])
+            if question is not None:
+                return_side_question(history,ident,human,owner,delegation,question,provider,sideband,current)
+                result={'state':'side_question','ordinals':ordinals,'work_completed':False}
+                return dict(result)
         for ordinal in ordinals:
             current()
             if enroll_original(history,ident,human,owner,ordinal,provider)['state'] != 'observed': break
@@ -104,7 +114,7 @@ def prepare_native(history, ident, human, owner, delegation, provider, key_file,
         with history_lock(history.root / '.lock'):
             value = history.read(ident,human,owner); work=value['delegations'][delegation]
             work['native_pipeline']=result
-            work['state']='native_handed_off' if result['state']=='admitted' else 'native_preparation_held'
+            work['state']={'admitted':'native_handed_off','side_question':'side_question'}.get(result['state'],'native_preparation_held')
             work.pop('native_pipeline_reserve',None)
             history._write(value)
     return dict(result)
