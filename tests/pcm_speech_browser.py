@@ -20,16 +20,21 @@ async def main():
           const assert=(ok,text)=>{if(!ok)throw Error(text);};
           const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
           const hash=async raw=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',raw))].map(v=>v.toString(16).padStart(2,'0')).join('');
-          const raw=new Uint8Array(24000*.4*2),samples=new DataView(raw.buffer);
+          const raw=new Uint8Array(24000*1.25*2),samples=new DataView(raw.buffer);
           for(let n=0;n<raw.length/2;n++)samples.setInt16(n*2,4096,true);
           let writer,cancelled=false;
           const body=new ReadableStream({start(c){writer=c;},cancel(){cancelled=true;}});
-          const frame=async()=>writer.enqueue(new TextEncoder().encode(JSON.stringify({type:'audio',sequence:0,data:btoa(String.fromCharCode(...raw)),sha256:await hash(raw)})+'\\n'));
+          let sequence=0;
+          const frame=async part=>writer.enqueue(new TextEncoder().encode(JSON.stringify({
+            type:'audio',sequence:sequence++,data:btoa(String.fromCharCode(...part)),sha256:await hash(part)
+          })+'\\n'));
           const response=new Response(body,{headers:{'x-audio-encoding':'pcm_s16le'}});
           const controller=new AbortController(),stream=SpeechStream.open(response,controller.signal);
           const element=document.querySelector('audio'),audio=PcmSpeech.mount(element);
-          const started=performance.now();await frame();audio.src=stream.url;
-          await stream.ready();audio.muted=false;await audio.play();
+          const started=performance.now();await frame(raw.subarray(0,30000));audio.src=stream.url;
+          let ready=false;const buffered=stream.ready().then(()=>{ready=true;});
+          await wait(80);assert(!ready,'A short partial buffer must not start playback');
+          await frame(raw.subarray(30000));await buffered;audio.muted=false;await audio.play();
           const observed=new AudioContext({sampleRate:24000});await observed.resume();
           const capture=audio.captureStream(),source=observed.createMediaStreamSource(capture),analyser=observed.createAnalyser();
           analyser.fftSize=256;source.connect(analyser);const pcm=new Float32Array(256);
@@ -42,7 +47,7 @@ async def main():
           const ended=new Promise(resolve=>element.addEventListener('ended',resolve,{once:true}));
           writer.enqueue(new TextEncoder().encode(JSON.stringify({type:'end',audio_bytes:raw.length,audio_sha256:await hash(raw),format:{encoding:'pcm_s16le',sample_rate_hz:24000,channels:1}})+'\\n'));writer.close();
           await audio.play();await Promise.race([ended,wait(2500).then(()=>{throw Error('PCM did not end');})]);
-          assert(audio.ended&&Math.abs(audio.currentTime-.4)<.002,'Wrong completed media position');
+          assert(audio.ended&&Math.abs(audio.currentTime-1.25)<.002,'Wrong completed media position');
           const completion=await stream.done;assert(completion.complete&&completion.blob.type==='audio/wav','Same-audio fallback WAV unavailable');
           const bytes=new Uint8Array(await completion.blob.arrayBuffer());assert(bytes.length===raw.length+44,'PCM fallback changed source length');
           stream.cancel();audio.removeAttribute('src');
@@ -55,15 +60,15 @@ async def main():
           // Drive the scheduler clock deterministically after verifying the
           // actual output graph. A late but still timely block must stay
           // contiguous; a true underrun must retain its scheduling lead.
-          let clock=0;const starts=[],scheduled=[];
+          let clock=0;const starts=[],durations=[],scheduled=[];
           class FixtureContext {
             get currentTime(){return clock;}
             destination={};
             async resume(){}
             async suspend(){}
             createGain(){return {gain:{value:1},connect(){},disconnect(){}};}
-            createBuffer(_channels,count){return {getChannelData:()=>new Float32Array(count)};}
-            createBufferSource(){return {connect(){},disconnect(){},stop(){},start(at){starts.push(at);}};}
+            createBuffer(_channels,count){return {duration:count/24000,getChannelData:()=>new Float32Array(count)};}
+            createBufferSource(){return {connect(){},disconnect(){},stop(){},start(at){starts.push(at);durations.push(this.buffer.duration);}};}
           }
           const NativeContext=window.AudioContext;
           window.AudioContext=FixtureContext;
@@ -75,12 +80,23 @@ async def main():
             boundary.append(block);await boundary.play();
             clock=.130;boundary.append(block);
             clock=.320;boundary.append(block);
-            assert(starts.length===3,'Expected exactly three scheduled blocks');
+            assert(starts.length===2,'A single late block must not restart a drained stream');
             assert(Math.abs(starts[0]-.040)<.001 && Math.abs(starts[1]-.140)<.001,'A ready successor must not introduce a gap');
-            assert(Math.abs(starts[2]-.345)<.001,'Only a real underrun uses fresh lead time');
+            clock=.420;boundary.append(block);
+            assert(starts.length===2,'A second short block must not start another brief burst');
+            clock=.540;boundary.append(new Uint8Array(48000));
+            assert(Math.abs(starts[2]-.565)<.001,'A refilled stream starts with fresh scheduling lead');
+            for(let i=3;i<starts.length;i++)assert(Math.abs(starts[i]-starts[i-1]-durations[i-1])<.001,'Refilled audio must be contiguous');
             boundary.cancel();
+            starts.length=0;clock=1;
+            const tail=PcmSpeech.open();tail.append(block);await tail.play();
+            clock=1.300;tail.append(block);
+            assert(starts.length===1,'Trailing audio waits for completion or enough data');
+            tail.finish({audio_bytes:9600,format:{encoding:'pcm_s16le',sample_rate_hz:24000,channels:1}});
+            assert(starts.length===2&&Math.abs(starts[1]-1.325)<.001,'A verified short final tail still plays');
+            tail.cancel();
           }finally{window.AudioContext=NativeContext;window.setInterval=id;}
-          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:.4,cancellation:true,contiguous_pcm_boundary:true,prepared_players_max:3,hardware_hearing:'not_observed'};
+          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:1.25,cancellation:true,contiguous_pcm_boundary:true,rebuffering_and_verified_tail:true,prepared_players_max:3,hardware_hearing:'not_observed'};
         }''')
         print(json.dumps(result,indent=2));await browser.close()
 asyncio.run(main())

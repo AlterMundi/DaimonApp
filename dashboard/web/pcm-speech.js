@@ -1,7 +1,7 @@
 "use strict";
 /* Bounded PCM playback for canonical speech. No input, provider or retry. */
 window.PcmSpeech=(()=>{
-  const players=new Map();let context;
+  const players=new Map(),bufferSeconds=1.2;let context;
   const available=()=>typeof (window.AudioContext||window.webkitAudioContext)==="function";
   function unlock(){
     if(!available())return;
@@ -13,7 +13,7 @@ window.PcmSpeech=(()=>{
     if(!available()||players.size>=3)throw Error("Audio preparation capacity reached");
     const url="pcm-speech:"+crypto.randomUUID();
     let chunks=[],bytes=0,complete=false,closed=false,paused=true,muted=true,ended=false;
-    let position=0,cursor=0,nextTime=0,nodes=[],segments=[],gain,timer,element,captured;
+    let position=0,cursor=0,nextTime=0,rebuffering=false,nodes=[],segments=[],gain,timer,element,captured;
     const dispatch=type=>element?.dispatchEvent(new Event(type));
     function currentTime(){
       if(paused||!context)return position;
@@ -35,12 +35,15 @@ window.PcmSpeech=(()=>{
       const now=context.currentTime;
       position=currentTime();segments=segments.filter(v=>v.time+v.duration>now);
       nodes=nodes.filter(v=>!v.finished);
-      // Keep a successor sample-contiguous while the previous block is still
-      // scheduled. Add lead time only when playback really underruns.
-      if(nextTime<=now)nextTime=now+.025;
+      // A drained stream needs enough audio to resume continuously. Keep
+      // timely successors contiguous and always release a verified final tail.
+      if(nextTime<=now)rebuffering=true;
+      if(rebuffering && (complete||bytes-cursor>=bufferSeconds*48000)){
+        nextTime=now+.025;rebuffering=false;
+      }
       // Schedule at most half a second ahead, releasing decoded buffers when
       // played. Encoded PCM stays bounded by the same eight MiB transport cap.
-      while(cursor<bytes && nextTime<now+.5){
+      while(!rebuffering && cursor<bytes && nextTime<now+.5){
         let offset=0,raw;
         for(const chunk of chunks){if(cursor<offset+chunk.length){raw=chunk.subarray(cursor-offset);break;}offset+=chunk.length;}
         if(!raw)throw Error("PCM playback source unavailable");
@@ -68,7 +71,7 @@ window.PcmSpeech=(()=>{
       },
       async ready(at=0){
         const deadline=performance.now()+12000;
-        while(!closed && !complete && bytes/48000-at<.12){
+        while(!closed && !complete && bytes/48000-at<bufferSeconds){
           if(performance.now()>deadline)throw Error("Audio buffering delayed");
           await new Promise(resolve=>setTimeout(resolve,20));
         }
@@ -84,7 +87,7 @@ window.PcmSpeech=(()=>{
         finally{clearTimeout(timeout);}
         if(closed)throw Error("Speech stream closed");
         if(!paused)return;
-        ended=false;paused=false;nextTime=context.currentTime+.04;
+        ended=false;paused=false;rebuffering=false;nextTime=context.currentTime+.04;
         timer=setInterval(()=>{try{tick();}catch{halt();dispatch("error");}},25);tick();dispatch("playing");
       },
       pause(){if(paused)return;halt();dispatch("pause");},

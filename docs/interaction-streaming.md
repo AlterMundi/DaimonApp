@@ -301,8 +301,10 @@ coalesces provider micro-chunks into at most32KiB release units before those
 fresh authorization/source checks. The browser waits for1.2seconds of actual
 buffered media (or confirmed completion) before unmuting, and revalidates the
 canonical audible prefix after the wait. Readiness expires after12seconds;
-Stop/cancellation still owns late completion. Native progressive players retain
-their own buffering. Decoder recovery uses only the verified completed bytes
+Stop/cancellation still owns late completion. Web PCM playback refills to the same 1.2-second threshold after an underrun,
+or resumes immediately when the final bytes are verified. Timely chunks stay
+contiguous. Native encoded-audio players retain their own buffering. Decoder
+recovery uses only the verified completed bytes
 from the same attempt and does not wait on its cancelled progressive transport.
 Existing byte/deadline/cache bounds and no-automatic-provider-retry rules remain.
 
