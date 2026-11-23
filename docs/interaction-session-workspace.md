@@ -22,9 +22,13 @@ histories, grants, destinations or pending work.
 
 - No pin sends new input to the integrating Conversation. A pin selects a current
   owned session through its native-issued `session:ID` source and revision.
-- Clicking a session name opens its conversation and pins the existing composer
-  to it. Back returns to the general timeline while keeping the pin. Clicking
-  the general Conversation or clearing the pin restores its input destination.
+- Clicking a session name opens its conversation and focuses the existing
+  composer. New input targets that conversation while it is open. The explicit
+  pin remains independent. Back restores the ordinary timeline and its pinned
+  destination, if any.
+- Audio in a single-conversation view follows that session and its mute setting.
+  Leaving the view restores the existing mix without replaying skipped updates.
+  The soundscape quiets while the single conversation is open.
 - The message bubble freezes the latest retained assistant message, using
   `session:ID/ROW` with a revision bound to the destination and exact immutable
   native message. The integrating Conversation uses its existing contextual

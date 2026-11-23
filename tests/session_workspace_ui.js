@@ -20,7 +20,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
   let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,now=Date.now();
   const timers=new Map();let timerId=0;const noticePanel=noticeHost?new Element('aside'):undefined;if(noticePanel)root.append(noticePanel);
-  const reads=[],targets=[],replies=[],audioCalls=[],mutes=new Set(),solos=new Set();
+  const reads=[],targets=[],replies=[],focuses=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
     reads.push(route);
     if(deny)throw Object.assign(Error('No workspace'),{status:403});
@@ -33,14 +33,14 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
-  const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
+  const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
   const all=()=>{const result=[];const visit=n=>{result.push(n);n.children.forEach(visit);};visit(root);return result;};
   const byText=text=>all().find(n=>n.tag==='button'&&n.textContent===text);
   const byLabel=text=>all().find(n=>n.attrs['aria-label']===text);
   const rows=()=>all().filter(n=>n.className==='session-row');
-  return {storage,root,timeline,control,noticePanel,reads,targets,replies,audioCalls,rows,all,byText,byLabel,reference,
+  return {storage,root,timeline,control,noticePanel,reads,targets,replies,focuses,audioCalls,rows,all,byText,byLabel,reference,
     failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.fn();}},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
@@ -84,7 +84,8 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const restored=boot({storage});restored.setSessions(inventory.map(row=>({...row,destination:row.destination?{...row.destination,revision:'c'.repeat(64)}:null})));
   await restored.control.refresh('binding');await tick();
   assert.equal(restored.control.capture().reference.source,'session:8');assert.equal(restored.control.capture().reference.revision,'c'.repeat(64),'Reload uses fresh authorized references');
-  restored.byLabel('Back to the conversation').click();assert.equal(restored.control.capture().reference.source,'session:8','Back keeps the session explicitly pinned by name');
+  assert.equal(restored.focuses.length,0,'Restoring history does not take composer focus');
+  restored.byLabel('Back to the conversation').click();assert.equal(restored.control.capture().reference.source,'session:7','Back restores the prior explicit pin');
   assert.equal(restored.rows().length,3,'All/recent preference survives reload');
   const persisted=storage.get('interaction.followed-session.v1');assert(!persisted.includes('session:')&&!persisted.includes('Earlier work'),'Only opaque navigation preferences are retained');
   const missing=boot({storage});missing.setSessions([]);await missing.control.refresh('binding');assert.throws(()=>missing.control.capture(),/saved session is unavailable/);
@@ -111,12 +112,19 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal(JSON.stringify(f.control.capture()),selectedBeforeOutage,'Retry does not route input or clear the pin');
   f.byText('Earlier work').click();await tick();
   assert.equal(f.timeline.hidden,true);assert.equal(f.control.capture().reference.source,'session:8');
-  assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true','Opening a session automatically pins its composer');
+  assert.equal(f.focuses.length,1);
+  assert.equal(f.control.audioScope().audio_key,'100:8','Opening limits audio to the exact selected session');
+  assert.equal(f.rows()[1].children[2].children[1].attrs['aria-pressed'],'true');
+  assert.equal(f.rows()[2].children[2].children[1].attrs['aria-pressed'],'false','Opening does not pin');
   f.byLabel('Back to the conversation').click();
-  assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:8','Back leaves the named session pinned');
+  assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:7','Back restores its explicit pin');
+  assert.equal(f.control.audioScope(),undefined);
   assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true');
   f.byText('Daimon').click();
-  assert.equal(f.control.capture().reference,undefined,'Selecting the General conversation clears the worker pin');
+  assert.equal(f.control.capture().reference,undefined,'Selecting general temporarily selects the general destination');
+  assert.equal(f.control.audioScope().is_entry,true);
+  f.byLabel('Show all session updates').click();
+  assert.equal(f.control.capture().reference.source,'session:7');
   f.byLabel('Show sessions').click();
   f.rows()[2].children[2].children[0].click();
   assert.equal(f.byLabel('Your sessions').hidden,true,'Exact-message reply collapses the menu');
@@ -136,10 +144,17 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal(f.byLabel('Your sessions').hidden,false,'Reset keeps the menu open');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').hidden,true);
   // A different native generation does not rewrite a pin or fall back to integration.
-  f.byText('Busy work').click();await tick();
   f.getSessions()[0].destination=f.reference(7,'b');await f.control.refresh('binding');
   assert.equal(f.control.canSend(),false);assert.equal(f.control.capture().reference.revision,'a'.repeat(64));
   f.byLabel('Send to the conversation').click();assert.equal(f.control.canSend(),true);assert.equal(f.control.capture(),undefined);
+  const separate=boot();await separate.control.refresh('binding');
+  separate.byText('Earlier work').click();await tick();
+  assert.equal(separate.byLabel('Clear pinned input destination').hidden,true);
+  separate.rows().find(row=>row.children[0].textContent==='Busy work').children[2].children[1].click();
+  assert.equal(separate.timeline.hidden,true,'Pinning a different session does not close the current view');
+  separate.byLabel('Clear pinned input destination').click();
+  assert.equal(separate.control.capture().reference.source,'session:8','Clearing pin does not redirect the current view');
+  separate.byLabel('Back to the conversation').click();assert.equal(separate.control.capture(),undefined);
   // A failed initial history read stays actionable rather than returning to
   // an endless Reading indicator on every metadata observation.
   const broken=boot();await broken.control.refresh('binding');broken.failHistory(true);
@@ -189,7 +204,8 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   f.deny();await f.control.refresh('binding');
   assert.equal(f.control.active,false);assert.equal(f.timeline.hidden,false);assert.equal(f.control.canSend(),false);
   assert(!f.root.textContent.includes('Retained answer'));
-  f.byLabel('Send to the conversation').click();assert.equal(f.control.capture(),undefined);
+  f.byLabel('Clear pinned input destination').click();
+  f.byLabel('Back to the conversation').click();assert.equal(f.control.capture(),undefined);
   f.control.reset();assert.equal(f.control.active,false);
   const aging=boot();const now=Date.now()/1000;const records=aging.getSessions();
   records[0].last_activity_at=now-86399;records[1].last_activity_at=now-86401;
