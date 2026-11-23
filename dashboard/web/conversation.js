@@ -98,7 +98,7 @@ window.Conversation = (() => {
       finally{clearTimeout(deadline);if(fileDownloads.get(file.id)===controller)fileDownloads.delete(file.id);refreshFiles();}
     }
     let voiceEnabled=false,voiceSuspended=false,captureBusy=false,voiceBusy=false,voiceContext,voiceMode,conversationOnly=false,voiceModePrevious,voiceSession,continuousEnabled=false,nativeEnabled=false,nativeVoiceSession,legacyVoiceSession;
-    let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,publicLiveNativeEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
+    let providerVoiceSession,codexVoiceSession,publicLiveSession,voiceChoice='provider',codexEnabled=false,publicLiveEnabled=false,publicLiveResponsesEnabled=false,publicLiveNativeEnabled=false,providerNativeEnabled=false,providerContinuousEnabled=false,providerVoiceAvailable=false;
     const voiceEngine=$('#conversation-voice-engine'),voiceChoiceBox=$('#conversation-voice-choice');
     let conversationServices='current',openaiConversationAvailable=false,lastVoiceCapabilities,servicesDefaultApplied=false;
     const servicesEngine=$('#conversation-services-engine'),servicesChoice=$('#conversation-services-choice');
@@ -121,7 +121,7 @@ window.Conversation = (() => {
     });
     const isPublicLive=()=>voiceChoice==='gpt-live'||voiceChoice==='gpt-live-native';
     function selectVoiceEngine(){
-      const publicEnabled=publicLiveEnabled&&(voiceChoice!=='gpt-live-native'||publicLiveNativeEnabled);
+      const publicEnabled=voiceChoice==='gpt-live-native'?publicLiveNativeEnabled:publicLiveResponsesEnabled;
       const nextNative=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
       const next=isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
       if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
@@ -133,7 +133,7 @@ window.Conversation = (() => {
         const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
         if(codexOption)codexOption.disabled=!codexEnabled;
         const publicOption=voiceEngine.querySelector?.('option[value="gpt-live"]');
-        if(publicOption)publicOption.disabled=!publicLiveEnabled;
+        if(publicOption)publicOption.disabled=!publicLiveResponsesEnabled;
         const nativeOption=voiceEngine.querySelector?.('option[value="gpt-live-native"]');
         if(nativeOption)nativeOption.disabled=!publicLiveNativeEnabled;
       }
@@ -141,7 +141,7 @@ window.Conversation = (() => {
     }
     voiceEngine?.addEventListener('change',()=>{
       if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
-      if(!['provider','codex','gpt-live','gpt-live-native'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled)return;
+      if(!['provider','codex','gpt-live','gpt-live-native'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveResponsesEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled)return;
       voiceChoice=voiceEngine.value;selectVoiceEngine();
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
@@ -1921,6 +1921,7 @@ window.Conversation = (() => {
       providerContinuousEnabled=value.can_converse_continuous===true;providerVoiceAvailable=value.can_converse===true;
       codexEnabled=value.can_converse_codex===true&&window.CodexConversation?.supported()===true;
       publicLiveEnabled=value.can_converse_public_live===true&&window.PublicLiveConversation?.supported()===true;
+      publicLiveResponsesEnabled=publicLiveEnabled&&value.can_converse_public_live_responses!==false;
       publicLiveNativeEnabled=publicLiveEnabled&&value.can_converse_public_live_native===true;
       if(!servicesDefaultApplied){servicesDefaultApplied=true;if(value.voice_services_default==='openai'){conversationServices='openai';voiceChoice='gpt-live-native';}if(value.avatar_voice_default==='gpt-live-native'&&publicLiveNativeEnabled)voiceChoice='gpt-live-native';}
       selectVoiceEngine();

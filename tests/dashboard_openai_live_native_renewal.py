@@ -248,6 +248,15 @@ class Renewal(unittest.TestCase):
             f.provider,f.channel,stopped=stopped))
         self.assertEqual(f.updates,[]);self.assertEqual(len(f.writes),1)
 
+    def test_integrator_only_visit_does_not_inject_earlier_voice_results(self):
+        self.replacement()
+        f=self.f
+        before=f.visits.read(self.current,100,f.owner)
+        self.assertIsNone(return_next_native_part(f.visits,self.current,100,f.owner,1,
+            f.provider,f.channel,prior_visit_context=False))
+        self.assertEqual(f.visits.read(self.current,100,f.owner),before)
+        self.assertEqual(f.updates,[])
+
     def test_historical_clock_order_is_not_native_work_authority(self):
         f=self.f;self.replacement()
         origin=f.visits.read(self.origin,100,f.owner)

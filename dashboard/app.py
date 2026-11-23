@@ -691,6 +691,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'can_converse_native':bool(getattr(app.state,'native_voice_enabled',False) and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_codex':bool(can_codex_voice and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_public_live':bool(can_public_live and dict(session).get('scope')!='monitor_readonly'),
+                'can_converse_public_live_responses':bool(can_public_live and config.get('openai_live',{}).get('backend_mode')!='native'
+                    and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_public_live_native':bool(can_public_live and (config.get('openai_live',{}).get('native_backend_enabled') is True
                     or config.get('openai_live',{}).get('backend_mode')=='native')
                     and dict(session).get('scope')!='monitor_readonly'),

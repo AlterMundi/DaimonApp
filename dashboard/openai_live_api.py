@@ -61,9 +61,12 @@ def install(app, config, provider, authorize, origins):
     backend_mode=selected.get('backend_mode','responses')
     if backend_mode not in ('responses','native'):raise ValueError('Select an explicit public Live backend')
     native_backend=backend_mode=='native'
+    prior_visit_context=selected.get('prior_visit_context',True)
+    if type(prior_visit_context) is not bool:
+        raise ValueError('Select whether Avatar can use previous visit context')
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice','prior_visit_context'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
@@ -331,7 +334,8 @@ def install(app, config, provider, authorize, origins):
                         **({'voice_continuation':meta['replacement']['id']} if meta.get('replacement') and admission.get('voice_choice') else {})})
                     native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)
                     async def preparing_context():await send({'type':'context_preparing','id':visit})
-                    spec=await native_context.prepare(spec,notice=preparing_context,recheck=recheck)
+                    spec=await native_context.prepare(spec,notice=preparing_context,recheck=recheck,
+                                                      prior_visit_context=prior_visit_context)
                     current=await asyncio.to_thread(history.read,visit,human,owner)
                     history.check_capture(current)
                     admission['remaining_seconds']=max(1,int(current['admission']['expires']-time.monotonic()))
@@ -486,7 +490,8 @@ def install(app, config, provider, authorize, origins):
                             if native_backend and not returns_unavailable and returning is None and asyncio.get_running_loop().time()>=result_poll:
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
-                                    result_index,provider,sideband,stopped=preparation_stopped))
+                                    result_index,provider,sideband,stopped=preparation_stopped,
+                                    prior_visit_context=prior_visit_context))
                                 result_index+=1
                     if renewal_requested and not closing:
                         pending_value=await asyncio.to_thread(history.read,visit,human,owner)
