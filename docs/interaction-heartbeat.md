@@ -800,3 +800,21 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+### Fixed preventive Sysops admission
+
+The private listener setting `heartbeat_preventive_sysops = true` opts the
+existing owner into at most one dispatch per UTC day on a current Reports
+check. Install the policy-pinned Cluster executor as the existing owner's
+fixed user oneshot `daimon-cluster-preventive-sysops.service` before selecting
+this setting. The listener starts only that unit, without arguments supplied
+by a report or model. There is no timer for the unit.
+
+Disabling the setting, global pause, or Reports pause stops future admissions.
+The durable daily claim precedes dispatch. Loss of the dispatch acknowledgement
+retains uncertainty for the day. Inspect the actual Cluster operation rather
+than replaying the handoff. An acknowledged start is not an execution result.
+Use the Cluster result for actual changes, failures, coverage and pending
+operations. The fixed job owns its own effect journal and continuing package
+transactions. Reports admission does not reserve a model envelope or alter the
+finite review sources, counters or schedule.

@@ -31,6 +31,9 @@ pub struct Config {
     pub nexus: Option<crate::nexus::NexusConfig>,
     pub session_control: Option<SessionControlConfig>,
     pub interaction: Option<crate::interaction::InteractionConfig>,
+    /// Opt in to the fixed user-service Cluster operation on existing Reports checks.
+    #[serde(default)]
+    pub heartbeat_preventive_sysops: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
