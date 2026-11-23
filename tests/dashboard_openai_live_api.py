@@ -261,10 +261,16 @@ class Mounted(unittest.TestCase):
         self.assertEqual(list((self.state/'public-live-visits').glob('*.json')),[])
 
     def test_renewal_ready_follows_native_close_and_releases_owner_before_successor(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        binding=self.configure_matching_voice()
         app=self.renewal_app()
+        app.state.avatar_workshop=AvatarWorkshop(self.state)
         with TestClient(app,base_url='https://example.test') as client:
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as socket:
                 native=self.start(socket)
+                self.assertIn('Use natural voseo.',native.spec['instructions'])
+                reading=json.loads(binding.read_text())
+                binding.write_text(json.dumps({**reading,'instruction':'Use the new reading delivery.'}))
                 socket.send_json({'type':'close','reason':'transport_renewal'})
                 self.assertEqual(socket.receive_json()['type'],'finishing')
                 final=socket.receive_json();self.assertEqual(final['type'],'closed')
@@ -276,11 +282,15 @@ class Mounted(unittest.TestCase):
                 self.ident=str(uuid.uuid4())
                 self.meta={**self.meta,'id':self.ident,'voice_continuation':prior,'renewal':ready['renewal']}
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as successor:
-                self.start(successor);self.close(successor)
+                renewed=self.start(successor)
+                self.assertIn('Use natural voseo.',renewed.spec['instructions'])
+                self.assertNotIn('Use the new reading delivery.',renewed.spec['instructions'])
+                self.close(successor)
         old=json.loads((self.state/'public-live-visits'/(prior+'.json')).read_text())
         new=self.read()
         self.assertEqual(old['renewal_target'],self.ident)
         self.assertEqual(new['renewal_from'],prior)
+        self.assertEqual(new['conversation_delivery'],old['conversation_delivery'])
         self.assertEqual(new['native_continuation_from'],prior)
         self.assertEqual(len(Client.instances),2)
 
@@ -476,9 +486,7 @@ class Mounted(unittest.TestCase):
             self.assertEqual(before['replacement_review']['target'],self.ident)
             self.assertEqual(sum(c.creations for c in Client.instances),2)
 
-    def test_current_conversation_voice_replaces_old_voice_on_explicit_reconnect(self):
-        from dashboard.avatar_workshop import AvatarWorkshop
-        from dashboard.voice_studio import choice
+    def configure_matching_voice(self):
         binding=self.root/'reading.json'
         binding.write_text(json.dumps({'schema':'telecodex.speech-route/v1',
             'provider':'openai-realtime','model':'gpt-realtime-2.1-mini','voice':'cedar',
@@ -488,6 +496,12 @@ class Mounted(unittest.TestCase):
         self.config['speech_openai']={'binding':str(binding)}
         self.config['openai_live'].update(match_conversation_voice=True,
             session_options={'audio':{'output':{'voice':'cedar'}}})
+        return binding
+
+    def test_current_conversation_voice_replaces_old_voice_on_explicit_reconnect(self):
+        from dashboard.avatar_workshop import AvatarWorkshop
+        from dashboard.voice_studio import choice
+        binding=self.configure_matching_voice()
         self.owner.presentation=lambda command:{'binding':self.owner.binding,**NATIVE_CAPS}
         history=LiveCreations(self.state/'public-live-visits')
         owner=self.owner.public_live_binding(self.owner.binding)
@@ -501,11 +515,14 @@ class Mounted(unittest.TestCase):
             review=client.get('/api/interaction/voice/gpt-live/visits?entry_check=true',
                               headers=self.headers).json()['replacement']
             self.meta.update(backend='native',replacement=review)
+            reading=json.loads(binding.read_text())
+            binding.write_text(json.dumps({**reading,'instruction':'Use unhurried Rioplatense speech.'}))
             with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as ws:
                 self.start(ws)
                 self.close(ws)
         self.assertEqual(Client.instances[-1].spec['audio']['output']['voice'],'cedar')
-        self.assertIn('Use natural voseo.',Client.instances[-1].spec['instructions'])
+        self.assertIn('Use unhurried Rioplatense speech.',Client.instances[-1].spec['instructions'])
+        self.assertNotIn('Use natural voseo.',Client.instances[-1].spec['instructions'])
         self.assertEqual(history.read(old,100,owner)['voice_choice'],old_choice)
         current=history.read(self.ident,100,owner)
         self.assertEqual(current['native_continuation_from'],old)
