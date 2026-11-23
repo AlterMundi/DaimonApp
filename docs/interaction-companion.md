@@ -423,10 +423,10 @@ python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_
 python -m dashboard.companion --config /absolute/dashboard.toml workspace GRANT_ID --deny
 ```
 
-New explicit device enrollment also accepts `--workspace-access`. The current
-candidate exposes the all-owned-session inventory and generation-bound pin
-references; expanded history and its technical event view remain in development.
-Read-only monitors never gain this permission. It grants neither Sessions
+New explicit device enrollment also accepts `--workspace-access`. The
+[session workspace](interaction-session-workspace.md) keeps the conversation,
+input pin and Raw view within the same exact session binding. Read-only monitors
+never gain this permission. It grants neither Sessions
 administration, Stop/Resume nor funding controls. Expiry, actor and receiving
 binding checks continue to apply. Inventory reads recheck permission after I/O.
 

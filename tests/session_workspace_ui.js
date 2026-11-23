@@ -32,7 +32,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
-  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:{now:()=>now},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
+  vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
   const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
@@ -84,7 +84,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const restored=boot({storage});restored.setSessions(inventory.map(row=>({...row,destination:row.destination?{...row.destination,revision:'c'.repeat(64)}:null})));
   await restored.control.refresh('binding');await tick();
   assert.equal(restored.control.capture().reference.source,'session:8');assert.equal(restored.control.capture().reference.revision,'c'.repeat(64),'Reload uses fresh authorized references');
-  restored.byLabel('Back to the conversation').click();assert.equal(restored.control.capture().reference.source,'session:7','Back restores the prior explicit pin');
+  restored.byLabel('Back to the conversation').click();assert.equal(restored.control.capture().reference.source,'session:8','Back keeps the session explicitly pinned by name');
   assert.equal(restored.rows().length,3,'All/recent preference survives reload');
   const persisted=storage.get('interaction.followed-session.v1');assert(!persisted.includes('session:')&&!persisted.includes('Earlier work'),'Only opaque navigation preferences are retained');
   const missing=boot({storage});missing.setSessions([]);await missing.control.refresh('binding');assert.throws(()=>missing.control.capture(),/saved session is unavailable/);
@@ -111,13 +111,12 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal(JSON.stringify(f.control.capture()),selectedBeforeOutage,'Retry does not route input or clear the pin');
   f.byText('Earlier work').click();await tick();
   assert.equal(f.timeline.hidden,true);assert.equal(f.control.capture().reference.source,'session:8');
-  assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'false','Temporary view does not claim the earlier pin is its destination');
+  assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true','Opening a session automatically pins its composer');
   f.byLabel('Back to the conversation').click();
-  assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:7','Back restores the explicit prior pin');
+  assert.equal(f.timeline.hidden,false);assert.equal(f.control.capture().reference.source,'session:8','Back leaves the named session pinned');
   assert.equal(f.byLabel('Send to the conversation').attrs['aria-pressed'],'true');
   f.byText('Daimon').click();
-  assert.equal(f.control.capture().reference,undefined,'Selecting Conversation temporarily overrides a worker pin');
-  f.byLabel('Back to the conversation').click();assert.equal(f.control.capture().reference.source,'session:7');
+  assert.equal(f.control.capture().reference,undefined,'Selecting the General conversation clears the worker pin');
   f.byLabel('Show sessions').click();
   f.rows()[2].children[2].children[0].click();
   assert.equal(f.byLabel('Your sessions').hidden,true,'Exact-message reply collapses the menu');
@@ -137,6 +136,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal(f.byLabel('Your sessions').hidden,false,'Reset keeps the menu open');
   assert.equal(f.byLabel('Hear all sessions: clear mute and solo').hidden,true);
   // A different native generation does not rewrite a pin or fall back to integration.
+  f.byText('Busy work').click();await tick();
   f.getSessions()[0].destination=f.reference(7,'b');await f.control.refresh('binding');
   assert.equal(f.control.canSend(),false);assert.equal(f.control.capture().reference.revision,'a'.repeat(64));
   f.byLabel('Send to the conversation').click();assert.equal(f.control.canSend(),true);assert.equal(f.control.capture(),undefined);
@@ -175,15 +175,15 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const release=f.holdHistory();f.byText('Busy work').click();f.byText('Earlier work').click();await tick();
   release({schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{text:'Stale other session',kind:'message',role:'assistant',id:'stale',position:1,next_position:2}],before:1,after:2});await tick();
   assert(!f.root.textContent.includes('Stale other session'));
-  f.byLabel('Show session detail and tools').click();await tick();
+  f.byLabel('Raw session view').click();await tick();
   assert(f.reads.at(-1).includes('technical=true'));
   const selectedTarget=f.control.capture();
-  f.byLabel('Show session replies').click();await tick();
+  f.byLabel('Raw session view').click();await tick();
   assert(f.reads.at(-1).includes('technical=false'));
   assert.deepEqual(f.control.capture(),selectedTarget,'Changing presentation keeps the input destination');
-  f.byLabel('Show session detail and tools').click();await tick();
+  f.byLabel('Raw session view').click();await tick();
   f.byText('Busy work').click();await tick();
-  assert(f.reads.at(-1).includes('technical=false'),'Opening a session always starts with replies');
+  assert(f.reads.at(-1).includes('technical=false'),'Opening a session always starts with the conversation');
   // Access loss removes visible history, keeps a refused old target, and leaves
   // the ordinary conversation available without a global sign-out/reset.
   f.deny();await f.control.refresh('binding');

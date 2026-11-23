@@ -22,9 +22,9 @@ histories, grants, destinations or pending work.
 
 - No pin sends new input to the integrating Conversation. A pin selects a current
   owned session through its native-issued `session:ID` source and revision.
-- Opening another session temporarily selects it. Back restores the explicit pin
-  that existed before opening it. Opening Conversation temporarily selects the
-  integrating conversation; Back still restores the pin.
+- Clicking a session name opens its conversation and pins the existing composer
+  to it. Back returns to the general timeline while keeping the pin. Clicking
+  the general Conversation or clearing the pin restores its input destination.
 - The message bubble freezes the latest retained assistant message, using
   `session:ID/ROW` with a revision bound to the destination and exact immutable
   native message. The integrating Conversation uses its existing contextual
@@ -38,9 +38,10 @@ histories, grants, destinations or pending work.
   admission/start/steer path, including busy workers, without an integrating
   model turn. Avatar remains independent of this default target.
 
-Pins and expanded views are bounded, in-memory client intent. They are cleared
-on binding/authentication changes, not saved as transcript data. Back does not
-clear the composer draft or an already frozen recording. Audio filters retain
+The client saves only bounded, binding-scoped pin and view identifiers. It
+resolves fresh destination references from the authorized inventory after
+reload. Back preserves the composer draft and any already frozen recording.
+Audio filters retain
 only their existing binding-scoped preferences. Per-update compact Mute/Solo controls remain beside update titles and share
 the same audio preferences as the menu. Their pin control resolves only through
 the current authorized complete inventory, matching an exact target key or the
@@ -81,16 +82,15 @@ and session binding after I/O. No client path, descendant traversal, model RPC,
 transcript corpus, persistent browser history or independent poller is added.
 Existing Conversation refresh events refresh the selected view.
 
-Opening a session defaults to **Conversation**, showing only its retained
-assistant output, formatted with the ordinary conversation Markdown renderer.
-Harness inputs and controller/context envelopes stay out of that view. The
-**>_ Detail** control additionally shows harness inputs, available function/custom
-tool calls, outputs and exposed reasoning summaries. **Input** labels a harness
-role, not verified human speech. Changing views keeps the input destination,
-explicit pin and composer draft; opening another session resets to Conversation.
-Private assistant analysis, encrypted reasoning, developer/system messages and
-unavailable event types are not exposed or reconstructed. Detail presents the
-available events, not a promise of complete CLI reproduction.
+Opening a session defaults to the Conversation layout. Its retained inputs and
+assistant messages use Conversation styling and Markdown, with the composer
+fixed below the message pane. Native input envelopes are reduced to their
+attributed message where available. **Input** identifies the harness role.
+**Raw** toggles the retained technical view with harness envelopes, available
+tool calls and outputs, and exposed reasoning summaries. The toggle keeps the
+selected session, input pin and draft. Opening another session resets to the
+Conversation layout. Both views exclude private assistant analysis, encrypted
+reasoning and developer/system messages.
 
 Reads use a 1-MiB target window (plus at most one crossing record), at most
 80 exposed records, a 2-MiB hard record bound and a 512-KiB response budget.
