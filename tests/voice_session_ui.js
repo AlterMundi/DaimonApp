@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const tick=()=>new Promise(yes=>setImmediate(yes));
 const until=async f=>{for(let i=0;i<100;i++){if(f())return;await new Promise(yes=>setTimeout(yes,5));}throw Error('Expected continuous voice transition');};
 const deferred=()=>{let resolve;return {promise:new Promise(yes=>resolve=yes),resolve};};
-function boot(){
+function boot(getTranscriptionProvider=()=> 'current'){
  const events={},timers=[],analyses=[],sources=[],recorders=[],medias=[],retained=[],commits=[],sent=[],reviews=[],states=[],captions=[],timings=[];
  let binding='a'.repeat(64),interrupts=0,permission,commitHold,retainHold,retentionCalls=0,questions={old:'v1'},playback={source:'synthetic-reply',position_millis:123};
  const document={hidden:false,addEventListener:(n,f)=>events[n]=f};
@@ -31,7 +31,7 @@ function boot(){
   }
  };
  vm.runInNewContext(fs.readFileSync('dashboard/web/voice-session.js','utf8'),{window,document,AbortController,ArrayBuffer,JSON,Map,Promise,Infinity,setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.closed=true;}});
- const session=window.ContinuousConversation.create({headers:()=>({}),getBinding:()=>binding,getQuestions:()=>questions,getPlayback:()=>playback,
+ const session=window.ContinuousConversation.create({headers:()=>({}),getBinding:()=>binding,getQuestions:()=>questions,getPlayback:()=>playback,getTranscriptionProvider,
   async retain(original){retentionCalls++;const v={...original,audio_sha256:Buffer.from(await crypto.subtle.digest('SHA-256',await original.blob.arrayBuffer())).toString('hex')};if(retainHold)await retainHold.promise;retained.push(v);return v;},
   async commit(original){commits.push(original);if(commitHold)return commitHold.promise;return {confirmed:true,value:{id:original.id,voice:{audio_sha256:original.audio_sha256}}};},
   onTiming:(id,stage,detail)=>timings.push({id,stage,detail}),onState:v=>states.push(v),onCaption:v=>captions.push(v),onInterrupt:()=>interrupts++,onSent:v=>sent.push(v),onReview:v=>reviews.push(v)
@@ -42,6 +42,23 @@ function boot(){
   questions:v=>questions=v,playback:v=>playback=v,bind:v=>binding=v,permission:()=>{permission=deferred();return permission;},holdCommit:()=>{commitHold=deferred();return commitHold;},holdRetention:()=>{retainHold=deferred();return retainHold;},retentionCalls:()=>retentionCalls};
 }
 (async()=>{
+ let preferred='openai';const direct=boot(()=>preferred);await direct.session.start();preferred='current';
+ assert.equal(direct.analyses[0].options.transcriptionProvider,'openai');
+ assert.equal(direct.recorders[0].options.transcriptionProvider,'openai');
+ direct.sources[0].emit(3200);direct.activity(1,true,false);
+ assert.equal(direct.interrupts(),0,'Audio activity alone does not interrupt the canonical reply');
+ direct.recorders[0].partial('Pregunta completa');assert.equal(direct.interrupts(),1);
+ direct.activity(1,false,true);await until(()=>direct.recorders.length===2);
+ assert.equal(direct.recorders[1].options.transcriptionProvider,'openai','The provider is frozen for a visit');
+ direct.recorders[0].complete('Pregunta completa');await until(()=>direct.sent.length===1);
+ assert.equal(direct.commits[0].transcriptionProfile,'openai-live');
+ assert.equal(direct.commits[0].id,direct.retained[0].id);assert.equal(direct.commits[0].audio_sha256,direct.retained[0].audio_sha256);
+ direct.session.hold();direct.recorders[1].complete();await tick();
+ assert.equal(direct.commits.length,1,'Leaving never submits a second recording');
+ const noFinal=boot(()=> 'openai');await noFinal.session.start();noFinal.sources[0].emit(3200);
+ noFinal.activity(1,true,false);noFinal.activity(1,false,true);await until(()=>noFinal.recorders.length===2);
+ noFinal.recorders[0].complete();await until(()=>noFinal.reviews.length>0);
+ assert.equal(noFinal.commits.length,0,'Missing final result remains in review without starting another recognizer');
  const early=boot();await early.session.start();early.sources[0].emit(3200);early.activity(1,true,false);
  early.session.hold('Voice view closed.');
  await until(()=>early.retained.length===1);

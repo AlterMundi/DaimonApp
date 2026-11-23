@@ -1,9 +1,9 @@
 "use strict";
 // Explicit foreground owner. Speech analysis is never itself input admission.
 window.ContinuousConversation=(()=>{
-  function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,
+  function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,getTranscriptionProvider=()=> 'current',
     retain,commit,onState=()=>{},onCaption=()=>{},onInterrupt=()=>{},onSent=()=>{},onReview=()=>{},onTiming=()=>{}}){
-    let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe;
+    let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe,transcriptionProvider;
     let current,ring=[],bytes=0,lastEnergy=0,verdict,latestActivity,floor=false,blockedAt=Infinity,order=0,dispatching=false,holdReason;
     const slots=new Map();
     function handoff(slot,gate,a=latestActivity){
@@ -58,7 +58,7 @@ window.ContinuousConversation=(()=>{
       // Acoustic turn ownership is independent of ASR readiness. Keep the
       // exact recording pending, but do not hold playback behind late captions.
       if(floor){floor=false;state('Listening');}
-      if(!slot.words){handoff(slot,'waiting_transcript');return;}
+      if(!slot.words&&transcriptionProvider!=='openai'){handoff(slot,'waiting_transcript');return;}
       // Captions can arrive after the analyzer's exact endpoint. Advancing
       // silence is not renewed speech; the acoustic fence above still owns it.
       // The current original owns PCM through its actual worklet flush. The
@@ -67,6 +67,11 @@ window.ContinuousConversation=(()=>{
       if(!analysis?.boundary(end)){hold('Voice analysis lost its turn boundary. Your recordings are kept.');return;}
       handoff(slot,'finishing');slot.send=true;floor=false;verdict=undefined;onTiming(slot.id,'ended');slot.recorder.stop();if(!stopping)state('Finishing your phrase');
     }
+    function takeFloor(slot){
+      if(floor||transcriptionProvider==='openai'&&(!slot.speech||!slot.words
+          ||!latestActivity?.speaking||slot.generation!==latestActivity.generation))return;
+      slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');
+    }
     function activity(a){
       if(!active||stopping||binding!==getBinding()){if(active)hold('Conversation changed. Your recordings are kept.');return;}
       latestActivity=a;const slot=current;
@@ -74,7 +79,7 @@ window.ContinuousConversation=(()=>{
          &&(slot.generation===undefined||a.onset.generation>slot.generation)){
         slot.generation=a.onset.generation;
         if(!slot.speech){slot.scopeFrozen=true;slot.speech=true;}
-        if(!floor){slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');}
+        takeFloor(slot);
       }
       if(a.endpoint){
         // Freeze the local acoustic watermark observed with this verdict.
@@ -95,6 +100,7 @@ window.ContinuousConversation=(()=>{
     function originalFor(slot){
       const r=slot.recorder;
       return {id:slot.id,binding,capture_started:slot.started,blob:slot.blob,mime:'audio/wav',preparedText:r?.preparedText,
+        ...(transcriptionProvider==='openai'?{transcriptionProfile:'openai-live'}:{}),
         captureStop:r?.captureStop,captureQuestions:slot.questions,playback:slot.playback};
     }
     async function retainOriginal(slot,original){
@@ -124,7 +130,8 @@ window.ContinuousConversation=(()=>{
       // failed, the existing once-only voice upload can use file-ASR; partial
       // captions never become the transcript. Exit/failed flush/held originals
       // have no endpoint Send intent and remain review-only, including reload.
-      const automatic=slot.send&&!slot.review&&!original.captureStop;
+      const automatic=slot.send&&!slot.review&&!original.captureStop
+        &&(transcriptionProvider!=='openai'||!!original.preparedText?.trim());
       try{
         if(slot.retention){
           await slot.retention;
@@ -162,9 +169,9 @@ window.ContinuousConversation=(()=>{
       const slot={id:window.crypto.randomUUID(),order:order++,started:Date.now(),start,questions:questions===undefined?undefined:JSON.parse(JSON.stringify(questions)),speech:false,words:false,send:false};
       slots.set(slot.id,slot);current=slot;verdict=undefined;onTiming(slot.id,'requested');onCaption('');
       try{
-        const recorder=await window.StreamingVoice.create(undefined,{headers,binding,id:slot.id,captureSource:source,
+        const recorder=await window.StreamingVoice.create(undefined,{headers,binding,id:slot.id,captureSource:source,transcriptionProvider,
           initialPCM:end=>prefix(start,end),
-          onPartial:text=>{if(current===slot&&active){slot.words=!!text.trim();if(slot.words)onTiming(slot.id,'partial');onCaption(text);consider();}},
+          onPartial:text=>{if(current===slot&&active){slot.words=!!text.trim();if(slot.words)onTiming(slot.id,'partial');onCaption(text);if(transcriptionProvider==='openai')takeFloor(slot);consider();}},
           onFlushed:(end,blob)=>{
             slot.end=end;retainFlushed(slot,blob);if(current===slot)current=undefined;
             if(stopping)closeGraph();else void arm(end,owned);
@@ -179,10 +186,11 @@ window.ContinuousConversation=(()=>{
     }
     async function start(){
       if(active||starting||slots.size||document.hidden||!getBinding())return false;
+      transcriptionProvider=getTranscriptionProvider();
       const owned=++epoch;binding=getBinding();starting=true;stopping=false;holdReason=undefined;bytes=lastEnergy=0;latestActivity=undefined;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
       abort=new AbortController();const ownAbort=abort;timer=setTimeout(()=>{if(owned===epoch)hold('Voice session reached five minutes. Your recordings are kept.');},300000);state('Preparing voice');
       try{
-        const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,
+        const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,transcriptionProvider,
           onActivity:a=>{if(owned===epoch)activity(a);},onUnavailable:()=>{if(owned===epoch)hold('Voice analysis unavailable. Your recordings are kept.');}});
         if(stopping||owned!==epoch){warmed.close();return false;}analysis=warmed;
         const value=await window.navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
