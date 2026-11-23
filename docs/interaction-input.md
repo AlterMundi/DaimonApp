@@ -431,7 +431,10 @@ not open a camera or introduce another conversation owner.
 
 ### Workflow admission at capacity
 
-A conversation can retain up to sixteen active, unexpired workflows. A full
+A conversation can retain up to 32 active, unexpired workflow plans. This
+counts plans, including deferred steps. Worker concurrency, native execution
+bounds and heartbeat resource allowances remain independently enforced. The
+journal still retains at most 256 workflows. A full
 active set returns `workflow_active_capacity` and `admitted: false`. The
 refused declaration creates neither a workflow nor a native instruction. Finish
 only workflows whose current results have been incorporated. After a slot

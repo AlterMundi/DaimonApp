@@ -16,7 +16,7 @@ pub(super) use native_returns::{
     transfer_collection_on as native_transfer_collection_on, visible_on as native_visible_on,
 };
 
-const MAX_ACTIVE_WORKFLOWS: i64 = 16;
+const MAX_ACTIVE_WORKFLOWS: i64 = 32;
 const MAX_RETAINED_WORKFLOWS: i64 = 256;
 const MAX_WORKFLOW_DOCUMENT_BYTES: usize = 256 * 1024;
 pub(crate) const WORKFLOW_CAPACITY_ERROR: &str = "Workflow journal capacity reached; retain existing history and finish or inspect current workflows";
@@ -1606,7 +1606,7 @@ mod tests {
         let outcome = rejection(&error).unwrap();
         assert_eq!(outcome["code"], "workflow_active_capacity");
         assert_eq!(outcome["admitted"], false);
-        assert_eq!(outcome["max_active_workflows"], MAX_ACTIVE_WORKFLOWS);
+        assert_eq!(outcome["max_active_workflows"], 32);
         assert_eq!(declare(&s, &entry, plan), first);
         let conn = s.conn.lock().unwrap();
         let retained: i64 = conn
