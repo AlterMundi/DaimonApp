@@ -254,6 +254,15 @@ Ordinary camera/gallery originals up to20MiB are accepted by the client. The cli
 
 Standalone Interaction can use `conversation_appearance = "authored"` to omit the automatic Homemaker stylesheet/script while Sessions continues to inherit its configured appearance. This is an explicit product choice; shared login and permissions remain unchanged. Its compact header, conversation area and composer remain separate, with recording status inside the composer and a paperclip-only attachment trigger.
 
+Standalone Interaction also supports `conversation_appearance = "journal"`.
+The paper Day skin is the initial choice. The header's moon and sun switch
+between Day and Night, and the existing browser-local preference mechanism
+applies the selected skin on reload. The choice is browser-local. The Night
+margin's fireflies remain still under reduced motion. The Journal bundles
+[Caveat](https://github.com/google/fonts/tree/main/ofl/caveat) and
+[Space Mono](https://github.com/google/fonts/tree/main/ofl/spacemono) with their
+SIL Open Font Licenses.
+
 With Voice on, standalone Interaction permits verified reply playback, continuation gaps and incoming-reply live updates while the document is hidden. Returning resumes a browser-paused segment after source validation, preserving its position. A human pause, Stop, loss of authorization or real page unload still stops automatic playback. Transient connection failures and offline transitions preserve opted-in Voice intent and already loaded audio; returning online revalidates a paused segment before resuming. Standalone playback exposes standard OS Media Session play/pause/stop controls where supported. These controls retain explicit human pause/Stop semantics. Mobile OS/browser suspension can prevent background execution; returning restores the existing opted-in intent, never a human-paused one. Physical phone background acceptance remains a separate check.
 
 Presentation resolves fallback `t<ID>` labels from the current authorized owner's session title without changing routing selectors, source IDs, revisions or explicit route aliases. A renamed session needs no route recreation.

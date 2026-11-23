@@ -109,8 +109,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     if not isinstance(daimon_name, str) or not 1 <= len(daimon_name) <= 80 or any(ord(c) < 32 for c in daimon_name):
         raise ValueError('daimon_name must be a display name of 1 to 80 characters')
     conversation_appearance = config.get('conversation_appearance', 'inherit')
-    if conversation_appearance not in ('inherit', 'authored'):
-        raise ValueError('conversation_appearance must be inherit or authored')
+    if conversation_appearance not in ('inherit', 'authored', 'journal'):
+        raise ValueError('conversation_appearance must be inherit, authored or journal')
     appearance = config.get('appearance_origin', '').rstrip('/')
     if appearance:
         u = urlparse(appearance)
@@ -344,9 +344,21 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 body = body.replace('    <script src="assets/app.js" defer></script>',
                     '    <script src="/access-client.js" defer></script>\n    <script src="assets/app.js" defer></script>')
             body = body.replace('    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>\n', '')
+        standalone_entry = (request.query_params.get('view') == 'conversation'
+                            and request.query_params.get('client') == 'standalone')
+        journal = standalone_entry and conversation_appearance == 'journal'
+        if journal:
+            # Load the saved browser theme after the Journal tokens and before first paint.
+            body = body.replace('<script src="assets/interface-appearance.js" defer></script>',
+                '<link rel="stylesheet" href="assets/journal.css">'
+                '<script src="assets/interface-appearance.js"></script>', 1)
         from .client_build import fingerprint, stamp, workshop_assets
         assets = []
-        for name in ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css'):
+        client_files = ('app.js', 'live.js', 'requests.js', 'interface-appearance.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'microphone.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css')
+        if journal:
+            client_files += ('journal.css',)
+            assets.extend((name, (public / name).read_bytes()) for name in ('journal-caveat.ttf', 'journal-space-mono.ttf'))
+        for name in client_files:
             asset = (public / name).read_bytes()
             assets.append((name, asset))
             version = hashlib.sha256(asset).hexdigest()[:16]
@@ -356,8 +368,6 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         body = stamp(body, fingerprint((public / 'index.html').read_bytes(), assets))
         if release:
             body = body.replace('<html lang="en"', '<html lang="en" data-workshop-release="'+release+'"', 1)
-        standalone_entry = (request.query_params.get('view') == 'conversation'
-                            and request.query_params.get('client') == 'standalone')
         if standalone_entry:
             body = body.replace('<title>Sessions · Telecodex</title>', '<title>Daimon Interaction</title>')
             # Select the initial visible shell before scripts or account reads.
@@ -367,11 +377,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = body.replace('Connecting to Telegram…', 'Opening your conversation…', 1)
             body = body.replace('<section id="conversation" hidden', '<section id="conversation"', 1)
             body = body.replace('</head>', '<link rel="manifest" href="manifest.webmanifest">'
-                '<meta name="theme-color" content="#0b1018">'
+                + ('<meta name="theme-color" content="#f2e8d6">' if journal else '<meta name="theme-color" content="#0b1018">') +
                 '<link rel="apple-touch-icon" href="assets/interaction-192.png"></head>')
-        if standalone_entry and conversation_appearance == 'authored':
-            body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="authored"', 1)
-        if appearance and not (standalone_entry and conversation_appearance == 'authored'):
+        if standalone_entry and conversation_appearance != 'inherit':
+            body = body.replace('<html lang="en"', f'<html lang="en" data-style-policy="{conversation_appearance}"', 1)
+        elif appearance:
             base = html.escape(appearance, quote=True)
             body = body.replace('<html lang="en"', '<html lang="en" data-style-policy="inherit"', 1)
             body = body.replace('</head>', '<link rel="stylesheet" data-home-style href="'+base+
@@ -383,9 +393,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     @app.get('/manifest.webmanifest')
     def interaction_manifest():
         entry = home_auth.entry if home_auth.enabled else prefix + '/'
+        color = '#f2e8d6' if conversation_appearance == 'journal' else '#0b1018'
         return JSONResponse({'id': entry, 'name': 'Daimon Interaction', 'short_name': 'Daimon',
             'start_url': entry + '?view=conversation&client=standalone', 'scope': entry,
-            'display': 'standalone', 'background_color': '#0b1018', 'theme_color': '#0b1018',
+            'display': 'standalone', 'background_color': color, 'theme_color': color,
             'icons': [{'src':entry + 'assets/interaction-' + str(size) + '.png',
                        'sizes':str(size)+'x'+str(size), 'type':'image/png', 'purpose':'any'}
                       for size in (192,512)]}, media_type='application/manifest+json')
@@ -450,7 +461,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             computer_health.assert_binding()
             data, media = computer_health.assets[name]
             return Response(data, media_type=media)
-        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt'):
+        if name not in ('health-live.js', 'live.js', 'interaction-192.png', 'interaction-512.png', 'app.js', 'requests.js', 'interface-appearance.js', 'microphone.js', 'voice-stream.js', 'voice-session.js', 'native-conversation.js', 'codex-conversation.js', 'openai-live.js', 'live-usage.js', 'webrtc-native-audio.js', 'voice-output-pcm.js', 'voice-pcm.js', 'visual.js', 'files.js', 'routing_graph.js', 'companion.js', 'avatar-workshop.js', 'voice-studio.js', 'sonic.js', 'pcm-speech.js', 'speech-stream.js', 'live-speech.js', 'markdown-it.min.js', 'markdown.js', 'conversation.js', 'conversation-surface.js', 'conversation-header.js', 'session-workspace.js', 'heartbeat.js', 'timing.js', 'attention.js', 'voice-mode.js', 'style.css', 'markdown-it.LICENSE', 'markdown-it.SOURCE', 'space-grotesk-latin.woff2', 'OFL.txt', 'journal.css', 'journal-caveat.ttf', 'journal-space-mono.ttf', 'journal-OFL-Caveat.txt', 'journal-OFL-SpaceMono.txt'):
             raise HTTPException(404)
         version = hashlib.sha256((public / name).read_bytes()).hexdigest()[:16]
         immutable = list(request.query_params.multi_items()) == [('v',version)]

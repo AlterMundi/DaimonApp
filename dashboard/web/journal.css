@@ -1,0 +1,409 @@
+/* Eko's authored Interaction skin: Cuaderno de sobremesa, journal revision 1.
+   Geometry, account state, avatar colours and all actions stay with the app. */
+@font-face {
+  font-family: "Eko Journal Hand";
+  src: url("journal-caveat.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Eko Journal Mono";
+  src: url("journal-space-mono.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+html[data-style-policy="journal"] {
+  color-scheme: light;
+  --dm-background: #f2e8d6;
+  --dm-surface: #fcf8ef;
+  --dm-text: #362d28;
+  --dm-accent: #a7432d;
+  --dm-body-font: "Eko Journal Mono", ui-monospace, monospace;
+  --dm-heading-font: "Eko Journal Hand", cursive;
+  --dm-radius: 6px;
+  --dm-gap: 14px;
+  --bg: var(--dm-background);
+  --panel: var(--dm-surface);
+  --ink: var(--dm-text);
+  --accent: var(--dm-accent);
+  --muted: #69594b;
+  --line: #9b8772;
+  --warn: #794500;
+  --secondary: #773e67;
+  --good: #35603b;
+  --danger: #a21b32;
+  --focus: var(--accent);
+  --journal-grain: #69594b0b;
+  --journal-edge: #9b877242;
+  --journal-shadow: #362d280b;
+  --journal-ring: #9b877260;
+  --journal-header-line: #9b87725c;
+  --journal-header-tint: #efdfd433;
+  --journal-paper: #fffdf7;
+  --journal-paper-edge: #9b877248;
+  --journal-paper-shadow: #362d2808;
+  --journal-note-edge: #79846c80;
+  --journal-note-label: #f8f8ec;
+  --journal-quote: #efdfd480;
+  --journal-composer-shadow: #362d2812;
+  --journal-panel-shadow: #362d2826;
+  --journal-backdrop: #362d2870;
+  --journal-rose: #efdfd4;
+  --journal-sage: #e1e5d6;
+  --journal-hand: "Eko Journal Hand", cursive;
+}
+html[data-style-policy="journal"][data-journal-theme="night"] {
+  color-scheme: dark;
+  --dm-background: #170f25;
+  --dm-surface: #211831;
+  --dm-text: #f6eefc;
+  --dm-accent: #e9bdff;
+  --muted: #cbbad9;
+  --line: #8e779f;
+  --warn: #f4ce94;
+  --secondary: #efbad6;
+  --good: #badbad;
+  --danger: #ffb8c6;
+  --journal-grain: #e9bdff09;
+  --journal-edge: #704e8b84;
+  --journal-shadow: #090511a0;
+  --journal-ring: #c6a2e04d;
+  --journal-header-line: #9c78b36b;
+  --journal-header-tint: #8c65bf23;
+  --journal-paper: #2a1e40;
+  --journal-paper-edge: #9971b567;
+  --journal-paper-shadow: #0a051852;
+  --journal-note-edge: #a281be83;
+  --journal-note-label: #47365d;
+  --journal-quote: #6346874a;
+  --journal-composer-shadow: #0a051868;
+  --journal-panel-shadow: #09051199;
+  --journal-backdrop: #10091cc7;
+  --journal-rose: #402953;
+  --journal-sage: #35294b;
+}
+html[data-style-policy="journal"] .standalone-conversation {
+  background: radial-gradient(var(--journal-grain) .6px, transparent .8px) 0 0 / 7px 7px, var(--bg);
+}
+html[data-style-policy="journal"] .standalone-conversation main {
+  position: relative;
+  isolation: isolate;
+  background: var(--panel);
+  border-inline: 1px solid var(--journal-edge);
+  box-shadow: 0 0 40px var(--journal-shadow);
+}
+html[data-style-policy="journal"] .standalone-conversation main::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 8px;
+  width: 8px;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(ellipse, var(--journal-ring) 0 23%, var(--bg) 26% 43%, transparent 46%) center 18px / 8px 37px repeat-y;
+}
+html[data-style-policy="journal"] .standalone-conversation header:not(.voice-studio-intro) {
+  border-bottom: 1px solid var(--journal-header-line);
+  background: linear-gradient(100deg, var(--journal-header-tint), transparent 65%);
+}
+html[data-style-policy="journal"] :is(h1,h2,.dialog-top h3,.voice-studio-card h3) {
+  font-family: var(--journal-hand);
+  font-weight: 600;
+}
+html[data-style-policy="journal"] :is(h1,h2) { font-size: 30px; line-height: 1.15; }
+html[data-style-policy="journal"] .standalone-conversation #conversation-daimon {
+  font: 600 34px/1.15 var(--journal-hand);
+  color: var(--ink);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-companion pre {
+  text-shadow: none;
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-timeline {
+  scrollbar-color: var(--line) transparent;
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-timeline .reply {
+  padding: 18px 16px;
+  border-radius: 3px;
+  border: 1px solid var(--journal-paper-edge);
+  background: var(--journal-paper);
+  box-shadow: 2px 3px 0 var(--journal-paper-shadow);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-timeline .human-message {
+  background: var(--journal-sage);
+  border-color: var(--journal-note-edge);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-timeline h3 {
+  display: inline-block;
+  padding: 1px 8px 3px;
+  background: var(--journal-rose);
+  border-radius: 2px;
+  color: var(--ink);
+  font: 600 24px/1.2 var(--journal-hand);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-timeline .human-message h3 {
+  background: var(--journal-note-label);
+}
+html[data-style-policy="journal"] .reply-text { line-height: 1.75; }
+html[data-style-policy="journal"] :is(.reply-text pre,.reply-text code) {
+  background: var(--bg);
+  color: var(--ink);
+}
+html[data-style-policy="journal"] .reply-text blockquote {
+  background: var(--journal-quote);
+  border-left-color: var(--accent);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-compose {
+  background: var(--journal-paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 2px 3px 0 var(--journal-composer-shadow);
+}
+html[data-style-policy="journal"] .standalone-conversation #conversation-compose:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+html[data-style-policy="journal"] #conversation-message::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+html[data-style-policy="journal"] :is(button,input,select,textarea) { font-family: var(--dm-body-font); }
+html[data-style-policy="journal"] .standalone-conversation :is(.reply-actions,.session-row-actions,.session-view-toolbar,.voice-mode-controls,.voice-studio-actions) button {
+  font-size: 16px;
+  border-radius: 5px;
+}
+html[data-style-policy="journal"] :is(.message-time,.image-thumbnail span,#client-build,.session-view-time) {
+  font-size: 14px;
+  opacity: 1;
+  color: var(--muted);
+}
+html[data-style-policy="journal"] :is(dialog,.heartbeat-menu,.session-rail,.pending-panel,#conversation-attachment-sheet,.composer-notice-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open]) {
+  color: var(--ink);
+  background: var(--panel);
+  border-color: var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px var(--journal-panel-shadow);
+}
+html[data-style-policy="journal"] dialog::backdrop { background: var(--journal-backdrop); }
+html[data-style-policy="journal"] :is(.voice-studio-card,.session-message,.request-card,.task-card) {
+  background: var(--journal-paper);
+  border-color: var(--line);
+}
+html[data-style-policy="journal"] .session-input-target {
+  background: var(--journal-rose);
+  color: var(--ink);
+  border-color: var(--line);
+}
+html[data-style-policy="journal"] .session-row[aria-current="true"] {
+  background: var(--journal-sage);
+}
+html[data-style-policy="journal"] .voice-mode { background: var(--bg); }
+html[data-style-policy="journal"] :is(a,button,input,textarea,select,summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (max-width: 480px) {
+  html[data-style-policy="journal"] .standalone-conversation main { padding-inline: 17px 12px; }
+  html[data-style-policy="journal"] .standalone-conversation main::before { left: 3px; width: 6px; background-size: 6px 37px; }
+  html[data-style-policy="journal"] .standalone-conversation #conversation-timeline { padding-inline: 3px; }
+  html[data-style-policy="journal"] .standalone-conversation #conversation-timeline .reply { padding: 14px 12px; }
+  html[data-style-policy="journal"] .standalone-conversation #conversation-daimon { font-size: 30px; }
+}
+
+/* Sai's journal: a proportional portrait fits inside the existing80px header.
+   The authoring canvas and fullscreen voice portrait retain their own layout. */
+html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame:has(.workshop-portrait) {
+  width:104px;
+  height:80px;
+}
+html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame:has(.workshop-portrait) :is(.avatar-surface,.workshop-portrait) {
+  width:64px;
+  height:80px;
+  background:transparent;
+}
+html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame .workshop-portrait {
+  filter:drop-shadow(0 0 .35px color-mix(in srgb,var(--ink) 65%,transparent));
+}
+@media(max-height:650px) {
+  html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame:has(.workshop-portrait) {
+    width:91.2px;
+    height:74px;
+  }
+  html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame:has(.workshop-portrait) :is(.avatar-surface,.workshop-portrait) {
+    width:51.2px;
+    height:64px;
+  }
+  html[data-style-policy="journal"] :is(#conversation-companion,.avatar-workshop-compact-header) > .avatar-frame:has(.workshop-portrait) .avatar-surface {
+    top:5px;
+  }
+}
+
+/* The Journal's appearance control and nocturnal margin stay on Eko's authored surface. */
+#journal-night-toggle,
+#journal-night-toggle .journal-toggle-sun,
+.journal-night-margin {
+  display: none;
+}
+html[data-journal-theme] .standalone-conversation #journal-night-toggle {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+  color: var(--accent);
+  border-color: var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+}
+#journal-night-toggle svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+html[data-journal-theme="night"] #journal-night-toggle .journal-toggle-moon { display: none; }
+html[data-journal-theme="night"] #journal-night-toggle .journal-toggle-sun { display: block; }
+
+@media (min-width: 481px) {
+  html[data-journal-theme] .standalone-conversation header:not(.voice-studio-intro) .header-tools {
+    max-width: 244px;
+    flex-wrap: nowrap;
+  }
+}
+.companion-name > .companion-name-prefix { color: inherit; }
+@media (max-width: 480px) {
+  html[data-journal-theme] .standalone-conversation header:not(.voice-studio-intro) .header-tools {
+    grid-template-columns: repeat(3, 44px);
+    width: 132px;
+    max-width: 132px;
+  }
+  html[data-journal-theme] .standalone-conversation header .identity:has(#conversation-companion:not([hidden])) > .identity-title,
+  html[data-journal-theme] .standalone-conversation .companion-name-prefix {
+    display: none;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion #client-build {
+    margin: 0;
+    line-height: 1.05;
+    white-space: normal;
+    word-break: break-all;
+  }
+  html[data-journal-theme] .standalone-conversation header #conversation-companion .companion-name {
+    display: flex;
+    align-items: center;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-daimon {
+    flex: none;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame {
+    width: 88px;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame :is(.avatar-surface,.workshop-portrait) {
+    width: 56px;
+    height: 70px;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame .avatar-surface {
+    top: 5px;
+  }
+}
+@media (max-width: 380px) {
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame {
+    width: 72px;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame :is(.avatar-surface,.workshop-portrait) {
+    width: 48px;
+    height: 60px;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion > .avatar-frame .avatar-surface {
+    top: 10px;
+  }
+  html[data-journal-theme] .standalone-conversation #conversation-companion .avatar-frame-controls {
+    left: -4px;
+  }
+}
+
+html[data-journal-theme="night"] .standalone-conversation:not(.conversation-surface) .journal-night-margin {
+  display: block;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: max(0px, (100% - 960px) / 2);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+.journal-night-margin-start { left: 0; }
+.journal-night-margin-end { right: 0; }
+.journal-night-moon,
+.journal-night-moth,
+.journal-night-fireflies {
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+}
+.journal-night-moon {
+  top: 15%;
+  width: 34px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  box-shadow: inset 11px -4px #f2d9ad;
+  opacity: .60;
+  rotate: -16deg;
+}
+.journal-night-moth {
+  top: 37%;
+  width: 30px;
+  aspect-ratio: 1.35;
+  rotate: -24deg;
+  opacity: .43;
+  background: linear-gradient(#dbb8ee, #dbb8ee) center 65% / 7% 48% no-repeat;
+}
+.journal-night-margin-end .journal-night-moth {
+  top: 62%;
+  rotate: 26deg;
+}
+.journal-night-moth::before,
+.journal-night-moth::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  width: 44%;
+  height: 68%;
+  background: radial-gradient(ellipse at 50% 46%, #edc9f4 6%, #8d65ad 64%, #684d82);
+  border-radius: 65% 28% 56% 36%;
+}
+.journal-night-moth::before { left: 4%; rotate: 27deg; }
+.journal-night-moth::after { right: 4%; transform: scaleX(-1) rotate(27deg); }
+.journal-night-fireflies {
+  top: 22%;
+  bottom: 20%;
+  width: 100%;
+  max-width: 180px;
+  opacity: .62;
+  background:
+    radial-gradient(circle at 25% 8%, #ffe2a4 0 1px, #f1c77b38 2px, transparent 5px),
+    radial-gradient(circle at 77% 23%, #ffe2a475 0 1px, transparent 3px),
+    radial-gradient(circle at 38% 48%, #ffe2a4 0 1px, #f1c77b38 2px, transparent 5px),
+    radial-gradient(circle at 66% 63%, #ffe2a475 0 1px, transparent 3px),
+    radial-gradient(circle at 31% 82%, #ffe2a4 0 1px, #f1c77b38 2px, transparent 5px);
+}
+.journal-night-margin-end .journal-night-fireflies { top: 30%; bottom: 12%; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .journal-night-fireflies { animation: journal-fireflies 3.6s ease-in-out 1; }
+  @keyframes journal-fireflies {
+    from { opacity: .38; }
+    52% { opacity: .76; }
+    to { opacity: .62; }
+  }
+}
+@media (max-width: 1000px) {
+  html[data-journal-theme="night"] .standalone-conversation:not(.conversation-surface) .journal-night-margin {
+    width: 9px;
+  }
+  .journal-night-moon { width: 8px; box-shadow: inset 3px -1px #f2d9ad; }
+  .journal-night-moth { width: 8px; }
+}

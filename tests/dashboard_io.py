@@ -1,4 +1,5 @@
 """HTTP, SQLite, signature and real Unix-control journeys for the private dashboard."""
+import hashlib
 import base64
 from contextlib import closing
 import json
@@ -745,6 +746,25 @@ class ProviderIO(unittest.TestCase):
 
 # Additional appearance transport coverage is intentionally independent of native control.
 class DashboardAppearance(unittest.TestCase):
+    def test_journal_uses_versioned_styles_only_on_the_selected_standalone_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'state_dir': tmp, 'origin': 'https://example.test', 'bot_id': 123,
+                      'appearance_origin': 'https://home.example.test', 'conversation_appearance': 'journal'}
+            with TestClient(create_app(config, Receiver()), base_url=config['origin']) as client:
+                standalone = client.get('/?view=conversation&client=standalone').text
+                self.assertIn('data-style-policy="journal"', standalone)
+                self.assertNotIn('data-home-style', standalone)
+                self.assertRegex(standalone, r'assets/journal\.css\?v=[a-f0-9]{16}')
+                self.assertRegex(standalone, r'assets/interface-appearance\.js\?v=[a-f0-9]{16}"></script>')
+                version = hashlib.sha256(client.get('/assets/journal.css').content).hexdigest()[:16]
+                self.assertIn('immutable', client.get('/assets/journal.css?v='+version).headers['cache-control'])
+                for font in ('journal-caveat.ttf', 'journal-space-mono.ttf'):
+                    self.assertEqual(client.get('/assets/'+font).status_code, 200)
+                self.assertEqual(client.get('/manifest.webmanifest').json()['theme_color'], '#f2e8d6')
+                self.assertIn('data-home-style', client.get('/').text)
+                self.assertNotIn('assets/journal.css', client.get('/').text)
+                self.assertEqual(client.get('/api/state').status_code, 401)
+
     def test_configured_public_style_is_render_blocking_but_never_receives_private_api_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp,0o700)

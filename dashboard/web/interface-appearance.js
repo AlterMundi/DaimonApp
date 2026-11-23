@@ -31,6 +31,46 @@ function interfaceRoles(appearance) {
 }
 
 const root=document.documentElement;
+if (root.dataset.stylePolicy === 'journal') {
+  // Use the same browser-local preference storage as Interaction's other choices.
+  const storageKey = 'interaction-journal-theme';
+  function readNight() {
+    try { return localStorage.getItem(storageKey) === 'night'; }
+    catch { return false; }
+  }
+  function applyNight(night) {
+    root.dataset.journalTheme = night ? 'night' : 'day';
+    const toggle = document.getElementById('journal-night-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', String(night));
+      toggle.title = night ? 'Switch to day' : 'Switch to night';
+    }
+    const browserTheme = document.querySelector('meta[name="theme-color"]');
+    if (browserTheme) {
+      browserTheme.content = getComputedStyle(root).getPropertyValue('--bg').trim();
+    }
+  }
+  applyNight(readNight());
+  document.addEventListener('DOMContentLoaded', () => {
+    const toggle = document.getElementById('journal-night-toggle');
+    if (!toggle) return;
+    applyNight(root.dataset.journalTheme === 'night');
+    const change = (night) => {
+      applyNight(night);
+      window.dispatchEvent(new CustomEvent('home-style:resolved'));
+    };
+    toggle.addEventListener('click', () => {
+      const night = root.dataset.journalTheme !== 'night';
+      try { localStorage.setItem(storageKey, night ? 'night' : 'day'); }
+      catch { /* The choice remains usable for this page. */ }
+      change(night);
+    });
+    window.addEventListener('storage', (event) => {
+      if (event.key === storageKey || event.key === null) change(readNight());
+    });
+  }, {once: true});
+  return;
+}
 const owned=new Map();
 function refresh(){
  if(root.dataset.stylePolicy==='authored'){
