@@ -1559,3 +1559,13 @@ cancellation and noise suppression. The voice brief guides the provider; it
 does not block provider-controlled turn interruptions or identify a speaker.
 Keep physical noise, overlap and speech-identity checks distinct from the
 synthetic transcript UI checks.
+
+A sealed client delegation and an observed submission receipt do not imply
+native acceptance or an answer. Check the exact original through the owning
+Conversation status reader. When the same native thread is busy and cannot
+accept steering, an original can stay queued without a local turn. In that
+case the voice frontend has no result to read aloud yet. Avoid replaying the
+original, interrupting its owner, or treating a spoken acknowledgment as
+evidence a lookup is running. Fresh startup context is bounded, so an older
+fact may need an explicit same-conversation lookup even when the app can show
+the older message in history.
