@@ -117,6 +117,14 @@ struct CheckObservation {
     error: Option<String>,
 }
 
+/// Most recent failed authenticated Matrix inbox observation and its first
+/// later successful read. This is source evidence, not transport diagnosis.
+#[derive(Clone, Serialize, Deserialize)]
+struct MatrixInboxRecovery {
+    failure: CheckObservation,
+    recovery: Option<CheckObservation>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::store) struct Parent {
     #[serde(default)]
@@ -147,6 +155,8 @@ pub(in crate::store) struct Parent {
     last_check: Option<CheckObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous_messaging_check: Option<CheckObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    matrix_inbox_recovery: Option<MatrixInboxRecovery>,
     #[serde(default)]
     last_success_at_unix_ms: Option<i64>,
     #[serde(default)]
@@ -460,6 +470,7 @@ pub(in crate::store) fn configure_on(
             inbox_state: None,
             last_check: None,
             previous_messaging_check: None,
+            matrix_inbox_recovery: None,
             last_success_at_unix_ms: None,
             observation_renewal: None,
             seen: BTreeMap::new(),
@@ -538,7 +549,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "originals":"retained; exact attempted revisions are not automatically replayed"})
         });
     Ok(
-        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":metadata_limits(conn, &p)?.0,"max_document_bytes":metadata_limits(conn, &p)?.1,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"previous_messaging_check":p.previous_messaging_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":metadata_limits(conn, &p)?.0,"max_document_bytes":metadata_limits(conn, &p)?.1,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"previous_messaging_check":p.previous_messaging_check,"matrix_inbox_recovery":p.matrix_inbox_recovery,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -1290,6 +1301,19 @@ impl Store {
             }
             .into();
             observation.error = error.clone();
+            if c.matrix_inbox.is_some() {
+                if observation.error.as_deref() == Some("matrix_inbox_unavailable") {
+                    p.matrix_inbox_recovery = Some(MatrixInboxRecovery {
+                        failure: observation.clone(),
+                        recovery: None,
+                    });
+                } else if error.is_none()
+                    && let Some(recovery) = &mut p.matrix_inbox_recovery
+                    && recovery.recovery.is_none()
+                {
+                    recovery.recovery = Some(observation.clone());
+                }
+            }
         }
         if error.is_none() {
             p.last_success_at_unix_ms = Some(now);
@@ -3051,6 +3075,11 @@ mod inbox_tests {
         );
         assert_eq!(&failed["producer"]["last_success_at_unix_ms"], last_success);
         assert!(!failed.to_string().contains("synthetic source unavailable"));
+        assert_eq!(
+            failed["producer"]["matrix_inbox_recovery"]["failure"],
+            failed["producer"]["last_check"]
+        );
+        assert!(failed["producer"]["matrix_inbox_recovery"]["recovery"].is_null());
         due(&s, e);
         let c = s.heartbeat_begin_check(100, e).unwrap().unwrap();
         assert!(
@@ -3074,6 +3103,12 @@ mod inbox_tests {
         );
         let status = s.heartbeat_control(100, e, H::Status).unwrap();
         assert_eq!(status["producer"]["checks"], 5);
+        let recovery = &status["producer"]["matrix_inbox_recovery"];
+        assert_eq!(recovery["failure"]["sequence"], 3);
+        assert_eq!(recovery["failure"]["error"], "matrix_inbox_unavailable");
+        assert_eq!(recovery["recovery"]["sequence"], 4);
+        assert_eq!(recovery["recovery"]["outcome"], "succeeded");
+        assert!(recovery["recovery"]["error"].is_null());
         assert_eq!(status["producer"]["last_check"]["outcome"], "succeeded");
         assert!(status["producer"]["last_check"]["error"].is_null());
         assert!(

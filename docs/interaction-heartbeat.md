@@ -136,6 +136,15 @@ offer-cursor advancement and native-return reservation. Later authorized
 execution sees the same original sources, without replaying them as new messages.
 Neither configuration nor an empty check spends inference attempts.
 
+The owner status also retains `producer.matrix_inbox_recovery`, the most recent
+failed Matrix inbox check and the first subsequent successful authenticated read.
+It survives later successful checks, other lanes, and restarts of the same
+producer. It retains the original activation and times for both observations.
+A later failure replaces this pair. The typed failure does not distinguish a
+broken reader from a network disconnection, and the first successful read does
+not prove recipient delivery or model execution. This evidence consumes no
+additional check or model turn.
+
 The owner can independently renew an expired observation deadline:
 
 ```
