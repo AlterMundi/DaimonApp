@@ -66,6 +66,27 @@ class SelectedHistory(unittest.TestCase):
         routed=ordinary['items'][1]
         self.assertEqual(read(self.path,'owned',event=routed['position'],revision=ordinary['revision'],
             routed_original=resolve)['items'][0]['text'],original)
+    def test_conversation_hides_only_trailing_assistant_result_declarations(self):
+        receipt='<daimon-result>{"requests":["id"],"covered":["id"],"completed":[],"deferred":[]}</daimon-result>'
+        legacy='<daimon-result>{"requests":[],"covered":[]}</daimon-result>'
+        malformed='<daimon-result>{"requests":[]}</daimon-result>'
+        repeated='<daimon-result>{"requests":[],"requests":[],"covered":[]}</daimon-result>'
+        fenced='Example:\n```xml\n'+receipt+'\n```'
+        answer='The prototype is ready.\n\n[Details](https://example.test).'
+        samples=[answer+'\n\n'+receipt+'  \n',receipt,'Legacy\n'+legacy,
+                 fenced,'Invalid\n'+malformed,'Repeated\n'+repeated,
+                 'Quote the syntax:\n'+receipt+'\nLiteral discussion continues.']
+        self.append(*(message(text) for text in samples),message('My text\n'+receipt,'user'))
+        ordinary=read(self.path,'owned')
+        self.assertEqual([item['text'] for item in ordinary['items']],
+                         [answer,'Legacy',*samples[3:],'My text\n'+receipt])
+        row=ordinary['items'][0]
+        part=read(self.path,'owned',revision=ordinary['revision'],event=row['position'],text_offset=len(answer)-1)
+        self.assertEqual(part['items'][0]['text'],answer[-1:])
+        self.assertEqual(part['items'][0]['characters'],len(answer))
+        raw=read(self.path,'owned',technical=True)
+        self.assertEqual([item['text'] for item in raw['items']],[*samples,'My text\n'+receipt])
+
     def test_partial_append_is_not_acknowledged_and_completion_appears_once(self):
         self.append(message('First'))
         second=encoded(message('Second'))
