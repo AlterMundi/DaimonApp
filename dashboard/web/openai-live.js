@@ -3,7 +3,7 @@
 // originals and trusted sideband sources; it never commits synthetic turns.
 window.PublicLiveConversation=(()=>{
   const supported=()=>!!(window.RTCPeerConnection&&window.StreamingVoice?.supported()&&window.VoiceInput?.recoveryStore&&window.indexedDB&&navigator.locks?.request);
-  function create({headers,getBinding,getBackend=()=>undefined,onState=()=>{},onItem=()=>{},onRecovery=()=>{},onHistory=()=>{},onUsage=()=>{}}){
+  function create({headers,getBinding,getBackend=()=>undefined,onState=()=>{},onItem=()=>{},onHistoryItems=items=>items.forEach(onItem),onCaption=()=>{},onRecovery=()=>{},onHistory=()=>{},onUsage=()=>{}}){
     // Keep the existing two-store,20MiB/128-record budget across ALL engines.
     // The historical key/name does not select the provider or replay an input.
     const recovery=window.VoiceInput.recoveryStore('codex_voice'),originals=new Map(),confirmed=new Set(),seals=new Map();
@@ -12,7 +12,7 @@ window.PublicLiveConversation=(()=>{
     let bytes=0,total=0,ordinal=0,parts=[],fragmentParts=[],fragmentBytes=0,segment;
     let durable=Promise.resolve(),uploads=Promise.resolve(),persisting=0,sourceBoundary;
     let captureLocks,releaseMicrophone;
-    let restored,restoring,historyBefore,historyGeneration=0,historyVisit,historyFailed,historySeen=new Set();
+    let restored,restoring,historyBefore,historyGeneration=0,historyFailed;
     let replacementReview,voiceContinuation,outputLevel=0,inputLevel=0;
     const inputMeter=window.ConversationVoiceMode?.meter?.(value=>{inputLevel=value;state();});
     const digest=async blob=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -221,6 +221,21 @@ window.PublicLiveConversation=(()=>{
       const backend=getBackend(),voiceParent=renewal?.id||(continuation&&voiceContinuation?.binding===binding?voiceContinuation.id:undefined);
       usage({});
       const current=()=>owned===epoch&&(active||starting)&&!closing&&binding===getBinding();
+      const captionEvents=new Set();
+      let captionRole,captionText='',directCaptions=false;
+      function caption(event){
+        if(!current()||!event||!['session.input_transcript.delta','session.output_transcript.delta'].includes(event.type)
+            ||typeof event.event_id!=='string'||!event.event_id||event.event_id.length>1024
+            ||typeof event.delta!=='string'||!event.delta||event.delta.length>32768)return false;
+        if(captionEvents.has(event.event_id))return true;
+        if(captionEvents.size>=8192)return false;
+        captionEvents.add(event.event_id);
+        captionText=((captionRole===event.type?captionText:'')+event.delta).slice(-800);
+        captionRole=event.type;
+        present(onCaption,captionText);
+        return true;
+      }
+
       function acceptReplacement(value){
         const prior=replacementReview,receipt=value.replacement_accepted;
         if(!current()||backend!=='native'||value.id!==visit||prior?.binding!==binding||prior.backend!==backend
@@ -298,6 +313,7 @@ window.PublicLiveConversation=(()=>{
             else if(value.type==='answer')answerResolve(value);
             else if(value.type==='provider_event'){
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
+              if(!directCaptions)caption(value.event);
               onItem({visit,item:value.event,public_live:true});
             }
             else if(value.type==='notice'&&value.code==='native_results_unavailable')state('Voice connected · work results need review.');
@@ -379,7 +395,17 @@ window.PublicLiveConversation=(()=>{
         let sessionId,started=false,connected=false,leaseReady=typeof window.__DaimonCaptureConnection!=='function';
         const listening=()=>{if(current()&&!renewing&&started&&connected&&leaseReady){starting=false;active=true;state('Listening');readyResolve();}};
         channel.onmessage=event=>{
-          try{const value=JSON.parse(event.data);if(value.type==='session.started'&&(value.session_id||value.session?.id)===sessionId){started=true;listening();}}catch{}
+          if(!current()||typeof event.data!=='string'||event.data.length>1024*1024)return;
+          try{
+            const value=JSON.parse(event.data);
+            const eventSession=value.session_id||value.session?.id;
+            if(!sessionId||eventSession&&eventSession!==sessionId)return;
+            if(value.type==='session.started'){if(eventSession===sessionId){started=true;listening();}}
+            // Captions need no journal round trip. This path cannot create a
+            // transcript record or authorize backend work.
+            else if(caption(value))directCaptions=true;
+          }catch{}
+
         };
         if(!nativeOutput){audio=new Audio();audio.autoplay=!paused;audio.muted=!audible;}
         peer.ontrack=event=>{
@@ -475,7 +501,8 @@ window.PublicLiveConversation=(()=>{
       };
       onHistory({loading:true,more:!!historyBefore});
       restoring=(async()=>{
-        await review();if(!current())throw Error('Voice history changed');
+        // Local recording recovery must not delay the saved transcript.
+        void review().catch(()=>{});
         const page=await read(cursor?'?before='+encodeURIComponent(cursor):'');
         if(!Array.isArray(page.visits)||page.visits.length>1||page.more&&(!/^[a-f0-9-]{36}$/.test(page.before||'')||page.before===cursor))throw Error('Voice history cursor changed');
         for(const entry of page.visits){
@@ -483,7 +510,7 @@ window.PublicLiveConversation=(()=>{
           // The current connection already forwards this visit. Restoring its
           // source concurrently must not duplicate live text or captions.
           if(entry.id===visit&&(active||starting||closing))continue;
-          if(historyVisit!==entry.id){historyVisit=entry.id;historySeen=new Set();}
+          const seen=new Set(),items=[];
           let after=0,revision,sourceOrder=0;
           for(let n=0;n<128;n++){
             const value=await read('/'+entry.id+'/events?after='+after+(revision?'&revision='+encodeURIComponent(revision):''));
@@ -491,15 +518,18 @@ window.PublicLiveConversation=(()=>{
                 ||value.more&&value.after===after||revision&&revision!==value.revision)throw Error('Voice source cursor changed');
             for(const row of value.items){
               const order=sourceOrder++,event=row.event;if(!event||typeof row.event_id!=='string'||event.event_id!==row.event_id)throw Error('Voice source changed');
-              if(historySeen.has(row.event_id))continue;
-              if(historySeen.size>=8192)throw Error('Voice history exceeds its bound');
-              historySeen.add(row.event_id);
-              onItem({visit:entry.id,item:event,public_live:true,history:true,source_order:order,observed_at:new Date(entry.created_at*1000).toISOString()});
+              if(seen.has(row.event_id))continue;
+              if(seen.size>=8192)throw Error('Voice history exceeds its bound');
+              seen.add(row.event_id);
+              if(['session.input_transcript.delta','session.output_transcript.delta'].includes(event.type))
+                items.push({visit:entry.id,item:event,public_live:true,history:true,source_order:order,observed_at:new Date(entry.created_at*1000).toISOString()});
             }
             if(!value.more)break;
             if(n===127)throw Error('Voice history page bound reached');
             after=value.after;revision=value.revision;
           }
+          if(!current())throw Error('Voice history changed');
+          onHistoryItems(items);
         }
         historyBefore=page.more?page.before:undefined;restored=selected;
         historyFailed=undefined;onHistory({loading:false,more:!!historyBefore});
@@ -508,7 +538,7 @@ window.PublicLiveConversation=(()=>{
       catch(error){if(current()){historyFailed=selected;onHistory({loading:false,more:!!historyBefore,error:true,older});}throw error;}
       finally{restoring=undefined;}
     }
-    return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyVisit=historyFailed=undefined;historySeen=new Set();onHistory({loading:false,more:false});},
+    return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyFailed=undefined;onHistory({loading:false,more:false});},
       retry:value=>withLock(value.voice_visit,()=>upload(value)),
       discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
       setEnabled:value=>{audible=value===true;if(!audible)outputLevel=0;if(audio)audio.muted=!audible;nativeAudio?.setEnabled(audible);state();},

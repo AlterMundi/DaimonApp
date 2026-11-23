@@ -12,7 +12,7 @@ async function rejectsLocked(action){
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
 function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
  const timers=[];
- const records=[],requests=[],sockets=[],peers=[],states=[],items=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
+ const records=[],requests=[],sockets=[],peers=[],states=[],items=[],captions=[],historyBatches=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
  const trackListeners=new Map();
  const track={readyState:'live',stop(){stops++;this.readyState='ended';},addEventListener(name,run){trackListeners.set(name,run);},removeEventListener(name,run){if(trackListeners.get(name)===run)trackListeners.delete(name);}};
@@ -90,18 +90,32 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
   {timeout(ms){const controller=new AbortController();networkClocks.push({ms,controller});return controller.signal;}},
   (run,ms)=>{if(continuous&&ms>470000&&ms<490000)timers.push(run);return setTimeout(run,ms);});
  let recovered=[];const engine=api.create({headers:()=>({'X-Dashboard-CSRF':'action'}),getBinding:()=>selectedBinding||binding,getBackend:()=>selectedBackend,onHistory:value=>historyStates.push(value),
-  onState:value=>{states.push(value);if(throwClosingState&&value.working)throw Error('Synthetic presentation failure during close');},onItem:value=>items.push(value),onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
+  onState:value=>{states.push(value);if(throwClosingState&&value.working)throw Error('Synthetic presentation failure during close');},onItem:value=>items.push(value),onCaption:text=>captions.push(text),onHistoryItems:batch=>{historyBatches.push(batch);items.push(...batch);},onUsage:value=>{usage.push(value);if(usageFailure)throw Error('Diagnostic failed');},onRecovery:value=>{recovered=value;}});
  async function start(reconnect=false,options){
   const started=reconnect?engine.reconnect():engine.start(options);await until(()=>peers.at(-1)?.listeners.has('icegatheringstatechange'));
   peers.at(-1).ice();await until(()=>peers.at(-1).connectionState==='connected');peers.at(-1).started();assert.equal(await started,true);
  }
- return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
+ return {engine,start,track,trackListeners,renew:()=>{assert(timers.length);timers.at(-1)();},store,records,requests,sockets,peers,states,items,captions,historyBatches,order,window,navigator,media,historyStates,audios,nativeOutputs,usage,observers,
   history:run=>{readHistory=run;},binding:value=>{selectedBinding=value;},backend:value=>{selectedBackend=value;},uploads:run=>{beforeUpload=run;},releaseUploadHash:()=>releaseUploadHash?.(),
   pcm:()=>{captureBytes+=32000;listener({pcm:new Uint8Array(32000).buffer});},boundaryTail:size=>{boundaryTail=size;},recovered:()=>recovered,fail:value=>{failUpload=value;},
   expireNetworkClocks:()=>{for(const clock of networkClocks)clock.controller.abort();},
   permission:()=>permission,stops:()=>stops,recorderCloses:()=>recorderCloses};
 }
 (async()=>{
+ const liveCaption=fixture();await liveCaption.start();
+ const transcript={type:'session.input_transcript.delta',event_id:'caption-1',delta:'Hola',session_id:'live/provider:42'};
+ const channel=liveCaption.peers[0].channel,socket=liveCaption.sockets[0];
+ channel.onmessage({data:JSON.stringify({...transcript,session_id:'other'})});
+ assert.deepEqual(liveCaption.captions,[]);
+ channel.onmessage({data:JSON.stringify(transcript)});
+ assert.deepEqual(liveCaption.captions,['Hola']);
+ assert.deepEqual(liveCaption.items,[],'WebRTC captions cannot write to Conversation history');
+ socket.onmessage({data:JSON.stringify({type:'provider_event',event:transcript})});
+ assert.deepEqual(liveCaption.captions,['Hola']);
+ assert.equal(liveCaption.items.length,1);
+ await liveCaption.engine.hold();
+ channel.onmessage({data:JSON.stringify({...transcript,event_id:'late',delta:'!'} )});
+ assert.deepEqual(liveCaption.captions,['Hola'],'Retired peers cannot update captions');
  // The sideband can request a source after SDP creation but before WebRTC's
  // connection-state event. Preserve the same request and microphone while
  // readiness is pending; source confirmation still waits for real uploads.
@@ -497,10 +511,10 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
   if(fail)return {ok:false};
   return {ok:true,json:async()=>({items:[second],after:200,revision:'source',more:false})};
  });
- await assert.rejects(history.engine.restoreHistory());assert.equal(history.items.length,1);
+ await assert.rejects(history.engine.restoreHistory());assert.equal(history.items.length,0,'Failed paged reads do not animate a partial visit');
  const afterFailure=reads;await history.engine.restoreHistory();assert.equal(reads,afterFailure,'Presence does not loop a failed source read');
  fail=false;await history.engine.restoreHistory(false,true);assert.deepEqual(history.items.map(v=>v.item.event_id),['one','two']);
- assert.equal(history.items[1].source_order,1);assert(history.items.every(v=>v.history));
+ assert.equal(history.historyBatches.length,1);assert.equal(history.items[1].source_order,1);assert(history.items.every(v=>v.history));
  const beforeReads=reads;await history.engine.restoreHistory();assert.equal(reads,beforeReads,'Presence refresh does not rescan sources');
  await history.engine.restoreHistory(true);assert.equal(history.historyStates.at(-1).more,false);
  assert.equal(history.permission(),0);assert.equal(history.sockets.length,0);assert.equal(history.requests.length,0);

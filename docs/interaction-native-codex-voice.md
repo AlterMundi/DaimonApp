@@ -1543,3 +1543,19 @@ the audio transport. With `prior_visit_context = false`, startup sends the
 current integrating context, without the previous physical visit's transcript
 or automatic delivery of earlier visits' results into the new voice session.
 Original recordings, transcripts and delivered native work remain readable.
+
+The GPT-Live WebRTC data channel supplies immediate local Avatar captions.
+The authenticated sideband still retains the canonical transcript deltas and
+forwards them to the Conversation timeline. Its captions cover clients before
+the first usable WebRTC transcript event. Reads of an earlier visit assemble
+its bounded, revision-checked event pages before drawing the speaker blocks, so
+existing text appears together. Browser recovery and original storage keep
+their separate ownership. Provider transcript emission can still be uneven.
+
+For an owner who wants to ignore incidental sound, tell the live voice brief
+to yield only for intelligible words addressed to it and to keep speaking
+through taps, breath and room noise. Browser capture already requests echo
+cancellation and noise suppression. The voice brief guides the provider; it
+does not block provider-controlled turn interruptions or identify a speaker.
+Keep physical noise, overlap and speech-identity checks distinct from the
+synthetic transcript UI checks.
