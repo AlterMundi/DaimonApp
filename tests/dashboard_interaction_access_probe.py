@@ -1,3 +1,5 @@
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +12,9 @@ SHELL = (b'<html data-shared-auth="true">'
          b'<script src="assets/app.js?v=2d711642b726b044"></script>')
 JS = (200, "text/javascript", b"x", None)
 VERSIONED_JS = (206, "text/javascript", b"x", '"2d711642b726b044"')
+HOME_STATUS = (200, "application/json",
+               b'{"contract":"dm.home-browser/v1","signed_in":false,"shared_login":true}', None)
+HOME_IDENTITY = (401, "application/json", b'{"detail":"human_browser_required"}', None)
 
 
 class AccessProbe(unittest.TestCase):
@@ -41,15 +46,70 @@ class AccessProbe(unittest.TestCase):
             results = [(*access, None)]
             if entry is not None:
                 results.extend([(*entry, None), *assets])
+            if expected == "ready":
+                results.extend([HOME_STATUS, HOME_IDENTITY])
             with self.subTest(expected=expected, access=access[0]), patch(
                 "scripts.interaction_access_probe.read_probe_response", side_effect=results,
             ) as request:
                 self.assertEqual(probe(ORIGIN)["state"], expected)
                 self.assertEqual(request.call_count, len(results))
                 if expected == "ready":
-                    self.assertTrue(all(call.kwargs.get("prefix_only") for call in request.call_args_list[2:]))
+                    self.assertTrue(all(call.kwargs.get("prefix_only") for call in request.call_args_list[2:5]))
                     self.assertEqual([call.args[1] for call in request.call_args_list[2:]], [
                         ORIGIN + "/access-client.js",
                         ORIGIN + "/interaction/assets/conversation.js",
                         ORIGIN + "/interaction/assets/app.js?v=2d711642b726b044",
+                        ORIGIN + "/access/status",
+                        ORIGIN + "/access/identity",
                     ])
+
+    def test_real_http_shared_sign_in_failure_then_recovery(self):
+        paths = {
+            "/interaction/api/interaction/access": (
+                401, "application/json", b'{"detail":"Shared browser sign-in required"}', None),
+            "/interaction/": (200, "text/html", SHELL, None),
+            "/access-client.js": JS,
+            "/interaction/assets/conversation.js": JS,
+            "/interaction/assets/app.js": VERSIONED_JS,
+            "/access/status": (200, "application/json",
+                               b'{"contract":"dm.home-browser/v1","signed_in":false}', None),
+            "/access/identity": HOME_IDENTITY,
+        }
+        seen = []
+
+        class Gateway(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path.split("?")[0])
+                assert not self.headers.get("Authorization") and not self.headers.get("Cookie")
+                status, media, body, etag = paths[self.path.split("?")[0]]
+                self.send_response(status)
+                self.send_header("Content-Type", media)
+                self.send_header("Content-Length", str(len(body)))
+                if etag:
+                    self.send_header("ETag", etag)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Gateway) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                origin = f"http://127.0.0.1:{server.server_port}"
+                missing = probe(origin)
+                self.assertEqual((missing["state"], missing["sign_in"]),
+                                 ("unexpected_entry_response", "status_unavailable"))
+                self.assertNotIn("/access/identity", seen)
+                paths["/access/status"] = HOME_STATUS
+                paths["/access/identity"] = (503, "text/html", b"Unavailable", None)
+                broken = probe(origin)
+                self.assertEqual((broken["state"], broken["sign_in"]),
+                                 ("unexpected_entry_response", "identity_unavailable"))
+                paths["/access/identity"] = HOME_IDENTITY
+                ready = probe(origin)
+                self.assertEqual((ready["state"], ready["sign_in"]), ("ready", "ready"))
+            finally:
+                server.shutdown()
+                thread.join(3)

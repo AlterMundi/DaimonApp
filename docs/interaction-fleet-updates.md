@@ -456,9 +456,13 @@ shared-login entry, verifies TLS and does not follow redirects. The expected
 application-specific anonymous HTTP 401, shared entry HTTP 200 and three
 same-origin bootstrap scripts must agree. The probe reads a small JavaScript
 prefix and compares the served ETag with the declared version when present.
-An HTML fallback, missing script or stale script is an entry failure.
-It uses no session cookies or credentials. Exit 0 means all selected entries
-passed their anonymous-path check. Exit 1 includes a bounded per-receiver result.
+An HTML fallback, missing script or stale script is an entry failure. It
+also checks the same Home's anonymous `/access/status` for enabled shared
+login and the `/access/identity` route for its expected human-session refusal.
+A shell with broken Home sign-in routes is reported by the existing entry
+incident, with bounded detail in the App probe output. It uses no sessions,
+cookies or credentials. Exit 0 means all selected entries passed this
+public check. Exit 1 includes a bounded per-receiver result.
 A deadline or failed execution is an unavailable observation. Positive signed-in
 access and individual browser session expiry require separate evidence.
 
