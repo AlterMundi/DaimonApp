@@ -468,8 +468,11 @@ access and individual browser session expiry require separate evidence.
 
 The standalone Conversation page retries one transient access failure while
 visible. Its manual Retry connection action rechecks the existing session.
-Only an authentication-required response can start shared sign-in. The retry
-reads access metadata and never resubmits a conversation original.
+Only an authentication-required response can start shared sign-in. The Home
+identity adapter treats HTTP 401 as session refusal only when the bounded JSON
+response contains Home's `human_browser_required` detail. Other upstream
+refusals are connection failures and preserve the existing retry action. The
+retry reads access metadata and never resubmits a conversation original.
 
 The generic process `/health` route can stay 200 when `/api/interaction/access`
 returns 503. On 22 November both a native observer-model selection and a legacy

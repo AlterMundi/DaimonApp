@@ -17,14 +17,21 @@ def identity_response(origin, token):
                                                              'Accept': 'application/json'})
         response = connection.getresponse()
         body = response.read(8193)
-        if response.status == 401:
-            raise ValueError('Shared sign-in required')
-        if response.status != 200 or len(body) > 8192:
+        if (response.status not in (200, 401) or len(body) > 8192
+                or response.headers.get_content_type() != 'application/json'):
             raise OSError('Shared authentication unavailable')
         try:
-            return json.loads(body)
-        except (ValueError, UnicodeError):
+            value = json.loads(body)
+        except (ValueError, RecursionError):
             raise OSError('Shared identity response unavailable') from None
+        if response.status == 401:
+            # Only Home's explicit anonymous/expired-session contract can
+            # tell the app to offer sign-in. A proxy or unrelated service may
+            # also return 401 while the browser session is still valid.
+            if isinstance(value, dict) and value.get('detail') == 'human_browser_required':
+                raise ValueError('Shared sign-in required')
+            raise OSError('Shared identity response unavailable')
+        return value
     finally:
         connection.close()
 
