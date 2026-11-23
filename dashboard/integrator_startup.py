@@ -20,6 +20,10 @@ def _size(value):
     return len(json.dumps(text,ensure_ascii=False).encode())
 
 
+def _without_text(source):
+    return {key:value for key,value in source.items() if key!='text'} | {'text_omitted':'startup_bound'}
+
+
 def _time(value):
     if not isinstance(value,str):return None
     try:
@@ -114,16 +118,15 @@ def _integrating_sources(provider, frozen, max_bytes, check, outputs=None):
                     raise ValueError('Current integrating result cursor changed')
                 offset=following
                 if _size(text)>max_bytes:break
-            else:raise ValueError('Current integrating result exceeds its source read bound')
-            if following is not None:
-                if not selected:raise ValueError('Latest integrating source needs semantic preparation before voice')
-                more=True;break
+            if following is not None and selected:more=True;break
             result={'kind':part.get('kind'),'source':row['id'],'revision':row['revision'],
                 'text':text,'completed':row.get('completed'),'observed_at':row.get('observed_at'),
                 'ordering_unknown':observed is None}
+            if following is not None:result=_without_text(result)
         if _size(selected+[result])>max_bytes:
-            if not selected:raise ValueError('Latest integrating source needs semantic preparation before voice')
-            more=True;break
+            if selected:more=True;break
+            result=_without_text(result)
+            if _size([result])>max_bytes:raise ValueError('Latest integrating source reference exceeds the startup bound')
         selected.append(result)
     return {'sources':list(reversed(selected)),'earlier_sources_available':more}
 
@@ -167,8 +170,10 @@ def read(native, thread, *, max_bytes=16384, check=lambda:None):
             candidate={'kind':'current_integrator_conversation','thread':thread,
                 'messages':list(reversed(rows+[row])),'earlier_history_available':True}
             if _size(candidate)>max_bytes:
-                if not rows:raise ValueError('Latest integrator message needs semantic preparation before voice')
-                more=True;break
+                if rows:more=True;break
+                row=_without_text(row)
+                if _size({**candidate,'messages':[row]})>max_bytes:
+                    raise ValueError('Latest integrator message reference exceeds the startup bound')
             rows.append(row)
             if len(rows)==16:more=True;break
         else:

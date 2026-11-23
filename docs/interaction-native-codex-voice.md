@@ -1582,7 +1582,12 @@ case the voice frontend has no result to read aloud yet. Avoid replaying the
 original, interrupting its owner, or treating a spoken acknowledgment as
 evidence a lookup is running. Fresh startup context is bounded, so an older
 fact may need an explicit same-conversation lookup even when the app can show
-the older message in history.
+the older message in history. When the newest native message or retained
+source exceeds the startup bound, keep its exact item and revision or input
+ID and hash, labeled `text_omitted`. A smaller preceding source can still be
+included. The handoff brief directs a lookup in the same conversation when
+the omitted text matters. Never send a clipped message as if it were complete
+or skip an ownership, revision or cursor failure to admit voice.
 
 Send empty `session.thinking.append` immediately for each trusted native
 client delegation, using its original delegation ID. This is GPT-Live's quiet
