@@ -51,7 +51,10 @@ pub(crate) use live_context::{
 pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
-pub(crate) use matrix::inbox::{Page as MatrixInboxPage, Selection as MatrixInboxSelection};
+pub(crate) use matrix::inbox::{
+    Page as MatrixInboxPage, ReadFailure as MatrixInboxReadFailure,
+    Selection as MatrixInboxSelection,
+};
 pub(crate) use matrix::publication::{
     PublicationCompletion, PublicationConfig, PublicationRequest,
 };
