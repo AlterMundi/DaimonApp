@@ -85,6 +85,14 @@ an uncertain native input or manually supply a fabricated checkpoint to satisfy 
 
 ## Startup with a long idle integrating history
 
+
+During startup, a retained result may receive a correction between the home
+Conversation list and the exact revision read. If the owned list explicitly
+shows a newer revision of that same source, read the ledger once more within
+the existing startup deadline. Never combine fragments from different
+revisions. A failure without a visible revision change, or a changed owner
+or binding, still stops preparation before creating a call.
+
 The receiving owner reproduced `Native active turn selection incomplete` during
 the pre-microphone work observation. Core reported the exact integrating thread
 as `idle`, but its completed history exceeded the six-page recent-turn bound.
