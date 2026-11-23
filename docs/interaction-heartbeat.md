@@ -884,3 +884,38 @@ event-source observation does not advance unrelated periodic task counters.
 Operational service detection and supported fixed recovery belong to the producer,
 not to an LLM review of an unchanged report. Account-holder login and unsupported
 repairs remain concrete escalations; observation is not proof of repair.
+
+### Daily operator work through Reports
+
+An existing periodic task can select `"cadence":"daily_utc"` in its owner
+selection JSON for one revision per UTC day, or
+`"cadence":"twice_daily_utc"` for one revision per UTC half-day starting at
+00:00 and 12:00 UTC. The existing Reports loop offers the current slot at the
+next eligible check, even if no files or alerts change. An instruction edit
+does not create a second offer in a twice-daily slot. A task uses either a
+calendar cadence or a semantic change source. Tasks with neither setting preserve their existing
+per-check behavior. The retained offer and its reader carry the original
+`occurrence_utc`, including when a busy entry defers the batch into a later day.
+There is no historical catch-up sweep. Normal attempted-source and uncertain
+admission rules still apply. A calendar date is a scheduling slot, not an
+execution or remediation receipt.
+
+For Sysops, select one task with the paired human's retained operating purpose
+in the existing Reports parent. The scheduler uses that parent's pause,
+cadence, idle admission and existing execution allowance. Its worker may
+submit only a finite, previously bound Cluster operation. The binding belongs
+to Cluster: resolve living placements and existing signed/operator grants,
+select the exact maintenance policy or component, and use the UTC occurrence
+as part of the existing owner's operation identity. Inspect the current
+operation before another submission. An active, deferred or uncertain writer
+must keep its original identity through observation or recovery. One schedule
+slot does not supersede an older unfinished operation.
+
+The Cluster receiving-maintenance journal covers qualified native application
+selection. For guest OS inventory and reviewed package actions, reuse the
+existing children daily inventory and package writers. Those paths do not
+supply fleet-wide tooling, account custody or security remediation rights.
+Cluster must supply the corresponding closed supported operator bindings for
+those domains and keep their effects and actual receiving verification in
+the owning journal. Report the observed state and uncovered resources; avoid
+emitting account material, commands or private logs in report offers.

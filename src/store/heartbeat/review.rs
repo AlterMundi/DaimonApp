@@ -1,5 +1,6 @@
 //! One finite report-source successor inside the existing heartbeat parent.
 use super::*;
+use chrono::{DateTime, Timelike};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,7 +73,7 @@ pub(super) fn status_on(conn: &Connection, p: &producer::Parent) -> Result<Value
         json!({"state":state,"contract":r.contract,"checks":r.checks,
         "next_check_ms":r.next_check_ms,"maximum_executions":if r.contract.production {Value::Null} else {json!(4)},
         "mode":if r.contract.production {"production"} else {"finite"},
-        "periodic_tasks":r.tasks.iter().map(|t|json!({"id":t.id,"purpose":t.purpose,"revision":task_revision(t),"state":if producer::purpose_source(conn,p.human,p.entry,&p.native,&t.purpose).is_ok_and(|(_,rev)|rev==t.purpose_revision){"selected"}else{"purpose_retired"}})).collect::<Vec<_>>(),
+        "periodic_tasks":r.tasks.iter().map(|t|json!({"id":t.id,"purpose":t.purpose,"revision":task_revision(t),"cadence":t.cadence,"state":if producer::purpose_source(conn,p.human,p.entry,&p.native,&t.purpose).is_ok_and(|(_,rev)|rev==t.purpose_revision){"selected"}else{"purpose_retired"}})).collect::<Vec<_>>(),
         "funding":if r.contract.production {"shared_production_hourly_allowance"} else {"original_shared_pilot_only_no_standing_refill"},
         "meaning":"Selected purpose/source observation; native useful review and delivery remain separate"}),
     )
@@ -216,6 +217,9 @@ impl Store {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeartbeatReviewTask {
+    /// Optional UTC-day slots sampled by the existing Reports observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cadence: Option<ReviewTaskCadence>,
     pub id: String,
     pub purpose: HeartbeatPurpose,
     pub purpose_revision: String,
@@ -226,10 +230,35 @@ pub struct HeartbeatReviewTask {
     pub change_source: Option<HeartbeatReportSource>,
 }
 
-fn offer_revision(task: &HeartbeatReviewTask, checks: u32) -> Result<String> {
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewTaskCadence {
+    DailyUtc,
+    TwiceDailyUtc,
+}
+
+impl ReviewTaskCadence {
+    fn occurrence(self, now: DateTime<Utc>) -> String {
+        let date = now.date_naive();
+        match self {
+            Self::DailyUtc => date.to_string(),
+            Self::TwiceDailyUtc => format!("{date}T{:02}:00:00Z", (now.hour() / 12) * 12),
+        }
+    }
+}
+
+fn offer_revision(task: &HeartbeatReviewTask, checks: u32, now: DateTime<Utc>) -> Result<String> {
     use sha2::{Digest, Sha256};
     let value = if let Some(source) = &task.change_source {
         serde_json::to_vec(&(task, super::reports::snapshot(source)?.1))?
+    } else if let Some(cadence) = task.cadence {
+        match cadence {
+            ReviewTaskCadence::DailyUtc => serde_json::to_vec(&(task, now.date_naive()))?,
+            // Editing the instructions must not offer a second run in the same slot.
+            ReviewTaskCadence::TwiceDailyUtc => {
+                serde_json::to_vec(&("twice_daily_utc", &task.id, cadence.occurrence(now)))?
+            }
+        }
     } else {
         serde_json::to_vec(&(task, checks))?
     };
@@ -252,7 +281,8 @@ pub(in crate::store) fn task_current(
     Ok(revision == task.purpose_revision
         && offer.evidence["task"] == serde_json::to_value(task)?
         && (task.change_source.is_none()
-            || offer.revision == offer_revision(task, p.review.as_ref().unwrap().checks)?))
+            || offer.revision
+                == offer_revision(task, p.review.as_ref().unwrap().checks, Utc::now())?))
 }
 
 pub(in crate::store) fn task_offers(
@@ -262,6 +292,7 @@ pub(in crate::store) fn task_offers(
     let Some(review) = &p.review else {
         return Ok(vec![]);
     };
+    let now = Utc::now();
     let mut offers = Vec::new();
     for task in &review.tasks {
         let Ok((_, revision)) =
@@ -272,9 +303,10 @@ pub(in crate::store) fn task_offers(
         if revision != task.purpose_revision {
             continue;
         }
-        let revision = offer_revision(task, review.checks)?;
+        let occurrence = task.cadence.map(|cadence| cadence.occurrence(now));
+        let revision = offer_revision(task, review.checks, now)?;
         offers.push(producer::Offer {key:format!("review-task:{}",task.id),revision:revision.clone(),evidence:json!({
-            "kind":"periodic_review_task","task":task,"revision":revision,
+            "kind":"periodic_review_task","task":task,"revision":revision,"occurrence_utc":occurrence,
             "reader":{"operation":"heartbeat_source","arguments":{"source":format!("periodic:{}",task.id),"revision":revision}},
             "meaning":"Read this task's own retained human purpose before acting; the batch's other purpose does not replace it. Shared Reports cadence/funding; no publication permission."})});
     }
@@ -366,6 +398,10 @@ impl Store {
                 && task.instructions.len() <= 8000,
             "Bounded task identity/instructions required"
         );
+        anyhow::ensure!(
+            task.cadence.is_none() || task.change_source.is_none(),
+            "Select a periodic cadence or a change source, not both"
+        );
         if let Some(source) = &task.change_source {
             super::reports::validate(std::slice::from_ref(source))?;
         }
@@ -408,5 +444,56 @@ impl Store {
         producer::save(&tx, &p)?;
         tx.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daily_review_revision_is_stable_across_reports_checks() {
+        let mut task: HeartbeatReviewTask = serde_json::from_value(json!({
+            "id": "daily-test",
+            "purpose": {"channel":"conversation","input_ref":"00000000-0000-4000-8000-000000000001"},
+            "purpose_revision": "purpose",
+            "instructions": "Run the selected finite job.",
+        })).unwrap();
+        let day = "2026-11-22T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let next_day = day + chrono::TimeDelta::days(1);
+        assert!(
+            serde_json::to_value(&task)
+                .unwrap()
+                .get("cadence")
+                .is_none()
+        );
+        assert_ne!(
+            offer_revision(&task, 1, day).unwrap(),
+            offer_revision(&task, 2, day).unwrap()
+        );
+        task.cadence = Some(ReviewTaskCadence::DailyUtc);
+        let previous = offer_revision(&task, 1, day).unwrap();
+        assert_eq!(previous, offer_revision(&task, 96, day).unwrap());
+        assert_ne!(previous, offer_revision(&task, 97, next_day).unwrap());
+
+        let cadence = ReviewTaskCadence::TwiceDailyUtc;
+        task.cadence = Some(cadence);
+        let noon = day + chrono::TimeDelta::hours(12);
+        let one_second = chrono::TimeDelta::seconds(1);
+        assert_eq!(cadence.occurrence(day), "2026-11-22T00:00:00Z");
+        assert_eq!(cadence.occurrence(noon), "2026-11-22T12:00:00Z");
+        let morning = offer_revision(&task, 1, day).unwrap();
+        task.instructions.push_str(" Retain the exact result.");
+        assert_eq!(
+            morning,
+            offer_revision(&task, 42, noon - one_second).unwrap()
+        );
+        let afternoon = offer_revision(&task, 43, noon).unwrap();
+        assert_ne!(morning, afternoon);
+        assert_eq!(
+            afternoon,
+            offer_revision(&task, 96, next_day - one_second).unwrap()
+        );
+        assert_ne!(afternoon, offer_revision(&task, 97, next_day).unwrap());
     }
 }
