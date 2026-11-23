@@ -27,10 +27,11 @@ native action, reply delivery or current operational readiness.
 Selected per-body receiving state belongs in the owning current service record.
 An older backend without conditional capabilities leaves control rows disabled
 with explanations; a compatible selected backend enables the explicit controls
-below. Configuration never activates resources. Messaging is the initial lane;
-Issues, Sensory, Tasks and Bitácora remain unsupported/off until separately
-qualified. Missing operational proof keeps the pulse unavailable, independently
-of whether conditional controls are supported.
+below. Configuration never activates resources. Messaging and Reports have
+separate lane states. Bitácora and the sleep health check are scheduled purposes
+within Reports. The menu reads their selections and the fixed Sysops schedule
+from the receiver. Missing operational proof keeps the pulse unavailable,
+independently of whether conditional controls are supported.
 
 Matrix owns the shared generation-aware global/lane control contract and receiving
 activation. Once selected, the App can bind those actual commands and observed
@@ -802,3 +803,12 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+The heart's Scheduled reviews section shows the known purposes in its live
+owner-console status: Bitácora, Matrix alerts, Sleep consolidation checks and
+Sysops. “Scheduled” means selected on configured Reports; it is not proof of
+execution. Sleep shows the check, not the underlying consolidation worker.
+Sysops uses the fixed operation status from the listener; an unrelated
+model-reviewed task with the same label does not schedule that operation.
+An absent selection is displayed as “Not scheduled” only when the server has
+supplied the actual periodic task list. These rows add no controls.

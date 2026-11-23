@@ -18,6 +18,9 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
     document.documentElement.dataset.stylePolicy='authored';document.body.className='standalone-conversation conversation-header-compact';
     const heart=document.querySelector('#heartbeat-toggle');for(let p=heart;p;p=p.parentElement)p.hidden=false;
     window.calls=[];window.ownerStatus={schema:'telecodex.heartbeat-control/v1',generation:34,admission_paused:false,producer:{state:'configured',mode:'continuous',last_check:{outcome:'in_progress',started_at_unix_ms:Date.now()}},resources:{state:'available',mode:'continuous'},lanes:{messaging:{supported:true,paused:false,generation:3},reports:{supported:true,paused:false,generation:11},issues:{supported:false}},controls:{schema:'telecodex.heartbeat-controls/v1',conditional_global:true,conditional_lane:true,actions:['set_paused','set_lane_paused']},operational_evidence:{schema:'telecodex.heartbeat-operational/v1',generation:34,operational:false,reason:'attention_pending',observed_at_unix_ms:Date.now(),valid_for_seconds:15}};
+    ownerStatus.producer.finite_review={state:'configured',periodic_tasks:[
+      {id:'bitacora-intake',state:'selected'},{id:'dmk-learning-health',state:'selected'},
+    ]};
     InteractionHeartbeat.mount({authenticated:()=>true,api:async(...args)=>{calls.push(args);return ownerStatus;}});
    });
    await page.locator('#heartbeat-toggle').click();await page.locator('#heartbeat-status').filter({hasText:'Waiting'}).waitFor();
@@ -30,6 +33,11 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
    assert(view.menu.bottom<=viewport.height-8);assert.equal(view.pulse,'unavailable');
    assert.doesNotMatch(view.text,/Generation|reconciled|Source check|Admission|lane|resources|Issues|2026-/);
    assert.match(view.text,/Earlier heartbeat work is still pending/);assert.match(view.text,/Messages/);assert.match(view.text,/Scheduled reviews/);
+   for(const [label,status] of [['Bitácora','Scheduled'],['Sleep · consolidation checks','Scheduled'],['Sysops','Not scheduled']]){
+    const row=page.locator('#heartbeat-lanes>div').filter({has:page.getByText(label,{exact:true})});
+    assert.equal(await row.getByText(status,{exact:true}).count(),1);
+    assert.equal(await row.getByRole('button').count(),0);
+   }
    assert(view.calls.every(c=>c.length===1),'Opening the menu may only read status');
    if(process.env.QUALIFICATION_OUTPUT)await page.screenshot({path:process.env.QUALIFICATION_OUTPUT+'/heartbeat-'+viewport.width+'.png'});
    await page.keyboard.press('Escape');await page.locator('#heartbeat-menu').waitFor({state:'hidden'});

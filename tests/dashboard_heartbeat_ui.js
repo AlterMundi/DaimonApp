@@ -79,3 +79,26 @@ assert.equal(presentation(unloaded,now).detail,'Our conversation will be prepare
 assert.equal(state(unloaded,now),'unavailable','An unloaded thread is not fresh positive admission proof');
 assert.equal(presentation(unloaded,now+15000).label,'Status unavailable');
 assert.equal(presentation({...unloaded,operational_evidence:{...unloaded.operational_evidence,reason:'native_admission_unavailable'}},now).label,'Needs attention','An explicit native refusal still needs attention');
+
+const {reviewTasks}=window.InteractionHeartbeat;
+const reports={...base,lanes:{reports:{supported:true,paused:false}},
+  producer:{finite_review:{state:'configured',periodic_tasks:[
+    {id:'bitacora-intake',state:'selected'},
+    {id:'matrix-alerts',state:'selected'},
+    {id:'dmk-learning-health',state:'selected'},
+    {id:'private-unknown-task',state:'selected',purpose:'must not display'},
+  ]}}};
+assert.deepEqual(Array.from(reviewTasks(reports), row=>[row.label,row.status]),[
+  ['Bitácora','Scheduled'],['Matrix alerts','Scheduled'],
+  ['Sleep · consolidation checks','Scheduled'],['Sysops','Not scheduled'],
+]);
+assert.equal(reviewTasks({...reports,admission_paused:true})[0].status,'Paused');
+assert.equal(reviewTasks({...reports,lanes:{reports:{supported:true,paused:true}}})[0].status,'Paused');
+assert.equal(reviewTasks({...reports,producer:{finite_review:{state:'configured',periodic_tasks:[
+  {id:'sysops',state:'selected'},
+]}}})[3].status,'Not scheduled');
+const fixedSysops={...reports,sysops:{state:'scheduled',dispatch:'dispatch_acknowledged'}};
+assert.equal(reviewTasks(fixedSysops)[3].status,'Scheduled');
+assert.equal(reviewTasks({...fixedSysops,admission_paused:true})[3].status,'Paused');
+assert.equal(reviewTasks({...fixedSysops,producer:{finite_review:{state:'expired',periodic_tasks:[]}}})[3].status,'Checks unavailable');
+assert.equal(reviewTasks({...reports,producer:{}}).length,0);
