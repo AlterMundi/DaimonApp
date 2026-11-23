@@ -16,6 +16,7 @@ MAX_LINE=2*1024*1024
 MAX_ITEMS=80
 TEXT_PART=16000
 MAX_RESPONSE=512*1024
+ROUTED_INSTRUCTION = re.compile(r'^Current instruction: ([a-f0-9-]{36})$', re.MULTILINE)
 
 
 def _text(value):
@@ -27,21 +28,27 @@ def _text(value):
     return ''
 
 
-def _conversation_input(text):
+def _conversation_input(text, routed_original):
     # Match the native conversation's user-request envelope. Ordinary text is
     # kept as written, including Markdown and paragraph spacing.
     text=text.replace('\r\n','\n')
     if text.lstrip().startswith(('# AGENTS.md instructions','<environment_context>')):
         _,marker,text=text.rpartition('\n\nUser request:\n')
         if not marker:return ''
-    if text.startswith('[Interaction controller]\n') and '\nTransport provenance: ' in text:
-        _,marker,text=text.partition('\nCurrent attributed input:\n')
-        if not marker:return ''
-        text=text.partition('\n\nReturn your answer followed by <daimon-result>')[0]
+    if text.startswith('<codex_internal_context '):
+        return ''
+    if text.startswith('[Interaction controller]\n'):
+        header,marker,body=text.partition('\nCurrent attributed input:\n')
+        instruction=ROUTED_INSTRUCTION.search(header)
+        if not marker or not instruction or not routed_original:return ''
+        original=routed_original(instruction[1])
+        if not isinstance(original,str) or not body.startswith(original.replace('\r\n','\n')+'\n'):
+            return ''
+        return original
     return text.partition('\n\nFollow these instructions for this turn:')[0]
 
 
-def _event(record,technical):
+def _event(record,technical,routed_original):
     if not isinstance(record,dict):return None
     p=record.get('payload',{})
     if not isinstance(p,dict) or record.get('type')!='response_item':return None
@@ -54,7 +61,7 @@ def _event(record,technical):
         if role=='assistant' and (p.get('channel')=='analysis' or p.get('phase')=='analysis'):return None
         text=_text(p.get('content'))
         if not technical and role=='user':
-            text=_conversation_input(text)
+            text=_conversation_input(text,routed_original)
         if not technical and not text.strip():return None
         return {'kind':'message','role':role,'text':text}
     if not technical:return None
@@ -73,7 +80,7 @@ def _event(record,technical):
     return None
 
 
-def read(path,native,*,technical=False,revision=None,before=None,after=None,event=None,text_offset=0,expected_file=None,scan=False):
+def read(path,native,*,technical=False,revision=None,before=None,after=None,event=None,text_offset=0,expected_file=None,scan=False,routed_original=None):
     if (type(technical) is not bool or type(scan)is not bool
             or scan and before is None and after is None
             or sum(v is not None for v in (before,after,event))>1):
@@ -179,7 +186,7 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
             consumed+=len(line)
             try:record=json.loads(line)
             except (ValueError,UnicodeError):skipped+=1;continue
-            value=_event(record,technical)
+            value=_event(record,technical,routed_original)
             if event is not None and value is None:raise ValueError('Selected native event is not exposed in this view')
             if value is None:continue
             text=value.pop('text');size=len(text)

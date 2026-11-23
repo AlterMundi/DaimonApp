@@ -57,13 +57,19 @@ def qualify(binary):
         header={'type':'session_meta','payload':{'id':'native-topic-7'}}
         tool={'type':'response_item','payload':{'type':'function_call','name':'inspect','arguments':'{"fixture":true}'}}
         result={'type':'response_item','payload':{'type':'message','role':'assistant','content':[{'type':'output_text','text':'Late worker answer'}]}}
-        history.write_text(json.dumps(header)+'\n'+json.dumps(tool)+'\n')
+        relay={'type':'response_item','payload':{'type':'message','role':'user',
+            'content':[{'type':'input_text','text':first.replace(
+                '\nReturn your answer followed by <daimon-result>',
+                '\nSelected creation context (source data):\n{"fixture":"receiving context"}\n\nReturn your answer followed by <daimon-result>')} ]}}
+        history.write_text('\n'.join(map(json.dumps,[header,tool,relay]))+'\n')
         with sqlite3.connect(native_home/'state_5.sqlite') as db:
             db.execute('CREATE TABLE threads(id TEXT,rollout_path TEXT,archived INTEGER)')
             db.execute('INSERT INTO threads VALUES(?,?,0)',('native-topic-7',str(history)))
         b.provider.native_home=native_home
         url='/api/interaction/sessions/'+selected['id']
+        assert [item['text'] for item in b.get(url)['items']]==['#Unknown Keep the exact original words.']
         first=b.get(url+'?technical=true');assert first['items'][0]['kind']=='tool_call'
+        assert 'receiving context' in first['items'][1]['text']
         with history.open('a') as stream:stream.write(json.dumps(result))
         cursor='?technical=true&revision='+first['revision']+'&after='+str(first['after'])
         assert b.get(url+cursor)['items']==[]
