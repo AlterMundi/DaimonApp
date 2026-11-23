@@ -122,6 +122,7 @@ class PublicLiveSessionContext:
         # explicit ancestry order. Other modes/unfinished projections are not
         # retired merely because this owner selected public voice.
         for old in reversed(chain):
+            if self.updates_stopped:raise ValueError('Voice startup ended')
             current=_PublicProducer(self.history,self.provider,self.human,old['id'],self.frozen['binding'],self.operation)
             ancestor=old.get('native_continuation_from')
             if ancestor is not None:
@@ -137,7 +138,9 @@ class PublicLiveSessionContext:
             await current.close()
             if current.status!='closed':raise ResumePending('Prior native context still needs review')
 
+        if self.updates_stopped:raise ValueError('Voice startup ended')
         seed=await self._catch_up(previous,notice,recheck) if previous is not None else None
+        if self.updates_stopped:raise ValueError('Voice startup ended')
         prepared=json.loads(json.dumps(spec,ensure_ascii=False,allow_nan=False))
         if seed is not None:
             messages=prepared.setdefault('input',[])
@@ -162,6 +165,7 @@ class PublicLiveSessionContext:
         reserve=min(16384,32768-len(json.dumps(prepared,ensure_ascii=False,
             allow_nan=False).encode())+6)
         context=await self.operation(self.provider.public_live_integrator_context,self.frozen,reserve)
+        if self.updates_stopped:raise ValueError('Voice startup ended')
         messages[-1]=_current_context_message(context)
         # Validate the entire seed/configuration, not a clipped excerpt, before
         # any provider creation or microphone permission.

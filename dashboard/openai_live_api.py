@@ -224,6 +224,8 @@ def install(app, config, provider, authorize, origins):
             if (owner_cleanup_finished and lease is not None and not context_operations and not context_syncs
                     and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
                 lease.release()
+                return True
+            return False
         pre_offer_closed=False
         result_index=0;result_poll=0
         held_returns=set()
@@ -276,6 +278,19 @@ def install(app, config, provider, authorize, origins):
             await asyncio.to_thread(history.end_capture,visit,human,binding)
             await send({'type':'finishing','id':visit,**({'message':
                 'Finishing voice; this native request needs review. Originals are kept.'} if native_failure else {})})
+        async def close_before_offer(action):
+            nonlocal pre_offer_closed
+            if action.get('type')!='close' or set(action)-{'type','reason'}:
+                raise ValueError('Select an explicit close before the WebRTC offer')
+            reason=action.get('reason','explicit_stop')
+            if not isinstance(reason,str) or reason not in history.close_reasons-{'transport_renewal'}:
+                raise ValueError('Select a known voice close diagnostic')
+            await recheck();await current_owner()
+            if native_context is not None:native_context.stop_updates()
+            await asyncio.to_thread(history.end_capture,visit,human,binding)
+            with suppress(OSError,ValueError,RenderError):
+                await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
+            pre_offer_closed=True
         try:
             async with asyncio.timeout(seconds+60):
                 meta=await asyncio.wait_for(message(8192),5)
@@ -344,8 +359,14 @@ def install(app, config, provider, authorize, origins):
                         **({'voice_continuation':meta['replacement']['id']} if meta.get('replacement') and admission.get('voice_choice') else {})})
                     native_context=PublicLiveSessionContext(app.state.native_history,history,provider,human,visit,owner,context_operation)
                     async def preparing_context():await send({'type':'context_preparing','id':visit})
-                    spec=await native_context.prepare(spec,notice=preparing_context,recheck=recheck,
-                                                      prior_visit_context=prior_visit_context)
+                    read_browser=asyncio.create_task(message(66000))
+                    preparing=asyncio.create_task(native_context.prepare(spec,notice=preparing_context,recheck=recheck,
+                                                                         prior_visit_context=prior_visit_context))
+                    done,_=await asyncio.wait((read_browser,preparing),return_when=asyncio.FIRST_COMPLETED)
+                    if read_browser in done:
+                        await close_before_offer(read_browser.result())
+                        return
+                    spec=preparing.result();preparing=None
                     current=await asyncio.to_thread(history.read,visit,human,owner)
                     history.check_capture(current)
                     admission['remaining_seconds']=max(1,int(current['admission']['expires']-time.monotonic()))
@@ -355,16 +376,10 @@ def install(app, config, provider, authorize, origins):
                 await send({'type':'prepared','id':visit,'binding':binding,'admission':admission,
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})
-                offer=await asyncio.wait_for(message(66000),min(seconds,300))
-                if offer.get('type')=='close' and set(offer)<={'type','reason'}:
-                    reason=offer.get('reason','explicit_stop')
-                    if not isinstance(reason,str) or reason not in history.close_reasons-{'transport_renewal'}:
-                        raise ValueError('Select a known voice close diagnostic')
-                    await recheck();await current_owner()
-                    await asyncio.to_thread(history.end_capture,visit,human,binding)
-                    with suppress(OSError,ValueError,RenderError):
-                        await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
-                    pre_offer_closed=True
+                offer=await asyncio.wait_for(read_browser if read_browser is not None else message(66000),min(seconds,300))
+                read_browser=None
+                if offer.get('type')=='close':
+                    await close_before_offer(offer)
                     return
                 if set(offer)!={'type','sdp'} or offer['type']!='offer':raise ValueError('Select one WebRTC offer')
                 await recheck();await current_owner()
@@ -634,8 +649,8 @@ def install(app, config, provider, authorize, origins):
                         # There was no provider creation. Acknowledge only after
                         # releasing the old app lease so a fresh entry can proceed.
                         owner_cleanup_finished=True
-                        release_owner_if_settled()
-                        with suppress(Exception):await send({'type':'startup_ended','id':visit})
+                        if release_owner_if_settled():
+                            with suppress(Exception):await send({'type':'startup_ended','id':visit})
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:
                     if lease is not None:

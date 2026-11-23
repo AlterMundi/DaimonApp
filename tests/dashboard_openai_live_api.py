@@ -201,6 +201,49 @@ class Mounted(unittest.TestCase):
                     self.close(retry)
                 self.assertEqual(sum(c.creations for c in Client.instances),1)
 
+    def test_close_while_fresh_context_read_is_blocked_stops_startup_before_context_open(self):
+        entered, release, closing = (threading.Event() for _ in range(3))
+        original_read=self.owner.public_live_integrator_context
+        record_close=LiveCreations.record_close_reason
+        def delayed_context(*args):
+            entered.set()
+            if not release.wait(8):raise TimeoutError('Synthetic context reader not released')
+            value=original_read(*args)
+            return {**value,'messages':[{'text':'Current conversation marker'}]}
+        def observe_close(history,*args):
+            record_close(history,*args)
+            closing.set()
+        self.owner.public_live_integrator_context=delayed_context
+        app=self.renewal_app()
+        with TestClient(app) as client,patch.object(LiveCreations,'record_close_reason',observe_close):
+            socket=lambda:client.websocket_connect('/api/interaction/voice/gpt-live',
+                headers={'origin':'https://example.test'})
+            with socket() as ws:
+                try:
+                    ws.send_json(self.meta)
+                    self.assertEqual(ws.receive_json()['type'],'context_preparing')
+                    self.assertTrue(entered.wait(2))
+                    ws.send_json({'type':'close','reason':'explicit_stop'})
+                    self.assertTrue(closing.wait(2),'Stop must reach the owner before the context reader returns')
+                    self.assertEqual(app.state.voice_active,{100},'Keep the old lease until its actual read settles')
+                    value=self.read()
+                    self.assertEqual(value['client_close_reason'],'explicit_stop')
+                    self.assertEqual(value['state'],'not_created')
+                    self.assertNotIn('native_context_seed',value)
+                finally:
+                    release.set()
+                self.assertEqual(ws.receive_json(),{'type':'startup_ended','id':self.ident})
+                self.assertEqual(app.state.voice_active,set())
+                self.assertNotIn('native_context_seed',self.read())
+                self.assertEqual(sum(c.creations for c in Client.instances),0)
+            self.ident=str(uuid.uuid4())
+            self.meta={**self.meta,'id':self.ident}
+            with socket() as retry:
+                native=self.start(retry)
+                self.assertIn('Current conversation marker',json.dumps(native.spec))
+                self.close(retry)
+            self.assertEqual(sum(c.creations for c in Client.instances),1)
+
     def test_cold_native_entry_auth_failure_never_initializes(self):
         calls=[]
         self.owner.prepare_native_voice=lambda binding:calls.append(binding)
