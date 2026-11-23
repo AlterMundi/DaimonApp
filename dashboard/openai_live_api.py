@@ -389,6 +389,17 @@ def install(app, config, provider, authorize, origins):
                                 break
                             if await asyncio.to_thread(history.event,visit,human,owner,event):
                                 if native_context is not None:native_context.observe(event)
+                                if native_backend and not closing and event['type']=='session.delegation.created':
+                                    # Quiet progress precedes sealing the audio and
+                                    # dispatching native work. It does not authorize either.
+                                    try:
+                                        command=await asyncio.to_thread(history.claim_quiet_progress,
+                                            visit,human,owner,event['delegation']['id'])
+                                        if command is not None:
+                                            await recheck();await current_owner()
+                                            await asyncio.to_thread(sideband.send,command)
+                                    except (OSError,ValueError,RenderError,LiveUnavailable):
+                                        logging.getLogger(__name__).warning('Public voice quiet progress unconfirmed')
                                 await send({'type':'provider_event','event':event})
                             if (context and not native_backend and event['type']=='response.event'
                                     and event.get('event',{}).get('type')=='response.completed'):

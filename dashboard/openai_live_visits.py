@@ -443,6 +443,24 @@ class LiveCreations:
             self._write(value)
             return receipt
 
+    def claim_quiet_progress(self, ident, human, frozen, delegation):
+        """Claim the immediate provider acknowledgment once for a new handoff."""
+        with history_lock(self.root / '.lock'):
+            value = self.read(ident, human, frozen)
+            work = value['delegations'].get(delegation, {})
+            if (value.get('backend_mode') != 'native' or work.get('target') != 'client'
+                    or 'quiet_progress' in work or 'source_seal' in work):
+                return None
+            self.check_capture(value)
+            command = {'type': 'session.thinking.append', 'event_id': str(uuid.uuid4()),
+                       'delegation_id': delegation, 'content': ''}
+            # Durable before send. An unwitnessed attempt is never sent again,
+            # and this receipt cannot establish admission, a result or hearing.
+            work['quiet_progress'] = {'event_id': command['event_id'], 'state': 'intent',
+                                      'ack_reserve': ' ' * 1024}
+            self._write(value)
+            return command
+
     def event(self, ident, human, frozen, event):
         """Fsync ordered source deltas before forwarding; no inferred utterances."""
         if isinstance(event,dict) and event.get('type') in (
@@ -509,6 +527,15 @@ class LiveCreations:
             if event['type'] in ('session.thinking.appended','session.commentary.appended'):
                 from .openai_live_native_results import observe_append
                 changed = observe_append(value, event)
+                if event['type'] == 'session.thinking.appended':
+                    for work in value['delegations'].values():
+                        quiet = work.get('quiet_progress')
+                        if (quiet is not None and quiet['state'] == 'intent'
+                                and quiet['event_id'] == event.get('client_event_id')):
+                            quiet.update(state='context_injected', ack_source=event['event_id'])
+                            quiet.pop('ack_reserve', None)
+                            changed = True
+                            break
             if event['type']=='session.delegation.created':
                 delegation=event.get('delegation',{});key=delegation.get('id')
                 if (not _text(key,1024) or key in value['delegations'] and

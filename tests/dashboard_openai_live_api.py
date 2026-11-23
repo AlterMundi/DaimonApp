@@ -821,13 +821,26 @@ class Mounted(unittest.TestCase):
                         'delegation':{'id':'native-task','target':'client'}})
                     self.assertEqual(socket.receive_json()['type'],'provider_event')
                     request=socket.receive_json();self.assertEqual(request['type'],'source_seal_requested')
+                    quiet,=native.sent
+                    self.assertEqual(quiet,{'type':'session.thinking.append','event_id':quiet['event_id'],
+                        'delegation_id':'native-task','content':''})
+                    self.assertEqual(calls['work'],0,'Quiet progress precedes sealing and native admission')
+                    native.events.put({'type':'session.thinking.appended','event_id':'quiet-progress-receipt',
+                        'client_event_id':quiet['event_id']})
+                    self.assertEqual(socket.receive_json()['event']['event_id'],'quiet-progress-receipt')
+                    self.assertEqual(self.read()['delegations']['native-task']['quiet_progress']['state'],'context_injected')
+                    native.events.put({'type':'session.delegation.created','event_id':'native-request',
+                        'delegation':{'id':'native-task','target':'client'}})
+                    native.events.put({'type':'session.updated','event_id':'after-duplicate'})
+                    self.assertEqual(socket.receive_json()['event']['event_id'],'after-duplicate')
+                    self.assertEqual(native.sent,[quiet],'Retained duplicate must not send another acknowledgment')
                     socket.send_json({'type':'source_sealed','request':request['request'],
                         'through_ordinal':1,'capture_bytes':len(audio)-44})
                     self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
                     if unconfirmed_work:
                         notice=socket.receive_json()
                         self.assertEqual(notice,{'type':'notice','code':'native_handoff_unconfirmed'})
-                        self.assertEqual(native.sent,[],'An uncertain work acknowledgment must not close current speech')
+                        self.assertEqual(native.sent,[quiet],'An uncertain work acknowledgment must not close current speech')
                         pending=self.read()['delegations']['native-task']
                         self.assertEqual(pending['native_pipeline']['state'],'unconfirmed')
                         self.assertEqual(pending['native_work']['state'],'intent')
@@ -852,7 +865,7 @@ class Mounted(unittest.TestCase):
                         self.assertEqual(pending['state'],'native_handed_off')
                         self.assertEqual(pending['native_pipeline']['state'],'admitted')
                         self.assertEqual(pending['native_work']['state'],'observed')
-                        self.assertEqual([event['type'] for event in native.sent],['session.close'])
+                        self.assertEqual([event['type'] for event in native.sent],['session.thinking.append','session.close'])
                         self.assertTrue(native.detached);self.assertEqual(app.state.voice_active,set())
                     elif slow_result:
                         self.assertTrue(entered.wait(1));socket.send_json({'type':'close'})
@@ -901,7 +914,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(len(updates),0 if slow_result or automatic or unconfirmed_work else 1)
         if not slow_result and not automatic and not unconfirmed_work:
             self.assertEqual(updates[0]['state'],'context_injected');self.assertNotIn('heard',updates[0])
-        else:self.assertEqual([row['type'] for row in native.sent],['session.close'])
+        else:self.assertEqual([row['type'] for row in native.sent],['session.thinking.append','session.close'])
         self.assertFalse(first_value['delegations']['native-task']['native_pipeline']['work_completed'])
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
@@ -971,7 +984,7 @@ class Mounted(unittest.TestCase):
                     socket.send_json({'type':'close'})  # Browser hold duplicates the same close intent.
                     final=socket.receive_json();self.assertEqual(final['type'],'closed')
                     self.assertIn('needs review',final['message'])
-        self.assertEqual(len(attempts),1);self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertEqual(len(attempts),1);self.assertEqual([v['type'] for v in native.sent],['session.thinking.append','session.close'])
         value=self.read();self.assertEqual(value['state'],'closed')
         self.assertTrue(value['finalization']['voice_usage_confirmed'])
         self.assertEqual(value['delegations']['failed-task']['native_pipeline']['state'],'held')
@@ -1021,7 +1034,7 @@ class Mounted(unittest.TestCase):
         self.assertNotIn('interpretation',value['native_originals']['0'])
         self.assertEqual(value['delegations']['slow-task']['native_pipeline']['state'],'held')
         self.assertNotIn('native_work',value['delegations']['slow-task'])
-        self.assertEqual([row['type'] for row in native.sent],['session.close'])
+        self.assertEqual([row['type'] for row in native.sent],['session.thinking.append','session.close'])
     def test_native_original_opt_in_uses_exact_owner_and_never_repeats_lost_ack(self):
         app=self.app_with_history()
         async def authorize(request):return {'human':100,'csrf':'fresh'}
@@ -1150,7 +1163,7 @@ class Mounted(unittest.TestCase):
                 self.assertTrue(closed['finalization']['voice_usage_confirmed'])
                 self.assertFalse(closed['renewal_pending'],'Stop never admits an automatic successor')
                 self.assertEqual(self.read()['delegations'],before,'Native work/source uncertainty is retained unchanged')
-        self.assertEqual([x['type'] for x in native.sent],['session.close'])
+        self.assertEqual([x['type'] for x in native.sent],['session.thinking.append','session.close'])
         self.assertEqual(native.creations,1)
         self.assertEqual(app.state.voice_active,set())
 
