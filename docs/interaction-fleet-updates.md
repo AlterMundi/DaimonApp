@@ -505,5 +505,14 @@ defers active voice, 78 means the writer never started, and 79 means an
 attempt ran with unconfirmed recovery. A nonzero operator result is preserved.
 
 Cluster owns registration of the exact operator, its preimage and candidate
-digest. An incident alone grants no write. Use the existing Alerts observer
+digest. For a scheduled unit, use `--observer-receipt` with a fixed absolute
+path in its owner-private operation directory. Keep this path separate from
+the writer's own output directory. The guard exclusively claims the receipt
+and syncs it before handing control to the writer. Only a matching live
+binding fault can create the claim. Code 80 means a retained claim already
+exists and the writer did not run again. Read that receipt and the writer's
+own effects. An interrupted claim is unknown, even after a job restart.
+Keep one receipt per prepared transition, and retain it while its unit can
+still run or any associated effect is uncertain.
+An incident alone grants no write. Use the existing Alerts observer
 for a fresh public readback and separately retain real authenticated evidence.

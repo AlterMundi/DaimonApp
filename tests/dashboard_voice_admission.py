@@ -211,7 +211,7 @@ class Admission(unittest.TestCase):
         result=self.command(self.server(self.admission.header,COVERAGE),code,require_speech=True)
         self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(target.read_text(),'effect')
 
-    def observer_repair(self, health, code, *, extra_change=False):
+    def observer_repair(self, health, code, *, extra_change=False, receipt=None):
         preimage=self.root/'receiver.previous.toml'
         receiver=self.root/'receiver.toml'
         config=self.root/'operator.toml'
@@ -223,7 +223,8 @@ class Admission(unittest.TestCase):
         script=Path(__file__).resolve().parents[1]/'scripts/interaction_web_maintenance.py'
         return subprocess.run([sys.executable,str(script),'--config',str(config),
             '--health-url',health,'--seconds','5','--require-speech','--observer-preimage',str(preimage),
-            '--receiver-sha256',hashlib.sha256(upcoming.encode()).hexdigest(),'--',sys.executable,'-c',code],
+            '--receiver-sha256',hashlib.sha256(upcoming.encode()).hexdigest(),
+            *(['--observer-receipt',str(receipt)] if receipt is not None else []),'--',sys.executable,'-c',code],
             capture_output=True,text=True,timeout=12)
 
     def test_observer_repair_runs_once_and_requires_confirmed_recovery(self):
@@ -248,6 +249,38 @@ class Admission(unittest.TestCase):
         result=self.observer_repair(health,'pass')
         self.assertEqual(result.returncode,79,result.stderr)
         self.assertIn('recovery is unconfirmed',result.stderr)
+
+    def test_scheduled_observer_repair_holds_unconfirmed_attempt_across_processes(self):
+        receipt = self.root/'repair-receipt.json'
+        target = self.root/'writer-effect'
+        fault = (503,'Receiving control binding changed; operator must requalify Sessions')
+        health = self.server(self.admission.header,COVERAGE,lambda: fault)
+        code = ('from pathlib import Path; import json; '
+                f'assert json.loads(Path({str(receipt)!r}).read_text())["state"] == "attempt_claimed"; '
+                f'Path({str(target)!r}).write_text("once"); raise SystemExit(9)')
+        outcome = self.observer_repair(health,code,receipt=receipt)
+        self.assertEqual(outcome.returncode,9,outcome.stderr)
+        retained = receipt.read_bytes()
+        self.assertEqual(json.loads(retained)['state'],'recovery_unconfirmed')
+        self.assertEqual(self.observer_repair(health,'print("unexpected")',receipt=receipt).returncode,80)
+        self.assertEqual(receipt.read_bytes(),retained)
+        self.assertEqual(target.read_text(),'once')
+
+    def test_scheduled_observer_receipt_changes_only_after_a_matching_fault_and_recheck(self):
+        receipt = self.root/'repair-receipt.json'
+        target = self.root/'writer-effect'
+        fault = (503,'Receiving control binding changed; operator must requalify Sessions')
+        healthy = (401,'Shared browser sign-in required')
+        access = [healthy]
+        health = self.server(self.admission.header,COVERAGE,lambda: healthy if target.exists() else access[0])
+        code = f'from pathlib import Path; Path({str(target)!r}).touch()'
+        self.assertEqual(self.observer_repair(health,code,receipt=receipt).returncode,78)
+        self.assertFalse(receipt.exists())
+        access[0] = fault
+        outcome = self.observer_repair(health,code,receipt=receipt)
+        self.assertEqual(outcome.returncode,0,outcome.stderr)
+        value = json.loads(receipt.read_bytes())
+        self.assertEqual((value['state'],value['access_status']),('recovery_verified',401))
 
     def test_repair_operator_cannot_claim_an_unheld_or_foreign_fence(self):
         from dashboard.voice_admission import inherited_maintenance, MAINTENANCE_FD
