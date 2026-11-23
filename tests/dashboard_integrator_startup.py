@@ -49,8 +49,17 @@ class CurrentIntegrator(unittest.TestCase):
         result=read(native,'owned',max_bytes=1024)
         self.assertEqual([r['text'] for r in result['messages']],[latest])
         self.assertTrue(result['earlier_history_available'])
-        with self.assertRaisesRegex(ValueError,'semantic preparation'):
-            read(Reader([{'data':[message('new','large '*10000)],'nextCursor':None}]),'owned',max_bytes=1024)
+
+    def test_oversized_latest_keeps_exact_native_reference_and_small_context(self):
+        largest=message('latest','large '*10000)
+        earlier=message('earlier','Short context')
+        result=read(Reader([{'data':[largest,earlier],'nextCursor':None}]),'owned',max_bytes=1024)
+        older,recent=result['messages']
+        self.assertEqual(older['text'],'Short context')
+        self.assertEqual((recent['item'],recent['turn'],recent['text_omitted']),('latest','owned-turn','startup_bound'))
+        self.assertNotIn('text',recent)
+        full=read(Reader([{'data':[message('latest','small')],'nextCursor':None}]),'owned')
+        self.assertNotEqual(recent['revision'],full['messages'][0]['revision'])
 
     def test_voice_spec_budget_counts_embedding_context_as_json_text(self):
         native=Reader([{'data':[message('new','Latest complete correction.'),
@@ -118,6 +127,29 @@ class IntegratingLedger(unittest.TestCase):
         self.assertFalse(value['sources'][1]['completed'])
         self.assertEqual(self.reads,['input list 0 before','input status '+self.ident],
             'Raw read-only readers must not invoke media-retiring status/list conveniences')
+
+    def test_oversized_latest_result_keeps_exact_revision_and_preceding_original(self):
+        original=self.p.presentation_part
+        calls=[]
+        def part(source,revision,offset):
+            calls.append(offset)
+            return {**original(source,revision,offset),'text':'Large result. '*200,'next_offset':offset+2800}
+        self.p.presentation_part=part
+        earlier,latest=integrating_sources(self.p,self.frozen,max_bytes=1280)['sources']
+        self.assertEqual(earlier['text'],self.status['text'])
+        self.assertEqual((latest['source'],latest['revision'],latest['text_omitted']),
+            (self.source,'b'*64,'startup_bound'))
+        self.assertNotIn('text',latest)
+        self.assertEqual(calls,[0])
+
+    def test_oversized_latest_original_is_not_replaced_by_a_partial_transcript(self):
+        self.input_page['items'][0]['received_at']='2026-11-07T18:00:02Z'
+        self.status['text']='A long captured transcript. '*5000
+        older,latest=integrating_sources(self.p,self.frozen,max_bytes=1280)['sources']
+        self.assertEqual(older['source'],self.source)
+        self.assertEqual((latest['source'],latest['text_omitted']),(self.ident,'startup_bound'))
+        self.assertEqual(len(latest['text_sha256']),64)
+        self.assertNotIn('text',latest)
 
     def test_concurrent_result_revision_restarts_the_read_without_mixing_fragments(self):
         original=self.p.presentation_part

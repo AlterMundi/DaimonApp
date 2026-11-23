@@ -244,6 +244,27 @@ class Mounted(unittest.TestCase):
                 self.close(retry)
             self.assertEqual(sum(c.creations for c in Client.instances),1)
 
+    def test_latest_large_native_message_keeps_exact_location_in_the_fresh_offer(self):
+        from dashboard.integrator_startup import read
+        from dashboard_integrator_startup import Reader, message
+
+        def current(frozen,budget):
+            native=Reader([{'data':[message('latest','Too large to include. '*10000),
+                message('earlier','Exact short context')],'nextCursor':None}])
+            return read(native,frozen['native_thread'],max_bytes=budget//2)
+
+        self.owner.public_live_integrator_context=current
+        with TestClient(self.renewal_app()) as client:
+            with client.websocket_connect('/api/interaction/voice/gpt-live',headers={'origin':'https://example.test'}) as ws:
+                native=self.start(ws)
+                spec=json.dumps(native.spec)
+                self.assertIn('text_omitted',spec)
+                self.assertIn('latest',spec)
+                self.assertIn('Exact short context',spec)
+                self.assertNotIn('Too large to include.',spec)
+                self.close(ws)
+        self.assertEqual(sum(c.creations for c in Client.instances),1)
+
     def test_cold_native_entry_auth_failure_never_initializes(self):
         calls=[]
         self.owner.prepare_native_voice=lambda binding:calls.append(binding)
