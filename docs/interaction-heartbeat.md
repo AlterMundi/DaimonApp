@@ -804,7 +804,8 @@ adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
 
 For an owner-bound inbox with an observation credential, qualify the current
-Matrix receiving-status view before selecting the adapter. The inbox preflight
+Matrix receiving-status view and its existing `runtime.status` plus `scope.me`
+observation grant before selecting the adapter. The inbox preflight
 uses the authenticated compact view with the exact being and embodiment checks.
 The full ledger integrity audit remains separately available for operator
 diagnosis. An unavailable or mismatched compact response does not read the inbox

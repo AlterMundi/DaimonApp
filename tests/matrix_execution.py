@@ -1810,7 +1810,7 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
         observe = create_capability(
             b"o" * 32,
             client_id="observe-test",
-            methods=["runtime.status"],
+            methods=["runtime.status", "scope.me"],
             not_before_ms=now - 1000,
             not_after_ms=now + 60000,
         )
