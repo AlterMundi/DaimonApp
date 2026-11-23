@@ -20,6 +20,24 @@ struct Submit {
     playback: Option<crate::store::ConversationPlayback>,
 }
 
+/// Only a leading explicit command with a request can interrupt for Avatar.
+fn foreground_interrupt_requested(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    match words.next() {
+        Some(word) if word.eq_ignore_ascii_case("/interrupt") => {}
+        Some(word) if word.eq_ignore_ascii_case("barra") || word.eq_ignore_ascii_case("slash") => {
+            if !words
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case("interrupt"))
+            {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    words.next().is_some()
+}
+
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
     let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
@@ -522,6 +540,13 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         }
         let selected: Delegate = serde_json::from_str(body)?;
         let _ingress = app.shared.conversation_ingress.lock().await;
+        // Freeze the listener-owned execution before checking the journal.
+        // A later execution cannot inherit the pending request's interrupt.
+        let interrupt_targets = if selected.live_window.is_some() {
+            super::voice::snapshot(app).await
+        } else {
+            Default::default()
+        };
         let (input, fresh) = if let Some(window) = selected.live_window {
             #[cfg(unix)]
             {
@@ -560,9 +585,27 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             )?
         };
         if fresh {
-            // Bypass voice-selected routing and automatic question answers.
-            // Only the existing integrator decides downstream work.
-            submit(app.clone(), input.clone()).await?;
+            // Trust the acoustic text validated by the native store, never the
+            // provider's formulation, echoed text or an earlier capture.
+            let priority = input
+                .foreground_delegation
+                .as_ref()
+                .is_some_and(|delegation| {
+                    delegation.live_window.is_some() && foreground_interrupt_requested(&input.text)
+                });
+            if priority {
+                let worker = app.worker_for(input.entry).await?;
+                enqueue(app, &input, worker.sender)?;
+                // Enqueue first. A failed admission must never interrupt work.
+                super::voice::INTERRUPT_TARGETS
+                    .scope(interrupt_targets, async {
+                        super::voice::interrupt_snapshot(input.entry)
+                    })
+                    .await;
+            } else {
+                // Only the existing integrator decides downstream work.
+                submit(app.clone(), input.clone()).await?;
+            }
         }
         return response(
             app,
@@ -1427,4 +1470,32 @@ async fn voice_submit(
             .conversation_input_read(human, entry, &input.id)?,
         fresh && !recover,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::foreground_interrupt_requested;
+
+    #[test]
+    fn avatar_priority_requires_explicit_leading_command_and_request() {
+        for text in [
+            "/interrupt respondé ahora",
+            " /Interrupt revisá el último mensaje",
+            "Barra interrupt contame cómo quedó",
+            "slash INTERRUPT último estado",
+        ] {
+            assert!(foreground_interrupt_requested(text), "{text}");
+        }
+        for text in [
+            "/interrupt",
+            "barra interrupt   ",
+            "¿podés usar /interrupt si hace falta?",
+            "interrumpí el turno",
+            "/interruptible respondé",
+            "barra de interrupt respondé",
+            "/btw qué significa interrupt",
+        ] {
+            assert!(!foreground_interrupt_requested(text), "{text}");
+        }
+    }
 }

@@ -1588,3 +1588,14 @@ A valid browser close before the WebRTC offer ends the prepared visit and
 releases its app lease. The visit records the bounded browser reason and
 confirms startup ended without a provider creation or final usage claim.
 The browser keeps the local reason it already displayed.
+
+An explicit leading `/interrupt` (or spoken “barra interrupt” / “slash
+interrupt”) followed by a request uses the native owner's existing exact
+execution cancellation token. The listener first validates the acoustic
+source window and admits the same original through the existing queue. It
+then requests cancellation of the execution captured for that conversation
+before journal validation. A duplicate or unadmitted original cannot request
+cancellation. A newer execution and other conversations do not share that
+token. This does not change goal state, promote the request past already
+queued inputs, or confirm native termination. Ordinary speech keeps its
+existing steer/queue behavior.
