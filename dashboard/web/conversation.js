@@ -117,17 +117,20 @@ window.Conversation = (() => {
       if(captureBusy||voiceBusy||active||speechWait||voiceSession?.active||microphone?.ownsSend()||!['current','openai'].includes(servicesEngine.value)||servicesEngine.value==='openai'&&!openaiConversationAvailable){servicesEngine.value=conversationServices;return;}
       stop();conversationServices=servicesEngine.value;
       if(conversationServices==='openai'&&publicLiveNativeEnabled){voiceChoice='gpt-live-native';selectVoiceEngine();}
+      if(conversationServices!=='openai'&&voiceChoice==='conversation'){voiceChoice='provider';selectVoiceEngine();}
       applyConversationServices();
     });
     const isPublicLive=()=>voiceChoice==='gpt-live'||voiceChoice==='gpt-live-native';
+    const canonicalVoiceAvailable=()=>conversationServices==='openai'&&lastVoiceCapabilities?.can_openai_converse_continuous===true;
     function selectVoiceEngine(){
       const publicEnabled=voiceChoice==='gpt-live-native'?publicLiveNativeEnabled:publicLiveResponsesEnabled;
-      const nextNative=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
-      const next=isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
+      const canonical=voiceChoice==='conversation';
+      const nextNative=!canonical&&(isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled);
+      const next=canonical?(canonicalVoiceAvailable()?legacyVoiceSession:undefined):isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
       if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
       nativeEnabled=nextNative;nativeVoiceSession=nextNative?next:providerVoiceSession;voiceSession=next;
-      continuousEnabled=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
-      voiceMode?.configure(isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
+      continuousEnabled=canonical?canonicalVoiceAvailable():isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
+      voiceMode?.configure(canonical?canonicalVoiceAvailable():isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
       if(voiceEngine){
         voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
         const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
@@ -136,12 +139,14 @@ window.Conversation = (() => {
         if(publicOption)publicOption.disabled=!publicLiveResponsesEnabled;
         const nativeOption=voiceEngine.querySelector?.('option[value="gpt-live-native"]');
         if(nativeOption)nativeOption.disabled=!publicLiveNativeEnabled;
+        const canonicalOption=voiceEngine.querySelector?.('option[value="conversation"]');
+        if(canonicalOption)canonicalOption.disabled=!canonicalVoiceAvailable();
       }
-      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&voiceChoice==='provider';
+      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&!canonicalVoiceAvailable()&&voiceChoice==='provider';
     }
     voiceEngine?.addEventListener('change',()=>{
       if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
-      if(!['provider','codex','gpt-live','gpt-live-native'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveResponsesEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled)return;
+      if(!['provider','codex','gpt-live','gpt-live-native','conversation'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveResponsesEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled||voiceEngine.value==='conversation'&&!canonicalVoiceAvailable())return;
       voiceChoice=voiceEngine.value;selectVoiceEngine();
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
@@ -2392,6 +2397,7 @@ window.Conversation = (() => {
     if(readOnly){document.body.classList.toggle("monitor-mode",true);$("#conversation-sent").open=true;}
     if(standalone&&!readOnly&&microphone)legacyVoiceSession=window.ContinuousConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
+      getTranscriptionProvider:()=>voiceChoice==='conversation'?'openai':'current',
       getPlayback:()=>playbackContext(true),retain:original=>microphone.retainContinuous(original),commit:original=>microphone.commitContinuous(original),
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);if(stage==='handoff')voiceMode?.update({handoff:{...detail,id}});},
       onReview:originals=>{void microphone.reviewContinuous(originals);},
@@ -2513,8 +2519,8 @@ window.Conversation = (() => {
     }
     nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
-      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
+      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation'))),
+      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation')):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
         if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};
@@ -2525,7 +2531,7 @@ window.Conversation = (() => {
         (voiceSession===publicLiveSession?publicLiveSession?.start({avatarEntry}):voiceSession?.start()):
         microphone?.startConversation(),
       canReconnect:()=>nativeEnabled,
-      onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous())return voiceSession?.start();},
+      onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous(voiceChoice==='conversation'))return voiceSession?.start();},
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:({returnToText=false}={})=>{

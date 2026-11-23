@@ -255,6 +255,11 @@ function boot(fail){
  assert.equal(live.preparedText,'Single live words');assert.equal(single.events[0].data.type,'audio/wav');
  assert.equal(single.sockets.length,1,'One live recognition, never another transcription');
 
+ const canonicalActivity=boot(),openingDirect=canonicalActivity.window.StreamingVoice.openActivity({headers:()=>({}),binding,id:uuid,transcriptionProvider:'openai'});
+ assert.equal(canonicalActivity.sockets[0].url,'wss://example.invalid/interaction/api/interaction/voice/openai/activity');
+ canonicalActivity.sockets[0].open();canonicalActivity.sockets[0].message({type:'ready',id:uuid,analysis_only:true});
+ (await openingDirect).close();
+
  for(const failure of ['resume','connect']){
   const preview=boot(failure),original=new Canonical(),capture=await preview.create(original);
   let errors=0;capture.addEventListener('error',()=>errors++);capture.start(250);

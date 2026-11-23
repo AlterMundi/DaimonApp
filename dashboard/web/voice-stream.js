@@ -64,9 +64,10 @@ window.StreamingVoice=(()=>{
   }
   // One explicitly selected foreground analysis socket. It neither transcribes
   // nor admits originals; the coordinator owns PCM/original retention and Send.
-  async function openActivity({headers,binding,id,onActivity=()=>{},onUnavailable=()=>{},signal}){
+  async function openActivity({headers,binding,id,onActivity=()=>{},onUnavailable=()=>{},signal,transcriptionProvider='current'}){
     if(signal?.aborted)throw Error('Foreground voice closed');
-    const target=new URL('api/interaction/voice/activity',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
+    if(!['current','openai'].includes(transcriptionProvider))throw Error('Voice analysis unavailable');
+    const target=new URL(transcriptionProvider==='openai'?'api/interaction/voice/openai/activity':'api/interaction/voice/activity',window.location.href);target.protocol=target.protocol==='https:'?'wss:':'ws:';
     const socket=new WebSocket(target);
     let ready=false,closed=false,total=0,offset=0,lastEndpoint,pendingBoundary,timer,deadline,resolve,reject;
     const opened=new Promise((yes,no)=>{resolve=yes;reject=no;});
@@ -131,7 +132,7 @@ window.StreamingVoice=(()=>{
     };
   }
   async function create(media,{headers,binding,id,onPartial=()=>{},onPCM=()=>{},onUnavailable=()=>{},canonicalRecorder,transcriptionProvider='current',turnDetection=false,onEndpoint=()=>{},onDetectionUnavailable=()=>{},captureSource,initialPCM=()=>[],onFlushed=()=>{}}){
-    if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&(captureSource||turnDetection))throw Error('OpenAI live transcription requires one manual capture');
+    if(!['current','openai'].includes(transcriptionProvider)||transcriptionProvider==='openai'&&turnDetection)throw Error('Voice transcription unavailable');
     if(captureSource&&canonicalRecorder)throw Error('Shared PCM cannot split a compressed original');
     const shared=!!captureSource,capture=captureSource||await openCapture(media);
     let socket,unsubscribe;

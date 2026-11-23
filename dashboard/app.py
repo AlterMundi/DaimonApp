@@ -697,6 +697,11 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     or config.get('openai_live',{}).get('backend_mode')=='native')
                     and dict(session).get('scope')!='monitor_readonly'),
                 'can_session_workspace':workspace_granted(session),
+                'can_openai_converse_continuous':bool(can_openai_stream_transcribe and openai_speech
+                    and 'openai-live' in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{})
+                    and config.get('streaming_transcription_openai',{}).get('turn_detection',{}).get('enabled') is True
+                    and config.get('streaming_transcription_openai',{}).get('turn_detection',{}).get('continuous') is True
+                    and dict(session).get('scope')!='monitor_readonly'),
                 'can_converse_continuous':bool(can_stream_transcribe and speech and getattr(provider,'receiver',{}).get('voice')
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('enabled') is True
                     and config.get('streaming_transcription',{}).get('turn_detection',{}).get('continuous') is True

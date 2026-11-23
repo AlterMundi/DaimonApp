@@ -1621,3 +1621,23 @@ mismatch stays in the existing recovery store and is shown as individual
 downloads. It cannot be uploaded as an assembled original or discarded from
 that view. Other intact groups remain recoverable and a fresh microphone
 visit can proceed. Failure to read the recovery store still blocks capture.
+
+### Conversation voice in Avatar
+
+The optional **Conversation voice** engine uses the authenticated
+Conversation input writer and the current OpenAI reading voice. Each
+qualified phrase has one retained recording, one streaming transcription
+result, and the same queue and reply stream as typed Conversation. The
+foreground analyzer supplies acoustic boundaries only. It does not
+generate a reply or submit an original. An unconfirmed prepared result
+stays in review.
+
+Enable the existing local turn detector for `streaming_transcription_openai`
+with an explicit `turn_detection` command and `continuous = true`, in
+prepared mode with the same receiver's `openai-live` profile. This also
+requires the selected OpenAI speech renderer. The regular Avatar engine
+selection remains independent. The browser freezes its transcription route
+for the visit, retains unfinished recordings, and uses the existing
+Conversation playback and interruption path. Recognized words can interrupt
+playback only while the detector confirms speech. The speech-only route
+does not identify the speaker.

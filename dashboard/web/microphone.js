@@ -619,7 +619,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {pauseEditing,editDraft,continueEditing,configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {pauseEditing,editDraft,continueEditing,configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:(openai=false)=>!!recovery&&recoveryFree&&available&&(openai?openaiLiveAvailable:liveAvailable&&liveMode==='prepared')&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount,recoveryStore};
 })();

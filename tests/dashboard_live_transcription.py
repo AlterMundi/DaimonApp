@@ -162,6 +162,9 @@ class LiveTranscription(unittest.TestCase):
         self.assertTrue(permitted('POST','/api/interaction/voice/openai/live'))
         self.assertFalse(permitted('POST','/api/interaction/voice/openai/live','monitor_readonly'))
         self.assertFalse(permitted('POST','/api/interaction/voice/openai/live/extra'))
+        self.assertTrue(permitted('POST','/api/interaction/voice/openai/activity'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/activity','monitor_readonly'))
+        self.assertFalse(permitted('POST','/api/interaction/voice/openai/activity/extra'))
 
     def test_openai_prepared_result_is_reused_without_another_recognition(self):
         self.config['streaming_transcription_openai']={
@@ -431,6 +434,40 @@ class LiveTranscription(unittest.TestCase):
 
     def open_activity(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/activity',headers={'origin':origin})
+
+    def test_openai_only_uses_the_existing_analysis_worker_without_transcribing(self):
+        from scripts.speech_render import SCHEMA
+        speech=self.root/'openai-speech.json'
+        speech.write_text(json.dumps({'schema':SCHEMA,'provider':'openai-realtime',
+            'model':'gpt-realtime-2.1-mini','voice':'cedar','language':'es-AR','credential_file':str(self.root/'key'),
+            'cache_root':str(self.root/'speech-cache')}))
+        speech.chmod(0o600)
+        self.config['voice_services_only']='openai'
+        self.config['voice_services_default']='openai'
+        self.config['speech_openai']={'binding':str(speech)}
+        self.provider.receiver['voice']['transcription_profiles']={'openai-live':{}}
+        self.config['streaming_transcription_openai']={
+            'enabled':True,'provider':'openai','mode':'prepared',
+            'endpoint':'wss://api.openai.com/v1/realtime?intent=transcription',
+            'credential_file':str(self.root/'key'),'cache_root':str(self.root/'prepared-openai'),
+            'turn_detection':{'enabled':True,'continuous':True,'command':['/fixture/python','capture-turn']},
+        }
+        warm=self.analysis()
+        with patch('dashboard.live_transcription.Detector',warm), TestClient(
+                create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url='https://example.test') as client:
+            client.post('/api/session',json={'init_data':'100'},headers={'origin':'https://example.test'})
+            client.cookies.set('telecodex_dashboard',client.cookies.get('telecodex_dashboard'),path='/')
+            meta={**self.meta(),'csrf':client.get('/api/state').json()['csrf']}
+            self.assertTrue(client.get('/api/interaction').json()['can_openai_converse_continuous'])
+            with client.websocket_connect('/api/interaction/voice/openai/activity',headers={'origin':'https://example.test'}) as ws:
+                ws.send_json(meta)
+                self.assertTrue(ws.receive_json()['analysis_only'])
+                ws.send_bytes(b'\0\0'*1600)
+                self.assertEqual(ws.receive_json()['activity']['audio_bytes'],3200)
+                ws.send_json({'type':'close'})
+        self.assertEqual(len(warm.opened),1)
+        self.assertEqual(Stream.opened,[])
+        self.assertEqual(self.provider.calls,[])
 
     def shared_home(self):
         self.client.__exit__(None,None,None)

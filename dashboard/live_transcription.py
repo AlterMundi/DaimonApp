@@ -252,7 +252,7 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
     mode=selected.get('mode','prepared')
     if (mode not in ('prepared','captions')
             or selected.get('provider','qwen') not in (('openai',) if openai else ('qwen','gemini'))
-            or set(selected)-({'enabled','endpoint','credential_file','cache_root','mode','provider','transcription_options'} if openai else {'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds','native_provider','native_credential_file'})
+            or set(selected)-({'enabled','endpoint','credential_file','cache_root','mode','provider','transcription_options','turn_detection'} if openai else {'enabled','endpoint','credential_file','cache_root','mode','provider','fallback','turn_detection','native_dialogue','native_activity_mode','native_identity_file','native_voice_name','native_caption_recovery','native_session_seconds','native_provider','native_credential_file'})
             or not {'enabled','endpoint','credential_file','cache_root'}<=set(selected)
             or any(not isinstance(selected[k], str) for k in ('endpoint','credential_file','cache_root'))
             or not all(Path(selected[k]).is_absolute() for k in ('credential_file','cache_root'))):
@@ -360,7 +360,7 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                     raise ValueError('One exact capture binding required')
                 if meta.get('mode','prepared')!=mode:
                     raise ValueError('Capture transcription mode changed')
-                if 'turn_detection' in meta and (meta['turn_detection'] is not True or not detector_command):
+                if 'turn_detection' in meta and (openai or meta['turn_detection'] is not True or not detector_command):
                     raise ValueError('Conversational analysis unavailable')
                 provider.input_id(meta['id'])
                 diagnostic['capture_id'] = meta['id']
@@ -558,11 +558,9 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                 with suppress(Exception):await socket.close()
             finally:
                 if owner is not None:active.discard(owner)
-    if openai:
-        # Reuse authenticated bounded captions only. Never install another
-        # activity/native-dialogue route or grant caption text work authority.
+    if openai and (not detector_command or selected['turn_detection'].get('continuous') is not True):
         return True
-    @app.websocket('/api/interaction/voice/activity')
+    @app.websocket('/api/interaction/voice/openai/activity' if openai else '/api/interaction/voice/activity')
     async def foreground_activity(socket: WebSocket):
         """One explicit warm foreground analyzer; no ASR, originals or work."""
         worker = reader = incoming = inbox = output_inbox = None
