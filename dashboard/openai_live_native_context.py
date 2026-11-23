@@ -110,6 +110,13 @@ class PublicLiveContextHistory:
         if canonical:return canonical
         value=self._public(record)
         if value is None or value['state'] not in ('created','closed'):return []
+        if value.get('project_voice_transcripts') is False:
+            # This is a frozen visit policy, not a change to old source
+            # claims. Raw speech and exact admitted native originals keep
+            # their existing owners. Ambient deltas stay in the voice journal.
+            if 'native_context_batch' in value or 'native_context_cursor' in value:
+                raise ValueError('Projection policy conflicts with a retained native voice cursor')
+            return []
         cursor=self._cursor(value,record)
         for _ in range(128):
             claim=value.get('native_context_batch')

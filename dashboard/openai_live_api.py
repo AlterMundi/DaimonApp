@@ -64,9 +64,12 @@ def install(app, config, provider, authorize, origins):
     prior_visit_context=selected.get('prior_visit_context',True)
     if type(prior_visit_context) is not bool:
         raise ValueError('Select whether Avatar can use previous visit context')
+    project_voice_transcripts=selected.get('project_voice_transcripts',True)
+    if type(project_voice_transcripts) is not bool:
+        raise ValueError('Select whether Avatar projects ambient transcripts into the native conversation')
     if (set(selected)-{'enabled','api_key_file','identity_file','native_identity_file','backend_instructions_file',
             'backend_model','backend_tools','session_options','backend_options','continuous_renewal',
-            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice','prior_visit_context'}
+            'delegation_options','session_seconds','resume_mode','conversation_context','native_originals','source_seals','backend_mode','native_backend_enabled','default_native','match_conversation_voice','prior_visit_context','project_voice_transcripts'}
             or any(not isinstance(selected.get(key),str) or not Path(selected[key]).is_absolute()
                    for key in (('api_key_file','identity_file') if native_backend else ('api_key_file','identity_file','backend_instructions_file')))
             or type(selected.get('session_seconds',600)) is not int
@@ -321,6 +324,7 @@ def install(app, config, provider, authorize, origins):
                     revision=await asyncio.to_thread(workshop.voice_for_conversation,human,profiles) if select_current_voice or meta.get('voice_start')=='new' else None
                     voice_choice=choice(revision,revision['profile'] if revision is not None else profiles[0])
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
+                    project_voice_transcripts=project_voice_transcripts if native_backend else True,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
                     voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
@@ -388,7 +392,7 @@ def install(app, config, provider, authorize, origins):
                                        if native_failure else {})})
                                 break
                             if await asyncio.to_thread(history.event,visit,human,owner,event):
-                                if native_context is not None:native_context.observe(event)
+                                if native_context is not None and project_voice_transcripts:native_context.observe(event)
                                 if native_backend and not closing and event['type']=='session.delegation.created':
                                     # Quiet progress precedes sealing the audio and
                                     # dispatching native work. It does not authorize either.
@@ -494,8 +498,9 @@ def install(app, config, provider, authorize, origins):
                                         return asyncio.run_coroutine_threadsafe(synchronize_context(),loop).result(timeout=35)
                                     preparing=asyncio.create_task(asyncio.to_thread(prepare_native,
                                         history,visit,human,owner,pending,provider,selected['api_key_file'],
-                                        stopped=preparation_stopped,before_delegate=before_delegate))
-                            if (native_context is not None and syncing is None and preparing is None
+                                        stopped=preparation_stopped,
+                                        before_delegate=before_delegate if project_voice_transcripts else None))
+                            if (native_context is not None and project_voice_transcripts and syncing is None and preparing is None
                                     and native_context.sync_due()):
                                 syncing=asyncio.create_task(synchronize_context())
                             if native_backend and not returns_unavailable and returning is None and asyncio.get_running_loop().time()>=result_poll:

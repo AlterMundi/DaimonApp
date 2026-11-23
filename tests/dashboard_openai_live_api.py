@@ -750,7 +750,8 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False):
+    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False,
+                             project_voice_transcripts=True):
         app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
@@ -773,8 +774,12 @@ class Mounted(unittest.TestCase):
         def delegate(body):
             calls['work']+=1;row=saved[body['id']]
             row['text']=self.read()['delegations']['native-task']['live_window']['text']
-            self.assertIn('native semantic producer',body['formulation'])
-            self.assertIn(self.ident,body['formulation'])
+            if project_voice_transcripts:
+                self.assertIn('native semantic producer',body['formulation'])
+                self.assertIn(self.ident,body['formulation'])
+            else:
+                self.assertNotIn('native semantic producer',body['formulation'])
+                self.assertIs(self.read()['project_voice_transcripts'],False)
             self.assertIn(self.ident,owner.journal.producers,'Context must be retained before native work')
             if unconfirmed_work:raise ProviderUnavailable('Synthetic lost native acknowledgment')
             row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
@@ -804,6 +809,7 @@ class Mounted(unittest.TestCase):
                     'client_event_id':event['event_id']})
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',
+            'project_voice_transcripts':project_voice_transcripts,
             **({'continuous_renewal':True} if automatic else {})}}
         install(app,config,owner,authorize,['https://example.test'])
         with patch.object(Client,'send',acknowledge):
@@ -919,6 +925,9 @@ class Mounted(unittest.TestCase):
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         self._native_backend_flow()
+
+    def test_exact_native_work_can_return_without_projecting_ambient_transcripts(self):
+        self._native_backend_flow(project_voice_transcripts=False)
 
     def test_uncertain_native_handoff_keeps_current_speech_until_explicit_stop_without_replay(self):
         self._native_backend_flow(unconfirmed_work=True)

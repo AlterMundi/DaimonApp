@@ -243,11 +243,13 @@ class LiveCreations:
                     'original_retained':any(r['ordinal']==ordinal for r in value['recordings'])}
                 self._write(value)
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False, project_voice_transcripts=True):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
             raise ValueError('Select the admitted public voice backend')
+        if type(project_voice_transcripts) is not bool or (not project_voice_transcripts and backend_mode!='native'):
+            raise ValueError('Select the native voice transcript projection policy')
         if resume_spec is not None:
             creation_request('v=0 validation only',resume_spec)
             if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
@@ -299,6 +301,7 @@ class LiveCreations:
                 'delegations':{}, 'max_input_pcm_bytes':seconds*32000,
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
             if backend_mode is not None:value['backend_mode']=backend_mode
+            if not project_voice_transcripts:value['project_voice_transcripts']=False
             if backend_mode=='native':
                 previous=[v for v,_ in records if v['owner']==owner and self.return_origin_eligible(v)
                           and v.get('backend_mode')=='native']

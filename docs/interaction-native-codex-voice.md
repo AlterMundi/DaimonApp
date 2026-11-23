@@ -1577,3 +1577,12 @@ before sending and correlates only its exact provider acknowledgment. An
 unconfirmed send is never retried. Source seals, native submission, the actual
 answer, and hearing remain separate. Quiet progress does not expedite a
 native turn that is already queued.
+
+A native Avatar owner can select `project_voice_transcripts = false` to keep
+ambient provider deltas in the original voice journal. Conversation can still
+read those events. Deliberately admitted native originals and their exact
+returns continue through the existing Conversation writer. The projection
+selection is captured per visit; it cannot suppress a prior in-flight cursor
+or reclassify a completed receipt. The default still projects ambient speech.
+This option does not implement or select side-query classification,
+ephemeral inference, or prioritized interruption.
