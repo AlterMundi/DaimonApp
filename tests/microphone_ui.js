@@ -48,7 +48,7 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
   if(mode==='retention-full'){mode=undefined;return {ok:false,status:507,json:async()=>({})};}
   if(mode==='visual-refusal'){mode=undefined;return {ok:false,status:400,json:async()=>({code:'visual_reselection',submission_attempted:false})};}
   if(mode==='denied'){mode=undefined;return {ok:false,status:403,json:async()=>({})};}
-  const result={id,phase:capturePhase,retired:captureRetired,visual:options.headers['X-Visual-Reference']?JSON.parse(options.headers['X-Visual-Reference']):undefined,voice:{audio_sha256:options.headers['X-Audio-Sha256'],...(options.headers['X-Recording-Stop']?{capture_stop:options.headers['X-Recording-Stop']}:{})}};if(mode==='visual-extra'){mode=undefined;result.visual.push({source_id:'unexpected-third-image'});}
+  const result={id,phase:capturePhase,retired:captureRetired,visual:options.headers['X-Visual-Reference']?JSON.parse(options.headers['X-Visual-Reference']):undefined,voice:{audio_sha256:options.headers['X-Audio-Sha256'],...(_route.endsWith('/interrupt')?{avatar_interrupt:true}:{}),...(options.headers['X-Recording-Stop']?{capture_stop:options.headers['X-Recording-Stop']}:{})}};if(mode==='visual-extra'){mode=undefined;result.visual.push({source_id:'unexpected-third-image'});}
   if(options.headers['X-File-References']){result.files=JSON.parse(decodeURIComponent(options.headers['X-File-References'])).map(f=>({size:f.size,name:f.name,mime:f.mime,sha256:f.sha256,file_id:f.file_id}));if(mode==='files-changed'){mode=undefined;result.files[0].size++;}}
   originals.set(id,result);
   if(uploadHold)await uploadHold.promise;
@@ -525,6 +525,42 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  const attempted=await conversationMic.ui.retainContinuous({...localOpenAI,id:crypto.randomUUID(),submissionRequested:true});
  await assert.rejects(conversationMic.ui.prepareReconnect([attempted],true));
  assert.equal(conversationMic.uploads.length,0);
+ const interruptStore=memoryRecovery(),interruptMic=boot(true,interruptStore);
+ await until(()=>interruptMic.ui.canStartContinuous());
+ interruptMic.ui.continuousOwner(true);
+ const interruptOriginal={id:crypto.randomUUID(),binding:'original-binding',transcriptionProfile:'openai-live',
+  avatarInterrupt:true,mime:'audio/wav',blob:new Blob(['same captured original'])};
+ await assert.rejects(()=>interruptMic.ui.retainContinuous({...interruptOriginal,captureStop:'duration_limit'}),/Invalid interruption recording/);
+ await interruptMic.ui.retainContinuous({...interruptOriginal,avatarInterrupt:undefined});
+ assert.equal(interruptStore.values.get('pending').schema,'telecodex.voice-recovery/v6');
+ const interrupted=await interruptMic.ui.retainContinuous(interruptOriginal);
+ const envelope=interruptStore.values.get('pending');
+ assert.equal(envelope.schema,'telecodex.voice-recovery/v8');
+ assert.equal(envelope.id,undefined,'Old flat-record readers must refuse marked originals');
+ await assert.rejects(()=>interruptMic.ui.retainContinuous({...interruptOriginal,avatarInterrupt:undefined}),/identity changed/);
+ const preparing=await interruptMic.ui.commitContinuous(interrupted);
+ assert(preparing.confirmed);
+ assert.equal(interruptMic.uploads.at(-1).route,'api/interaction/voice/openai-live/interrupt');
+ assert.equal(interruptStore.values.get('pending').items[0].id,interrupted.id,'Preparing receipt must preserve the local original');
+ interruptMic.ui.observe({...preparing.value,phase:'accepted',voice:{...preparing.value.voice,audio_sha256:'other'}});
+ await new Promise(yes=>setTimeout(yes,5));
+ assert.equal(interruptStore.values.get('pending').items[0].id,interrupted.id,'A mismatched acceptance cannot delete the original');
+ interruptMic.ui.observe({...preparing.value,phase:'accepted'});
+ await until(()=>!interruptStore.values.has('pending'));
+ const disagree=await interruptMic.ui.retainContinuous({...interruptOriginal,id:crypto.randomUUID()});
+ const disagreeSaved=await interruptMic.ui.commitContinuous(disagree);
+ const disagreementReceipt={...disagreeSaved.value,phase:'retained_unsent'};
+ interruptMic.originals.set(disagree.id,disagreementReceipt);
+ interruptMic.ui.observe(disagreementReceipt);
+ interruptMic.ui.continuousOwner(false);
+ await until(()=>interruptMic.ui.ownsSend());
+ interruptMic.nodes.get('#conversation-voice-check').handlers.click();
+ await until(()=>interruptMic.state().includes('no interruption was confirmed'));
+ assert.equal(interruptStore.values.get('pending').items[0].id,disagree.id);
+ assert.equal(interruptMic.nodes.get('#conversation-voice-save').hidden,false);
+ const beforeRetry=interruptMic.uploads.length;
+ await interruptMic.ui.submit();
+ assert.equal(interruptMic.uploads.length,beforeRetry,'Reviewing a known mismatch cannot start another submission');
  const reconnectStore=memoryRecovery(),reconnectMic=boot(true,reconnectStore);
  await until(()=>reconnectMic.ui.canStartContinuous());reconnectMic.ui.continuousOwner(true);
  const pendingOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['local only'])});

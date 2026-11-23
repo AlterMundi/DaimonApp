@@ -430,6 +430,7 @@ pub(super) async fn process_turn(
     if queued.request.review_mode.is_none() {
         let active = ActiveTurnSteerHandle {
             turn_id,
+            physical_turn: physical_turn.clone(),
             sender: steer_tx,
             attachments: steered_files.clone(),
             controller_hint: controller_hint.clone(),

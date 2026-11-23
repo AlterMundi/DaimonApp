@@ -519,6 +519,10 @@ class Provider:
         try:
             voice = value.get('voice') or {}
             proof = voice.get('transcription') or {}
+            # The intent requires both a transcript and an observed admission.
+            # A disagreement or unconfirmed write retains the original bytes.
+            if voice.get('avatar_interrupt') is True and value.get('phase') != 'accepted':
+                return False
             ident = self.input_id(value['id'])
             digest = voice.get('audio_sha256')
             if (not isinstance(value.get('text'), str) or not value['text'].strip()
@@ -1125,10 +1129,15 @@ class Provider:
 
     def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
-        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile'}:
+        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile','avatar_interrupt'}:
             raise ValueError('Select one original voice recording')
         if metadata.get('transcription_profile') not in (None,'openai','previous','openai-live','previous-live'):
             raise ValueError('Unknown transcription profile; no fallback')
+        avatar_interrupt=metadata.get('avatar_interrupt')
+        if 'avatar_interrupt' in metadata and (avatar_interrupt is not True
+                or metadata.get('transcription_profile')!='openai-live' or foreground_dialogue is not None
+                or any(metadata.get(k) is not None for k in ('reply','visual','capture_stop')) or metadata.get('files')):
+            raise ValueError('Avatar interruption requires a complete standalone recording')
         self.input_id(metadata['id'])
         if foreground_dialogue is not None:
             self.input_id(foreground_dialogue)
@@ -1152,6 +1161,11 @@ class Provider:
         self.assert_binding()
         if not self.receiver.get('voice') or not self.authorized(self.human):
             raise ProviderUnavailable('Voice input unavailable')
+        capabilities = None
+        if avatar_interrupt:
+            capabilities=self.presentation('input voice capabilities')
+            if capabilities.get('binding')!=metadata['binding'] or capabilities.get('voice_avatar_interrupt')!='v1':
+                raise ProviderUnavailable('Avatar interruption unavailable; preserve the exact original')
         directory = Path(str(self.receiver['db_path'])+'.voice')
         directory.mkdir(mode=0o700, parents=False, exist_ok=True)
         info = directory.lstat()
@@ -1175,7 +1189,7 @@ class Provider:
             # archive handoff unless the actual writer can persist its hold.
             protected = retention.selected(selected)
             if protected:
-                capabilities = self.presentation('input voice capabilities')
+                capabilities = capabilities or self.presentation('input voice capabilities')
                 if capabilities.get('binding') != metadata['binding']:
                     raise ProviderUnavailable('Original conversation binding changed')
                 held = capabilities.get('voice_original_hold') == 'v1'

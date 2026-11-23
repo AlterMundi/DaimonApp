@@ -916,6 +916,7 @@ async fn sends_plain_text_to_the_active_turn() {
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 turn_id: 17,
+                physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
                 controller_hint: None,
@@ -962,6 +963,7 @@ async fn check_rejected_steering(rejection: CodexSteerError) {
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 turn_id: 17,
+                physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
                 controller_hint: None,
@@ -995,6 +997,7 @@ async fn keeps_steering_pending_past_the_previous_timeout() {
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 turn_id: 17,
+                physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
                 controller_hint: None,

@@ -743,6 +743,7 @@ mod tests {
                 &clip,
                 ConversationVoice {
                     transcription_profile: None,
+                    avatar_interrupt: None,
                     preserve_original: None,
                     audio_sha256: "a".repeat(64),
                     mime: "audio/wav".into(),

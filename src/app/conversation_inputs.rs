@@ -20,6 +20,24 @@ struct Submit {
     playback: Option<crate::store::ConversationPlayback>,
 }
 
+/// Only a leading explicit command with a request can interrupt for Avatar.
+fn foreground_interrupt_requested(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    match words.next() {
+        Some(word) if word.eq_ignore_ascii_case("/interrupt") => {}
+        Some(word) if word.eq_ignore_ascii_case("barra") || word.eq_ignore_ascii_case("slash") => {
+            if !words
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case("interrupt"))
+            {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    words.next().is_some()
+}
+
 fn outcome(input: &ConversationInput, fresh: bool) -> Value {
     let mut value = json!({"schema":"telecodex.conversation-input/v1","id":input.id,"phase":input.phase,"local_turn":input.local_turn,
         "new_input":fresh,"retired":input.retired,"text":input.text,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"capture_questions":input.capture_questions,
@@ -522,6 +540,13 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         }
         let selected: Delegate = serde_json::from_str(body)?;
         let _ingress = app.shared.conversation_ingress.lock().await;
+        // Freeze the listener-owned execution before checking the journal.
+        // A later execution cannot inherit the pending request's interrupt.
+        let target = if selected.live_window.is_some() {
+            avatar_interrupt_snapshot(app, cfg.entry(), human).await
+        } else {
+            None
+        };
         let (input, fresh) = if let Some(window) = selected.live_window {
             #[cfg(unix)]
             {
@@ -560,9 +585,20 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             )?
         };
         if fresh {
-            // Bypass voice-selected routing and automatic question answers.
-            // Only the existing integrator decides downstream work.
-            submit(app.clone(), input.clone()).await?;
+            // Trust the acoustic text validated by the native store, never the
+            // provider's formulation, echoed text or an earlier capture.
+            let priority = input
+                .foreground_delegation
+                .as_ref()
+                .is_some_and(|delegation| {
+                    delegation.live_window.is_some() && foreground_interrupt_requested(&input.text)
+                });
+            if priority {
+                enqueue_avatar_interruption(app, &input, target).await?;
+            } else {
+                // Only the existing integrator decides downstream work.
+                submit(app.clone(), input.clone()).await?;
+            }
         }
         return response(
             app,
@@ -579,6 +615,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["voice_original_hold"] = json!("v1");
+        result["voice_avatar_interrupt"] = json!("v1");
         result["foreground_retention"] = json!("v1");
         #[cfg(unix)]
         {
@@ -1123,6 +1160,68 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     Ok(())
 }
 
+#[derive(PartialEq, Eq)]
+struct AvatarInterruptTarget {
+    local: i64,
+    thread: String,
+    physical: String,
+}
+
+async fn avatar_interrupt_snapshot(
+    app: &App,
+    entry: SessionKey,
+    human: i64,
+) -> Option<AvatarInterruptTarget> {
+    let workers = app.workers.lock().await;
+    let worker = workers.get(&entry)?;
+    let active = worker.steer.lock().expect("steer mutex poisoned").clone()?;
+    let physical = active
+        .physical_turn
+        .lock()
+        .expect("native correlation mutex poisoned")
+        .clone()?;
+    let thread = app
+        .shared
+        .store
+        .controller_native_turn(active.turn_id, entry, human)
+        .ok()?;
+    Some(AvatarInterruptTarget {
+        local: active.turn_id,
+        thread,
+        physical,
+    })
+}
+
+async fn enqueue_avatar_interruption(
+    app: &App,
+    input: &ConversationInput,
+    target: Option<AvatarInterruptTarget>,
+) -> Result<()> {
+    let worker = app.worker_for(input.entry).await?;
+    if input.phase == "retained" {
+        app.shared
+            .store
+            .conversation_input_event(input.human, &input.id, E::Queue)?;
+    }
+    enqueue(app, input, worker.sender)?;
+    // Only the exact active execution selected at ingress can be interrupted.
+    // The original stays queued if that execution ended or its ACK is uncertain.
+    if let Some(target) = target
+        && avatar_interrupt_snapshot(app, input.entry, input.human)
+            .await
+            .as_ref()
+            == Some(&target)
+        && let Err(error) = app
+            .shared
+            .codex
+            .interrupt_selected_turn(&target.thread, &target.physical)
+            .await
+    {
+        tracing::warn!(%error, "Avatar interruption acknowledgement unavailable");
+    }
+    Ok(())
+}
+
 fn enqueue(
     app: &App,
     input: &ConversationInput,
@@ -1177,6 +1276,8 @@ struct VoiceSubmit {
     #[serde(default)]
     transcription_profile: Option<String>,
     #[serde(default)]
+    avatar_interrupt: bool,
+    #[serde(default)]
     preserve_original: bool,
     binding: String,
     #[serde(default)]
@@ -1223,6 +1324,15 @@ async fn voice_submit(
             None
         };
     }
+    if request.avatar_interrupt
+        && (recover
+            || request.foreground_dialogue.is_some()
+            || request.reply.is_some()
+            || request.visual.is_some()
+            || !request.files.is_empty())
+    {
+        bail!("Avatar interruption must be a new standalone conversation recording");
+    }
     if request.defer_foreground && request.foreground_dialogue.is_none() {
         bail!("Deferred completion requires a foreground capture");
     }
@@ -1252,6 +1362,7 @@ async fn voice_submit(
     }
     let voice = ConversationVoice {
         transcription_profile: request.transcription_profile,
+        avatar_interrupt: request.avatar_interrupt.then_some(true),
         preserve_original: request.preserve_original.then_some(true),
         audio_sha256: request.audio_sha256,
         mime: request.mime,
@@ -1287,7 +1398,13 @@ async fn voice_submit(
     {
         super::conversation_requests::validate_reply(app, human, request.reply.as_ref()).await?;
     }
-    let interruption_targets = if request.foreground_dialogue.is_some() {
+    let avatar_target = if request.avatar_interrupt {
+        avatar_interrupt_snapshot(app, entry, human).await
+    } else {
+        None
+    };
+    let interruption_targets = if request.foreground_dialogue.is_some() || request.avatar_interrupt
+    {
         Default::default()
     } else {
         super::voice::snapshot(app).await
@@ -1382,21 +1499,34 @@ async fn voice_submit(
                 if captured
                     .voice
                     .as_ref()
-                    .is_none_or(|v| v.preserve_original != Some(true))
+                    .is_none_or(|v| v.preserve_original != Some(true) && v.avatar_interrupt != Some(true))
                     && crate::voice::retire_transcribed_clip(&path, expected).is_err()
                 {
                     // Durable text is already committed. A later client read
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");
                 }
-                if ready.foreground_dialogue.is_none()
-                    && let Err(error) = deliver(&worker, ready, None).await
-                {
-                    worker
-                        .shared
-                        .store
-                        .conversation_input_finish(human, &captured.id)?;
-                    return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
+                if ready.foreground_dialogue.is_none() {
+                    let outcome = if ready
+                        .voice
+                        .as_ref()
+                        .is_some_and(|v| v.avatar_interrupt == Some(true))
+                    {
+                        if foreground_interrupt_requested(&ready.text) {
+                            enqueue_avatar_interruption(&worker, &ready, avatar_target).await
+                        } else {
+                            Err(anyhow!("Prepared transcript does not confirm the explicit Avatar interruption"))
+                        }
+                    } else {
+                        deliver(&worker, ready, None).await
+                    };
+                    if let Err(error) = outcome {
+                        worker
+                            .shared
+                            .store
+                            .conversation_input_finish(human, &captured.id)?;
+                        return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
+                    }
                 }
                 Ok::<_, anyhow::Error>(())
             });
@@ -1427,4 +1557,32 @@ async fn voice_submit(
             .conversation_input_read(human, entry, &input.id)?,
         fresh && !recover,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::foreground_interrupt_requested;
+
+    #[test]
+    fn avatar_priority_requires_explicit_leading_command_and_request() {
+        for text in [
+            "/interrupt respondé ahora",
+            " /Interrupt revisá el último mensaje",
+            "Barra interrupt contame cómo quedó",
+            "slash INTERRUPT último estado",
+        ] {
+            assert!(foreground_interrupt_requested(text), "{text}");
+        }
+        for text in [
+            "/interrupt",
+            "barra interrupt   ",
+            "¿podés usar /interrupt si hace falta?",
+            "interrumpí el turno",
+            "/interruptible respondé",
+            "barra de interrupt respondé",
+            "/btw qué significa interrupt",
+        ] {
+            assert!(!foreground_interrupt_requested(text), "{text}");
+        }
+    }
 }

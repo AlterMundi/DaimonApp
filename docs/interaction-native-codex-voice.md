@@ -1678,3 +1678,29 @@ While an original still waits, the Avatar shows that it is saved and leaves
 the microphone available. The existing Conversation refresh reads the same
 original ID and clears the notice when admission settles. This creates no
 separate polling, resubmission, priority lane, or automatic interruption.
+
+An explicit leading `/interrupt` (or spoken “barra interrupt” / “slash
+interrupt”) followed by a request uses the native owner's existing exact
+execution cancellation token. The listener first validates the acoustic
+source window and admits the same original through the existing queue. It
+then requests cancellation of the execution captured for that conversation
+before journal validation. A duplicate or unadmitted original cannot request
+cancellation. A newer execution and other conversations do not share that
+token. This does not change goal state, promote the request past already
+queued inputs, or confirm native termination. Ordinary speech keeps its
+existing steer/queue behavior.
+
+Conversation voice uses the same exact-turn cancellation for a complete
+phrase starting with one of those explicit commands. Only that prepared
+OpenAI recording uses the dedicated interrupt upload. The native receiver
+rechecks the saved transcript and admits the exact original before
+requesting interruption. Older receivers refuse the new route before
+retention or handoff. Quoted commands, ordinary microphone clips, and
+limited or unconfirmed captures cannot request it. After an explicit
+interrupt, previously queued originals still keep their order.
+
+
+When the prepared browser transcript and the canonical transcript disagree,
+the explicitly marked original remains saved for review. Route rollout pairs
+the native reader with the web upload. After recording an interruption-marked
+original, retain a native rollback that can read that frozen field.

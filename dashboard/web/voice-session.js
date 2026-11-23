@@ -97,10 +97,12 @@ window.ContinuousConversation=(()=>{
       }
       consider();
     }
+    const requestsInterrupt=text=>/^\s*(?:\/interrupt|(?:barra|slash)\s+interrupt)\s+\S/iu.test(text||'');
     function originalFor(slot){
       const r=slot.recorder;
       return {id:slot.id,binding,capture_started:slot.started,blob:slot.blob,mime:'audio/wav',preparedText:r?.preparedText,
         ...(transcriptionProvider==='openai'?{transcriptionProfile:'openai-live'}:{}),
+        ...(transcriptionProvider==='openai'&&!r?.captureStop&&requestsInterrupt(r?.preparedText)?{avatarInterrupt:true}:{}),
         captureStop:r?.captureStop,captureQuestions:slot.questions,playback:slot.playback};
     }
     async function retainOriginal(slot,original){
@@ -138,7 +140,7 @@ window.ContinuousConversation=(()=>{
           if(slot.retentionFailed || slot.original?.blob!==original.blob)throw Error('Flushed original changed');
           // The durable WAV and frozen context are unchanged. Prepared text is
           // advisory; its exact server receipt remains the admission authority.
-          if(slot.original.captureStop!==original.captureStop)await retainOriginal(slot,original);
+          if(slot.original.captureStop!==original.captureStop||slot.original.avatarInterrupt!==original.avatarInterrupt)await retainOriginal(slot,original);
           else slot.original={...slot.original,preparedText:original.preparedText};
         }else{slot.original=original;await retainOriginal(slot,original);}
       }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}

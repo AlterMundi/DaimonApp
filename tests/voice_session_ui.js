@@ -61,6 +61,15 @@ function boot(getTranscriptionProvider=()=> 'current'){
  noFinal.activity(1,true,false);noFinal.activity(1,false,true);await until(()=>noFinal.recorders.length===2);
  noFinal.recorders[0].complete();await until(()=>noFinal.reviews.length>0);
  assert.equal(noFinal.commits.length,0,'Missing final result remains in review without starting another recognizer');
+ for(const [text,interrupt] of [['barra interrupt contestame',true],['Lo de /interrupt era una pregunta',false]]){
+  const explicit=boot(()=> 'openai');await explicit.session.start();
+  explicit.sources[0].emit(3200);explicit.activity(1,true,false);explicit.activity(1,false,true);
+  await until(()=>explicit.recorders.length===2);
+  explicit.recorders[0].complete(text);await until(()=>explicit.sent.length===1);
+  assert.equal(explicit.commits[0].avatarInterrupt,interrupt?true:undefined);
+  assert.equal(explicit.commits[0].id,explicit.retained[0].id);
+  explicit.session.hold();explicit.recorders[1].complete();
+ }
  const reconnect=boot(()=> 'openai'),denied=reconnect.permission(),first=reconnect.session.start();
  await until(()=>reconnect.analyses.length===1);
  denied.reject(new Error("Permission denied"));assert.equal(await first,false);

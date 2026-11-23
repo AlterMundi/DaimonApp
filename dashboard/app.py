@@ -191,7 +191,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/openai-live','/api/interaction/voice/openai-live/limited','/api/interaction/voice/previous-live','/api/interaction/voice/previous-live/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/openai-live','/api/interaction/voice/openai-live/limited','/api/interaction/voice/openai-live/interrupt','/api/interaction/voice/previous-live','/api/interaction/voice/previous-live/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):
@@ -936,6 +936,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     @app.post('/api/interaction/voice/previous')
     @app.post('/api/interaction/voice/previous/limited')
     @app.post('/api/interaction/voice/openai-live')
+    @app.post('/api/interaction/voice/openai-live/interrupt')
     @app.post('/api/interaction/voice/openai-live/limited')
     @app.post('/api/interaction/voice/previous-live')
     @app.post('/api/interaction/voice/previous-live/limited')
@@ -952,6 +953,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if profile not in getattr(provider,'receiver',{}).get('voice',{}).get('transcription_profiles',{}):
                 raise HTTPException(409,'Selected transcription is unavailable; no fallback')
             metadata['transcription_profile']=profile
+        if request.url.path.endswith('/interrupt'):
+            metadata['avatar_interrupt']=True
         capture_stop = request.headers.get('x-recording-stop')
         if request.url.path.endswith('/limited') and capture_stop not in ('duration_limit','audio_flush_unconfirmed'):
             raise HTTPException(400, 'Limited recording stop reason required')

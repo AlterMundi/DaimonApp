@@ -665,14 +665,29 @@ def qualify_public_context(binary):
     finally:j.close()
 
 
-def qualify_public_live_window(binary):
+def qualify_public_live_window(binary, explicit=False):
     """Actual native journal reader + canonical ingress, with no file ASR."""
     from dashboard.live_transcription import wav_bytes
     from dashboard.openai_live import LiveCall
     from dashboard.openai_live_visits import LiveCreations
     from dashboard.openai_live_native_backend import prepare_native
     from dashboard.openai_live_seals import request_seal,accept_seal
-    j=ReconnectCheckpointContext(binary)
+    class WindowContext(ReconnectCheckpointContext):
+        def __init__(self, binary):
+            self.interrupts = []
+            super().__init__(binary)
+
+        def context_rpc(self, message, send):
+            if message.get('method') == 'turn/interrupt':
+                params = message['params']
+                self.interrupts.append(params)
+                send({'id':message['id'],'result':{}})
+                self.broadcast(params['threadId'],'turn/completed',{
+                    'turn':{'id':params['turnId'],'status':'interrupted'}})
+                return True
+            return super().context_rpc(message, send)
+
+    j=WindowContext(binary)
     try:
         assert '[voice]' not in j.config.read_text()
         j.config.write_text(j.config.read_text()+'\n[voice]\ntranscription_command=["/bin/false"]\ntranscriber_label="Forbidden second ASR in Live-window qualification"\n')
@@ -688,6 +703,11 @@ def qualify_public_live_window(binary):
         tone=b''.join(struct.pack('<h',int(5000*math.sin(2*math.pi*440*n/16000))) for n in range(1600))
         for ordinal in range(32):visits.recording(ident,100,binding,ordinal,wav_bytes(tone),provider)
         text='Use only this Live input transcript. Keep the later correction.'
+        if explicit:
+            current,_=j.submit(binding,'Synthetic integration turn still running.')
+            j.wait(lambda:provider.conversation_input_status(current['id'])['phase']=='accepted')
+            predecessor={'threadId':j.web_thread,'turnId':j.web_turn}
+            text='/interrupt '+text
         visits.event(ident,100,owner,{'type':'session.input_transcript.delta','event_id':'input','delta':text,'start_ms':0,'end_ms':100})
         visits.event(ident,100,owner,{'type':'session.output_transcript.delta','event_id':'output','delta':'Never promote assistant output.','start_ms':0,'end_ms':100})
         visits.event(ident,100,owner,{'type':'session.delegation.created','event_id':'task','delegation':{'id':'window-task','target':'client'}})
@@ -711,14 +731,25 @@ def qualify_public_live_window(binary):
         assert 'Never promote assistant output.' not in original['text']
         assert all('interpretation' not in slot for slot in value['native_originals'].values())
         assert prepare_native(visits,ident,100,owner,'window-task',provider,'/no-key-required',forbidden)==result
-        print('public Live window: exact journal input + 32 raw originals + native canonical handoff, zero ASR; synthetic Core only, no real provider/model calls')
+        if explicit:
+            assert j.interrupts==[predecessor],j.interrupts
+            method,packet=j.packets[-1]
+            assert method=='turn/start' and packet['threadId']==predecessor['threadId']
+            assert packet['clientUserMessageId']=='conversation:'+root
+            assert [method for method,_ in j.packets]==['turn/start','turn/start']
+        else:
+            assert not j.interrupts
+        print('public Live window: '+('exact explicit native interrupt' if explicit else 'ordinary canonical handoff')+
+            ', exact journal input + 32 raw originals, zero ASR; synthetic Core only, no real provider/model calls')
         provider.close()
     finally:j.close()
 
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
-    if '--public-window' in sys.argv[2:]:qualify_public_live_window(binary)
+    if '--public-window' in sys.argv[2:]:
+        qualify_public_live_window(binary)
+        qualify_public_live_window(binary,explicit=True)
     elif '--public-context' in sys.argv[2:]:qualify_public_context(binary)
     elif '--active-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary,active=True)
     elif '--reconnect-compaction' in sys.argv[2:]:qualify_reconnect_compaction(binary)
