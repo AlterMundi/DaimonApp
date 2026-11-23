@@ -47,7 +47,13 @@ class EntryScripts(HTMLParser):
                 self.paths[path] = query
 
 
-def read_response(opener, url, accept, limit, deadline, *, prefix_only=False):
+def read_response(opener, url, accept, limit):
+    """Read one full response for the existing maintenance guard."""
+    status, media, body, _ = read_probe_response(opener, url, accept, limit, time.monotonic() + 5)
+    return status, media, body
+
+
+def read_probe_response(opener, url, accept, limit, deadline, *, prefix_only=False):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError
@@ -73,8 +79,8 @@ def entry_ready(opener, origin, body, deadline):
         if query and not re.fullmatch(r"v=[a-f0-9]{16}", query):
             return False
         asset = origin + (path if path.startswith("/") else ENTRY + path)
-        status, media, content, etag = read_response(opener, asset + ("?" + query if query else ""),
-                                                     "text/javascript", 256, deadline, prefix_only=True)
+        status, media, content, etag = read_probe_response(opener, asset + ("?" + query if query else ""),
+                                                           "text/javascript", 256, deadline, prefix_only=True)
         if status not in (200, 206) or media not in JAVASCRIPT_TYPES or not content:
             return False
         if query and etag != '"' + query[2:] + '"':
@@ -87,7 +93,7 @@ def probe(origin):
     deadline = time.monotonic() + 7
     status = None
     try:
-        status, media, body, _ = read_response(opener, origin + ACCESS, "application/json", 4096, deadline)
+        status, media, body, _ = read_probe_response(opener, origin + ACCESS, "application/json", 4096, deadline)
         detail = None
         if media == "application/json" and len(body) <= 4096:
             try:
@@ -101,7 +107,7 @@ def probe(origin):
         if status != 401 or detail not in UNAUTHENTICATED:
             return {"origin": origin, "state": "unexpected_access_response", "access_status": status}
         entry_url = origin + ENTRY + "?view=conversation&client=standalone"
-        entry_status, media, body, _ = read_response(opener, entry_url, "text/html", 16384, deadline)
+        entry_status, media, body, _ = read_probe_response(opener, entry_url, "text/html", 16384, deadline)
         ready = entry_status == 200 and media == "text/html" and entry_ready(opener, origin, body, deadline)
         return {"origin": origin, "state": "ready" if ready else "unexpected_entry_response",
                 "access_status": status, "entry_status": entry_status}

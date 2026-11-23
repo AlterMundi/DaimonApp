@@ -19,7 +19,7 @@ class AccessProbe(unittest.TestCase):
             ("Alerts receiving binding changed; operator must requalify Sessions", "alerts_binding_changed"),
         ):
             with self.subTest(expected=expected), patch(
-                "scripts.interaction_access_probe.read_response",
+                "scripts.interaction_access_probe.read_probe_response",
                 return_value=(503, "application/json", ('{"detail": "%s"}' % detail).encode(), None),
             ) as request:
                 self.assertEqual(probe(ORIGIN)["state"], expected)
@@ -42,7 +42,7 @@ class AccessProbe(unittest.TestCase):
             if entry is not None:
                 results.extend([(*entry, None), *assets])
             with self.subTest(expected=expected, access=access[0]), patch(
-                "scripts.interaction_access_probe.read_response", side_effect=results,
+                "scripts.interaction_access_probe.read_probe_response", side_effect=results,
             ) as request:
                 self.assertEqual(probe(ORIGIN)["state"], expected)
                 self.assertEqual(request.call_count, len(results))
