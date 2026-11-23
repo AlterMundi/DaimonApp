@@ -43,30 +43,39 @@ window.PublicLiveConversation=(()=>{
       if(value.voice_visit===visit&&value.binding===binding)confirmed.add(value.ordinal);
       await recovery.remove(value);originals.delete(value.id);notify();return receipt;
     }
+    async function recoveredPrefix(id,fragments){
+      if(fragments.length>32)return;
+      fragments.sort((a,b)=>a.fragment_offset-b.fragment_offset);
+      const first=fragments[0];let offset=0;
+      for(const value of fragments){
+        if(value.fragment_offset!==offset||value.binding!==first.binding||value.voice_visit!==first.voice_visit
+            ||value.ordinal!==first.ordinal||value.blob.size<=44||value.blob.size>64044||await digest(value.blob)!==value.audio_sha256)
+          return;
+        offset+=value.blob.size-44;
+      }
+      if(offset>31*32000)return;
+      const blob=window.StreamingVoice.wav(await Promise.all(fragments.map(v=>v.blob.slice(44).arrayBuffer())));
+      return {...first,id,blob,native_fragment:undefined,fragment_group:undefined,fragment_offset:undefined,
+        audio_sha256:await digest(blob),captureStop:'interrupted_prefix',native_fragments:fragments};
+    }
     async function review(expectedEpoch=epoch){
-      const values=(await recovery.list()).filter(v=>v.engine==='gpt-live'),groups=new Map();
-      if(expectedEpoch!==epoch)return [];
-      originals.clear();
+      const selectedBinding=binding;
+      const values=(await recovery.list()).filter(v=>v.engine==='gpt-live'&&v.binding===selectedBinding);
+      const groups=new Map(),reviewed=new Map();
       for(const value of values){
-        if(!value.native_fragment){originals.set(value.id,value);continue;}
+        if(!value.native_fragment){reviewed.set(value.id,value);continue;}
         const group=groups.get(value.fragment_group)||[];group.push(value);groups.set(value.fragment_group,group);
       }
       for(const [id,fragments] of groups){
-        fragments.sort((a,b)=>a.fragment_offset-b.fragment_offset);const first=fragments[0];let offset=0;
-        if(fragments.length>32)throw Error('Recording prefix needs review');
-        for(const value of fragments){
-          if(value.fragment_offset!==offset||value.binding!==first.binding||value.voice_visit!==first.voice_visit
-              ||value.ordinal!==first.ordinal||value.blob.size<=44||value.blob.size>64044||await digest(value.blob)!==value.audio_sha256)
-            throw Error('Recording prefix changed');
-          offset+=value.blob.size-44;
-        }
-        if(offset>31*32000)throw Error('Recording prefix exceeds its bound');
-        const blob=window.StreamingVoice.wav(await Promise.all(fragments.map(v=>v.blob.slice(44).arrayBuffer())));
-        if(expectedEpoch!==epoch)return [];
-        originals.set(id,{...first,id,blob,native_fragment:undefined,fragment_group:undefined,fragment_offset:undefined,
-          audio_sha256:await digest(blob),captureStop:'interrupted_prefix',native_fragments:fragments});
+        if(expectedEpoch!==epoch||selectedBinding!==getBinding())return [];
+        const prefix=await recoveredPrefix(id,fragments);
+        if(prefix)reviewed.set(id,prefix);
+        else for(const fragment of fragments)reviewed.set(fragment.id,{...fragment,downloadOnly:true});
       }
-      if(expectedEpoch===epoch)notify();return [...originals.values()];
+      if(expectedEpoch!==epoch||selectedBinding!==getBinding())return [];
+      originals.clear();
+      for(const [id,value] of reviewed)originals.set(id,value);
+      notify();return [...originals.values()];
     }
     function withLock(id,run){return navigator.locks.request('daimon-native-voice:'+id,{ifAvailable:true},lock=>{
       if(!lock)throw Error('The microphone capture is still finishing in another page');return run();
@@ -540,8 +549,17 @@ window.PublicLiveConversation=(()=>{
       finally{restoring=undefined;}
     }
     return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyFailed=undefined;onHistory({loading:false,more:false});},
-      retry:value=>withLock(value.voice_visit,()=>upload(value)),
-      discard:value=>withLock(value.voice_visit,async()=>{if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);originals.delete(value.id);notify();}),
+      retry:async value=>{
+        if(value.native_fragment||value.downloadOnly)throw Error('Download the retained audio fragment for review');
+        return withLock(value.voice_visit,()=>upload(value));
+      },
+      discard:async value=>{
+        if(value.downloadOnly)throw Error('Download the retained audio fragment for review');
+        return withLock(value.voice_visit,async()=>{
+          if(value.native_fragments)await recovery.discardNative(value.native_fragments);else await recovery.remove(value);
+          originals.delete(value.id);notify();
+        });
+      },
       setEnabled:value=>{audible=value===true;if(!audible)outputLevel=0;if(audio)audio.muted=!audible;nativeAudio?.setEnabled(audible);state();},
       pause:()=>{paused=true;outputLevel=0;audio?.pause();nativeAudio?.pause();state();},resume:()=>{paused=false;nativeAudio?.resume();const selected=audio;selected?.play().catch(()=>{if(selected===audio){paused=true;state();}});state();},
       release:()=>false,get originals(){return [];},get active(){return active||starting||closing;},get hasAudio(){return active;},get paused(){return paused;},get floor(){return false;}};

@@ -940,6 +940,12 @@ remains separate.
 
 ## Original recovery and bounds
 
+A browser worklet that never loads now releases the input graph after a
+six-second startup bound. Ordinary microphone recording can use its existing
+recorder without live preview; a new Avatar activation stays subject to the
+existing capture and provider-admission fences. Startup protection is separate
+from the original-audio upload lifetime and from physical microphone acceptance.
+
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV
 chunks are stored locally first, then uploaded to a capture-only endpoint.
 The separate `codex_voice` recovery key shares the existing combined20MiB and
@@ -1598,8 +1604,9 @@ retained voice and tuning. In the default Cedar profile, Conversation reads
 with Realtime synthesis and Avatar speaks with GPT-Live. The shared voice
 name and instructions do not guarantee identical rendered audio.
 
-A browser worklet that never loads now releases the input graph after a
-six-second startup bound. Ordinary microphone recording can use its existing
-recorder without live preview; a new Avatar activation stays subject to the
-existing capture and provider-admission fences. Startup protection is separate
-from the original-audio upload lifetime and from physical microphone acceptance.
+On fresh Avatar entry, recovery assembles intact local recording prefixes for
+the current Conversation. A fragment group with broken continuity or a hash
+mismatch stays in the existing recovery store and is shown as individual
+downloads. It cannot be uploaded as an assembled original or discarded from
+that view. Other intact groups remain recoverable and a fresh microphone
+visit can proceed. Failure to read the recovery store still blocks capture.
