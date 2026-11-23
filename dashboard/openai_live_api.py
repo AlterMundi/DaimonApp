@@ -29,7 +29,7 @@ from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
-from .openai_live_native_backend import prepare_native, return_next_native_part
+from .openai_live_native_backend import NativeReturnNeedsReview, prepare_native, return_next_native_part
 from .openai_live_native_session import PublicLiveSessionContext
 from .native_context import ResumePending
 from .provider import ProviderUnavailable
@@ -225,6 +225,7 @@ def install(app, config, provider, authorize, origins):
                     and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
                 lease.release()
         result_index=0;result_poll=0
+        held_returns=set()
         preparation_stopped=threading.Event()
         visit=human=binding=None;meta={};startup_stage=None
         admitted=False;closing=False;close_deadline=None;native_failure=False;returns_unavailable=False
@@ -436,6 +437,11 @@ def install(app, config, provider, authorize, origins):
                     if returning is not None and returning.done():
                         completed=returning;returning=None
                         try:completed.result()
+                        except NativeReturnNeedsReview as error:
+                            held_returns.add(error.source)
+                            logging.getLogger(__name__).warning('An individual public voice result needs review')
+                            if not closing:
+                                await send({'type':'notice','code':'native_results_unavailable'})
                         except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable) as error:
                             # Returning older work is optional to this live transport.
                             # Keep its exact uncertain cursor/append; do not retry it
@@ -502,7 +508,7 @@ def install(app, config, provider, authorize, origins):
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
                                     result_index,provider,sideband,stopped=preparation_stopped,
-                                    prior_visit_context=prior_visit_context))
+                                    prior_visit_context=prior_visit_context,held_returns=frozenset(held_returns)))
                                 result_index+=1
                     if renewal_requested and not closing:
                         pending_value=await asyncio.to_thread(history.read,visit,human,owner)

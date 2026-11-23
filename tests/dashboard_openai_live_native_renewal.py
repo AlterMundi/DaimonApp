@@ -1,5 +1,6 @@
 """Old native work, fresh voice context, flat receipts; zero providers/models."""
 import copy
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -10,10 +11,48 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from dashboard.openai_live_native_results import return_native_part
-from dashboard.openai_live_native_backend import return_next_native_part,return_one_native_part
+from dashboard.openai_live_native_backend import NativeReturnNeedsReview,return_next_native_part,return_one_native_part
+from dashboard.openai_live import LiveUnavailable
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.provider import ProviderUnavailable
 import dashboard_openai_live_native_results as fixtures
+
+
+class ReturnIsolation(unittest.TestCase):
+    def test_one_unreadable_source_does_not_disable_other_results(self):
+        ident, owner = 'visit', {'binding': 'bound'}
+        work = {'native_work': {'state': 'observed'}}
+        history = SimpleNamespace(read=lambda *_: {'delegations': {'old': work, 'new': work}})
+        provider = SimpleNamespace(authorized=lambda _: True, public_live_binding=lambda _: owner)
+        answer = {'state': 'sent'}
+        selected = []
+
+        def read(*args, **kwargs):
+            selected.append(args[4])
+            if args[4] == 'old':
+                raise ProviderUnavailable('Synthetic exact result failure')
+            return answer
+
+        with patch('dashboard.openai_live_native_backend.return_one_native_part', side_effect=read):
+            with self.assertRaises(NativeReturnNeedsReview) as failed:
+                return_next_native_part(history, ident, 100, owner, 0, provider, object(),
+                                        prior_visit_context=False)
+            self.assertEqual(failed.exception.source, (ident, 'old'))
+            result = return_next_native_part(history, ident, 100, owner, 1, provider, object(),
+                                             prior_visit_context=False, held_returns={failed.exception.source})
+        self.assertEqual(result, answer)
+        self.assertEqual(selected, ['old', 'new'])
+
+    def test_unknown_sideband_effect_is_not_a_source_read_failure(self):
+        owner = {'binding': 'bound'}
+        work = {'native_work': {'state': 'observed'}}
+        history = SimpleNamespace(read=lambda *_: {'delegations': {'source': work}})
+        provider = SimpleNamespace(authorized=lambda _: True, public_live_binding=lambda _: owner)
+        with patch('dashboard.openai_live_native_backend.return_one_native_part',
+                   return_value={'state': 'unconfirmed'}):
+            with self.assertRaises(LiveUnavailable):
+                return_next_native_part(history, 'visit', 100, owner, 0, provider, object(),
+                                        prior_visit_context=False)
 
 
 class Renewal(unittest.TestCase):
