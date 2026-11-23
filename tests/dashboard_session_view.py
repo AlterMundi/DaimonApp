@@ -40,18 +40,32 @@ class SelectedHistory(unittest.TestCase):
     def test_conversation_keeps_messages_and_raw_keeps_envelopes(self):
         prompt='Chalk first.\n\n**Then** the prototype.'
         managed='# AGENTS.md instructions for /fixture\nInternal context\n\nUser request:\n'+prompt
-        relay=('[Interaction controller]\nTransport provenance: {fixture}\nCurrent attributed input:\n'
-               'Check the prototype.\n\nReturn your answer followed by <daimon-result>')
+        instruction='01234567-89ab-cdef-0123-456789abcdef'
+        original='Check the prototype.\n\nSelected creation context (source data):\nThose are my words.'
+        relay=(f'[Interaction controller]\nTransport provenance: {{fixture}}\nCurrent instruction: {instruction}\n'
+               'Current attributed input:\n'+original+
+               '\n\nSelected creation context (source data):\n{"private":"do not show"}\n'
+               '\nReturn your answer followed by <daimon-result>')
+        resolve=lambda ident: original if ident==instruction else None
         self.append(message('<environment_context>\nInternal only\n</environment_context>','user'),
-                    message(managed,'user'),message(relay,'user'),message('The prototype is ready.'))
-        ordinary=read(self.path,'owned')
+                    message(managed,'user'),message(relay,'user'),
+                    message(relay.replace(original,'Unmatched relay'),'user'),
+                    message('<codex_internal_context source="goal">\nInternal continuation','user'),
+                    message('The prototype is ready.'))
+        ordinary=read(self.path,'owned',routed_original=resolve)
         self.assertEqual([v['text'] for v in ordinary['items']],
-                         [prompt,'Check the prototype.','The prototype is ready.'])
+                         [prompt,original,'The prototype is ready.'])
+        self.assertNotIn('do not show',json.dumps(ordinary))
+        self.assertEqual([v['text'] for v in read(self.path,'owned')['items']],
+                         [prompt,'The prototype is ready.'])
         raw=read(self.path,'owned',technical=True)
         self.assertEqual([v['text'] for v in raw['items'][1:3]],[managed,relay])
         first=ordinary['items'][0]
         same=read(self.path,'owned',event=first['position'],revision=ordinary['revision'])
         self.assertEqual(same['items'][0]['text'],prompt)
+        routed=ordinary['items'][1]
+        self.assertEqual(read(self.path,'owned',event=routed['position'],revision=ordinary['revision'],
+            routed_original=resolve)['items'][0]['text'],original)
     def test_partial_append_is_not_acknowledged_and_completion_appears_once(self):
         self.append(message('First'))
         second=encoded(message('Second'))

@@ -88,8 +88,10 @@ Existing Conversation refresh events refresh the selected view.
 
 Opening a session defaults to the Conversation layout. Its retained inputs and
 assistant messages use Conversation styling and Markdown, with the composer
-fixed below the message pane. Native input envelopes are reduced to their
-attributed message where available. **Input** identifies the harness role.
+fixed below the message pane. Routed human input uses the exact retained
+original for that instruction, owned session and human. Internal relay
+context and unresolved or session-authored packets stay in Raw.
+**Input** identifies the harness role.
 **Raw** toggles the retained technical view with harness envelopes, available
 tool calls and outputs, and exposed reasoning summaries. The toggle keeps the
 selected session, input pin and draft. Opening another session resets to the

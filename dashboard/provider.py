@@ -333,7 +333,17 @@ class Provider:
             raise ProviderUnavailable('Selected history is outside the native root')
         from .session_view import read
         meta=path.stat()
-        value=read(path,selected['codex_thread_id'],expected_file=(meta.st_dev,meta.st_ino),**window)
+        with closing(readonly(self.receiver['db_path'])) as db:
+            def routed_original(instruction):
+                row=db.execute('''SELECT json_extract(src.doc,'$.text')
+                    FROM interaction_instructions i JOIN interaction_sources src ON src.id=i.input_id
+                    WHERE i.id=? AND i.session_id=? AND src.human_id=?
+                      AND src.channel!='local-session'
+                      AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=src.id)''',
+                    (instruction,selected['id'],self.human)).fetchone()
+                return row[0] if row else None
+            value=read(path,selected['codex_thread_id'],expected_file=(meta.st_dev,meta.st_ino),
+                routed_original=routed_original,**window)
         self.assert_binding()
         current=next((r for r in self.bindings() if self.identity(r)==ident),None)
         if current is None or self.identity(current)!=self.identity(selected) or not self.authorized(self.human):
