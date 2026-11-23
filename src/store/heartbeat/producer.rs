@@ -1171,6 +1171,34 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(check_on(&conn, c)?.is_some())
     }
+    pub(crate) fn heartbeat_claim_response_receipt(
+        &self,
+        check: &Check,
+        selection: &crate::store::MatrixInboxSelection,
+    ) -> Result<Option<(String, Value)>> {
+        let Some(source) = &check.matrix_inbox else {
+            return Ok(None);
+        };
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        if !selection.belongs(check.human, check.entry, source)
+            || !check_on(&tx, check)?.is_some_and(|parent| {
+                parent
+                    .last_check
+                    .is_some_and(|observation| observation.outcome == "succeeded")
+            })
+        {
+            return Ok(None);
+        }
+        let receipt = super::super::matrix::inbox::claim_response_receipt_on(
+            &tx,
+            selection,
+            Utc::now().timestamp_millis(),
+        )?;
+        tx.commit()?;
+        Ok(receipt)
+    }
+
     #[cfg(test)]
     pub(crate) fn heartbeat_finish_check(
         &self,

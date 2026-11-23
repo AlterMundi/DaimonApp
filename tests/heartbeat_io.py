@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
+import time
 import uuid
 from workflow_io import WorkflowJourney
 
@@ -577,22 +578,35 @@ def qualify_inbox(binary):
         assert answered["handling"]["phase"] == "uncertain"
         repeated = j.call("route-answer-again", "matrix_response", reply)
         assert repeated["submit"] is False and len(response_calls) == 1
-        observed = j.call("route-answer-observe", "matrix_response", {
-            "action": "inspect", "message_id": first["message_id"],
-        })
-        assert observed["handling"]["intent"]["send_id"] == answered["handling"]["intent"]["send_id"]
-        assert observed["handling"]["phase"] in ("submitted", "recipient_copy_proved")
-        assert response_calls == [("--respond", answered["handling"]["intent"]["send_id"]),
-                                  ("--response-status", answered["handling"]["intent"]["send_id"])]
         j.call("route-peer-work-integrated", "workflow_finish", {
             "workflow": work["id"], "revision": work["revision"],
             "checkpoint": "Read the exact reserved worker result and retained its correlated native reply outcome.",
         })
         assert j.instructions(8)[0] == primary_before, "Primary original was replayed, rewritten or retired"
         finish(packet)
+        intent = answered["handling"]["intent"]
+        j.wait(lambda: int(time.time() * 1000) >= intent["effect_not_after_ms"], seconds=20)
+        due()
+        outbound = None
+
+        def receiving_copy_projected():
+            nonlocal outbound
+            page = j.read("presentation", "before", "0", "0", "0", "0", "0")["result"]
+            outbound = next(
+                (item for item in page["items"] if item["id"] == "matrix-response:" + first["message_id"]),
+                None,
+            )
+            return outbound is not None and outbound["handling"]["phase"] == "recipient_copy_proved"
+
+        j.wait(receiving_copy_projected, seconds=45)
+        assert outbound["handling"]["intent"]["send_id"] == intent["send_id"]
+        assert response_calls == [
+            ("--respond", intent["send_id"]), ("--response-status", intent["send_id"])
+        ]
+        assert len(j.bounded) == 3, "Receipt refresh must not start another native turn"
         final = j.read("heartbeat", "pause", str(status["generation"]))["result"]
         assert (
-            final["producer"]["checks"] == 4
+            final["producer"]["checks"] == 5
             and final["resources"]["reserved_provider_attempts"] == 9
         )
         assert j.row("SELECT count(*) FROM conversation_inputs") == [(1,)]
@@ -608,7 +622,7 @@ def qualify_inbox(binary):
             for i in presentation["items"]
         )
         print(
-            "PASS signed Matrix original -> finite shared producer -> bounded idle integrator -> exact source and actual human-purpose read -> durable defer -> ordinary workflow with reserved child -> exact result -> correlated native reply -> canonical Conversation report; no-news quiet; messaging-only lane persists; unrelated lane pause leaves source reads active; held read lane-pause/restart rejects late cursor; lost reply ACK stays uncertain, duplicate does not resend, delivery-only inspection recovers same intent; checks/account9of12 conserved; Telegram disabled, one actual synthetic human-purpose original with no fabricated peer/human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
+            "PASS signed Matrix original -> finite shared producer -> bounded idle integrator -> exact source and actual human-purpose read -> durable defer -> ordinary workflow with reserved child -> exact result -> correlated native reply -> canonical Conversation report; no-news quiet; messaging-only lane persists; unrelated lane pause leaves source reads active; held read lane-pause/restart rejects late cursor; lost reply ACK stays uncertain, duplicate does not resend, automatic model-free receipt inspection recovers same intent; checks/account9of12 conserved; Telegram disabled, one actual synthetic human-purpose original with no fabricated peer/human input or real provider/model call. Synthetic native; live receiving/model/device acceptance remains separate."
         )
     except Exception:
         print("INBOX_FIXTURE_DIAGNOSTICS", {"calls":calls,"errors":errors,"bounded":len(j.bounded)},file=sys.stderr)
