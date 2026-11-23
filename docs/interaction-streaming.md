@@ -1016,6 +1016,10 @@ changes; existing persisted playback cursors remain independently bounded.
 
 ### Unconfirmed capture flush
 
+On ordinary microphone Send, the browser stores the original recording and
+the explicit send intent in a single local recovery transaction before the
+upload. Review-only captures are kept without a send intent.
+
 The PCM recorder waits for its worklet's final buffer before closing an ordinary
 recording. If that acknowledgment does not arrive within the existing six-second
 bound, preserve only the bytes actually received and mark audio_flush_unconfirmed.

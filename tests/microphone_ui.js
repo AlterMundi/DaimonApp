@@ -3,14 +3,14 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const until=async fn=>{for(let n=0;n<100;n++){if(fn())return;await new Promise(yes=>setTimeout(yes,5));}throw Error('Expected microphone transition did not occur');};
 const deferred=()=>{let resolve;return {promise:new Promise(yes=>{resolve=yes;}),resolve:value=>resolve(value)};};
 function memoryRecovery(){
- const values=new Map();
+ const values=new Map(),writes=[];
  const db={createObjectStore(){},close(){},transaction(_name,mode){
    const tx={aborted:false,abort(){this.aborted=true;this.onabort?.();},objectStore(){return {
      get(key){const request={};queueMicrotask(()=>{request.result=values.get(key);request.onsuccess?.();queueMicrotask(()=>{if(!tx.aborted)tx.oncomplete?.();});});return request;},
-     put(value,key){assert.equal(mode,'readwrite');values.set(key,value);},delete(key){assert.equal(mode,'readwrite');values.delete(key);}
+     put(value,key){assert.equal(mode,'readwrite');values.set(key,value);writes.push(value);},delete(key){assert.equal(mode,'readwrite');values.delete(key);}
    };}};return tx;
  }};
- return {values,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
+ return {values,writes,open(){const request={result:db};queueMicrotask(()=>request.onsuccess?.());return request;}};
 }
 function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,originalEvents={}){
  let now=1000;
@@ -73,6 +73,13 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  };
 }
 (async()=>{
+ const directStorage=memoryRecovery(),directSend=boot(false,directStorage);await until(()=>directSend.ui.canStartNative());
+ const slowUpload=directSend.holdUpload();await directSend.click();await directSend.click();
+ await until(()=>directSend.uploads.length===1);
+ assert.equal(directStorage.writes.length,1,'Ordinary Send saves the bytes and explicit intent in one transaction before upload');
+ assert.equal(directStorage.writes[0].submissionRequested,true);
+ assert.equal(directStorage.writes[0].id,directSend.uploads[0].headers['X-Input-Id']);
+ slowUpload.resolve();await until(()=>directSend.received.length===1);
  const contextRef={file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64};
  for(const live of [false,true]){
   const contextHold=deferred();let frozen;

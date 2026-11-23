@@ -410,7 +410,10 @@ window.VoiceInput = (() => {
       // an arbitrary application timer must not cut off a progressing upload.
       if(frozen.preparedText)caption(frozen.preparedText);else notice('Saving your recording…');controls();
       try {
-        if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
+        if(persistIntent && recovery){
+          try{await recovery.put(frozen,continuousOwned);frozen.localRecovery=true;}
+          catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}
+        }
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
         if(frozen.transcriptionProfile!==undefined&&!['openai','previous','openai-live','previous-live'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
         const route=frozen.avatarInterrupt?'api/interaction/voice/openai-live/interrupt'
@@ -468,11 +471,12 @@ window.VoiceInput = (() => {
 
         }
         pending={dictation,transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
-        try{if(recovery){await recovery.put(pending);pending.localRecovery=true;}}catch{pending.localRecovery=false;}
-        if(owned!==generation || binding!==getBinding())return;
         const attachmentsFull=dictation&&((selection?.files?.length||0)+2>8||blob.size+dictation.transcript.size+(selection?.files||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024);
         if(attachmentsFull)pending.retentionBlocked=true;
         if(needsReview||attachmentsFull){
+          const reviewed=pending;
+          try{if(recovery){await recovery.put(reviewed);reviewed.localRecovery=true;}}catch{reviewed.localRecovery=false;}
+          if(owned!==generation || binding!==getBinding() || pending!==reviewed)return;
           phase='ready';commit=false;parts=[blob];
           readySelection={binding,selection:{...selection,captureId:pending.id,captureStop:pending.captureStop,preparedText,captureReviewed:true}};
           notice((attachmentsFull?'This recording and your edited draft are kept. Save the audio and reduce the original attachments before sending.':captureStop==='audio_flush_unconfirmed'

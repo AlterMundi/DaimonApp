@@ -240,3 +240,9 @@ default. Either view is limited to the same authorized inventory. Browser focus,
 pageshow and network return retry only remembered-access observation, never input.
 This integrates the selected Eko1109321 navigation behavior while retaining the
 current reply/Detail controls, metadata recovery and shared-auth semantics.
+
+
+The saved-input reader uses the existing refresh cadence independently of
+reply, question and playback reads. An unchanged message stays in place when
+its status updates. Checking a saved message reports whether it is still
+queued and uses the existing read-only input endpoint.
