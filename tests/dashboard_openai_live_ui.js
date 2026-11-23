@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
+function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false,prepareVoice=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],captions=[],historyBatches=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -26,7 +26,7 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
     if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
     if(failReviewedPreparation&&sockets.length===2){emit({type:'context_preparing',id:this.id,replacement_accepted:value.replacement,voice_continuation:value.replacement.id});emit({type:'unconfirmed',id:this.id,message:'Synthetic context preparation failed.'});return;}
-    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
+    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(prepareVoice?{voice_choice:{}}:{}),...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close'&&!deferClose){
     const renewal=value.reason==='transport_renewal';
@@ -504,12 +504,16 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert.equal(empty.sockets[0].sent.find(row=>row.type==='source_sealed').capture_bytes,0);
  assert.equal(empty.requests.length,0);await empty.engine.hold();
 
- const denied=fixture();
+ const denied=fixture({nativeChoice:true,prepareVoice:true});
  denied.navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('Synthetic refusal','NotAllowedError');};
- assert.equal(await denied.engine.start(),false);
+ assert.equal(await denied.engine.start({avatarEntry:true}),false);
  assert.equal(denied.sockets[0].sent.filter(v=>v.type==='close').length,1);
  assert(!denied.sockets[0].sent.some(v=>v.type==='offer'));
  assert.match(denied.states.at(-1).message,/Microphone access was denied/);
+ assert.equal(await denied.engine.reconnect(),false);
+ const admission=denied.sockets[1].sent[0];
+ assert.equal(admission.voice_start,'new');
+ assert(!admission.voice_continuation,'A visit cancelled before its offer cannot become a continuation');
  const permission=fixture();let resolvePermission;
  permission.navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{resolvePermission=resolve;});
  const retired=permission.engine.start();await until(()=>resolvePermission);await permission.engine.hold();

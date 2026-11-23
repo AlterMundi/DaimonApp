@@ -300,7 +300,7 @@ window.PublicLiveConversation=(()=>{
         }).catch(()=>granted(false));
         if(!await wait(locked,3000))throw Error('Microphone capture is owned by another page');
         const url=new URL('api/interaction/voice/gpt-live',window.location.href);url.protocol=url.protocol==='https:'?'wss:':'ws:';
-        const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve;const sourceReasons=new Set();
+        const transport=socket=new WebSocket(url);let preparedResolve,answerResolve,readyResolve,priorVoiceContinuation;const sourceReasons=new Set();
         const prepared=new Promise(resolve=>{preparedResolve=resolve;}),answer=new Promise(resolve=>{answerResolve=resolve;}),ready=new Promise(resolve=>{readyResolve=resolve;});
         const sourceReady=Promise.race([ready,aborted]);sourceReady.catch(()=>{});
         transport.onopen=()=>{if(current())transport.send(JSON.stringify({id:visit,binding,csrf:headers()['X-Dashboard-CSRF']||headers()['x-dashboard-csrf'],
@@ -315,12 +315,17 @@ window.PublicLiveConversation=(()=>{
             if(value.type==='prepared'){
               continuity=backend==='native'&&value.admission?.continuous_renewal===true;
               for(const reason of value.admission?.source_close_reasons||[])if(typeof reason==='string'&&/^source_[a-z_]{1,40}$/.test(reason))sourceReasons.add(reason);
+              priorVoiceContinuation=voiceContinuation;
               voiceContinuation=value.admission?.voice_choice?{id:visit,binding}:undefined;replacementReview=undefined;preparedResolve(value);}
             else if(value.type==='context_preparing'){
               acceptReplacement(value);state('Preparing your conversation');
             }
             else if(value.type==='answer')answerResolve(value);
-            else if(value.type==='startup_ended'&&value.id===visit&&closing)closedAck?.(true);
+            else if(value.type==='startup_ended'&&value.id===visit&&closing){
+              // A prepared visit that never opened WebRTC cannot be continued.
+              if(voiceContinuation?.id===visit)voiceContinuation=priorVoiceContinuation;
+              closedAck?.(true);
+            }
             else if(value.type==='provider_event'){
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
               if(!directCaptions)caption(value.event);
