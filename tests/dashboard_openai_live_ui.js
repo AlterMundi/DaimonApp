@@ -552,25 +552,37 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  history.history(()=>new Promise(resolve=>{finish=resolve;}));const pending=history.engine.restoreHistory();await until(()=>finish);
  history.binding('b'.repeat(64));finish({ok:true,json:async()=>({visits:[{id,created_at:1}],more:false})});
  await assert.rejects(pending);assert.equal(history.items.length,2,'Changed binding cannot publish stale history');
- const returned=fixture();let returnReads=0,failTail=true,foreignHead=false;
- returned.history(async()=>({ok:true,json:async()=>({visits:[],more:false})}));
- await returned.engine.restoreHistory(); // The current binding was already loaded before speaking.
+ const returned=fixture();let returnReads=0,latestReads=0,failTail=true,wrongStatus=false;
+ returned.history(async url=>({ok:true,json:async()=>url.endsWith('/visits')?
+  {visits:[{id,created_at:0,state:'closed'}],more:true,before:id}:{items:[],after:0,revision:null,more:false}}));
+ await returned.engine.restoreHistory();
+ const initialBatches=returned.historyBatches.length;
  await returned.start();const ownVisit=returned.sockets[0].id;
  returned.history(async url=>{
   returnReads++;
-  if(url.endsWith('/visits'))return {ok:true,json:async()=>({visits:[{id:foreignHead?id:ownVisit,created_at:1}],more:false})};
+  if(url.endsWith('/visits')){latestReads++;return {ok:true,json:async()=>({visits:[{id,created_at:2,state:'closed'}],more:false})};}
+  if(url.endsWith('/visits/'+ownVisit))return {ok:true,json:async()=>({id:wrongStatus?id:ownVisit,created_at:1,state:'closed'})};
+  if(url.includes('?before=')){
+   assert(url.endsWith('?before='+id),'Exact return must preserve the previous history cursor');
+   return {ok:true,json:async()=>({visits:[],more:false})};
+  }
   assert(url.includes(ownVisit));
   if(url.includes('after=0'))return {ok:true,json:async()=>({items:[first],after:100,revision:'source',more:true})};
   return {ok:!failTail,json:async()=>({items:[second],after:200,revision:'source',more:false})};
  });
  await returned.engine.reconcileHistory();assert.equal(returnReads,0,'Do not snapshot the active visit');
  await returned.engine.hold();
- await assert.rejects(returned.engine.reconcileHistory());assert.equal(returned.historyBatches.length,0,'Do not publish a partial snapshot on return');
- failTail=false;await returned.engine.restoreHistory(false,true); // Existing explicit Retry action.
- assert.equal(returned.historyBatches.length,1);
- assert.deepEqual(returned.historyBatches[0].map(value=>value.visit),[ownVisit,ownVisit]);
- foreignHead=true;const beforeForeign=returnReads;await returned.engine.reconcileHistory();
- assert.equal(returnReads,beforeForeign+1,'Do not fetch another visit in the ended visit reconciliation');
- assert.equal(returned.historyBatches.length,1);
+ await assert.rejects(returned.engine.reconcileHistory());
+ assert.equal(returned.historyBatches.length,initialBatches,'Do not publish a partial snapshot on return');
+ failTail=false;await returned.engine.restoreHistory(false,true);
+ assert.equal(returned.historyBatches.length,initialBatches+1);
+ assert.deepEqual(returned.historyBatches.at(-1).map(value=>value.visit),[ownVisit,ownVisit]);
+ assert.equal(latestReads,0,'Return and explicit retry read the exact visit even when the latest visit moved');
+ wrongStatus=true;const beforeForeign=returnReads;
+ await assert.rejects(returned.engine.reconcileHistory());
+ assert.equal(returnReads,beforeForeign+1,'A different visit identity cannot reach the source page');
+ assert.equal(returned.historyBatches.length,initialBatches+1);
+ await returned.engine.restoreHistory(true,true);
+ assert.equal(returned.historyStates.at(-1).more,false);
  console.log('Public Live: admission/ICE/started ordering, exact original recovery, source sealing with later frames/duplicate control/missing uploads/empty prefix/changed owner, engine isolation/retirement fences and paged history passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

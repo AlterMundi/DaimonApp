@@ -1272,11 +1272,16 @@ class Mounted(unittest.TestCase):
             self.assertFalse(page.json()['more']);self.assertEqual(native.creations,1)
             self.assertEqual(native.sent,[])
             self.close(socket)
+            exact=path+'/'+self.ident
+            receipt=self.client.get(exact,headers=self.headers)
+            self.assertEqual(receipt.status_code,200)
+            self.assertEqual(receipt.json()['created_at'],page.json()['visits'][0]['created_at'])
             # Read-only history binding checks run after voice closes. Changing
             # the live owner correctly revokes an active socket's admission.
             self.owner.binding='b'*64
             self.assertEqual(self.client.get(path,headers=self.headers).status_code,409)
             self.assertEqual(self.client.get(path,headers={**self.headers,'x-voice-binding':'b'*64}).json()['visits'],[])
+            self.assertEqual(self.client.get(exact,headers={**self.headers,'x-voice-binding':'b'*64}).status_code,404)
             self.owner.binding='a'*64
         self.allowed=False;self.assertEqual(self.client.get(path,headers=self.headers).status_code,401)
     def test_explicit_stop_finalizes_native_voice_with_an_unsealed_client_request(self):

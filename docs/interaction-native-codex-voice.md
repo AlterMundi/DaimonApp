@@ -1704,3 +1704,9 @@ When the prepared browser transcript and the canonical transcript disagree,
 the explicitly marked original remains saved for review. Route rollout pairs
 the native reader with the web upload. After recording an interruption-marked
 original, retain a native rollback that can read that frozen field.
+
+Returning to text reads the exact visit that answered in this browser through
+the existing owner-scoped visit status and revision-fenced event reader. A
+newer visit from another window does not replace that transcript. Retry reads
+the same failed visit; incomplete snapshots and changed owners stay out of
+Conversation. Ordinary earlier-history paging keeps its own cursor.
