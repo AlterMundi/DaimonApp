@@ -47,7 +47,12 @@ fn eligible(value: &Value, now: i64, loop_started: i64) -> Result<(), &'static s
     if producer["pending"] == true {
         return Err("attention_pending");
     }
-    let check = &producer["last_check"];
+    let latest = &producer["last_check"];
+    let check = if latest["activation"]["lane"] == "messaging" {
+        latest
+    } else {
+        &producer["previous_messaging_check"]
+    };
     if check["outcome"] != "succeeded"
         || check["generation"] != value["generation"]
         || check["activation"]["lane"] != "messaging"
@@ -222,6 +227,32 @@ mod tests {
             assert_eq!(eligible(&value, 100000, 80000), Err(reason), "{pointer}");
         }
     }
+    #[test]
+    fn reports_do_not_erase_a_current_messaging_observation() {
+        let mut value = ready();
+        let messaging = value["producer"]["last_check"].clone();
+        value["producer"]["previous_messaging_check"] = messaging.clone();
+        value["producer"]["last_check"]["activation"]["lane"] = json!("reports");
+        value["producer"]["last_check"]["outcome"] = json!("failed");
+        assert_eq!(eligible(&value, 100000, 80000), Ok(()));
+        assert_eq!(eligible(&value, 167000, 80000), Err("source_check_stale"));
+        assert_eq!(eligible(&value, 100000, 92000), Err("source_check_stale"));
+
+        value["lanes"]["messaging"]["generation"] = json!(3);
+        assert_eq!(
+            eligible(&value, 100000, 80000),
+            Err("source_check_unavailable")
+        );
+        value["lanes"]["messaging"]["generation"] = json!(2);
+
+        value["producer"]["last_check"] = messaging;
+        value["producer"]["last_check"]["outcome"] = json!("in_progress");
+        assert_eq!(
+            eligible(&value, 100000, 80000),
+            Err("source_check_unavailable")
+        );
+    }
+
     #[test]
     fn continuous_readiness_uses_current_rate_and_fresh_check_not_pilot_expiry() {
         let mut value = ready();
