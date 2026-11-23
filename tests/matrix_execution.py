@@ -88,6 +88,15 @@ class UsageReceiptCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(MatrixExecutionError, "exceeds bound"):
             self.selected("import sys; sys.stdin.read(); print('x' * 65537)")(request)
 
+    def test_receipt_command_does_not_inherit_listener_credentials(self):
+        callback = self.selected(
+            "import os, sys; sys.stdin.read(); "
+            "assert 'DM_TEST_PARENT_CREDENTIAL' not in os.environ; print('null')"
+        )
+        request = dict(deadline_unix_ms=int((time.time() + 10) * 1000))
+        with patch.dict(os.environ, {"DM_TEST_PARENT_CREDENTIAL": "synthetic"}):
+            self.assertIsNone(callback(request))
+
     def test_timeout_kills_and_reaps_the_owned_process(self):
         import subprocess
         original = subprocess.Popen
@@ -1229,9 +1238,8 @@ class AdapterTests(unittest.TestCase):
             )
             if receipt:
                 authority = root / "synthetic-accountant.py"
-                authority.write_text("import json,sys\n"
+                authority.write_text("import hashlib,json,sys\n"
                     "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey\n"
-                    "from tests.test_execution_instruction import proof\n"
                     "request=json.load(sys.stdin)\n"
                     "assert request['schema']=='execution/usage-receipt-request/v1'\n"
                     "assert request['operation_id']==request['observation']['attemptId']\n"
@@ -1240,8 +1248,13 @@ class AdapterTests(unittest.TestCase):
                     "operation_id=request['operation_id'],actual=8)\n"
                     "key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex("
                     + repr(state.key.private_bytes_raw().hex()) + "))\n"
-                    "print(json.dumps(dict(usage=usage,proof=proof(key,'approve',usage,'receipt-'"
-                    "+request['operation_id']))))\n")
+                    "def canonical(value):\n"
+                    "    return json.dumps(value,sort_keys=True,separators=(',',':')).encode()\n"
+                    "proof=dict(purpose='execution/v1/approve',principal=usage['principal'],"
+                    "event_id='receipt-'+usage['operation_id'],"
+                    "payload_sha256=hashlib.sha256(canonical(usage)).hexdigest())\n"
+                    "proof['signature']=key.sign(canonical(proof)).hex()\n"
+                    "print(json.dumps(dict(usage=usage,proof=proof)))\n")
                 authority.chmod(0o600)
                 selected.update(schema="telecodex.native-funding-binding/v2", usage_receipt=dict(
                     command=[sys.executable, "-B", str(authority)], timeout_seconds=2))

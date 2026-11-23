@@ -495,8 +495,10 @@ def usage_receipt_command(selection, *, clock=time.time, monotonic=time.monotoni
         raw = (canonical(request) + "\n").encode()
         if len(raw) > 65536:
             raise MatrixExecutionError("Accounting request exceeds bound")
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL, close_fds=True)
+        process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, close_fds=True, env={},
+        )
         output = bytearray()
         sent = 0
         try:
