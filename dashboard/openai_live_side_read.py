@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import time
 import unicodedata
 import uuid
 
@@ -47,12 +48,57 @@ def _evidence(snapshot, question):
     return unique
 
 
+def _older_evidence(provider, owner, question, current):
+    """Walk the existing presentation cursors, then resolve an exact current revision."""
+    terms=_terms(question)
+    if not terms:return {}
+    delivery=native=0
+    reads=0
+    deadline=time.monotonic()+6
+    for _ in range(6):
+        current()
+        if time.monotonic()>=deadline:break
+        page=provider.presentation_list(delivery,native,'before')
+        if page.get('binding')!=owner['binding']:
+            raise ProviderUnavailable('Conversation history owner changed')
+        items=page.get('items')
+        if not isinstance(items,list) or len(items)>16:raise ValueError('Invalid conversation history page')
+        candidates=[row for row in items if row.get('kind') in ('integrator_answer','worker_result')
+                    and row.get('current') is not False and row.get('correction_pending') is not True
+                    and isinstance(row.get('preview'),str) and _terms(row['preview'])&terms]
+        candidates.sort(key=lambda row:len(_terms(row['preview'])&terms),reverse=True)
+        for candidate in candidates:
+            if reads>=3 or time.monotonic()>=deadline:return {}
+            current()
+            reads+=1
+            part=provider.presentation_part(candidate['id'],candidate['revision'],0)
+            if (part.get('id')!=candidate['id'] or part.get('revision')!=candidate['revision']
+                    or part.get('offset')!=0 or part.get('kind')!=candidate['kind']
+                    or part.get('entry_binding')!=owner['entry_binding'][:3]+[owner['binding']]
+                    or part.get('native_binding_current') is not True
+                    or part.get('current') is False or part.get('correction_pending') is True):
+                continue
+            result=_evidence({'messages':[dict(part,source=part['id'])]},question)
+            if result:return result
+        if not page.get('more'):break
+        cursor=page.get('cursor',{})
+        following=cursor.get('delivery'),cursor.get('native')
+        if any(type(value) is not int or value<0 for value in following) or following==(delivery,native):
+            raise ValueError('Invalid conversation history continuation')
+        delivery,native=following
+    return {}
+
+
 def return_side_question(history,ident,human,owner,delegation,question,provider,sideband,current):
     """Return evidence once. The user query is never submitted as native work."""
     current()
     try:
         snapshot=provider.public_live_integrator_context(owner,16384)
-        sources=_evidence(snapshot,question) if snapshot.get('thread')==owner['native_thread'] else {}
+        if snapshot.get('thread')!=owner['native_thread']:
+            raise ProviderUnavailable('Current conversation changed during side lookup')
+        sources=_evidence(snapshot,question)
+        if not sources and snapshot.get('earlier_history_available') is True:
+            sources=_older_evidence(provider,owner,question,current)
     except (OSError,ValueError,ProviderUnavailable):
         sources={}
     current()

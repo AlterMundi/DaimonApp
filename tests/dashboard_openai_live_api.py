@@ -757,7 +757,8 @@ class Mounted(unittest.TestCase):
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
         if side_lookup:
             owner.public_live_integrator_context=lambda *args:{
-                'thread':frozen['native_thread'],'messages':[{'item':'selected-source','revision':'e'*64,
+                'thread':frozen['native_thread'],'earlier_history_available':side_lookup=='older',
+                'messages':[] if side_lookup=='older' else [{'item':'selected-source','revision':'e'*64,
                     'role':'assistant','text':'La palabra clave es jacarandá.'}]}
         def trace(root):
             if slow_result:
@@ -802,6 +803,26 @@ class Mounted(unittest.TestCase):
             'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
             'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
             'kind':'integrator_answer','local_turn':42,'native_binding_current':True}
+        older_reads=[]
+        if side_lookup=='older':
+            def older(delivery,native,direction):
+                self.assertEqual(direction,'before')
+                older_reads.append((delivery,native))
+                if not native:
+                    return {'binding':owner.binding,'items':[{'id':'native:5','revision':'b'*64,
+                        'kind':'integrator_answer','preview':'La palabra clave es otra.',
+                        'current':False,'correction_pending':True}],'more':True,'cursor':{'delivery':0,'native':5}}
+                return {'binding':owner.binding,'items':[
+                    {'id':'native:4','revision':'d'*64,'kind':'integrator_answer','preview':'La palabra clave'},
+                    {'id':'native:3','revision':'e'*64,'kind':'integrator_answer','preview':'La palabra clave'}],
+                    'more':False,'cursor':{'delivery':0,'native':3}}
+            def part(id,revision,offset):
+                self.assertNotEqual(id,'native:5')
+                return {'id':id,'revision':revision,'offset':offset,'kind':'integrator_answer',
+                    'entry_binding':frozen['entry_binding'][:3]+[owner.binding if id=='native:3' else 'b'*64],
+                    'native_binding_current':True,'text':'La palabra clave es jacarandá.'}
+            owner.presentation_list=older
+            owner.presentation_part=part
         class Recognizer:
             model='gpt-transcribe'
             def transcribe(self,data):calls['asr']+=1;return '¿Quién sos y qué recordás?'
@@ -856,7 +877,9 @@ class Mounted(unittest.TestCase):
                         retained=self.read()
                         receipt=retained['delegations']['native-task']['side_question']
                         self.assertEqual(receipt['state'],'context_injected')
-                        self.assertEqual(receipt['sources'],[{'source':'selected-source','revision':'e'*64}])
+                        source='native:3' if side_lookup=='older' else 'selected-source'
+                        self.assertEqual(receipt['sources'],[{'source':source,'revision':'e'*64}])
+                        if side_lookup=='older':self.assertEqual(older_reads,[(0,0),(0,5)])
                         self.assertNotIn('native_originals',retained)
                         self.assertNotIn('native_work',retained['delegations']['native-task'])
                         self.assertEqual(calls,{'asr':0,'work':0})
@@ -947,6 +970,9 @@ class Mounted(unittest.TestCase):
 
     def test_explicit_side_question_uses_own_history_without_native_work(self):
         self._native_backend_flow(project_voice_transcripts=False,side_lookup=True)
+
+    def test_side_question_reads_older_current_source_and_refuses_changed_owner(self):
+        self._native_backend_flow(project_voice_transcripts=False,side_lookup='older')
 
     def test_exact_native_work_can_return_without_projecting_ambient_transcripts(self):
         self._native_backend_flow(project_voice_transcripts=False)

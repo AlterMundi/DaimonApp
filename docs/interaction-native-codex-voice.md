@@ -1594,7 +1594,11 @@ bounded read of the same Integration conversation. The result is a short
 source excerpt, not an independently reasoned native answer. It is offered to
 the current GPT-Live delegation with a recorded exact command identity; an
 unknown append is never repeated. A missing excerpt stays missing. This
-invokes no new native work or model turn. Normal unmarked utterances keep
+invokes no new native work or model turn. When the startup snapshot has no
+match and older history is available, the reader checks up to six preceding
+presentation pages and three exact candidate revisions. A source has to match
+the current conversation binding and pass its correction checks.
+Normal unmarked utterances keep
 the existing native handoff. Hardware speech recognition of the spoken
 markers, automatic semantic route selection and prioritized interruption are
 separate acceptance work.
