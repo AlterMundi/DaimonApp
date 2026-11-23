@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -526,44 +526,66 @@ fn read_rollout_session_meta(path: &Path) -> Result<Option<CodexThreadSummary>> 
 
 fn read_rollout_history(path: &Path, limit: usize) -> Result<Vec<CodexHistoryEntry>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut entries = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        let Some(kind) = value.get("type").and_then(|kind| kind.as_str()) else {
-            continue;
-        };
-        let timestamp = value
-            .get("timestamp")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let Some(payload) = value.get("payload") else {
-            continue;
-        };
-        let candidate = match kind {
-            "event_msg" => history_entry_from_event_payload(payload, timestamp),
-            "response_item" => history_entry_from_response_payload(payload, timestamp),
-            _ => None,
-        };
-        let Some(entry) = candidate else {
-            continue;
-        };
-        if entries.last().is_some_and(|last: &CodexHistoryEntry| {
-            last.role == entry.role && last.text == entry.text
-        }) {
-            continue;
-        }
-        entries.push(entry);
+    read_rollout_history_tail(file, limit)
+}
+
+fn history_entry_from_line(line: &[u8]) -> Option<CodexHistoryEntry> {
+    let value: serde_json::Value = serde_json::from_slice(line).ok()?;
+    let timestamp = value["timestamp"].as_str().unwrap_or_default().to_owned();
+    let payload = value.get("payload")?;
+    match value["type"].as_str()? {
+        "event_msg" => history_entry_from_event_payload(payload, timestamp),
+        "response_item" => history_entry_from_response_payload(payload, timestamp),
+        _ => None,
     }
-    if entries.len() > limit {
-        entries = entries.split_off(entries.len() - limit);
+}
+
+fn read_rollout_history_tail(
+    mut source: impl Read + Seek,
+    limit: usize,
+) -> Result<Vec<CodexHistoryEntry>> {
+    if limit == 0 {
+        return Ok(Vec::new());
     }
+    let mut end = source.seek(SeekFrom::End(0))?;
+    let mut block = vec![0; 64 * 1024];
+    let mut reversed_line = Vec::new();
+    let mut entries: Vec<CodexHistoryEntry> = Vec::new();
+    while end > 0 {
+        let count = end.min(block.len() as u64) as usize;
+        end -= count as u64;
+        source.seek(SeekFrom::Start(end))?;
+        source.read_exact(&mut block[..count])?;
+        for byte in block[..count]
+            .iter()
+            .rev()
+            .copied()
+            .chain((end == 0).then_some(b'\n'))
+        {
+            if byte != b'\n' {
+                reversed_line.push(byte);
+                continue;
+            }
+            reversed_line.reverse();
+            let entry = history_entry_from_line(&reversed_line);
+            reversed_line.clear();
+            let Some(entry) = entry else { continue };
+            if let Some(last) = entries.last_mut() {
+                if last.role == entry.role && last.text == entry.text {
+                    // The old forward reader retained the first of adjacent
+                    // duplicates, including its original timestamp.
+                    *last = entry;
+                    continue;
+                }
+            }
+            if entries.len() == limit {
+                entries.reverse();
+                return Ok(entries);
+            }
+            entries.push(entry);
+        }
+    }
+    entries.reverse();
     Ok(entries)
 }
 
@@ -1497,6 +1519,47 @@ mod tests {
             .unwrap()
             .expect("thread");
         assert_eq!(thread.id, "019cd417-2272-7abc-8def-0abc01b61077");
+    }
+
+    #[test]
+    fn recent_history_reads_only_tail_and_keeps_first_duplicate_timestamp() {
+        use serde_json::json;
+        use std::io::Cursor;
+
+        struct CountReads {
+            source: Cursor<Vec<u8>>,
+            bytes: usize,
+        }
+        impl Seek for CountReads {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.source.seek(pos)
+            }
+        }
+        impl Read for CountReads {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.source.read(bytes)?;
+                self.bytes += read;
+                Ok(read)
+            }
+        }
+
+        let event = |timestamp, text| json!({"type":"event_msg", "timestamp":timestamp,
+            "payload":{"type":"user_message","message":text}});
+        let duplicate = "Café".repeat(16_000);
+        let mut log = format!("{}\n",event("old", "Older input")).repeat(140_000);
+        log.push_str(&format!("{}\n{}\n{}\n{{",event("first",&duplicate),event("second",&duplicate),
+            event("last","Recent original")));
+        let mut source = CountReads { source: Cursor::new(log.into_bytes()), bytes: 0 };
+        let history = read_rollout_history_tail(&mut source, 2).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].text, duplicate);
+        assert_eq!(history[0].timestamp, "first");
+        assert_eq!(history[1].text, "Recent original");
+        assert!(source.bytes <= 3 * 64 * 1024);
+        assert!(source.bytes * 10 < source.source.get_ref().len());
+        let without_newline = format!("{}", event("only","No trailing newline"));
+        assert_eq!(read_rollout_history_tail(Cursor::new(without_newline), 8).unwrap()[0].text,
+            "No trailing newline");
     }
 
     #[test]
