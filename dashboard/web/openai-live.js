@@ -510,12 +510,16 @@ window.PublicLiveConversation=(()=>{
     }
     async function restoreHistory(older=false,explicit=false,exactVisit){
       const selected=getBinding(),generation=historyGeneration;
-      const failed=historyFailed===selected;
+      const failed=historyFailed?.binding===selected;
+      if(explicit&&!older&&!exactVisit&&failed)exactVisit=historyFailed.visit;
       if(failed&&!explicit||!older&&!exactVisit&&restored===selected&&!failed)return;
       if(restoring)return restoring;
       if(older&&(!historyBefore||restored!==selected))return;
       const cursor=older?historyBefore:undefined;
-      const current=()=>getBinding()===selected&&historyGeneration===generation;
+      const ended=()=>visit===exactVisit&&answeredVisit===exactVisit&&!active&&!starting&&!closing;
+      const sameBinding=()=>getBinding()===selected&&historyGeneration===generation;
+      const current=()=>sameBinding()&&(!exactVisit||ended());
+      if(exactVisit&&!current())return;
       const deadline=exactVisit?AbortSignal.timeout(15000):undefined;
       const read=async path=>{
         const response=await fetch(new URL('api/interaction/voice/gpt-live/visits'+path,window.location.href),{
@@ -527,9 +531,15 @@ window.PublicLiveConversation=(()=>{
       restoring=(async()=>{
         // Local recording recovery must not delay the saved transcript.
         void review().catch(()=>{});
-        const page=await read(cursor?'?before='+encodeURIComponent(cursor):'');
-        if(!Array.isArray(page.visits)||page.visits.length>1||page.more&&(!/^[a-f0-9-]{36}$/.test(page.before||'')||page.before===cursor))throw Error('Voice history cursor changed');
-        if(exactVisit&&page.visits[0]?.id!==exactVisit){onHistory({loading:false,more:!!historyBefore});return;}
+        let page;
+        if(exactVisit){
+          const entry=await read('/'+exactVisit);
+          if(entry.id!==exactVisit||!['created','closed'].includes(entry.state))throw Error('Voice visit changed');
+          page={visits:[entry]};
+        }else{
+          page=await read(cursor?'?before='+encodeURIComponent(cursor):'');
+          if(!Array.isArray(page.visits)||page.visits.length>1||page.more&&(!/^[a-f0-9-]{36}$/.test(page.before||'')||page.before===cursor))throw Error('Voice history cursor changed');
+        }
         for(const entry of page.visits){
           if(!/^[a-f0-9-]{36}$/.test(entry.id)||!Number.isFinite(entry.created_at))throw Error('Voice history source changed');
           // The current connection already forwards this visit. Restoring its
@@ -556,12 +566,20 @@ window.PublicLiveConversation=(()=>{
           if(!current())throw Error('Voice history changed');
           onHistoryItems(items);
         }
-        if(older||restored!==selected)historyBefore=page.more?page.before:undefined;
-        restored=selected;
+        if(!exactVisit){
+          if(older||restored!==selected)historyBefore=page.more?page.before:undefined;
+          restored=selected;
+        }
         historyFailed=undefined;onHistory({loading:false,more:!!historyBefore});
       })();
       try{return await restoring;}
-      catch(error){if(current()){historyFailed=selected;onHistory({loading:false,more:!!historyBefore,error:true,older});}throw error;}
+      catch(error){
+        if(current()){
+          historyFailed={binding:selected,visit:exactVisit};
+          onHistory({loading:false,more:!!historyBefore,error:true,older});
+        }else if(sameBinding())onHistory({loading:false,more:!!historyBefore});
+        throw error;
+      }
       finally{restoring=undefined;}
     }
     return {start,hold,reconnect:()=>start({continuation:true}),restoreHistory,reconcileHistory,resetHistory:()=>{historyGeneration++;restored=historyBefore=historyFailed=answeredVisit=undefined;onHistory({loading:false,more:false});},

@@ -159,7 +159,7 @@ def install(app, config, provider, authorize, origins):
         try:
             value=await asyncio.to_thread(history.owned,visit,session['human'],binding)
             # SDP/owner internals are unnecessary for a recovery/status read.
-            return {key:value[key] for key in ('id','state','backend_mode','recordings','delegations','finalization','latest_usage') if key in value}
+            return {key:value[key] for key in ('id','created_at','state','backend_mode','recordings','delegations','finalization','latest_usage') if key in value}
         except (OSError,ValueError,RenderError):raise HTTPException(404,'Voice visit unavailable') from None
 
     @app.get('/api/interaction/voice/gpt-live/visits/{visit}/events')
