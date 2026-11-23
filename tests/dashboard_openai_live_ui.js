@@ -444,6 +444,26 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert(!f.sockets.flatMap(s=>s.sent).some(v=>['session.start','response.create'].includes(v.type)));
  const oldSocket=f.sockets[0];await f.start();oldSocket.onclose();assert(f.engine.active,'Retired socket cannot close the current visit');await f.engine.hold();
 
+ const damaged=fixture({nativeChoice:true});
+ const blob=new Blob([new Uint8Array(100)],{type:'audio/wav'});
+ const hash=Buffer.from(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())).toString('hex');
+ const fragment=(binding,offset)=>({id:crypto.randomUUID(),fragment_group:crypto.randomUUID(),
+  voice_visit:crypto.randomUUID(),engine:'gpt-live',native_fragment:true,fragment_offset:offset,
+  ordinal:0,binding,blob,audio_sha256:hash});
+ const incomplete=fragment('a'.repeat(64),56),intact=fragment('a'.repeat(64),0),foreign=fragment('b'.repeat(64),56);
+ damaged.records.push(incomplete,intact,foreign);
+ await damaged.start(false,{avatarEntry:true});
+ const recovered=damaged.recovered();
+ assert.equal(recovered.length,2);
+ assert(recovered.some(value=>value.id===intact.fragment_group&&value.captureStop==='interrupted_prefix'));
+ const download=recovered.find(value=>value.id===incomplete.id);
+ assert(download.downloadOnly&&download.blob===incomplete.blob);
+ await assert.rejects(damaged.engine.retry(download),/Download the retained audio/);
+ await assert.rejects(damaged.engine.discard(download),/Download the retained audio/);
+ assert.equal(damaged.requests.length,0);
+ await damaged.engine.hold();
+ assert.deepEqual(damaged.records,[incomplete,intact,foreign],'No old recovery record is changed by a fresh entry');
+
  // The first seal fixes exact frames before awaiting uploads. Later microphone
  // frames keep recording; duplicate control cannot move the boundary or upload
  // another original. This is a raw prefix, never a completed speech/work claim.
