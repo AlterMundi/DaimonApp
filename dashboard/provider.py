@@ -1225,13 +1225,46 @@ class Provider:
         return value
 
     @staticmethod
+    def check_voice_capture_capacity(directory, incoming_bytes):
+        """Check the shared spool without claiming storage or changing originals."""
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ProviderUnavailable('Voice recording storage changed')
+        used = 0
+        entries = 0
+        inodes = set()
+        try:
+            for path in directory.iterdir():
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue  # Confirmed cleanup may run concurrently.
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077):
+                    raise ProviderUnavailable('Voice recording storage changed')
+                if path.name != 'admission.lock':
+                    entries += 1
+                key = (info.st_dev, info.st_ino)
+                if key not in inodes:
+                    used += info.st_size
+                    inodes.add(key)
+                if entries >= 128 or used + incoming_bytes > 256 * 1024 * 1024:
+                    raise VoiceStorageFull('Audio storage is full; existing originals are preserved. This recording was not submitted. Keep the local recording until storage is restored.')
+        except FileNotFoundError:
+            # A read-only startup check can race directory retirement. Actual
+            # capture retention still checks the quota while holding the lock.
+            return
+
+    @staticmethod
     def retain_voice_capture(directory, ident, data, digest):
         """Bound unresolved originals without expiring or discarding any input."""
         from scripts.speech_render import lock, RenderError
         import secrets
         # Same budget for every receiving worker/process. Completed transcripts
         # release their original bytes through retire_voice_capture above.
-        budget = 256 * 1024 * 1024
         try:
             with lock(directory / 'admission.lock'):
                 destination = directory / ident
@@ -1249,23 +1282,7 @@ class Provider:
                             raise ValueError('Original voice identity cannot be replaced')
                     sync_directory(directory)  # Finish an interrupted publication barrier.
                     return  # An exact retained retry needs no new space.
-                used = 0
-                entries = 0
-                inodes = set()
-                for path in directory.iterdir():
-                    try: info = path.lstat()
-                    except FileNotFoundError: continue  # Confirmed cleanup may run concurrently.
-                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                            or info.st_mode & 0o077):
-                        raise ProviderUnavailable('Voice recording storage changed')
-                    if path.name != 'admission.lock':
-                        entries += 1
-                    key = (info.st_dev, info.st_ino)
-                    if key not in inodes:
-                        used += info.st_size
-                        inodes.add(key)
-                    if entries >= 128 or used + len(data) > budget:
-                        raise VoiceStorageFull('Audio storage is full; existing originals are preserved. This recording was not submitted. Keep the local recording until storage is restored.')
+                Provider.check_voice_capture_capacity(directory, len(data))
                 temporary = directory / ('.'+secrets.token_hex(16))
                 try:
                     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

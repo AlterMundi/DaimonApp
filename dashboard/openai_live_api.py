@@ -32,7 +32,7 @@ from .openai_live_seals import request_seal, accept_seal
 from .openai_live_native_backend import NativeReturnNeedsReview, prepare_native, return_next_native_part
 from .openai_live_native_session import PublicLiveSessionContext
 from .native_context import ResumePending
-from .provider import ProviderUnavailable
+from .provider import Provider, ProviderUnavailable, VoiceStorageFull
 from scripts.speech_render import private_bytes, RenderError, route
 
 
@@ -40,6 +40,7 @@ def _startup_failure_code(error):
     if isinstance(error,ResumePending):return 'context_pending'
     if isinstance(error,TimeoutError):return 'timeout'
     if isinstance(error,WebSocketDisconnect):return 'client_disconnected'
+    if isinstance(error,VoiceStorageFull):return 'recording_storage_full'
     if isinstance(error,ProviderUnavailable):return 'native_unavailable'
     if isinstance(error,LiveUnavailable):return 'unavailable'
     if isinstance(error,ValueError):
@@ -308,6 +309,11 @@ def install(app, config, provider, authorize, origins):
                 session,recheck,actor=await bind_voice_actor(provider,authorize,socket,meta,require_voice=False)
                 if dict(session).get('scope')=='monitor_readonly':raise HTTPException(403,'Voice interaction access required')
                 human=session['human']
+                if not meta.get('renewal'):
+                    directory=Path(str(provider.receiver['db_path'])+'.voice')
+                    # Even the minimum canonical PCM WAV needs a free slot.
+                    # The upload rechecks actual bytes under its existing lock.
+                    await asyncio.to_thread(Provider.check_voice_capture_capacity,directory,46)
                 if native_backend and callable(getattr(provider,'prepare_native_voice',None)):
                     await asyncio.to_thread(provider.prepare_native_voice,binding)
                     await recheck()
@@ -580,6 +586,8 @@ def install(app, config, provider, authorize, origins):
                 'project_key_unavailable':'This voice comparison needs its configured OpenAI project access. Your recordings and work are unchanged.'}
             from .voice_admission import admission_failure
             message=admission_failure(error) or (messages.get(error.outcome) if isinstance(error,LiveUnavailable) else None)
+            if isinstance(error,VoiceStorageFull):
+                message='There’s no room to save a new recording. Your recordings are kept. Try again after storage is available.'
             if message is None and startup_stage=='native_context' and failure=='context_changed':
                 message='Your conversation changed while voice was starting. Tap Reconnect voice to try again; your work is kept.'
             replacement=None

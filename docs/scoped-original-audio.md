@@ -138,3 +138,11 @@ Inspect both bounded stores and their actual consumer incorporation receipts.
 Preserve protected/uncertain originals and existing limits; retire producer copies
 only through a verified owning archive transfer. Status and transcription success
 do not establish that transfer or make an unhanded-off original disposable.
+
+A fresh or manually reconnected GPT-Live Avatar checks the same receiver
+quota after authenticating and before preparing the microphone or calling the
+provider. When even a minimum recording will not fit, it explains the storage
+failure and leaves all originals untouched. This check does not reserve space:
+an upload still checks its actual size under the existing lock, and a full
+store still needs the verified archive handoff. Automatic transport renewal
+continues under its existing visit and storage limits.
