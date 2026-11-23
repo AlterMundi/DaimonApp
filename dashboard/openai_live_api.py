@@ -29,7 +29,7 @@ from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
-from .openai_live_native_backend import prepare_native, return_next_native_part
+from .openai_live_native_backend import NativeReturnNeedsReview, prepare_native, return_next_native_part
 from .openai_live_native_session import PublicLiveSessionContext
 from .native_context import ResumePending
 from .provider import ProviderUnavailable
@@ -85,14 +85,14 @@ def install(app, config, provider, authorize, origins):
         native_instructions=private_bytes(native_file,8192).decode()
     match_voice=selected.get('match_conversation_voice',False)
     if type(match_voice) is not bool:raise ValueError('Select explicit shared Conversation voice delivery')
-    if match_voice:
+    def conversation_delivery():
         reading=route(Path(config['speech_openai']['binding']))
         output_voice=selected.get('session_options',{}).get('audio',{}).get('output',{}).get('voice')
         if reading['provider']!='openai-realtime' or reading['voice']!=output_voice:
             raise ValueError('Match Avatar to the selected Conversation default voice')
-        delivery=reading.get('instruction','').strip()
-        if delivery:
-            native_instructions+='\nShared Conversation pronunciation and delivery preferences:\n'+delivery
+        return reading.get('instruction','').strip()
+
+    initial_delivery=conversation_delivery() if match_voice else None
     backend=None if native_backend else private_bytes(selected['backend_instructions_file'],8192).decode()
     context=selected.get('conversation_context',False)
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
@@ -224,7 +224,9 @@ def install(app, config, provider, authorize, origins):
             if (owner_cleanup_finished and lease is not None and not context_operations and not context_syncs
                     and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
                 lease.release()
+        pre_offer_closed=False
         result_index=0;result_poll=0
+        held_returns=set()
         preparation_stopped=threading.Event()
         visit=human=binding=None;meta={};startup_stage=None
         admitted=False;closing=False;close_deadline=None;native_failure=False;returns_unavailable=False
@@ -323,9 +325,17 @@ def install(app, config, provider, authorize, origins):
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
-                    voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
+                    voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),
+                    renewal=meta.get('renewal'),
+                    conversation_delivery=await asyncio.to_thread(conversation_delivery) if select_current_voice else None)
                 admitted=True
                 startup_stage='configuration'
+                delivery=admission.pop('conversation_delivery',initial_delivery if match_voice and native_backend else None)
+                if delivery:
+                    instructions=spec['instructions']+'\nShared Conversation pronunciation and delivery preferences:\n'+delivery
+                    if len(instructions.encode())>8192:
+                        raise ValueError('Voice delivery exceeds the existing instruction bound')
+                    spec={**spec,'instructions':instructions}
                 if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'],profiles)
                 if native_backend:
                     startup_stage='native_context'
@@ -346,6 +356,16 @@ def install(app, config, provider, authorize, origins):
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})
                 offer=await asyncio.wait_for(message(66000),min(seconds,300))
+                if offer.get('type')=='close' and set(offer)<={'type','reason'}:
+                    reason=offer.get('reason','explicit_stop')
+                    if not isinstance(reason,str) or reason not in history.close_reasons-{'transport_renewal'}:
+                        raise ValueError('Select a known voice close diagnostic')
+                    await recheck();await current_owner()
+                    await asyncio.to_thread(history.end_capture,visit,human,binding)
+                    with suppress(OSError,ValueError,RenderError):
+                        await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
+                    pre_offer_closed=True
+                    return
                 if set(offer)!={'type','sdp'} or offer['type']!='offer':raise ValueError('Select one WebRTC offer')
                 await recheck();await current_owner()
                 startup_stage='creation'
@@ -436,6 +456,11 @@ def install(app, config, provider, authorize, origins):
                     if returning is not None and returning.done():
                         completed=returning;returning=None
                         try:completed.result()
+                        except NativeReturnNeedsReview as error:
+                            held_returns.add(error.source)
+                            logging.getLogger(__name__).warning('An individual public voice result needs review')
+                            if not closing:
+                                await send({'type':'notice','code':'native_results_unavailable'})
                         except (OSError,ValueError,RenderError,ProviderUnavailable,LiveUnavailable) as error:
                             # Returning older work is optional to this live transport.
                             # Keep its exact uncertain cursor/append; do not retry it
@@ -502,7 +527,7 @@ def install(app, config, provider, authorize, origins):
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
                                     result_index,provider,sideband,stopped=preparation_stopped,
-                                    prior_visit_context=prior_visit_context))
+                                    prior_visit_context=prior_visit_context,held_returns=frozenset(held_returns)))
                                 result_index+=1
                     if renewal_requested and not closing:
                         pending_value=await asyncio.to_thread(history.read,visit,human,owner)
@@ -605,6 +630,12 @@ def install(app, config, provider, authorize, origins):
                             renewal=await asyncio.to_thread(history.ready_for_renewal,visit,human,owner,
                                 allow_expired=True)
                             await send({'type':'successor_ready','id':visit,'renewal':renewal})
+                    if pre_offer_closed:
+                        # There was no provider creation. Acknowledge only after
+                        # releasing the old app lease so a fresh entry can proceed.
+                        owner_cleanup_finished=True
+                        release_owner_if_settled()
+                        with suppress(Exception):await send({'type':'startup_ended','id':visit})
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:
                     if lease is not None:

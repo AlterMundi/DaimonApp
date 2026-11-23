@@ -311,6 +311,7 @@ window.PublicLiveConversation=(()=>{
               acceptReplacement(value);state('Preparing your conversation');
             }
             else if(value.type==='answer')answerResolve(value);
+            else if(value.type==='startup_ended'&&value.id===visit&&closing)closedAck?.(true);
             else if(value.type==='provider_event'){
               if(value.event?.type==='session.usage.updated')usage({usage:value.event.usage});
               if(!directCaptions)caption(value.event);

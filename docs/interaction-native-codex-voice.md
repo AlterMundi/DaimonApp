@@ -1578,6 +1578,26 @@ unconfirmed send is never retried. Source seals, native submission, the actual
 answer, and hearing remain separate. Quiet progress does not expedite a
 native turn that is already queued.
 
+A failed source-specific return is held for the rest of the current voice visit.
+The return reader continues checking other owned delegations while the same
+actor and entry binding remain verified. A changed binding, unreadable visit,
+or uncertain provider append still stops the return lane. Do not retry a held
+append or treat a successful injection as playback.
+
+A valid browser close before the WebRTC offer ends the prepared visit and
+releases its app lease. The visit records the bounded browser reason and
+confirms startup ended without a provider creation or final usage claim.
+The browser keeps the local reason it already displayed.
+
+When matching the current Conversation reader, each manual native Avatar
+entry or reconnect reads the current OpenAI reading delivery instructions.
+The selected delivery stays with that logical visit across automatic transport
+renewal. Existing visits without a delivery snapshot use the process's
+validated startup delivery. Saved Studio revisions still use their exact
+retained voice and tuning. In the default Cedar profile, Conversation reads
+with Realtime synthesis and Avatar speaks with GPT-Live. The shared voice
+name and instructions do not guarantee identical rendered audio.
+
 A browser worklet that never loads now releases the input graph after a
 six-second startup bound. Ordinary microphone recording can use its existing
 recorder without live preview; a new Avatar activation stays subject to the

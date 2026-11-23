@@ -30,7 +30,7 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close'&&!deferClose){
     const renewal=value.reason==='transport_renewal';
-    emit({type:this.offered?'closed':'unconfirmed',id:this.id,renewal_pending:renewal});
+    emit({type:this.offered?'closed':'startup_ended',id:this.id,renewal_pending:renewal});
     if(renewal&&!deferRenewalReady)emit({type:'successor_ready',id:this.id,renewal:{id:this.id,token:'12345678-1234-4234-8234-123456789abc'}});
    }
   }
@@ -484,6 +484,12 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert.equal(empty.sockets[0].sent.find(row=>row.type==='source_sealed').capture_bytes,0);
  assert.equal(empty.requests.length,0);await empty.engine.hold();
 
+ const denied=fixture();
+ denied.navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('Synthetic refusal','NotAllowedError');};
+ assert.equal(await denied.engine.start(),false);
+ assert.equal(denied.sockets[0].sent.filter(v=>v.type==='close').length,1);
+ assert(!denied.sockets[0].sent.some(v=>v.type==='offer'));
+ assert.match(denied.states.at(-1).message,/Microphone access was denied/);
  const permission=fixture();let resolvePermission;
  permission.navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{resolvePermission=resolve;});
  const retired=permission.engine.start();await until(()=>resolvePermission);await permission.engine.hold();
