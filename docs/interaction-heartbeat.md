@@ -888,9 +888,12 @@ repairs remain concrete escalations; observation is not proof of repair.
 ### Daily operator work through Reports
 
 An existing periodic task can select `"cadence":"daily_utc"` in its owner
-selection JSON. It receives one revision per UTC date on the existing Reports
-checks, even if no files or alerts change. A task uses either a UTC-day cadence
-or a semantic change source. Tasks with neither setting preserve their existing
+selection JSON for one revision per UTC day, or
+`"cadence":"twice_daily_utc"` for one revision per UTC half-day starting at
+00:00 and 12:00 UTC. The existing Reports loop offers the current slot at the
+next eligible check, even if no files or alerts change. An instruction edit
+does not create a second offer in a twice-daily slot. A task uses either a
+calendar cadence or a semantic change source. Tasks with neither setting preserve their existing
 per-check behavior. The retained offer and its reader carry the original
 `occurrence_utc`, including when a busy entry defers the batch into a later day.
 There is no historical catch-up sweep. Normal attempted-source and uncertain

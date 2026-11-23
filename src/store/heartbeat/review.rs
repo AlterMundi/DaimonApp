@@ -1,5 +1,6 @@
 //! One finite report-source successor inside the existing heartbeat parent.
 use super::*;
+use chrono::{DateTime, Timelike};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -233,18 +234,31 @@ pub struct HeartbeatReviewTask {
 #[serde(rename_all = "snake_case")]
 pub enum ReviewTaskCadence {
     DailyUtc,
+    TwiceDailyUtc,
 }
 
-fn offer_revision(
-    task: &HeartbeatReviewTask,
-    checks: u32,
-    utc_day: chrono::NaiveDate,
-) -> Result<String> {
+impl ReviewTaskCadence {
+    fn occurrence(self, now: DateTime<Utc>) -> String {
+        let date = now.date_naive();
+        match self {
+            Self::DailyUtc => date.to_string(),
+            Self::TwiceDailyUtc => format!("{date}T{:02}:00:00Z", (now.hour() / 12) * 12),
+        }
+    }
+}
+
+fn offer_revision(task: &HeartbeatReviewTask, checks: u32, now: DateTime<Utc>) -> Result<String> {
     use sha2::{Digest, Sha256};
     let value = if let Some(source) = &task.change_source {
         serde_json::to_vec(&(task, super::reports::snapshot(source)?.1))?
-    } else if matches!(task.cadence, Some(ReviewTaskCadence::DailyUtc)) {
-        serde_json::to_vec(&(task, utc_day))?
+    } else if let Some(cadence) = task.cadence {
+        match cadence {
+            ReviewTaskCadence::DailyUtc => serde_json::to_vec(&(task, now.date_naive()))?,
+            // Editing the instructions must not offer a second run in the same slot.
+            ReviewTaskCadence::TwiceDailyUtc => {
+                serde_json::to_vec(&("twice_daily_utc", &task.id, cadence.occurrence(now)))?
+            }
+        }
     } else {
         serde_json::to_vec(&(task, checks))?
     };
@@ -268,11 +282,7 @@ pub(in crate::store) fn task_current(
         && offer.evidence["task"] == serde_json::to_value(task)?
         && (task.change_source.is_none()
             || offer.revision
-                == offer_revision(
-                    task,
-                    p.review.as_ref().unwrap().checks,
-                    Utc::now().date_naive(),
-                )?))
+                == offer_revision(task, p.review.as_ref().unwrap().checks, Utc::now())?))
 }
 
 pub(in crate::store) fn task_offers(
@@ -282,6 +292,7 @@ pub(in crate::store) fn task_offers(
     let Some(review) = &p.review else {
         return Ok(vec![]);
     };
+    let now = Utc::now();
     let mut offers = Vec::new();
     for task in &review.tasks {
         let Ok((_, revision)) =
@@ -292,9 +303,8 @@ pub(in crate::store) fn task_offers(
         if revision != task.purpose_revision {
             continue;
         }
-        let utc_day = Utc::now().date_naive();
-        let occurrence = task.cadence.map(|_| utc_day);
-        let revision = offer_revision(task, review.checks, utc_day)?;
+        let occurrence = task.cadence.map(|cadence| cadence.occurrence(now));
+        let revision = offer_revision(task, review.checks, now)?;
         offers.push(producer::Offer {key:format!("review-task:{}",task.id),revision:revision.clone(),evidence:json!({
             "kind":"periodic_review_task","task":task,"revision":revision,"occurrence_utc":occurrence,
             "reader":{"operation":"heartbeat_source","arguments":{"source":format!("periodic:{}",task.id),"revision":revision}},
@@ -449,8 +459,8 @@ mod tests {
             "purpose_revision": "purpose",
             "instructions": "Run the selected finite job.",
         })).unwrap();
-        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 22).unwrap();
-        let next_day = day.succ_opt().unwrap();
+        let day = "2026-11-22T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let next_day = day + chrono::TimeDelta::days(1);
         assert!(
             serde_json::to_value(&task)
                 .unwrap()
@@ -465,5 +475,25 @@ mod tests {
         let previous = offer_revision(&task, 1, day).unwrap();
         assert_eq!(previous, offer_revision(&task, 96, day).unwrap());
         assert_ne!(previous, offer_revision(&task, 97, next_day).unwrap());
+
+        let cadence = ReviewTaskCadence::TwiceDailyUtc;
+        task.cadence = Some(cadence);
+        let noon = day + chrono::TimeDelta::hours(12);
+        let one_second = chrono::TimeDelta::seconds(1);
+        assert_eq!(cadence.occurrence(day), "2026-11-22T00:00:00Z");
+        assert_eq!(cadence.occurrence(noon), "2026-11-22T12:00:00Z");
+        let morning = offer_revision(&task, 1, day).unwrap();
+        task.instructions.push_str(" Retain the exact result.");
+        assert_eq!(
+            morning,
+            offer_revision(&task, 42, noon - one_second).unwrap()
+        );
+        let afternoon = offer_revision(&task, 43, noon).unwrap();
+        assert_ne!(morning, afternoon);
+        assert_eq!(
+            afternoon,
+            offer_revision(&task, 96, next_day - one_second).unwrap()
+        );
+        assert_ne!(afternoon, offer_revision(&task, 97, next_day).unwrap());
     }
 }
