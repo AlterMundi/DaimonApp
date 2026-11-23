@@ -940,6 +940,12 @@ remains separate.
 
 ## Original recovery and bounds
 
+A browser worklet that never loads now releases the input graph after a
+six-second startup bound. Ordinary microphone recording can use its existing
+recorder without live preview; a new Avatar activation stays subject to the
+existing capture and provider-admission fences. Startup protection is separate
+from the original-audio upload lifetime and from physical microphone acceptance.
+
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV
 chunks are stored locally first, then uploaded to a capture-only endpoint.
 The separate `codex_voice` recovery key shares the existing combined20MiB and

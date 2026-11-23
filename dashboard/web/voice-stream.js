@@ -22,11 +22,16 @@ window.StreamingVoice=(()=>{
       for(const node of [source,filter,worklet,mute])node?.disconnect();
       context.close().catch(()=>{});listeners.clear();
     }
+    let loading;
     try{
-      await context.audioWorklet.addModule('assets/voice-pcm.js');worklet=new AudioWorkletNode(context,'interaction-pcm',{processorOptions:{sessionSeconds}});
+      // A stalled browser worklet must release this graph so the caller can
+      // fall back to its ordinary recorder. No socket or provider is ready yet.
+      await Promise.race([context.audioWorklet.addModule('assets/voice-pcm.js'),
+        new Promise((_,reject)=>{loading=setTimeout(()=>reject(Error('Audio capture is still unavailable')),6000);})]);
+      worklet=new AudioWorkletNode(context,'interaction-pcm',{processorOptions:{sessionSeconds}});
       source=context.createMediaStreamSource(media);filter=context.createBiquadFilter();mute=context.createGain();
       filter.type='lowpass';filter.frequency.value=7400;mute.gain.value=0;
-    }catch(error){close();throw error;}
+    }catch(error){close();throw error;}finally{clearTimeout(loading);}
     worklet.port.onmessage=message=>{
       if(closed)return;
       if(message.data.captureError){close(message.data.captureError);return;}
