@@ -130,6 +130,8 @@ pub struct ConversationVoice {
     /// not be selected after a profiled capture has been admitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcription_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_interrupt: Option<bool>,
     /// Server-selected archive protection; a transcript alone cannot retire it.
     /// Omission preserves ordinary ephemeral media behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,6 +146,13 @@ pub struct ConversationVoice {
 }
 impl ConversationVoice {
     pub fn validate(&self) -> Result<()> {
+        if self.avatar_interrupt.is_some()
+            && !(self.avatar_interrupt == Some(true)
+                && self.transcription_profile.as_deref() == Some("openai-live")
+                && self.capture_stop.is_none())
+        {
+            bail!("Avatar interruption requires a complete prepared OpenAI recording");
+        }
         if self.transcription_profile.as_ref().is_some_and(|v| {
             v.is_empty()
                 || v.len() > 32
@@ -1161,6 +1170,7 @@ impl Store {
                             || a.mime != b.mime
                             || a.capture_stop != b.capture_stop
                             || a.transcription_profile != b.transcription_profile
+                            || a.avatar_interrupt != b.avatar_interrupt
                     }
                     _ => true,
                 }
@@ -2763,6 +2773,7 @@ mod tests {
         let dialogue = Uuid::now_v7().to_string();
         let voice = ConversationVoice {
             transcription_profile: None,
+            avatar_interrupt: None,
             preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
@@ -3113,6 +3124,7 @@ mod tests {
     fn clip() -> ConversationVoice {
         ConversationVoice {
             transcription_profile: None,
+            avatar_interrupt: None,
             preserve_original: None,
             audio_sha256: "a".repeat(64),
             mime: "audio/wav".into(),
@@ -3430,6 +3442,36 @@ mod tests {
                         ..hint
                     })
                 )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn avatar_interrupt_is_a_frozen_complete_openai_original() {
+        let (_file, store, key, binding) = setup();
+        let id = Uuid::now_v7().to_string();
+        let mut voice = clip();
+        voice.avatar_interrupt = Some(true);
+        assert!(voice.validate().is_err());
+        voice.transcription_profile = Some("openai-live".into());
+        voice.capture_stop = Some("duration_limit".into());
+        assert!(voice.validate().is_err());
+        voice.capture_stop = None;
+        let (input, fresh) = store
+            .conversation_voice_capture(100, key, &binding, &id, voice.clone(), true)
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(input.voice.unwrap().avatar_interrupt, Some(true));
+        assert!(
+            !store
+                .conversation_voice_capture(100, key, &binding, &id, voice.clone(), true)
+                .unwrap()
+                .1
+        );
+        voice.avatar_interrupt = None;
+        assert!(
+            store
+                .conversation_voice_capture(100, key, &binding, &id, voice, true)
                 .is_err()
         );
     }

@@ -338,6 +338,10 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     } else {
         None
     };
+    let receipt_source = read
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .map(|(selection, _)| selection.clone());
     let current = app.shared.store.get_session(cfg.entry())?;
     let mut continuing_goal = None;
     let allow_attention = if let Some(session) = current.filter(|s| !s.busy) {
@@ -349,24 +353,41 @@ pub(super) async fn tick(app: &App) -> Result<()> {
     } else {
         false
     };
-    if let Some(selected) =
-        app.shared
-            .store
-            .heartbeat_finish_observation(&check, read, allow_attention)?
-    {
-        let id = selected.id.clone();
-        let attempt = selected.attempts;
-        if app.shared.shutdown.is_cancelled()
-            || super::workflows::deliver(app, selected).await.is_err()
+    let selected = app
+        .shared
+        .store
+        .heartbeat_finish_observation(&check, read, allow_attention)?;
+    // Surface new authenticated delivery evidence without delaying offer admission
+    // or confusing receipt availability with inbox health. Both operations remain
+    // inside the same scheduled check and use their existing independent owners.
+    let receipts = async {
+        if let Some(selection) = &receipt_source
+            && super::matrix::refresh_heartbeat_response_receipt(app, cfg, &check, selection)
+                .await
+                .is_err()
         {
-            app.shared.store.workflow_native_outcome_attempt(
-                &id,
-                attempt,
-                "retained_unsent",
-                None,
-            )?;
+            tracing::warn!("Heartbeat response receipt projection remains unconfirmed");
         }
-    }
+    };
+    let deliver = async {
+        if let Some(selected) = selected {
+            let id = selected.id.clone();
+            let attempt = selected.attempts;
+            if app.shared.shutdown.is_cancelled()
+                || super::workflows::deliver(app, selected).await.is_err()
+            {
+                app.shared.store.workflow_native_outcome_attempt(
+                    &id,
+                    attempt,
+                    "retained_unsent",
+                    None,
+                )?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+    let ((), delivery) = tokio::join!(biased; receipts, deliver);
+    delivery?;
     // The previous bounded collector may have closed before the ordinary
     // native goal's idle checkpoint elapsed. Reuse this selected source tick
     // and exact owner attachment for its already-running successor; no new

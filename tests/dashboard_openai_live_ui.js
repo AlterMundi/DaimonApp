@@ -10,7 +10,7 @@ async function rejectsLocked(action){
  })]);}finally{clearTimeout(timeout);}
 }
 function locks(){const held=new Set();return {async request(name,options,run){if(held.has(name))return run(null);held.add(name);try{return await run({name});}finally{held.delete(name);}}};}
-function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false}={}){
+function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,reviewFirst=false,failReviewedPreparation=false,deferClose=false,nativeOutput=false,usageFailure=false,continuous=false,deferRenewalReady=false,throwClosingState=false,sourceDiagnostics=false,badBoundary=false,deferConnection=false,deferUploadHash=false,prepareVoice=false}={}){
  const timers=[];
  const records=[],requests=[],sockets=[],peers=[],states=[],items=[],captions=[],historyBatches=[],order=[],historyStates=[],audios=[],usage=[],networkClocks=[];let readHistory=async()=>({visits:[],more:false,before:null});let selectedBinding;
  const binding='a'.repeat(64);let listener,permission=0,stops=0,recorderCloses=0,failUpload=false,beforeUpload=async()=>{},captureBytes=0,boundaryTail=0,selectedBackend=nativeChoice?'native':undefined;
@@ -26,7 +26,7 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
     if(reviewFirst&&sockets.length===1){emit({type:'unconfirmed',id:this.id,message:'Tap Reconnect voice. Final usage unconfirmed.',
       replacement:{id:'12345678-1234-4234-8234-123456789abc',revision:'b'.repeat(64)}});return;}
     if(failReviewedPreparation&&sockets.length===2){emit({type:'context_preparing',id:this.id,replacement_accepted:value.replacement,voice_continuation:value.replacement.id});emit({type:'unconfirmed',id:this.id,message:'Synthetic context preparation failed.'});return;}
-    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
+    emit({type:'prepared',id:this.id,mode:!modeMismatch&&value.backend==='native'?'public_live_native_comparison':'public_live_responses_comparison',admission:{id:this.id,remaining_seconds:600,max_input_pcm_bytes:600*32000,continuous_renewal:continuous,...(prepareVoice?{voice_choice:{}}:{}),...(sourceDiagnostics?{source_close_reasons:['source_boundary_changed']}:{})}});}
    if(value.type==='offer'){order.push('offer');this.offered=true;emit({type:'answer',id:this.id,session:'live/provider:42',sdp:'v=0 answer'});}
    if(value.type==='close'&&!deferClose){
     const renewal=value.reason==='transport_renewal';
@@ -444,6 +444,26 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert(!f.sockets.flatMap(s=>s.sent).some(v=>['session.start','response.create'].includes(v.type)));
  const oldSocket=f.sockets[0];await f.start();oldSocket.onclose();assert(f.engine.active,'Retired socket cannot close the current visit');await f.engine.hold();
 
+ const damaged=fixture({nativeChoice:true});
+ const blob=new Blob([new Uint8Array(100)],{type:'audio/wav'});
+ const hash=Buffer.from(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())).toString('hex');
+ const fragment=(binding,offset)=>({id:crypto.randomUUID(),fragment_group:crypto.randomUUID(),
+  voice_visit:crypto.randomUUID(),engine:'gpt-live',native_fragment:true,fragment_offset:offset,
+  ordinal:0,binding,blob,audio_sha256:hash});
+ const incomplete=fragment('a'.repeat(64),56),intact=fragment('a'.repeat(64),0),foreign=fragment('b'.repeat(64),56);
+ damaged.records.push(incomplete,intact,foreign);
+ await damaged.start(false,{avatarEntry:true});
+ const recovered=damaged.recovered();
+ assert.equal(recovered.length,2);
+ assert(recovered.some(value=>value.id===intact.fragment_group&&value.captureStop==='interrupted_prefix'));
+ const download=recovered.find(value=>value.id===incomplete.id);
+ assert(download.downloadOnly&&download.blob===incomplete.blob);
+ await assert.rejects(damaged.engine.retry(download),/Download the retained audio/);
+ await assert.rejects(damaged.engine.discard(download),/Download the retained audio/);
+ assert.equal(damaged.requests.length,0);
+ await damaged.engine.hold();
+ assert.deepEqual(damaged.records,[incomplete,intact,foreign],'No old recovery record is changed by a fresh entry');
+
  // The first seal fixes exact frames before awaiting uploads. Later microphone
  // frames keep recording; duplicate control cannot move the boundary or upload
  // another original. This is a raw prefix, never a completed speech/work claim.
@@ -484,12 +504,16 @@ function fixture({nativeChoice=false,entryReview=false,modeMismatch=false,review
  assert.equal(empty.sockets[0].sent.find(row=>row.type==='source_sealed').capture_bytes,0);
  assert.equal(empty.requests.length,0);await empty.engine.hold();
 
- const denied=fixture();
+ const denied=fixture({nativeChoice:true,prepareVoice:true});
  denied.navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('Synthetic refusal','NotAllowedError');};
- assert.equal(await denied.engine.start(),false);
+ assert.equal(await denied.engine.start({avatarEntry:true}),false);
  assert.equal(denied.sockets[0].sent.filter(v=>v.type==='close').length,1);
  assert(!denied.sockets[0].sent.some(v=>v.type==='offer'));
  assert.match(denied.states.at(-1).message,/Microphone access was denied/);
+ assert.equal(await denied.engine.reconnect(),false);
+ const admission=denied.sockets[1].sent[0];
+ assert.equal(admission.voice_start,'new');
+ assert(!admission.voice_continuation,'A visit cancelled before its offer cannot become a continuation');
  const permission=fixture();let resolvePermission;
  permission.navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{resolvePermission=resolve;});
  const retired=permission.engine.start();await until(()=>resolvePermission);await permission.engine.hold();

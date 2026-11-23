@@ -515,6 +515,16 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  assert.equal(leaving.uploads[0].headers['X-Recording-Stop'],undefined,'Leaving voice mode is not a duration-limit cutoff');
  const failure=boot(true);await failure.ui.startConversation();failure.preparation().onDetectionUnavailable();
  await until(()=>failure.state().startsWith('Voice mode ended.'));assert.equal(failure.uploads.length,0,'Detector failure retains the recording for review');
+ const conversationStore=memoryRecovery(),conversationMic=boot(true,conversationStore);
+ await until(()=>conversationMic.ui.canStartContinuous());conversationMic.ui.continuousOwner(true);
+ const localOpenAI=await conversationMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',transcriptionProfile:'openai-live',mime:'audio/wav',blob:new Blob(['canonical voice'])});
+ await assert.rejects(conversationMic.ui.prepareReconnect([localOpenAI]));
+ await assert.rejects(conversationMic.ui.prepareReconnect([{...localOpenAI,audio_sha256:'changed'}],true));
+ await conversationMic.ui.prepareReconnect([localOpenAI],true);
+ assert.equal((conversationStore.values.get('pending').items?.[0]||conversationStore.values.get('pending')).reconnect_review,true);
+ const attempted=await conversationMic.ui.retainContinuous({...localOpenAI,id:crypto.randomUUID(),submissionRequested:true});
+ await assert.rejects(conversationMic.ui.prepareReconnect([attempted],true));
+ assert.equal(conversationMic.uploads.length,0);
  const reconnectStore=memoryRecovery(),reconnectMic=boot(true,reconnectStore);
  await until(()=>reconnectMic.ui.canStartContinuous());reconnectMic.ui.continuousOwner(true);
  const pendingOriginal=await reconnectMic.ui.retainContinuous({id:crypto.randomUUID(),binding:'original-binding',foreground_dialogue:crypto.randomUUID(),mime:'audio/wav',blob:new Blob(['local only'])});

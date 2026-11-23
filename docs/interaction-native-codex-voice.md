@@ -85,6 +85,14 @@ an uncertain native input or manually supply a fabricated checkpoint to satisfy 
 
 ## Startup with a long idle integrating history
 
+
+During startup, a retained result may receive a correction between the home
+Conversation list and the exact revision read. If the owned list explicitly
+shows a newer revision of that same source, read the ledger once more within
+the existing startup deadline. Never combine fragments from different
+revisions. A failure without a visible revision change, or a changed owner
+or binding, still stops preparation before creating a call.
+
 The receiving owner reproduced `Native active turn selection incomplete` during
 the pre-microphone work observation. Core reported the exact integrating thread
 as `idle`, but its completed history exceeded the six-page recent-turn bound.
@@ -940,6 +948,12 @@ remains separate.
 
 ## Original recovery and bounds
 
+A browser worklet that never loads now releases the input graph after a
+six-second startup bound. Ordinary microphone recording can use its existing
+recorder without live preview; a new Avatar activation stays subject to the
+existing capture and provider-admission fences. Startup protection is separate
+from the original-audio upload lifetime and from physical microphone acceptance.
+
 Capture starts before enabling the WebRTC microphone track. Raw microphone WAV
 chunks are stored locally first, then uploaded to a capture-only endpoint.
 The separate `codex_voice` recovery key shares the existing combined20MiB and
@@ -1578,7 +1592,10 @@ unconfirmed send is never retried. Source seals, native submission, the actual
 answer, and hearing remain separate. Quiet progress does not expedite a
 native turn that is already queued.
 
-A failed source-specific return is held for the rest of the current voice visit.
+The return reader retries a timed-out or disconnected source read once while the
+visit remains open, using the same source, revision and cursor. This happens
+before any new provider append is attempted. A persistent source-specific failure
+is held for the rest of the current voice visit.
 The return reader continues checking other owned delegations while the same
 actor and entry binding remain verified. A changed binding, unreadable visit,
 or uncertain provider append still stops the return lane. Do not retry a held
@@ -1598,6 +1615,56 @@ retained voice and tuning. In the default Cedar profile, Conversation reads
 with Realtime synthesis and Avatar speaks with GPT-Live. The shared voice
 name and instructions do not guarantee identical rendered audio.
 
+On fresh Avatar entry, recovery assembles intact local recording prefixes for
+the current Conversation. A fragment group with broken continuity or a hash
+mismatch stays in the existing recovery store and is shown as individual
+downloads. It cannot be uploaded as an assembled original or discarded from
+that view. Other intact groups remain recoverable and a fresh microphone
+visit can proceed. Failure to read the recovery store still blocks capture.
+
+### Conversation voice in Avatar
+
+The optional **Conversation voice** engine uses the authenticated
+Conversation input writer and the current OpenAI reading voice. Each
+qualified phrase has one retained recording, one streaming transcription
+result, and the same queue and reply stream as typed Conversation. The
+foreground analyzer supplies acoustic boundaries only. It does not
+generate a reply or submit an original. An unconfirmed prepared result
+stays in review.
+
+Enable the existing local turn detector for `streaming_transcription_openai`
+with an explicit `turn_detection` command and `continuous = true`, in
+prepared mode with the same receiver's `openai-live` profile. This also
+requires the selected OpenAI speech renderer. The regular Avatar engine
+selection remains independent. The browser freezes its transcription route
+for the visit, retains unfinished recordings, and uses the existing
+Conversation playback and interruption path. Recognized words can interrupt
+playback only while the detector confirms speech. The speech-only route
+does not identify the speaker.
+
+
+After a connection or capture pause, **Reconnect voice** starts a distinct
+foreground capture on the same Conversation. A finished, unsent recording
+remains in local review with its original identity and bytes; reconnect
+never submits it. A recording still being saved or with unconfirmed
+submission remains in the existing review flow. Reconnect requires the
+same Conversation binding and does not silently switch speech profiles.
+Conversation voice does not show a per-recording countdown. The existing
+recording and foreground visit safety limits still apply.
+
+
+A truncated or invalid progressive speech stream holds the rest of that
+reply for explicit playback. The reader retains the verified playback
+position and continues with already queued independent replies; it does
+not automatically synthesize the failed part again or skip over it within
+the same reply. Text stays visible and input admission is independent.
+
+Conversation voice distinguishes a saved recording from native admission.
+While an original still waits, the Avatar shows that it is saved and leaves
+the microphone available. The existing Conversation refresh reads the same
+original ID and clears the notice when admission settles. This creates no
+separate polling, resubmission, priority lane, or automatic interruption.
+
 An explicit leading `/interrupt` (or spoken “barra interrupt” / “slash
 interrupt”) followed by a request uses the native owner's existing exact
 execution cancellation token. The listener first validates the acoustic
@@ -1608,3 +1675,18 @@ cancellation. A newer execution and other conversations do not share that
 token. This does not change goal state, promote the request past already
 queued inputs, or confirm native termination. Ordinary speech keeps its
 existing steer/queue behavior.
+
+Conversation voice uses the same exact-turn cancellation for a complete
+phrase starting with one of those explicit commands. Only that prepared
+OpenAI recording uses the dedicated interrupt upload. The native receiver
+rechecks the saved transcript and admits the exact original before
+requesting interruption. Older receivers refuse the new route before
+retention or handoff. Quoted commands, ordinary microphone clips, and
+limited or unconfirmed captures cannot request it. After an explicit
+interrupt, previously queued originals still keep their order.
+
+
+When the prepared browser transcript and the canonical transcript disagree,
+the explicitly marked original remains saved for review. Route rollout pairs
+the native reader with the web upload. After recording an interruption-marked
+original, retain a native rollback that can read that frozen field.

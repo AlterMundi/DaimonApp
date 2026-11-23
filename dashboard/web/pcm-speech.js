@@ -35,7 +35,9 @@ window.PcmSpeech=(()=>{
       const now=context.currentTime;
       position=currentTime();segments=segments.filter(v=>v.time+v.duration>now);
       nodes=nodes.filter(v=>!v.finished);
-      nextTime=Math.max(nextTime,now+.025);
+      // Keep a successor sample-contiguous while the previous block is still
+      // scheduled. Add lead time only when playback really underruns.
+      if(nextTime<=now)nextTime=now+.025;
       // Schedule at most half a second ahead, releasing decoded buffers when
       // played. Encoded PCM stays bounded by the same eight MiB transport cap.
       while(cursor<bytes && nextTime<now+.5){

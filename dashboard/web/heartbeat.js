@@ -1,10 +1,18 @@
 /* Foreground owner-console status and explicit conditional controls; no setup. */
 (() => {
+  function observationExpiry(value,now) {
+    const e=value?.operational_evidence;
+    if(e?.schema!=='telecodex.heartbeat-operational/v1' || e.generation!==value.generation ||
+        !Number.isSafeInteger(e.observed_at_unix_ms) || e.observed_at_unix_ms<=0 || e.observed_at_unix_ms>now ||
+        !Number.isInteger(e.valid_for_seconds) || e.valid_for_seconds<1 || e.valid_for_seconds>15)return 0;
+    const deadline=e.observed_at_unix_ms+e.valid_for_seconds*1000;
+    return Number.isSafeInteger(deadline) && deadline>now?deadline:0;
+  }
   function evidenceExpiry(value,now) {
-    const e=value?.operational_evidence,lane=value?.lanes?.messaging;
-    if(value?.operational!==true || e?.schema!=='telecodex.heartbeat-operational/v1' || e.operational!==true || e.generation!==value.generation || lane?.paused!==false || e.lanes?.messaging?.operational!==true || e.lanes.messaging.generation!==lane.generation)return 0;
-    if(!Number.isSafeInteger(e.observed_at_unix_ms) || e.observed_at_unix_ms<=0 || e.observed_at_unix_ms>now || !Number.isInteger(e.valid_for_seconds) || e.valid_for_seconds<1 || e.valid_for_seconds>15)return 0;
-    const ends=[e.observed_at_unix_ms+e.valid_for_seconds*1000];
+    const e=value?.operational_evidence,lane=value?.lanes?.messaging,observedUntil=observationExpiry(value,now);
+    if(!observedUntil || value?.operational!==true || e.operational!==true || lane?.paused!==false ||
+        e.lanes?.messaging?.operational!==true || e.lanes.messaging.generation!==lane.generation)return 0;
+    const ends=[observedUntil];
     for(const kind of ['producer','resources'])if(value[kind]?.mode!=='continuous')ends.push(value[kind]?.contract?.expires_at_unix_ms);
     if(ends.some(x=>!Number.isSafeInteger(x) || x<=now))return 0;
     return Math.min(...ends);
@@ -28,9 +36,13 @@
     const producer=value?.producer,check=producer?.last_check;
     if(!check || !['in_progress','succeeded','failed'].includes(check.outcome))return '';
     const completed=time(check.completed_at_unix_ms),started=time(check.started_at_unix_ms);
-    if(check.outcome==='in_progress')return started?'Source check started '+started+'; completion not observed.':'';
-    if(!completed)return '';
     const different=check.generation!==value.generation || typeof check.activation?.lane!=='string' || !Number.isSafeInteger(check.activation?.generation) || check.activation.generation!==value.lanes?.[check.activation.lane]?.generation;
+    if(check.outcome==='in_progress'){
+      if(!started)return '';
+      return different?'Earlier or unverified source check started '+started+'; completion not observed.':
+        'Source check started '+started+'; completion not observed.';
+    }
+    if(!completed)return '';
     let text='Last source check '+check.outcome+' at '+completed+(different?' (different or unconfirmed control generation).':'.');
     const success=time(producer.last_success_at_unix_ms);
     if(check.outcome==='failed')text+=' Last successful source check: '+(success || 'not observed')+'.';
@@ -43,8 +55,11 @@
     const details={paused:'Automatic work is paused.',unconfigured:'Heartbeat setup is incomplete.',unavailable:'Refresh to check heartbeat.',error:'Heartbeat could not run. Refresh to check again.',operational:'Heartbeat is ready for automatic work.',observation_expired:'Automatic checks have ended.',observation_stopped:'Automatic checks have stopped.',inference_expired:'The time allowed for automatic work has ended.',inference_exhausted:'The allowance for automatic work has been used.',inference_rate_limited:'Automatic checks continue. New work will wait.'};
     const result={label:labels[selected],detail:details[selected]};
     const e=value?.operational_evidence;
-    const fresh=e?.schema==='telecodex.heartbeat-operational/v1' && e.generation===value.generation && Number.isSafeInteger(e.observed_at_unix_ms) && e.observed_at_unix_ms<=now && e.valid_for_seconds>=1 && e.valid_for_seconds<=15 && now<e.observed_at_unix_ms+e.valid_for_seconds*1000;
-    if(selected==='unavailable' && fresh){
+    if(selected==='unavailable' && observationExpiry(value,now)){
+      const messaging=value.lanes?.messaging;
+      if(e.reason==='messaging_paused' && messaging?.supported===true && messaging.paused===true &&
+          Number.isSafeInteger(messaging.generation) && e.lanes?.messaging?.generation===messaging.generation)
+        return {label:'Messages paused',detail:'Automatic messaging is paused.'};
       if(e.reason==='attention_pending')return {label:'Waiting',detail:'Earlier heartbeat work is still pending.'};
       if(e.reason==='native_busy')return {label:'Waiting',detail:'Automatic work waits while our conversation is busy.'};
       if(e.reason==='native_idle_unloaded')return {label:'Waiting',detail:'Our conversation will be prepared when automatic work arrives.'};
@@ -68,8 +83,9 @@
     let last=-Infinity,pending=false,hold,held=false,epoch=0,expiry,writing=false,current=null,notice="";
     function render(value){
       current=value;clearTimeout(expiry);
-      const selected=state(value,clock()),copy=presentation(value,clock());button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+copy.label);button.title='Heartbeat · '+copy.label;
-      if(selected==='operational')expiry=setTimeout(()=>render(null),Math.max(0,evidenceExpiry(value,clock())-clock()));
+      const now=clock(),selected=state(value,now),copy=presentation(value,now);button.dataset.state=selected;button.setAttribute('aria-label','Heartbeat · '+copy.label);button.title='Heartbeat · '+copy.label;
+      const observedUntil=selected==='operational'?evidenceExpiry(value,now):observationExpiry(value,now);
+      if(observedUntil)expiry=setTimeout(()=>render(null),observedUntil-now);
       status.textContent='Heartbeat · '+copy.label;
       generation.textContent=notice || copy.detail;
       lanes.replaceChildren();

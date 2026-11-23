@@ -117,13 +117,16 @@ window.VoiceInput = (() => {
             !item.foreground_dialogue||item.foreground_dialogue!==value.foreground_dialogue)throw Error('Original review changed');
         item.native_review=true;storeRecords(store,items);
       }),
-      reconnect:(values,binding)=>operation('readwrite',(store,old)=>{
+      reconnect:(values,binding,conversation=false)=>operation('readwrite',(store,old)=>{
         const items=records(old);
         if(items.some(v=>v.binding!==binding))throw Error('Reconnect recovery binding changed');
         for(const value of values){
           const item=items.find(v=>v.id===value.id);
-          if(!item||!item.foreground_dialogue||item.foreground_dialogue!==value.foreground_dialogue||
-              item.binding!==value.binding||item.audio_sha256!==value.audio_sha256||!value.audio_sha256)throw Error('Reconnect recording changed');
+          if(!item||item.binding!==value.binding||item.audio_sha256!==value.audio_sha256||!value.audio_sha256)throw Error('Reconnect recording changed');
+          const eligible=conversation
+            ?item.transcriptionProfile==='openai-live'&&!item.foreground_dialogue&&!item.submissionRequested&&!item.uncertainSubmission
+            :item.foreground_dialogue&&item.foreground_dialogue===value.foreground_dialogue;
+          if(!eligible)throw Error('Reconnect recording changed');
           item.reconnect_review=true; // Local review only; never a server receipt.
         }
         if(items.some(v=>v.native_review!==true&&v.reconnect_review!==true)||items.length>=128)throw Error('Review retained recordings before reconnecting');
@@ -309,6 +312,7 @@ window.VoiceInput = (() => {
       if(pending!==frozen || frozen.binding!==getBinding())return;
       if(value.id!==frozen.id || (frozen.dictation?value.text!==frozen.dictation.text:value.voice?.audio_sha256!==frozen.audio_sha256))throw Error('Voice capture does not match this recording.');
       if(!frozen.dictation&&(frozen.captureStop||null)!==(value.voice?.capture_stop||null))throw Error('Recording stop context does not match this capture.');
+      if(!!frozen.avatarInterrupt!==!!value.voice?.avatar_interrupt)throw Error('Recording interruption request does not match this capture.');
       if(!!frozen.visual!==!!value.visual||Array.isArray(frozen.visual)!==Array.isArray(value.visual)||Array.isArray(frozen.visual)&&frozen.visual.length!==value.visual.length||frozen.visual&&Object.keys(frozen.visual).some(k=>JSON.stringify(frozen.visual[k])!==JSON.stringify(value.visual[k])))throw Error('Visual capture does not match this recording.');
       const fileValues=refs=>(refs||[]).map(file=>['file_id','sha256','name','mime','size'].map(key=>file[key]));
       if(JSON.stringify(fileValues(frozen.dictation?[...(frozen.files||[]),frozen.dictation.audio,frozen.dictation.transcript]:frozen.files))!==JSON.stringify(fileValues(value.files)))throw Error('Original files do not match this recording.');
@@ -378,7 +382,8 @@ window.VoiceInput = (() => {
         if(persistIntent){try{await recovery?.put(frozen,continuousOwned);}catch{if(automatic){notice('Automatic recovery paused. Your recording is kept; retry or save a copy.',true);return;}}}
         if(pending!==frozen || frozen.binding!==getBinding() || active.signal.aborted)return;
         if(frozen.transcriptionProfile!==undefined&&!['openai','previous','openai-live','previous-live'].includes(frozen.transcriptionProfile))throw Error('Recording provider unavailable; no fallback');
-        const route=frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
+        const route=frozen.avatarInterrupt?'api/interaction/voice/openai-live/interrupt'
+        :frozen.transcriptionProfile?'api/interaction/voice/'+frozen.transcriptionProfile:'api/interaction/voice';
         if(frozen.dictation){await uploadDictation(frozen,active);return;}
         originalAttempt(frozen);
         const response=frozen.foreground_dialogue?await fetch('api/interaction/voice/recover',{
@@ -534,9 +539,9 @@ window.VoiceInput = (() => {
       if(!recovery||original.binding!==getBinding())throw Error('Original review binding changed');
       await recovery.review(original);
     }
-    async function prepareReconnect(originals){
+    async function prepareReconnect(originals,conversation=false){
       if(!recovery||originals.some(v=>v.binding!==getBinding()))throw Error('Reconnect recording binding changed');
-      await recovery.reconnect(originals,getBinding());recoveryFree=true;
+      await recovery.reconnect(originals,getBinding(),conversation);recoveryFree=true;
     }
     async function releaseContinuous(original,hash){
       if(original.binding!==getBinding()||original.audio_sha256!==hash)throw Error('Original confirmation changed');
@@ -619,7 +624,7 @@ window.VoiceInput = (() => {
     window.addEventListener('online',()=>scheduleStatus(true));
     window.addEventListener('nativecapturebackground',()=>{clearStatusTimer();deactivate();});
     window.addEventListener('pagehide',()=>{clearStatusTimer();deactivate();});telegram?.onEvent?.('deactivated',()=>{clearStatusTimer();deactivate();});
-    controls();return {pauseEditing,editDraft,continueEditing,configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:()=>!!recovery&&recoveryFree&&available&&liveAvailable&&liveMode==='prepared'&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
+    controls();return {pauseEditing,editDraft,continueEditing,configure,reset,deactivate,observe,submit,ownsSend,hold,startConversation:()=>liveAvailable&&liveMode==='prepared'&&start(true),retainContinuous,reviewNativeContinuous,prepareReconnect,releaseContinuous,commitContinuous,reviewContinuous,continuousOwner,canStartNative:()=>!!recovery&&!restoring&&!ownsSend(),canStartContinuous:(openai=false)=>!!recovery&&recoveryFree&&available&&(openai?openaiLiveAvailable:liveAvailable&&liveMode==='prepared')&&supported()&&!restoring&&!ownsSend(),syncControls:syncSend};
   }
   return {mount,recoveryStore};
 })();

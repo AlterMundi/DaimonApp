@@ -594,14 +594,9 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
                     delegation.live_window.is_some() && foreground_interrupt_requested(&input.text)
                 });
             if priority {
-                let worker = app.worker_for(input.entry).await?;
-                enqueue(app, &input, worker.sender)?;
-                // Enqueue first. A failed admission must never interrupt work.
                 super::voice::INTERRUPT_TARGETS
-                    .scope(interrupt_targets, async {
-                        super::voice::interrupt_snapshot(input.entry)
-                    })
-                    .await;
+                    .scope(interrupt_targets, enqueue_avatar_interruption(app, &input))
+                    .await?;
             } else {
                 // Only the existing integrator decides downstream work.
                 submit(app.clone(), input.clone()).await?;
@@ -622,6 +617,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             .conversation_request_binding(human, cfg.entry())?;
         result["voice_available"] = json!(app.shared.config.voice.is_some());
         result["voice_original_hold"] = json!("v1");
+        result["voice_avatar_interrupt"] = json!("v1");
         result["foreground_retention"] = json!("v1");
         #[cfg(unix)]
         {
@@ -1166,6 +1162,19 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     Ok(())
 }
 
+async fn enqueue_avatar_interruption(app: &App, input: &ConversationInput) -> Result<()> {
+    let worker = app.worker_for(input.entry).await?;
+    if input.phase == "retained" {
+        app.shared
+            .store
+            .conversation_input_event(input.human, &input.id, E::Queue)?;
+    }
+    enqueue(app, input, worker.sender)?;
+    // Enqueue first. Failed admission or a duplicate cannot interrupt work.
+    super::voice::interrupt_snapshot(input.entry);
+    Ok(())
+}
+
 fn enqueue(
     app: &App,
     input: &ConversationInput,
@@ -1220,6 +1229,8 @@ struct VoiceSubmit {
     #[serde(default)]
     transcription_profile: Option<String>,
     #[serde(default)]
+    avatar_interrupt: bool,
+    #[serde(default)]
     preserve_original: bool,
     binding: String,
     #[serde(default)]
@@ -1266,6 +1277,15 @@ async fn voice_submit(
             None
         };
     }
+    if request.avatar_interrupt
+        && (recover
+            || request.foreground_dialogue.is_some()
+            || request.reply.is_some()
+            || request.visual.is_some()
+            || !request.files.is_empty())
+    {
+        bail!("Avatar interruption must be a new standalone conversation recording");
+    }
     if request.defer_foreground && request.foreground_dialogue.is_none() {
         bail!("Deferred completion requires a foreground capture");
     }
@@ -1295,6 +1315,7 @@ async fn voice_submit(
     }
     let voice = ConversationVoice {
         transcription_profile: request.transcription_profile,
+        avatar_interrupt: request.avatar_interrupt.then_some(true),
         preserve_original: request.preserve_original.then_some(true),
         audio_sha256: request.audio_sha256,
         mime: request.mime,
@@ -1425,21 +1446,34 @@ async fn voice_submit(
                 if captured
                     .voice
                     .as_ref()
-                    .is_none_or(|v| v.preserve_original != Some(true))
+                    .is_none_or(|v| v.preserve_original != Some(true) && v.avatar_interrupt != Some(true))
                     && crate::voice::retire_transcribed_clip(&path, expected).is_err()
                 {
                     // Durable text is already committed. A later client read
                     // can finish exact cleanup without repeating ASR or work.
                     tracing::warn!("Committed conversation voice cleanup deferred");
                 }
-                if ready.foreground_dialogue.is_none()
-                    && let Err(error) = deliver(&worker, ready, None).await
-                {
-                    worker
-                        .shared
-                        .store
-                        .conversation_input_finish(human, &captured.id)?;
-                    return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
+                if ready.foreground_dialogue.is_none() {
+                    let outcome = if ready
+                        .voice
+                        .as_ref()
+                        .is_some_and(|v| v.avatar_interrupt == Some(true))
+                    {
+                        if foreground_interrupt_requested(&ready.text) {
+                            enqueue_avatar_interruption(&worker, &ready).await
+                        } else {
+                            Err(anyhow!("Prepared transcript does not confirm the explicit Avatar interruption"))
+                        }
+                    } else {
+                        deliver(&worker, ready, None).await
+                    };
+                    if let Err(error) = outcome {
+                        worker
+                            .shared
+                            .store
+                            .conversation_input_finish(human, &captured.id)?;
+                        return Err(error.context(crate::voice::VoiceFailureStage::NativeAdmission));
+                    }
                 }
                 Ok::<_, anyhow::Error>(())
             });

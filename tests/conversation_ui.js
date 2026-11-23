@@ -165,7 +165,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       .filter(n => direction === "after" ? n > cursor : !cursor || n < cursor);
     if (direction === "before") numbers.reverse();
     const selected = numbers.slice(0, 8);
-    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse_codex:options.webRtcDriver?.engine==='codex',can_converse_public_live:options.webRtcDriver?.engine==='gpt-live',can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
+    return {binding:"fixture", csrf:"synthetic",can_view_coordination:options.budgetsGranted===true,can_converse_native:options.nativeVoice===true,can_converse_codex:options.webRtcDriver?.engine==='codex',can_converse_public_live:options.webRtcDriver?.engine==='gpt-live',can_converse:options.continuous===true,can_converse_continuous:options.continuous===true, response_draft:options.responseDraft, can_listen:true,voice_services_default:options.openaiDefault?'openai':'current',can_openai_conversation:options.openaiConversation===true,openai_speech_live_response:options.openaiConversation===true,openai_can_stream_transcribe:options.openaiCaptions===true,can_openai_live_result:options.liveResult===true,can_openai_converse_continuous:options.openaiCanonical===true,can_previous_live_result:options.previousLiveResult===true,can_reply_updates:true,can_speak_live_response:options.liveSpeech===true,can_report_playback:options.playback===true,can_report_word_position:options.wordTiming===true,can_stream_speech:options.openaiDefault?false:options.progressive===true,previous_can_stream_speech:options.progressive===true,can_download_files:options.fileAccess===true,artifacts:options.artifacts,presentation_profile:presentationProfile,
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
@@ -201,7 +201,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
   if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
-    context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);return options.continuousHold?.();},release:id=>continuousCalls.push(['release',id])};}};
+    context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],canReconnect(){return !this.active;},reconnect(){continuousCalls.push(['reconnect']);this.start();},start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);return options.continuousHold?.();},release:id=>continuousCalls.push(['release',id])};}};
     if(options.continuousDriver){
       const driver=options.continuousDriver;
       context.window.crypto=context.crypto;
@@ -217,10 +217,10 @@ function boot(readOnly=false,standalone=false,options={}) {
       const create=context.window.ContinuousConversation.create;
       context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession=create(hooks);}};
     }
-    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},resumeAudio(){hooks.onResumeAudio?.();},close(options){if(!this.active)return;this.active=false;hooks.onLeave(options);}};}};
+    context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},reconnect(){if(hooks.canReconnect())return hooks.onReconnect();},resumeAudio(){hooks.onResumeAudio?.();},close(options){if(!this.active)return;this.active=false;hooks.onLeave(options);}};}};
   }
   if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
-    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(){}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
+    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(fn){this.transportError=fn;}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
   }};
   if(options.liveSpeech)vm.runInContext(fs.readFileSync("dashboard/web/live-speech.js", "utf8"), context);
   if(options.timingEvents)context.window.ConversationTiming={mount:()=>Object.fromEntries(["bind","mark","input","source","pauseApplied"].map(name=>[name,(...args)=>options.timingEvents.push([name,...args])]))};
@@ -474,6 +474,28 @@ function boot(readOnly=false,standalone=false,options={}) {
     assert(!read.hidden);assert.equal(read.textContent,'Continue reading','The bounded reader must expose the remaining original');
     while(!read.hidden)await read.handlers.click();assert.equal(card.children[1].textContent,whole);view.ui.stop();
   }
+  const deliveryCards=boot(false,true);
+  const author={being_ref:"sender"};
+  const own={being_ref:"sender",receiving_copy:"proved"};
+  const peer={being_ref:"recipient",receiving_copy:"proved"};
+  const unconfirmed={being_ref:"another-recipient",receiving_copy:"unknown"};
+  const matrixStatus = (n, phase, members) => deliveryCards.overrideSource(n,{
+    kind:"matrix_response", direction:"outgoing", handling:{phase,outcome:{author,members}}
+  });
+  matrixStatus(8,"submitted",[own,peer,unconfirmed]);
+  matrixStatus(7,"submitted",[own,unconfirmed]);
+  matrixStatus(6,"recipient_copy_proved",[peer]);
+  matrixStatus(5,"uncertain",[]);
+  await deliveryCards.ui.refresh();
+  const plainStatus=n=>deliveryCards.nodes.get("#conversation-timeline").children
+    .find(card=>card.dataset.sourceId===`native:${n}`).children
+    .find(child=>child.className==="reply-status").textContent;
+  assert.equal(plainStatus(8),"Partly delivered");
+  assert.equal(plainStatus(7),"Sent · delivery unconfirmed","A sender copy does not count as recipient delivery");
+  assert.equal(plainStatus(6),"Delivered");
+  assert.equal(plainStatus(5),"Delivery not confirmed");
+  deliveryCards.ui.stop();
+
   const localProgress=boot(false,true,{autoText:true});
   const completeLocalProgress='Queda establecido: seguimos con el trabajo. '.repeat(80)+'La última palabra permanece completa.';
   localProgress.overrideSource(8,{kind:'integrator_progress',preview:completeLocalProgress.slice(0,240),text_characters:Array.from(completeLocalProgress).length});
@@ -614,6 +636,33 @@ function boot(readOnly=false,standalone=false,options={}) {
   const until=async check=>{for(let n=0;n<100;n++){if(check())return;await new Promise(resolve=>setTimeout(resolve,5));}throw Error("Voice transition did not finish");};
   const liveResult=boot(false,true,{capture:true,openaiConversation:true,openaiDefault:true,openaiCaptions:true,liveResult:true});await liveResult.ui.refresh();
   assert.equal(liveResult.transcriptionProfile(),'openai-live','A completed live result must never select the file recognizer');
+  const directVoice=boot(false,true,{capture:true,continuous:true,openaiConversation:true,
+    openaiDefault:true,openaiCaptions:true,liveResult:true,openaiCanonical:true});
+  await directVoice.ui.refresh();
+  const avatarEngine=directVoice.nodes.get('#conversation-voice-engine');
+  assert.equal(avatarEngine.value,'gpt-live-native','An available direct mode does not replace the selected default');
+  avatarEngine.value='conversation';avatarEngine.handlers.change();
+  assert.equal(directVoice.continuous().hooks.getTranscriptionProvider(),'openai');
+  directVoice.continuous().mode.open();
+  assert(directVoice.continuous().calls.some(([action])=>action==='start'));
+  directVoice.continuous().mode.suspend();
+  directVoice.continuous().mode.reconnect();
+  assert(directVoice.continuous().calls.some(([action])=>action==='reconnect'));
+  const receipt=(id,phase)=>({id,phase,voice:{audio_sha256:'owned'},sequence:1});
+  const firstQueued=receipt('voice-queued-a','queued'),secondQueued=receipt('voice-queued-b','queued');
+  directVoice.continuous().hooks.onSent(receipt('foreign-voice','uncertain'),'foreign');
+  directVoice.continuous().hooks.onSent(firstQueued,'fixture');
+  directVoice.continuous().hooks.onSent(secondQueued,'fixture');
+  const admissionNotice=()=>directVoice.continuous().mode.updates.filter(value=>Object.hasOwn(value,'admissionNotice')).at(-1)?.admissionNotice;
+  assert.equal(admissionNotice(),'Recording saved. Waiting for Conversation.');
+  directVoice.originals.set(firstQueued.id,receipt(firstQueued.id,'accepted'));
+  await directVoice.ui.refresh();
+  assert.equal(admissionNotice(),'Recording saved. Waiting for Conversation.','Another original still waits');
+  directVoice.originals.set(secondQueued.id,receipt(secondQueued.id,'accepted'));
+  await directVoice.ui.refresh();
+  assert.equal(admissionNotice(),'','The same originals settled through ordinary reads');
+  assert.equal(directVoice.nativePosts.length,0);
+  directVoice.continuous().mode.close();
   const openaiOnly=boot(false,true,{capture:true,openaiConversation:true,progressive:true,immediateHash:true});openaiOnly.audio();await openaiOnly.ui.refresh();
   assert.equal(openaiOnly.nodes.get('#conversation-services-choice').hidden,false);
   const services=openaiOnly.nodes.get('#conversation-services-engine');services.value='openai';services.handlers.change();
@@ -1249,6 +1298,22 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.match(outage.nodes.get('#conversation-state').textContent,/Synthetic TTS outage|replies available/);
   outage.clock.fire(450);await until(()=>outage.audioCalls.length===2&&!outage.nodes.get('#conversation-audio').paused);
   assert.equal(outage.audioCalls[1].source,'native:10','A failed TTS segment cannot strand the next independent reply');outage.ui.stop();
+
+  const truncated=boot(false,true,{clock:true,incremental:true,progressive:true,followStorage:new Map()});
+  truncated.audio();truncated.replyTexts.set('native:9','A retained sentence. '.repeat(45));await truncated.ui.refresh();
+  truncated.nodes.get('#conversation-voice-replies').handlers.click();truncated.addReplies(2);await truncated.ui.refresh();
+  const truncatedPlayer=truncated.nodes.get('#conversation-audio');
+  await until(()=>truncated.audioCalls.length===2&&!truncatedPlayer.paused&&!truncatedPlayer.muted);
+  const [badStream,failedTail]=truncated.streamedTransports;
+  badStream.transportError(new Error('EOF before confirmation'));
+  assert(failedTail.signal.aborted,'The unread tail of the failed reply cannot overtake its missing audio');
+  assert(truncatedPlayer.paused);
+  await until(()=>truncated.clock.pending().includes(450));truncated.clock.fire(450);
+  await until(()=>truncated.audioCalls.some(call=>call.source==='native:10')&&!truncatedPlayer.paused&&!truncatedPlayer.muted);
+  badStream.transportError(new Error('Late duplicate notification'));
+  assert.equal(truncatedPlayer.paused,false,'A stale failure cannot stop a new reply');
+  assert.deepEqual(truncated.audioCalls.filter(call=>call.source==='native:9').map(call=>call.offset),[0,120]);
+  assert.equal(truncated.nativePosts.length,0,'Speech recovery never posts any input');truncated.ui.stop();
 
   const submittedClips=[],recordingId='same-recording';
   const dismissWhileRecording=boot(false,true,{capture:true,ownsVoice:true,voiceSubmit:()=>submittedClips.push(recordingId)});
@@ -1967,9 +2032,19 @@ function boot(readOnly=false,standalone=false,options={}) {
   composerState.nodes.get("#conversation-message").value="Newest composer message";
   await composerState.nodes.get("#conversation-compose").handlers.submit({preventDefault(){}});
   const sent=[...composerState.originals.values()][0];
-  assert.match(composerState.nodes.get("#conversation-send-state").textContent,/waiting to send/);
-  sent.phase="accepted";await composerState.ui.refresh();
+  const queuedNotice=composerState.nodes.get("#conversation-send-state");
+  const queuedCheck=composerState.nodes.get("#conversation-send-check");
+  assert.equal(queuedNotice.textContent,"Message saved. Waiting for Conversation to pick it up.");
+  assert.equal(queuedNotice["data-attention"],"true");
+  assert.equal(queuedCheck.hidden,false,"A saved message waiting for admission can be checked without another send");
+  let queuedWrites=0;
+  const storeQueuedOriginal=composerState.originals.set.bind(composerState.originals);
+  composerState.originals.set=(...args)=>{queuedWrites++;return storeQueuedOriginal(...args);};
+  sent.phase="accepted";await queuedCheck.handlers.click();
   assert.match(composerState.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"Composer progress follows later native acceptance");
+  assert.equal(composerState.statusReads.length,1);
+  assert.equal(queuedWrites,0,"Checking a queued original must not submit it again");
+  assert.equal(queuedCheck.hidden,true);
   sent.phase="queued";await composerState.ui.refresh();
   assert.match(composerState.nodes.get("#conversation-send-state").textContent,/Sent to your conversation/,"Older source observations cannot regress acceptance");
   const composerLoss=boot();await composerLoss.ui.refresh();composerLoss.lose();const releaseLoss=composerLoss.holdPost();

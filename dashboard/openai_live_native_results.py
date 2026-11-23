@@ -11,6 +11,16 @@ from .openai_live import LiveUnavailable
 from .provider import ProviderUnavailable
 
 
+def read_return_source(read, current, *args):
+    """Recover once from a transient transport failure on an owned read."""
+    current()
+    try:
+        return read(*args)
+    except (TimeoutError, ConnectionError):
+        current()
+        return read(*args)
+
+
 def return_native_part(history, ident, human, owner, delegation, source, revision, offset,
                        provider, sideband, *, stopped=None, source_visit=None):
     """Read a current source, persist one append intent, then send once.
@@ -47,14 +57,14 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
             raise ValueError('A source-bound native work acknowledgment is required')
         intent = dict(intent)
         origin_date = datetime.fromtimestamp(value['created_at'], timezone.utc).date().isoformat()
-    native = provider.conversation_input_status(intent['root'])
+    native = read_return_source(provider.conversation_input_status, current, intent['root'])
     current()
     proof = native.get('foreground_delegation') or {}
     if (native.get('entry_binding') != owner['entry_binding'] or native.get('id') != intent['root']
             or native.get('foreground_dialogue') != origin or not isinstance(proof, dict)
             or proof.get('intent_id') != intent['intent_id']):
         raise ValueError('Native result belongs to another work intent')
-    part = provider.presentation_part(source, revision, offset)
+    part = read_return_source(provider.presentation_part, current, source, revision, offset)
     current()
     kind = part.get('kind')
     if (part.get('id') != source or part.get('revision') != revision or part.get('offset') != offset
@@ -76,7 +86,7 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
     elif kind == 'worker_result' and source.startswith('delivery:'):
         if part.get('current') is not True:
             raise ValueError('Worker result is not current')
-        trace = provider.conversation_input_trace(intent['root'])
+        trace = read_return_source(provider.conversation_input_trace, current, intent['root'])
         def associated(value):
             return any(result.get('source') == source and result.get('instruction_covered') is True
                 and result.get('current') is True and result.get('correction_pending') is False
@@ -85,7 +95,7 @@ def return_native_part(history, ident, human, owner, delegation, source, revisio
                 for result in route.get('results', []))
         if (trace.get('id') == intent['root'] and trace.get('entry_binding') == owner['entry_binding']
                 and trace.get('result_pages') == 'v1' and not associated(trace)):
-            trace=provider.conversation_input_trace_result(intent['root'],source)
+            trace=read_return_source(provider.conversation_input_trace_result,current,intent['root'],source)
             current()
         if (trace.get('id') != intent['root'] or trace.get('entry_binding') != owner['entry_binding']
                 or not associated(trace)):

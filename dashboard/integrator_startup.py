@@ -7,7 +7,10 @@ human speech. Older history stays with the native integrator and its memory tool
 import hashlib
 import json
 from datetime import datetime
+import re
 import uuid
+
+from .provider import ProviderUnavailable
 
 
 def _size(value):
@@ -25,11 +28,36 @@ def _time(value):
     except (ValueError,OverflowError):return None
 
 
+class ResultRevisionUnavailable(ProviderUnavailable):
+    def __init__(self, source, revision):
+        super().__init__('Current integrating result revision unavailable')
+        self.source, self.revision = source, revision
+
+
 def integrating_sources(provider, frozen, *, max_bytes=8192, check=lambda:None):
-    """Recent originals/returns can precede incorporation into native history."""
+    """Read current originals and returns before native incorporation."""
+    try:
+        return _integrating_sources(provider,frozen,max_bytes,check)
+    except ResultRevisionUnavailable as error:
+        # A correction changes the revision of the same source. Recheck only
+        # this owned page and assemble a fresh snapshot within the same budget.
+        # An opaque reader error alone is never evidence of a correction.
+        check()
+        outputs=provider.presentation_list(0,0,'before')
+        items=outputs.get('items')
+        if (outputs.get('binding')!=frozen['binding'] or not isinstance(items,list) or len(items)>16
+                or not any(row.get('id')==error.source
+                    and isinstance(row.get('revision'),str) and re.fullmatch(r'[a-f0-9]{64}',row['revision'])
+                    and row['revision']!=error.revision for row in items)):
+            raise
+        return _integrating_sources(provider,frozen,max_bytes,check,outputs)
+
+
+def _integrating_sources(provider, frozen, max_bytes, check, outputs=None):
     binding=frozen['binding'];entry=frozen['entry_binding']
     check();inputs=provider.presentation('input list 0 before')
-    check();outputs=provider.presentation_list(0,0,'before')
+    if outputs is None:
+        check();outputs=provider.presentation_list(0,0,'before')
     if (inputs.get('binding')!=binding or inputs.get('entry_binding')!=entry
             or outputs.get('binding')!=binding):
         raise ValueError('Current integrating source owner changed')
@@ -70,7 +98,10 @@ def integrating_sources(provider, frozen, *, max_bytes=8192, check=lambda:None):
             text='';offset=0
             for _ in range(16):
                 check()
-                part=provider.presentation_part(row['id'],row['revision'],offset)
+                try:
+                    part=provider.presentation_part(row['id'],row['revision'],offset)
+                except ProviderUnavailable as error:
+                    raise ResultRevisionUnavailable(row['id'],row['revision']) from error
                 if (part.get('id')!=row['id'] or part.get('revision')!=row['revision']
                         or part.get('offset')!=offset or not isinstance(part.get('text'),str)
                         or part.get('entry_binding')!=entry[:3]+[binding]

@@ -492,6 +492,34 @@ pub(super) async fn read_inbox(
     Ok((selected, serde_json::from_value(raw)?))
 }
 
+pub(super) async fn refresh_heartbeat_response_receipt(
+    app: &App,
+    cfg: &crate::interaction::InteractionConfig,
+    check: &crate::store::HeartbeatCheck,
+    selection: &crate::store::MatrixInboxSelection,
+) -> Result<()> {
+    let transport = cfg
+        .matrix_transport
+        .as_ref()
+        .context("Inbox host unavailable")?;
+    let store = &app.shared.store;
+    let Some((message, intent)) = store.heartbeat_claim_response_receipt(check, selection)? else {
+        return Ok(());
+    };
+    let send = intent["send_id"]
+        .as_str()
+        .context("Retained response send identity missing")?;
+    let result = tokio::select! {
+        biased;
+        _=app.shared.shutdown.cancelled()=>return Ok(()),
+        result=host_command_mode(transport,&intent,Some("--response-status"))=>result,
+    };
+    if let Ok(receipt) = result {
+        store.matrix_response_outcome(cfg.human_id, cfg.entry(), &message, send, Some(receipt))?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostOutcome {

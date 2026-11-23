@@ -22,7 +22,11 @@ the menu shows the last source-check outcome/time and the previous successful
 source-check time after a failure. Different or unconfirmed global/lane generations are labeled.
 An unfinished source check states that completion was not observed; it does not
 claim that an old process is still running. These source timestamps never prove
-native action, reply delivery or current operational readiness.
+native action, reply delivery or current operational readiness. Reports and
+other lanes leave the preceding Messaging observation available to the existing
+readiness check. Its loop, generation and freshness constraints still apply.
+A newer Messaging check supersedes it, including when it fails or is still
+running.
 
 Selected per-body receiving state belongs in the owning current service record.
 An older backend without conditional capabilities leaves control rows disabled
@@ -494,6 +498,16 @@ owner/current-entry store only, with no Matrix transport I/O or new journal.
 The existing bounded projection retention still applies; this is not a complete
 archive of the SDK's canonical signed history.
 
+A successful Messaging check can inspect one existing response intent after its
+authoring deadline through the owner-selected Matrix adapter. The check uses
+the configured transport deadline and the existing authenticated outcome writer.
+It never submits a response, creates a return or takes an inference reservation.
+Unconfirmed intents are eligible again after ten minutes, then an hour,
+then at most once a day while their original record is retained. The last
+attempt and backoff survive restart. Missing or invalid receipts leave the
+current delivery state intact. A later positive receipt updates the same
+outgoing item, and the existing owner inspection remains available.
+
 Incoming `matrix-inbox:UUID` sources keep their original canonical revisions.
 Their direction and sender label are presentation metadata, not revised offers.
 Own `matrix-response:ORIGINAL_UUID` sources expose exact retained response text,
@@ -506,6 +520,9 @@ not recipient delivery; a signed receiving copy is not comprehension, task
 completion or human hearing. No-reply dispositions author no outgoing speech.
 
 Conversation labels peer speech explicitly and exposes source/receipt details.
+An outgoing item is partly delivered when a current receipt confirms some
+recipients and the complete delivery has not been proved. A sender's own copy
+does not count towards recipient delivery.
 The same signed event shown through ordinary results, own response receipts or
 inbox copies is represented once when those views meet. These raw message cards
 do not automatically speak as the local daimon or trigger avatar reply animation.

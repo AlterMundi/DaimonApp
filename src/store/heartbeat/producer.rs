@@ -145,6 +145,8 @@ pub(in crate::store) struct Parent {
     pub inbox_state: Option<String>,
     #[serde(default)]
     last_check: Option<CheckObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_messaging_check: Option<CheckObservation>,
     #[serde(default)]
     last_success_at_unix_ms: Option<i64>,
     #[serde(default)]
@@ -457,6 +459,7 @@ pub(in crate::store) fn configure_on(
             stopped_reason: None,
             inbox_state: None,
             last_check: None,
+            previous_messaging_check: None,
             last_success_at_unix_ms: None,
             observation_renewal: None,
             seen: BTreeMap::new(),
@@ -535,7 +538,7 @@ pub(super) fn status_on(conn: &Connection, human: i64, session: i64) -> Result<V
             "originals":"retained; exact attempted revisions are not automatically replayed"})
         });
     Ok(
-        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":metadata_limits(conn, &p)?.0,"max_document_bytes":metadata_limits(conn, &p)?.1,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
+        json!({"state":state,"last_completed_without_review":completed_without_review,"last_attention_failure":last_attention_failure,"mode":if super::resources::continuous_on(conn, p.session, p.human)? {"continuous"} else {"finite"},"contract":p.contract,"checks":p.checks,"next_check_ms":p.next_check_ms,"cursor_entries":p.seen.len(),"retained_returns":p.native_returns.len(),"max_cursor_entries":256,"max_returns":metadata_limits(conn, &p)?.0,"max_document_bytes":metadata_limits(conn, &p)?.1,"stopped_reason":p.stopped_reason,"pending":pending(&p),"unoffered_inbox":unoffered_inbox,"inbox_observation":p.inbox_state,"last_check":p.last_check,"previous_messaging_check":p.previous_messaging_check,"last_success_at_unix_ms":p.last_success_at_unix_ms,"observation_window_renewal":p.observation_renewal,"finite_review":super::review::status_on(conn, &p)?,"observation_meaning":"Source checks only; not native execution, delivery or current operational readiness","sources":"selected_canonical_matrix_inbox_replies_workflows_and_owned_reports"}),
     )
 }
 pub(in crate::store) fn retained(
@@ -1137,6 +1140,13 @@ impl Store {
             .checked_add(1)
             .context("Heartbeat observation counter capacity")?;
         p.next_check_ms = now + i64::from(p.contract.interval_seconds) * 1000;
+        if activation.lane != HeartbeatLane::Messaging
+            && p.last_check
+                .as_ref()
+                .is_some_and(|check| check.activation.lane == HeartbeatLane::Messaging)
+        {
+            p.previous_messaging_check = p.last_check.take();
+        }
         p.last_check = Some(CheckObservation {
             sequence: p.checks,
             generation: control.generation,
@@ -1171,6 +1181,34 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(check_on(&conn, c)?.is_some())
     }
+    pub(crate) fn heartbeat_claim_response_receipt(
+        &self,
+        check: &Check,
+        selection: &crate::store::MatrixInboxSelection,
+    ) -> Result<Option<(String, Value)>> {
+        let Some(source) = &check.matrix_inbox else {
+            return Ok(None);
+        };
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        if !selection.belongs(check.human, check.entry, source)
+            || !check_on(&tx, check)?.is_some_and(|parent| {
+                parent
+                    .last_check
+                    .is_some_and(|observation| observation.outcome == "succeeded")
+            })
+        {
+            return Ok(None);
+        }
+        let receipt = super::super::matrix::inbox::claim_response_receipt_on(
+            &tx,
+            selection,
+            Utc::now().timestamp_millis(),
+        )?;
+        tx.commit()?;
+        Ok(receipt)
+    }
+
     #[cfg(test)]
     pub(crate) fn heartbeat_finish_check(
         &self,
@@ -2796,6 +2834,56 @@ mod inbox_tests {
         p.next_check_ms = 0;
         save(&conn, &p).unwrap();
     }
+    #[test]
+    fn reports_keep_the_exact_previous_messaging_check_across_restart() {
+        let (file, store, entry, source) = setup();
+        let report = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(report.path(), br#"{"selected": true}"#).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            let (session, _) = crate::store::presentation::entry_on(&conn, 100, entry).unwrap();
+            let mut producer = load(&conn, 100, session).unwrap().unwrap();
+            producer
+                .contract
+                .reports
+                .push(super::super::HeartbeatReportSource {
+                    id: "test-source".into(),
+                    path: report.path().to_owned(),
+                    pointers: vec!["/selected".into()],
+                });
+            save(&conn, &producer).unwrap();
+        }
+        let status = |store: &Store| {
+            store.heartbeat_control(100, entry, H::Status).unwrap()["producer"].clone()
+        };
+        let messaging = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+        let selected = selection(&store, entry, &source);
+        store
+            .heartbeat_finish_observation(
+                &messaging,
+                Some(Ok((selected.clone(), page(&selected, vec![])))),
+                false,
+            )
+            .unwrap();
+        let observed = status(&store)["last_check"].clone();
+        assert_eq!(observed["outcome"], "succeeded");
+
+        due(&store, entry);
+        let reports = store.heartbeat_begin_check(100, entry).unwrap().unwrap();
+        assert_eq!(reports.activation.lane, HeartbeatLane::Reports);
+        assert_eq!(status(&store)["previous_messaging_check"], observed);
+        store
+            .heartbeat_finish_observation(&reports, None, false)
+            .unwrap();
+        drop(store);
+
+        let store =
+            Store::open(file.path(), &[100, 101], &crate::store::tests::defaults()).unwrap();
+        let retained = status(&store);
+        assert_eq!(retained["last_check"]["activation"]["lane"], "reports");
+        assert_eq!(retained["previous_messaging_check"], observed);
+    }
+
     #[test]
     fn inbox_check_pause_and_resume_fence_a_late_page_without_refilling() {
         let (_f, s, e, source) = setup();

@@ -33,8 +33,10 @@ argument with the process executable's resolved identity and qualified digest;
 conditionally replace that actual argument, rather than searching the unit for
 the resolved target pathname. Keep source-manifest cache exclusions identical at
 preparation and selection: ordinary `__pycache__`/`.pyc` files do not change the
-qualified package, while every selected source/asset must still match. Retain
-failed preflight receipts and use a separate known-unsent continuation. After a
+qualified package, while every selected source/asset must still match. A
+web-only overlay must preserve the replaced asset's owner and mode. Read the
+qualified bytes as the actual web service user before selecting the overlay.
+Retain failed preflight receipts and use a separate known-unsent continuation. After a
 selection times out during observation, inspect that original installed outcome;
 never rerun selection just to obtain a successful verifier exit.
 
@@ -451,7 +453,10 @@ Run `python3 -B scripts/interaction_access_probe.py HOME_ORIGIN ...` as a finite
 observation in the existing Cluster Sysops pass. Use the current Home roster,
 including Emma and each child. The probe checks the actual HTTPS access API and
 shared-login entry, verifies TLS and does not follow redirects. The expected
-application-specific anonymous HTTP 401 and the shared entry HTTP 200 both matter.
+application-specific anonymous HTTP 401, shared entry HTTP 200 and three
+same-origin bootstrap scripts must agree. The probe reads a small JavaScript
+prefix and compares the served ETag with the declared version when present.
+An HTML fallback, missing script or stale script is an entry failure.
 It uses no session cookies or credentials. Exit 0 means all selected entries
 passed their anonymous-path check. Exit 1 includes a bounded per-receiver result.
 A deadline or failed execution is an unavailable observation. Positive signed-in
@@ -500,5 +505,14 @@ defers active voice, 78 means the writer never started, and 79 means an
 attempt ran with unconfirmed recovery. A nonzero operator result is preserved.
 
 Cluster owns registration of the exact operator, its preimage and candidate
-digest. An incident alone grants no write. Use the existing Alerts observer
+digest. For a scheduled unit, use `--observer-receipt` with a fixed absolute
+path in its owner-private operation directory. Keep this path separate from
+the writer's own output directory. The guard exclusively claims the receipt
+and syncs it before handing control to the writer. Only a matching live
+binding fault can create the claim. Code 80 means a retained claim already
+exists and the writer did not run again. Read that receipt and the writer's
+own effects. An interrupted claim is unknown, even after a job restart.
+Keep one receipt per prepared transition, and retain it while its unit can
+still run or any associated effect is uncertain.
+An incident alone grants no write. Use the existing Alerts observer
 for a fresh public readback and separately retain real authenticated evidence.

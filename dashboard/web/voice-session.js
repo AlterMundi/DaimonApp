@@ -1,9 +1,9 @@
 "use strict";
 // Explicit foreground owner. Speech analysis is never itself input admission.
 window.ContinuousConversation=(()=>{
-  function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,
-    retain,commit,onState=()=>{},onCaption=()=>{},onInterrupt=()=>{},onSent=()=>{},onReview=()=>{},onTiming=()=>{}}){
-    let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe;
+  function create({headers,getBinding,getQuestions=()=>undefined,getPlayback=()=>undefined,getTranscriptionProvider=()=> 'current',
+    retain,commit,prepareReconnect,onState=()=>{},onCaption=()=>{},onInterrupt=()=>{},onSent=()=>{},onReview=()=>{},onTiming=()=>{}}){
+    let active=false,starting=false,stopping=false,epoch=0,binding,source,analysis,media,abort,timer,unsubscribe,transcriptionProvider;
     let current,ring=[],bytes=0,lastEnergy=0,verdict,latestActivity,floor=false,blockedAt=Infinity,order=0,dispatching=false,holdReason;
     const slots=new Map();
     function handoff(slot,gate,a=latestActivity){
@@ -22,7 +22,7 @@ window.ContinuousConversation=(()=>{
       slot.handoff=detail;onTiming(slot.id,'handoff',detail);
     }
     function remaining(){return current?Math.max(0,Math.ceil(120-(bytes-current.start)/32000)):undefined;}
-    function state(message){const pending=[...slots.values()].some(s=>s.review);onState({active,starting,floor,pending,working:!active&&slots.size>0&&!pending,message:holdReason||message,remaining:remaining()});}
+    function state(message){const pending=[...slots.values()].some(s=>s.review);onState({active,starting,floor,pending,working:!active&&slots.size>0&&!pending,message:holdReason||message,remaining:transcriptionProvider==='openai'?undefined:remaining()});}
     function stopTracks(){for(const track of media?.getTracks()||[])track.stop();media=undefined;}
     function closeGraph(){unsubscribe?.();unsubscribe=undefined;source?.close();source=undefined;}
     function review(){onReview([...slots.values()].filter(s=>s.original).map(s=>s.original));}
@@ -58,7 +58,7 @@ window.ContinuousConversation=(()=>{
       // Acoustic turn ownership is independent of ASR readiness. Keep the
       // exact recording pending, but do not hold playback behind late captions.
       if(floor){floor=false;state('Listening');}
-      if(!slot.words){handoff(slot,'waiting_transcript');return;}
+      if(!slot.words&&transcriptionProvider!=='openai'){handoff(slot,'waiting_transcript');return;}
       // Captions can arrive after the analyzer's exact endpoint. Advancing
       // silence is not renewed speech; the acoustic fence above still owns it.
       // The current original owns PCM through its actual worklet flush. The
@@ -67,6 +67,11 @@ window.ContinuousConversation=(()=>{
       if(!analysis?.boundary(end)){hold('Voice analysis lost its turn boundary. Your recordings are kept.');return;}
       handoff(slot,'finishing');slot.send=true;floor=false;verdict=undefined;onTiming(slot.id,'ended');slot.recorder.stop();if(!stopping)state('Finishing your phrase');
     }
+    function takeFloor(slot){
+      if(floor||transcriptionProvider==='openai'&&(!slot.speech||!slot.words
+          ||!latestActivity?.speaking||slot.generation!==latestActivity.generation))return;
+      slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');
+    }
     function activity(a){
       if(!active||stopping||binding!==getBinding()){if(active)hold('Conversation changed. Your recordings are kept.');return;}
       latestActivity=a;const slot=current;
@@ -74,7 +79,7 @@ window.ContinuousConversation=(()=>{
          &&(slot.generation===undefined||a.onset.generation>slot.generation)){
         slot.generation=a.onset.generation;
         if(!slot.speech){slot.scopeFrozen=true;slot.speech=true;}
-        if(!floor){slot.playback=getPlayback();floor=true;onInterrupt();state('Listening');}
+        takeFloor(slot);
       }
       if(a.endpoint){
         // Freeze the local acoustic watermark observed with this verdict.
@@ -92,9 +97,12 @@ window.ContinuousConversation=(()=>{
       }
       consider();
     }
+    const requestsInterrupt=text=>/^\s*(?:\/interrupt|(?:barra|slash)\s+interrupt)\s+\S/iu.test(text||'');
     function originalFor(slot){
       const r=slot.recorder;
       return {id:slot.id,binding,capture_started:slot.started,blob:slot.blob,mime:'audio/wav',preparedText:r?.preparedText,
+        ...(transcriptionProvider==='openai'?{transcriptionProfile:'openai-live'}:{}),
+        ...(transcriptionProvider==='openai'&&!r?.captureStop&&requestsInterrupt(r?.preparedText)?{avatarInterrupt:true}:{}),
         captureStop:r?.captureStop,captureQuestions:slot.questions,playback:slot.playback};
     }
     async function retainOriginal(slot,original){
@@ -115,7 +123,7 @@ window.ContinuousConversation=(()=>{
     }
     async function finalized(slot){
       if(stopping&&current===slot){current=undefined;closeGraph();}
-      if(!slot.blob){slots.delete(slot.id);if(!stopping)hold('No recording was confirmed. Nothing was sent.');return;}
+      if(!slot.blob){slots.delete(slot.id);if(stopping)state();else hold('No recording was confirmed. Nothing was sent.');return;}
       const r=slot.recorder;onTiming(slot.id,'ready');
       if(r.preparationTiming)onTiming(slot.id,'prepared',r.preparationTiming);
       const original=originalFor(slot);
@@ -124,18 +132,19 @@ window.ContinuousConversation=(()=>{
       // failed, the existing once-only voice upload can use file-ASR; partial
       // captions never become the transcript. Exit/failed flush/held originals
       // have no endpoint Send intent and remain review-only, including reload.
-      const automatic=slot.send&&!slot.review&&!original.captureStop;
+      const automatic=slot.send&&!slot.review&&!original.captureStop
+        &&(transcriptionProvider!=='openai'||!!original.preparedText?.trim());
       try{
         if(slot.retention){
           await slot.retention;
           if(slot.retentionFailed || slot.original?.blob!==original.blob)throw Error('Flushed original changed');
           // The durable WAV and frozen context are unchanged. Prepared text is
           // advisory; its exact server receipt remains the admission authority.
-          if(slot.original.captureStop!==original.captureStop)await retainOriginal(slot,original);
+          if(slot.original.captureStop!==original.captureStop||slot.original.avatarInterrupt!==original.avatarInterrupt)await retainOriginal(slot,original);
           else slot.original={...slot.original,preparedText:original.preparedText};
         }else{slot.original=original;await retainOriginal(slot,original);}
       }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Local recovery unavailable. Keep this page open and save your recordings.');review();return;}
-      if(!automatic){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Your recording needs review. Nothing was resent.');review();return;}
+      if(!automatic){handoff(slot,'review');slot.review=true;slot.readyForReconnect=true;blockedAt=Math.min(blockedAt,slot.order);hold('Your recording needs review. Nothing was resent.');review();return;}
       handoff(slot,'confirming');slot.retained=true;slot.automatic=true;void drain();
     }
     async function drain(){
@@ -149,7 +158,7 @@ window.ContinuousConversation=(()=>{
           try{
             const result=await commit(slot.original);
             if(!result?.confirmed||result.value?.id!==slot.id||result.value?.voice?.audio_sha256!==slot.original.audio_sha256){handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording confirmation is missing. Check its status before retrying.');review();return;}
-            handoff(slot,'confirmed');slots.delete(slot.id);onSent(result.value);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
+            handoff(slot,transcriptionProvider==='openai'&&result.value.phase!=='accepted'?'foreground_saved':'confirmed');slots.delete(slot.id);onSent(result.value,slot.original.binding);state(active?'Listening':slots.size?'Recordings need review':'Voice session ended');
           }catch{handoff(slot,'review');slot.review=true;blockedAt=Math.min(blockedAt,slot.order);hold('Recording unconfirmed. Your originals are kept.');review();return;}
         }
       }finally{dispatching=false;}
@@ -162,9 +171,9 @@ window.ContinuousConversation=(()=>{
       const slot={id:window.crypto.randomUUID(),order:order++,started:Date.now(),start,questions:questions===undefined?undefined:JSON.parse(JSON.stringify(questions)),speech:false,words:false,send:false};
       slots.set(slot.id,slot);current=slot;verdict=undefined;onTiming(slot.id,'requested');onCaption('');
       try{
-        const recorder=await window.StreamingVoice.create(undefined,{headers,binding,id:slot.id,captureSource:source,
+        const recorder=await window.StreamingVoice.create(undefined,{headers,binding,id:slot.id,captureSource:source,transcriptionProvider,
           initialPCM:end=>prefix(start,end),
-          onPartial:text=>{if(current===slot&&active){slot.words=!!text.trim();if(slot.words)onTiming(slot.id,'partial');onCaption(text);consider();}},
+          onPartial:text=>{if(current===slot&&active){slot.words=!!text.trim();if(slot.words)onTiming(slot.id,'partial');onCaption(text);if(transcriptionProvider==='openai')takeFloor(slot);consider();}},
           onFlushed:(end,blob)=>{
             slot.end=end;retainFlushed(slot,blob);if(current===slot)current=undefined;
             if(stopping)closeGraph();else void arm(end,owned);
@@ -173,22 +182,35 @@ window.ContinuousConversation=(()=>{
         recorder.addEventListener('dataavailable',event=>{slot.blob=event.data;});
         recorder.addEventListener('stop',()=>{void finalized(slot);});
         recorder.addEventListener('error',()=>hold('Voice capture failed. Your recordings are kept.'));
-        if(owned!==epoch||stopping){slot.review=true;recorder.discard();slots.delete(slot.id);if(owned===epoch)closeGraph();return;}
+        if(owned!==epoch||stopping){slot.review=true;recorder.discard();slots.delete(slot.id);if(owned===epoch){if(current===slot)current=undefined;closeGraph();state();}return;}
         recorder.start();onTiming(slot.id,'started');state('Listening');consider();
       }catch{slots.delete(slot.id);if(owned!==epoch)return;if(current===slot)current=undefined;hold('Voice capture could not continue. Your earlier recordings are kept.');closeGraph();}
     }
-    async function start(){
-      if(active||starting||slots.size||document.hidden||!getBinding())return false;
+    function canReconnect(){
+      return typeof prepareReconnect==='function'&&getTranscriptionProvider()==='openai'
+        &&transcriptionProvider==='openai'&&stopping&&!active&&!starting&&!dispatching
+        &&!document.hidden&&!!binding&&binding===getBinding()
+        &&[...slots.values()].every(slot=>slot.review&&slot.readyForReconnect&&!slot.submitted);
+    }
+    async function start(reconnecting=false){
+      if(reconnecting?!canReconnect():active||starting||slots.size||document.hidden||!getBinding())return false;
+      transcriptionProvider=getTranscriptionProvider();
       const owned=++epoch;binding=getBinding();starting=true;stopping=false;holdReason=undefined;bytes=lastEnergy=0;latestActivity=undefined;ring=[];floor=false;blockedAt=Infinity;order=0;dispatching=false;
       abort=new AbortController();const ownAbort=abort;timer=setTimeout(()=>{if(owned===epoch)hold('Voice session reached five minutes. Your recordings are kept.');},300000);state('Preparing voice');
       try{
-        const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,
+        if(reconnecting){
+          try{await prepareReconnect([...slots.values()].map(slot=>slot.original));}
+          catch{if(owned===epoch&&!stopping)hold('Review your recordings in the conversation before reconnecting.');return false;}
+          if(stopping||owned!==epoch||document.hidden||binding!==getBinding()){if(owned===epoch&&!stopping)hold();return false;}
+          slots.clear();
+        }
+        const warmed=await window.StreamingVoice.openActivity({headers,binding,id:window.crypto.randomUUID(),signal:ownAbort.signal,transcriptionProvider,
           onActivity:a=>{if(owned===epoch)activity(a);},onUnavailable:()=>{if(owned===epoch)hold('Voice analysis unavailable. Your recordings are kept.');}});
         if(stopping||owned!==epoch){warmed.close();return false;}analysis=warmed;
         const value=await window.navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
         if(stopping||owned!==epoch||document.hidden||binding!==getBinding()){for(const t of value.getTracks())t.stop();if(owned===epoch)hold();return false;}
-        const capture=await window.StreamingVoice.openCapture(value);
-        if(stopping||owned!==epoch){capture.close();for(const t of value.getTracks())t.stop();return false;}media=value;source=capture;
+        media=value;const capture=await window.StreamingVoice.openCapture(value);
+        if(stopping||owned!==epoch){capture.close();return false;}source=capture;
         unsubscribe=source.subscribe(value=>{
           if(owned!==epoch)return;
           if(value.captureError){hold('Voice capture ended. Your recordings are kept.');return;}
@@ -215,7 +237,7 @@ window.ContinuousConversation=(()=>{
     document.addEventListener('visibilitychange',()=>{if(document.hidden)hold();});
     window.addEventListener('nativecapturebackground',()=>hold());
     window.addEventListener('pagehide',()=>hold());
-    return {start,hold,get active(){return active||starting;},get floor(){return floor;},
+    return {start:()=>start(),reconnect:()=>start(true),canReconnect,hold,get active(){return active||starting;},get floor(){return floor;},
       get originals(){return [...slots.values()].filter(s=>s.original).map(s=>s.original);},
       release(id){const slot=slots.get(id);if(slot?.original&&slot.review&&!slot.retaining)slots.delete(id);}
     };

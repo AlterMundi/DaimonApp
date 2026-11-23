@@ -56,11 +56,13 @@ window.ConversationVoiceMode=(()=>{
     const status=document.createElement('p');status.className='voice-mode-state';status.setAttribute('role','status');
     const detection=document.createElement('p');detection.className='voice-mode-detection';detection.setAttribute('role','status');detection.hidden=true;
     const caption=document.createElement('p');caption.className='voice-mode-caption';
+    const admission=document.createElement('p');admission.classList.add('voice-mode-detection');admission.id='voice-mode-admission';admission.hidden=true;
+    admission.setAttribute('role','status');
     const speak=document.createElement('button');speak.type='button';speak.textContent='Speak again';
     const back=document.createElement('button');back.type='button';back.textContent='Back to conversation';
     const review=document.createElement('button');review.type='button';review.hidden=true;
     const controls=document.createElement('div');controls.className='voice-mode-controls';controls.append(review,speak,back);
-    dialog.append(heading,hint,stage,status,detection,caption,controls);document.body.append(dialog);
+    dialog.append(heading,hint,stage,status,detection,admission,caption,controls);document.body.append(dialog);
     let available=false,opened=false,marker,timer,rearm,lastClose,waiting=false,heard=false,phase='idle',pending=false,playing=false,remaining,normal,continuous=false,listening=false,preparing=false,directPending=false,directWorking=false,directMessage,detectorId,detectionText,recentEnd;
     const detectionLabels={waiting_speech:'Waiting for speech',speaking:'Voice detected',waiting_endpoint:'Voice detected',waiting_analysis:'Processing your recording',waiting_transcript:'Processing your recording',finishing:'Saving your recording',confirming:'Sending your recording',confirmed:'Recording sent',foreground_saved:'Recording saved',review:'Check your recording in the conversation'};
     let audioPaused=false,audioEnabled=true,reconnecting=false,untilStop=false;
@@ -113,6 +115,7 @@ window.ConversationVoiceMode=(()=>{
       if(opened || !available || document.hidden || !canEnter())return;
       if(onEnter()===false)return;
       opened=true;untilStop=false;audioPaused=false;audioEnabled=true;reconnecting=false;detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;waiting=false;heard=false;pending=false;directPending=false;directWorking=false;directMessage=undefined;listening=false;preparing=false;phase='idle';playing=false;remaining=undefined;
+      admission.textContent='';admission.hidden=true;
       entryState();
       marker=document.createComment('portrait return');portrait.before(marker);stage.append(portrait);
       document.body.classList.add('direct-voice-open');dialog.showModal();back.focus();attention(getAttention());
@@ -131,6 +134,10 @@ window.ConversationVoiceMode=(()=>{
       if(value.connected===false){close();return;}
       showSignal(value.continuousState||value);
       if(continuous&&value.handoff)showDetection(value.handoff);
+      if(continuous&&Object.hasOwn(value,'admissionNotice')){
+        if(admission.textContent!==value.admissionNotice)admission.textContent=value.admissionNotice;
+        admission.hidden=!value.admissionNotice;
+      }
       const wasStopped=!listening&&!preparing&&!!directMessage,wasReconnecting=reconnecting;
       if(value.continuousState?.starting){detectorId=detectionText=recentEnd=undefined;detection.textContent='';detection.hidden=true;}
       if(value.continuousState){

@@ -54,6 +54,64 @@ impl Selection {
             && self.channel == source.channel_id
     }
 }
+/// Claim one observation of an existing intent. A process interruption may
+/// consume this attempt. It cannot authorize or repeat the native send.
+pub(in crate::store) fn claim_response_receipt_on(
+    conn: &Connection,
+    selection: &Selection,
+    now_ms: i64,
+) -> Result<Option<(String, Value)>> {
+    let candidate: Option<(i64, String, String)> = conn
+        .query_row(
+            "SELECT rowid, message_id, json_extract(handling, '$.intent')
+             FROM interaction_matrix_inbox
+             WHERE entry_session=?1 AND human_id=?2 AND binding=?3 AND epoch=?4
+                 AND native=?5 AND owner=?6 AND channel=?7
+                 AND json_extract(handling, '$.phase') IN ('submitting','submitted','uncertain')
+                 AND json_type(handling, '$.intent')='object'
+                 AND json_extract(handling, '$.intent.effect_not_after_ms')<=?8
+                 AND COALESCE(json_extract(handling, '$._receipt_checks.at_ms'), 0)
+                     <=?8-CASE json_extract(handling, '$._receipt_checks.count')
+                         WHEN 1 THEN 600000
+                         WHEN 2 THEN 3600000
+                         ELSE 86400000
+                     END
+             ORDER BY COALESCE(json_extract(handling, '$._receipt_checks.at_ms'), 0),
+                 rowid DESC LIMIT 1",
+            params![
+                selection.session,
+                selection.human,
+                selection.binding,
+                selection.epoch,
+                selection.native,
+                serde_json::to_string(&selection.owner)?,
+                selection.channel,
+                now_ms
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((row, message, raw)) = candidate else {
+        return Ok(None);
+    };
+    let intent: Value = serde_json::from_str(&raw)?;
+    anyhow::ensure!(
+        intent["source"] == serde_json::to_value(&selection.owner)?
+            && intent["channel_id"] == selection.channel
+            && intent["parent"]["message_id"] == message
+            && intent["send_id"].as_str().is_some_and(canonical_uuid),
+        "Retained response receipt owner or intent changed"
+    );
+    conn.execute(
+        "UPDATE interaction_matrix_inbox SET handling=json_set(handling, '$._receipt_checks',
+             json_object('at_ms', ?1, 'count',
+                 MIN(COALESCE(json_extract(handling, '$._receipt_checks.count'), 0)+1, 3)))
+         WHERE rowid=?2",
+        params![now_ms, row],
+    )?;
+    Ok(Some((message, intent)))
+}
+
 fn key(s: &Selection) -> String {
     format!(
         "matrix-inbox-cursor:{}",

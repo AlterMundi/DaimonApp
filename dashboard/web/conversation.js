@@ -117,17 +117,20 @@ window.Conversation = (() => {
       if(captureBusy||voiceBusy||active||speechWait||voiceSession?.active||microphone?.ownsSend()||!['current','openai'].includes(servicesEngine.value)||servicesEngine.value==='openai'&&!openaiConversationAvailable){servicesEngine.value=conversationServices;return;}
       stop();conversationServices=servicesEngine.value;
       if(conversationServices==='openai'&&publicLiveNativeEnabled){voiceChoice='gpt-live-native';selectVoiceEngine();}
+      if(conversationServices!=='openai'&&voiceChoice==='conversation'){voiceChoice='provider';selectVoiceEngine();}
       applyConversationServices();
     });
     const isPublicLive=()=>voiceChoice==='gpt-live'||voiceChoice==='gpt-live-native';
+    const canonicalVoiceAvailable=()=>conversationServices==='openai'&&lastVoiceCapabilities?.can_openai_converse_continuous===true;
     function selectVoiceEngine(){
       const publicEnabled=voiceChoice==='gpt-live-native'?publicLiveNativeEnabled:publicLiveResponsesEnabled;
-      const nextNative=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled;
-      const next=isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
+      const canonical=voiceChoice==='conversation';
+      const nextNative=!canonical&&(isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled);
+      const next=canonical?(canonicalVoiceAvailable()?legacyVoiceSession:undefined):isPublicLive()?(publicEnabled?publicLiveSession:undefined):voiceChoice==='codex'?(codexEnabled?codexVoiceSession:undefined):providerNativeEnabled?providerVoiceSession:legacyVoiceSession;
       if((next!==voiceSession||nextNative!==nativeEnabled)&&voiceMode?.active)voiceMode.close();
       nativeEnabled=nextNative;nativeVoiceSession=nextNative?next:providerVoiceSession;voiceSession=next;
-      continuousEnabled=isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
-      voiceMode?.configure(isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
+      continuousEnabled=canonical?canonicalVoiceAvailable():isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerNativeEnabled||providerContinuousEnabled;
+      voiceMode?.configure(canonical?canonicalVoiceAvailable():isPublicLive()?publicEnabled:voiceChoice==='codex'?codexEnabled:providerVoiceAvailable||providerNativeEnabled,continuousEnabled);
       if(voiceEngine){
         voiceEngine.value=voiceChoice;voiceEngine.disabled=!!voiceSession?.active;
         const codexOption=voiceEngine.querySelector?.('option[value="codex"]');
@@ -136,12 +139,14 @@ window.Conversation = (() => {
         if(publicOption)publicOption.disabled=!publicLiveResponsesEnabled;
         const nativeOption=voiceEngine.querySelector?.('option[value="gpt-live-native"]');
         if(nativeOption)nativeOption.disabled=!publicLiveNativeEnabled;
+        const canonicalOption=voiceEngine.querySelector?.('option[value="conversation"]');
+        if(canonicalOption)canonicalOption.disabled=!canonicalVoiceAvailable();
       }
-      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&voiceChoice==='provider';
+      if(voiceChoiceBox)voiceChoiceBox.hidden=!codexEnabled&&!publicLiveEnabled&&!canonicalVoiceAvailable()&&voiceChoice==='provider';
     }
     voiceEngine?.addEventListener('change',()=>{
       if(voiceSession?.active||voiceMode?.active){voiceEngine.value=voiceChoice;return;}
-      if(!['provider','codex','gpt-live','gpt-live-native'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveResponsesEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled)return;
+      if(!['provider','codex','gpt-live','gpt-live-native','conversation'].includes(voiceEngine.value)||voiceEngine.value==='codex'&&!codexEnabled||voiceEngine.value==='gpt-live'&&!publicLiveResponsesEnabled||voiceEngine.value==='gpt-live-native'&&!publicLiveNativeEnabled||voiceEngine.value==='conversation'&&!canonicalVoiceAvailable())return;
       voiceChoice=voiceEngine.value;selectVoiceEngine();
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
@@ -810,12 +815,13 @@ window.Conversation = (() => {
     const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
     const composerNotice=(text,attention=true)=>{sendState.textContent=text;sendState.setAttribute('data-attention',String(attention));};
-    const inputNotice=value=>composerNotice(phaseText(value),['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
+    const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
+    const inputNotice=value=>composerNotice(phaseText(value),savedWaiting(value) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
-      : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved; waiting to send.", queued:"Saved; waiting to send.",
+      : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Message saved. Waiting for Conversation to pick it up.", queued:"Message saved. Waiting for Conversation to pick it up.",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
           accepted:"Sent to your conversation. Work may continue.", matrix_requested:"Saved for the selected daimon; awaiting its authorized execution and reply.",
           reselection:"This attempt did not submit the message. Select the image again, then send.", answered:"Answer recorded for the selected question. Work may continue.",
@@ -897,8 +903,8 @@ window.Conversation = (() => {
     function syncComposerRecovery(){
       if(!composerCheck)return;
       const card=inputs.get(latestComposerId),value=card?.value;
-      const unconfirmed=value&&(!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
-      composerCheck.hidden=readOnly||posting||!unconfirmed||value.binding!==binding;
+      const checkable=value&&(savedWaiting(value)||!value.phase||['uncertain','preparation_unconfirmed','retained_unsent'].includes(value.phase)||value.routing?.phase==='uncertain');
+      composerCheck.hidden=readOnly||posting||!checkable||value.binding!==binding;
       composerCheck.disabled=!!card?.checking;
     }
     composerCheck?.addEventListener('click',async()=>{
@@ -988,6 +994,22 @@ window.Conversation = (() => {
         }catch(e){more.textContent="Read unavailable; try again";if([401,403].includes(e.status))failed(e);}
         finally{more.disabled=false;}
       });
+    }
+    const avatarVoiceAdmissions = new Map();
+    function updateAvatarAdmission(value, track = false) {
+      if (voiceChoice !== 'conversation' || !voiceMode?.active || value.binding !== undefined && value.binding !== binding
+          || (!track && !avatarVoiceAdmissions.has(value.id))) return;
+      const phase = value.routing?.phase || value.phase;
+      if (value.retired || ['accepted','answered','cancelled','rejected'].includes(phase))
+        avatarVoiceAdmissions.delete(value.id);
+      else {
+        const waiting = ['retained','queued','preparing','sending','steering','submitting'].includes(phase);
+        avatarVoiceAdmissions.set(value.id, waiting ? 'waiting' : 'review');
+        if(avatarVoiceAdmissions.size > 128)avatarVoiceAdmissions.delete(avatarVoiceAdmissions.keys().next().value);
+      }
+      const outcomes = [...avatarVoiceAdmissions.values()];
+      voiceMode.update({admissionNotice:outcomes.includes('review') ? 'Check your recording in Conversation.'
+        :outcomes.includes('waiting') ? 'Recording saved. Waiting for Conversation.' : ''});
     }
     function inputCard(value, observed = ++inputObservation) {
       timing?.input(value);
@@ -1101,7 +1123,8 @@ window.Conversation = (() => {
         renderInputText(card);
         card.status.textContent = phaseText(card.value);
         microphone?.observe(card.value,phaseText(card.value));
-      taskControls?.observeInput?.(card.value);
+        updateAvatarAdmission(card.value);
+        taskControls?.observeInput?.(card.value);
         renderRetry(card);
         if (card.value.id === latestComposerId) inputNotice(card.value);
         renderRoute(card);graph?.input(card.value);inputActivity();return card;
@@ -1133,6 +1156,7 @@ window.Conversation = (() => {
       renderInputText(card);
       card.status.textContent = phaseText(card.value);
       microphone?.observe(card.value,phaseText(card.value));
+      updateAvatarAdmission(card.value);
       if(card.value.phase && card.value.focusVersion===focusVersion)clearFocus();
       if (card.value.id === latestComposerId) inputNotice(card.value);
       renderRetry(card);
@@ -1849,9 +1873,14 @@ window.Conversation = (() => {
       const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
       const visibility=source.kind==="matrix_visibility";
       const deliveryPhase=source.handling?.phase;
+      const delivery=source.handling?.outcome;
+      const sendingBeing=delivery?.author?.being_ref;
+      const partialDelivery=deliveryPhase==="submitted" && !!sendingBeing && Array.isArray(delivery.members) &&
+        delivery.members.some(member=>member?.being_ref && member.being_ref!==sendingBeing && member.receiving_copy==="proved");
       const diagnosticStatus = visibility ? "Durable communication copy. This record is not a human message or a delivery confirmation." : matrix ? (source.kind==="matrix_response" ?
         deliveryPhase==="recipient_copy_proved" ? "Recipient receiving copy proved. Reading and work completion are unconfirmed." :
         deliveryPhase==="uncertain" ? "Delivery uncertain. The original response intent is retained; it has not been resent." :
+        partialDelivery ? "Delivery confirmed for some recipients; the remaining recipients are unconfirmed." :
         deliveryPhase==="submitted" ? "Submitted; recipient delivery is not proved." : "Response intent retained; delivery is not proved."
         : source.direction==="outgoing" ? "Own message retained in the signed Matrix inbox. Recipient delivery is not established by this copy." : "SDK-authenticated incoming message. Peer speech is not human instruction or proof of completed work.") : progress ? "Progress update." : source.kind === "integrator_answer" ? "Reply from this conversation."
         : source.correction_pending ? "A later correction is pending."
@@ -1861,7 +1890,7 @@ window.Conversation = (() => {
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
       card.status.textContent = visibility ? "Communication" : matrix ? (
         source.kind==="matrix_response" ? deliveryPhase==="recipient_copy_proved" ? "Delivered" :
-          deliveryPhase==="submitted" ? "Sent" : "Delivery not confirmed" :
+          partialDelivery ? "Partly delivered" : deliveryPhase==="submitted" ? "Sent · delivery unconfirmed" : "Delivery not confirmed" :
           source.direction==="incoming" ? "Received" : "Message copy") : diagnosticStatus;
       if(matrix || visibility){
         if(!card.matrixDetails){
@@ -2081,14 +2110,23 @@ window.Conversation = (() => {
       const attempt=selected.fallbackPromise;
       try{return await attempt;}finally{if(selected.fallbackPromise===attempt)delete selected.fallbackPromise;}
     }
+    function stopFailedSpeech(selected,message){
+      if(active!==selected)return;
+      // An incomplete stream cannot establish a heard boundary. Hold the
+      // rest of this message for explicit playback and keep independent replies.
+      rememberSkipped(selected.source);
+      liveSpeech?.interrupt(selected.source);
+      for(let n=voiceQueue.length-1;n>=0;n--)if(sameMessage(voiceQueue[n],selected.source))removeQueued(n);
+      if(prefetched?.source&&!sameMessage(prefetched.source,selected.source))parkPrepared();
+      stop(message);
+      if(voiceEnabled && !voiceSuspended)void nextSpokenReply("reply",selected.source);
+    }
     async function audioDecodeFailed(selected=active){
       if(!selected || active!==selected)return;
       const owned=generation,position=audio.currentTime;
       if(await fallbackProgressive(selected,owned,position))return;
       if(active!==selected || generation!==owned)return;
-      liveSpeech?.interrupt(selected.source);
-      stop("Audio decoding stopped. Your text and playback position remain available.");
-      if(voiceEnabled && !voiceSuspended)nextSpokenReply("reply",selected.source);
+      stopFailedSpeech(selected,"Audio decoding stopped. Your text and playback position remain available.");
     }
     async function startPlayback() {
       const selected = active;
@@ -2272,7 +2310,7 @@ window.Conversation = (() => {
         if(active!==selected || generation!==owned)return;
         Object.assign(selected,metadata);
         blobUrl = selected.streaming?.url || URL.createObjectURL(blob);
-        selected.streaming?.onError(()=>{if(active===selected)stop("Speech stream ended. Your text remains available; no automatic retry.");});
+        selected.streaming?.onError(()=>stopFailedSpeech(selected,"This reply’s audio stopped. You can still read it or listen again."));
         selected.streaming?.onDecoderError?.(()=>{if(active===selected)void audioDecodeFailed(selected);});
         if(active!==selected)return;
         audio.src = blobUrl;
@@ -2386,8 +2424,13 @@ window.Conversation = (() => {
     if(readOnly){document.body.classList.toggle("monitor-mode",true);$("#conversation-sent").open=true;}
     if(standalone&&!readOnly&&microphone)legacyVoiceSession=window.ContinuousConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
+      getTranscriptionProvider:()=>voiceChoice==='conversation'?'openai':'current',
+      prepareReconnect:originals=>microphone.prepareReconnect(originals,true),
       getPlayback:()=>playbackContext(true),retain:original=>microphone.retainContinuous(original),commit:original=>microphone.commitContinuous(original),
       onInterrupt:beginVoiceCapture,onCaption:text=>voiceMode?.update({caption:text}),onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);if(stage==='handoff')voiceMode?.update({handoff:{...detail,id}});},
+      onSent:(value,sourceBinding)=>{
+        if(sourceBinding===binding)updateAvatarAdmission(inputs.get(value.id)?.value || value,true);
+      },
       onReview:originals=>{void microphone.reviewContinuous(originals);},
       onState:value=>{
         if(!voiceModePrevious?.continuous)return;
@@ -2426,7 +2469,7 @@ window.Conversation = (() => {
       onRecovery:values=>{
         const panel=$('#conversation-codex-recovery');if(!panel)return;
         panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
-        panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
+        panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These audio copies are still on this device. Download a copy for review or use the available saving controls after voice mode stops.','note'));
         for(const original of selected){
           const partial=original.captureStop==='interrupted_prefix';
           const row=node('div',undefined,'conversation-tools'),label=node('span',`${partial?'Recovered audio prefix':'Voice recording'} · ${Math.ceil((original.blob.size-44)/32000)}s · local copy${partial?' · ending may be missing':''}`);
@@ -2488,14 +2531,14 @@ window.Conversation = (() => {
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
           panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
           for(const original of selected){
-            const row=node('div',undefined,'conversation-tools'),label=node('span',original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
+            const row=node('div',undefined,'conversation-tools'),label=node('span',original.downloadOnly?'Audio fragment · download to review':original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
             const retry=node('button','Try saving audio'),save=node('button','Download copy'),discard=node('button','Remove device copy');
             for(const button of [retry,save,discard])button.type='button';
             retry.title='Retain this same original; never resend speech or work';
             retry.addEventListener('click',async()=>{retry.disabled=true;try{await publicLiveSession.retry(original);}catch{label.textContent='Original not confirmed; your local copy is kept.';}finally{retry.disabled=false;}});
-            save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.voice_visit+'-'+original.ordinal+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+            save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.voice_visit+'-'+original.ordinal+(original.downloadOnly?'-'+original.id:'')+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
             discard.addEventListener('click',async()=>{discard.disabled=true;try{await publicLiveSession.discard(original);}catch{label.textContent='Local audio is kept; capture may still be finishing in another page.';}finally{discard.disabled=false;}});
-            row.append(label,retry,save,discard);panel.append(row);
+            row.append(label,...(original.downloadOnly?[save]:[retry,save,discard]));panel.append(row);
           }
         },
         onState:value=>{
@@ -2507,9 +2550,10 @@ window.Conversation = (() => {
     }
     nativeVoiceSession=providerVoiceSession;
     if(standalone && !readOnly)voiceMode=window.ConversationVoiceMode?.mount({
-      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous())),
-      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(voiceChoice!=='provider'?microphone.canStartNative():microphone.canStartContinuous()):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
+      portrait:$("#conversation-companion .avatar-surface")||$("#conversation-companion pre"),onReview:restore=>pendingNavigation?.open(restore),getAttention:()=>pendingNavigation?.count||0,canEnter:()=>!!microphone && !microphone.ownsSend() && !captureBusy && (!continuousEnabled||!!voiceSession&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation'))),
+      canStart:()=>continuousEnabled?!!voiceSession&&!voiceSession.active&&(nativeEnabled?microphone.canStartNative():microphone.canStartContinuous(voiceChoice==='conversation')):!!microphone && !microphone.ownsSend() && !captureBusy && !voiceBusy && !speechWait,
       onEnter:()=>{
+        avatarVoiceAdmissions.clear();
         if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};
         if(continuousEnabled)microphone.continuousOwner(true);
@@ -2518,11 +2562,15 @@ window.Conversation = (() => {
       onSpeak:({avatarEntry=false}={})=>voiceModePrevious?.continuous?
         (voiceSession===publicLiveSession?publicLiveSession?.start({avatarEntry}):voiceSession?.start()):
         microphone?.startConversation(),
-      canReconnect:()=>nativeEnabled,
-      onReconnect:()=>{if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}if(!nativeEnabled&&microphone.canStartContinuous())return voiceSession?.start();},
+      canReconnect:()=>nativeEnabled||voiceChoice==='conversation'&&!microphone.ownsSend()&&voiceSession?.canReconnect(),
+      onReconnect:()=>{
+        if(nativeEnabled&&!nativeVoiceSession?.active){enableVoice();return nativeVoiceSession?.reconnect();}
+        if(voiceChoice==='conversation'&&!microphone.ownsSend()&&voiceSession?.canReconnect())return voiceSession.reconnect();
+      },
       onResumeAudio:()=>{if(nativeEnabled&&nativeVoiceSession?.active){enableVoice();nativeVoiceSession.resume();}},
       onSuspend:()=>voiceSession?.hold('Microphone paused. Review your recording before speaking again.'),
       onLeave:({returnToText=false}={})=>{
+        avatarVoiceAdmissions.clear();
         const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration;
         let held;
         if(direct){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}

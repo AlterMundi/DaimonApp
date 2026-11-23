@@ -36,7 +36,12 @@ assert.match(observation({...checked,lanes:{messaging:{generation:8}}}),/differe
 const failed={...checked,producer:{...checked.producer,last_check:{...checked.producer.last_check,outcome:'failed',error:'arbitrary private adapter output'}}};
 assert.equal(observation(failed),'Last source check failed at 2023-11-14T22:13:21.000Z. Last successful source check: 2023-11-14T22:13:21.000Z.');
 assert.match(observation({...failed,producer:{...failed.producer,last_success_at_unix_ms:null}}),/not observed/);
-assert.match(observation({...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}}),/completion not observed/);
+const inProgress={...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}};
+assert.match(observation(inProgress),/^Source check started .*completion not observed\.$/);
+assert.match(observation({...inProgress,lanes:{messaging:{generation:8,paused:true}}}),
+  /^Earlier or unverified source check started .*completion not observed\.$/);
+assert.match(observation({...inProgress,generation:2}),
+  /^Earlier or unverified source check started .*completion not observed\.$/);
 for(const value of [null,base,{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Infinity}}},{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Number.MAX_SAFE_INTEGER}}}])assert.equal(observation(value),'');
 console.log('Heartbeat: expired/exhausted/stopped dependencies cannot pulse; source-check timestamps remain distinct from operational proof.');
 
@@ -79,3 +84,31 @@ assert.equal(presentation(unloaded,now).detail,'Our conversation will be prepare
 assert.equal(state(unloaded,now),'unavailable','An unloaded thread is not fresh positive admission proof');
 assert.equal(presentation(unloaded,now+15000).label,'Status unavailable');
 assert.equal(presentation({...unloaded,operational_evidence:{...unloaded.operational_evidence,reason:'native_admission_unavailable'}},now).label,'Needs attention','An explicit native refusal still needs attention');
+
+const messagingPaused={...waiting,
+  lanes:{messaging:{generation:2,paused:true,supported:true}},
+  operational_evidence:{...waiting.operational_evidence,reason:'messaging_paused'}};
+assert.equal(presentation(messagingPaused,now).label,'Messages paused');
+assert.equal(state(messagingPaused,now),'unavailable','A lane pause never pulses as ready');
+assert.equal(presentation(messagingPaused,now+15000).label,'Status unavailable');
+assert.equal(presentation({...messagingPaused,lanes:{messaging:{generation:3,paused:true,supported:true}}},now).label,'Status unavailable');
+
+async function checkMountedExpiry() {
+  const nodes=new Map();
+  const element=()=>({dataset:{},hidden:true,style:{},addEventListener(){},setAttribute(){},append(){},replaceChildren(){}});
+  let time=now,timer,delay;
+  const root={querySelector(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},createElement:element};
+  const mountedWindow={addEventListener(){}};
+  const context={window:mountedWindow,document:{hidden:false,addEventListener(){}},
+    setTimeout(callback,ms){timer=callback;delay=ms;return 1;},clearTimeout(){timer=undefined;}};
+  vm.runInNewContext(fs.readFileSync('dashboard/web/heartbeat.js','utf8'),context);
+  const view=mountedWindow.InteractionHeartbeat.mount({api:async()=>messagingPaused,
+    authenticated:()=>true,root,clock:()=>time});
+  await view.refresh(true);
+  assert.equal(nodes.get('#heartbeat-status').textContent,'Heartbeat · Messages paused');
+  assert.equal(delay,15000,'Negative evidence must have a display deadline too');
+  time+=delay;
+  timer();
+  assert.equal(nodes.get('#heartbeat-status').textContent,'Heartbeat · Status unavailable');
+}
+checkMountedExpiry().catch(error=>{console.error(error);process.exitCode=1;});

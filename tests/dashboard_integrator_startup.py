@@ -119,6 +119,47 @@ class IntegratingLedger(unittest.TestCase):
         self.assertEqual(self.reads,['input list 0 before','input status '+self.ident],
             'Raw read-only readers must not invoke media-retiring status/list conveniences')
 
+    def test_concurrent_result_revision_restarts_the_read_without_mixing_fragments(self):
+        original=self.p.presentation_part
+        old,text='b'*64,'Stale prefix'
+        refreshed=copy.deepcopy(self.output_page)
+        refreshed['items'][0]['revision']='c'*64
+        pages=iter((self.output_page,refreshed))
+        self.p.presentation_list=lambda *args:next(pages)
+        calls=[]
+        def part(source,revision,offset):
+            calls.append((revision,offset))
+            if revision==old and offset:
+                raise ProviderUnavailable('Receiving operation was not confirmed')
+            value=original(source,revision,offset)
+            return {**value,'text':text,'next_offset':len(text)} if revision==old else value
+        self.p.presentation_part=part
+        result=integrating_sources(self.p,self.frozen)
+        self.assertEqual(calls,[(old,0),(old,len(text)),('c'*64,0)])
+        self.assertEqual(result['sources'][-1]['revision'],'c'*64)
+        self.assertNotIn(text,result['sources'][-1]['text'])
+        self.assertEqual(result['sources'][0]['text'],self.status['text'])
+
+    def test_failed_part_requires_visible_revision_change_on_the_same_owner(self):
+        for changed in ('unchanged','foreign','missing'):
+            with self.subTest(changed=changed):
+                refreshed=copy.deepcopy(self.output_page)
+                if changed=='foreign':
+                    refreshed['binding']='d'*64
+                    refreshed['items'][0]['revision']='c'*64
+                if changed=='missing':
+                    refreshed['items']=[]
+                pages=iter((self.output_page,refreshed))
+                calls=[]
+                def failed(*args):
+                    calls.append(args)
+                    raise ProviderUnavailable('Receiving operation was not confirmed')
+                self.p.presentation_list=lambda *args:next(pages)
+                self.p.presentation_part=failed
+                with self.assertRaises(ProviderUnavailable):
+                    integrating_sources(self.p,self.frozen)
+                self.assertEqual(len(calls),1)
+
     def test_changed_owner_or_source_refuses(self):
         self.input_page['entry_binding'][0]=200
         with self.assertRaisesRegex(ValueError,'owner changed'):integrating_sources(self.p,self.frozen)

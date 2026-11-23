@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from threading import Event
 import unittest
 from unittest.mock import patch
 import uuid
@@ -73,6 +74,51 @@ class Renewal(unittest.TestCase):
         f=self.f
         return return_native_part(f.visits,self.current,100,f.owner,f.delegation,
             f.source,f.revision,offset,f.provider,f.channel,source_visit=self.origin)
+
+    def test_transient_source_read_returns_the_exact_answer_once(self):
+        f = self.f
+        value = f.visits.read(self.current, 100, f.owner)
+        value['delegations'][f.delegation]['native_pipeline'] = {'state': 'admitted'}
+        f.visits._write(value)
+        f.provider.conversation_input_trace = lambda root: {
+            'id': root, 'entry_binding': f.owner['entry_binding'], 'routes': []}
+        f.provider.presentation_list = lambda *_: {
+            'binding': f.owner['binding'], 'items': [{**f.source_fields, 'id': f.source,
+                'revision': f.revision}], 'cursor': {'native': 77, 'delivery': 0}, 'more': False}
+        read = f.provider.presentation_part
+        with patch.object(f.provider, 'presentation_part', side_effect=TimeoutError) as unavailable:
+            with self.assertRaises(NativeReturnNeedsReview):
+                return_next_native_part(f.visits, self.current, 100, f.owner, 0,
+                    f.provider, f.channel, prior_visit_context=False)
+        self.assertEqual(unavailable.call_count, 2)
+        self.assertEqual(f.updates, [])
+        with patch.object(f.provider, 'presentation_part', side_effect=[
+                TimeoutError(), read(f.source, f.revision, 0)]) as part:
+            result = return_next_native_part(f.visits, self.current, 100, f.owner, 0,
+                f.provider, f.channel, prior_visit_context=False)
+        self.assertEqual([call.args for call in part.call_args_list], [(f.source, f.revision, 0)] * 2)
+        self.assertEqual(result['state'], 'sent')
+        self.ack()
+        self.assertIsNone(return_next_native_part(f.visits, self.current, 100, f.owner, 1,
+            f.provider, f.channel, prior_visit_context=False))
+        self.assertEqual(len(f.updates), 1)
+        self.assertEqual(len(f.writes), 1)
+
+    def test_stop_during_interrupted_source_read_prevents_retry_and_append(self):
+        f = self.f
+        stopped = Event()
+
+        def read(*_):
+            stopped.set()
+            raise ConnectionResetError()
+
+        with patch.object(f.provider, 'presentation_part', side_effect=read) as part:
+            with self.assertRaisesRegex(ValueError, 'Voice ended'):
+                return_native_part(f.visits, self.current, 100, f.owner, f.delegation,
+                    f.source, f.revision, 0, f.provider, f.channel, stopped=stopped)
+        part.assert_called_once_with(f.source, f.revision, 0)
+        self.assertEqual(f.updates, [])
+        self.assertEqual(len(f.writes), 1)
 
     def ack(self):
         f=self.f;command=f.updates[-1]

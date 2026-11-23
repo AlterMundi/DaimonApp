@@ -517,14 +517,144 @@ print(json.dumps({'text':'Keep this exact protected requirement.','final':True})
         if client:client.close()
         j.close()
 
+def avatar_interrupt(binary):
+    class Interrupts(Requests):
+        def __init__(self):
+            self.interrupts=[]
+            super().__init__(str(Path(binary).resolve()))
+
+        def handle_extra_rpc(self,message,send):
+            if message.get('method')=='turn/interrupt':
+                params=message['params']
+                self.interrupts.append(params)
+                send({'id':message['id'],'result':{}})
+                self.broadcast(params['threadId'],'turn/completed',{
+                    'turn':{'id':params['turnId'],'status':'interrupted'}})
+                return True
+            return super().handle_extra_rpc(message,send)
+
+    j=Interrupts()
+    client=None
+    try:
+        transcriber=j.root/'prepared.py'
+        transcriber.write_text("""import hashlib,json,pathlib,sys,time
+root=pathlib.Path(sys.argv[1])
+path=pathlib.Path(sys.argv[-1])
+item=json.loads((root/'prepared.json').read_text())[hashlib.sha256(path.read_bytes()).hexdigest()]
+if item.get('wait'):
+    (root/'transcript-held').touch()
+    while not (root/'release-transcript').exists():time.sleep(.02)
+print(json.dumps({'text':item['text'],'final':True}))
+""")
+        command=json.dumps(['/usr/bin/python3',str(transcriber),str(j.root)])
+        j.config.write_text(j.config.read_text()+
+            f'\n[voice]\ntranscriber_label="synthetic/prepared"\ntimeout_seconds=15\n'
+            f'transcription_command={command}\n[voice.transcription_profiles.openai-live]\n'
+            f'transcriber_label="synthetic/prepared"\ntranscription_command={command}\n')
+        j.start();j.admit('Seed the entry only.',topic=1)
+        j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle()
+        j.wait_control_socket(j.socket)
+        config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),
+                'origin':'https://example.test','bot_id':123}
+        provider=Provider(config)
+        client=TestClient(create_app(config,provider,lambda raw,bot:int(raw)),base_url=config['origin'])
+        headers={'origin':config['origin']}
+        token=client.post('/api/session',json={'init_data':'100'},headers=headers).json()['session_token']
+        headers['authorization']='Bearer '+token
+        page=client.get('/api/interaction',headers=headers).json()
+        headers['x-dashboard-csrf']=page['csrf']
+        binding=page['binding']
+
+        start,_=j.submit(binding,'Existing long turn.')
+        def phase(ident):
+            return j.row('SELECT phase FROM conversation_inputs WHERE id=?',(ident,))[0][0]
+        j.wait(lambda:phase(start['id'])=='accepted')
+        active=(j.web_thread,j.web_turn)
+        phrases=[('  /interrupt respondé ahora',audio(515)),
+                 ('Comenté la palabra interrupt',audio(390)),
+                 ('barra interrupt es una cita en micrófono común',audio(620)),
+                 ('/interrupt captura demorada',audio(730))]
+        (j.root/'prepared.json').write_text(json.dumps({
+            hashlib.sha256(data).hexdigest():{'text':text,'wait':index==3}
+            for index,(text,data) in enumerate(phrases)}))
+        ordinary_path='/api/interaction/voice/openai-live'
+        interrupt_path=ordinary_path+'/interrupt'
+        def upload(path,data,ident):
+            return client.post(path,content=data,headers={**headers,'content-type':'audio/wav',
+                'x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':hashlib.sha256(data).hexdigest()})
+
+        mismatch=str(uuid.uuid4());mismatch_result=upload(interrupt_path,phrases[1][1],mismatch)
+        assert mismatch_result.status_code==200,mismatch_result.text
+        j.wait(lambda:phase(mismatch)=='retained_unsent')
+        assert client.get('/api/interaction/inputs/'+mismatch,headers=headers).status_code==200
+        assert (Path(str(j.root/'state.sqlite')+'.voice')/mismatch).read_bytes()==phrases[1][1]
+        assert j.interrupts==[] and len(j.packets)==1
+        ordinary=str(uuid.uuid4());ordinary_result=upload(ordinary_path,phrases[2][1],ordinary)
+        assert ordinary_result.status_code==200,ordinary_result.text
+        j.wait(lambda:phase(ordinary)=='accepted')
+        assert j.interrupts==[] and j.packets[-1][0]=='turn/steer'
+
+        explicit=str(uuid.uuid4());recording=phrases[0][1]
+        native_presentation=provider.presentation
+        def legacy(command):
+            value=native_presentation(command)
+            if command=='input voice capabilities':
+                value.pop('voice_avatar_interrupt',None)
+            return value
+        with patch.object(provider,'presentation',side_effect=legacy):
+            assert upload(interrupt_path,recording,explicit).status_code==503
+        assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(explicit,))==[(0,)]
+        assert not (Path(str(j.root/'state.sqlite')+'.voice')/explicit).exists()
+        assert j.interrupts==[]
+        response=upload(interrupt_path,recording,explicit)
+        assert response.status_code==200,response.text
+        j.wait(lambda:phase(explicit)=='accepted')
+        assert j.interrupts==[{'threadId':active[0],'turnId':active[1]}],j.interrupts
+        method,packet=j.packets[-1]
+        assert method=='turn/start' and packet['threadId']==active[0]
+        assert packet['clientUserMessageId']=='conversation:'+explicit
+        assert 'respondé ahora' in packet['input'][0]['text']
+        value=upload(interrupt_path,recording,explicit).json()
+        assert not value['new_input'] and value['phase']=='accepted'
+        assert value['voice']['audio_sha256']==hashlib.sha256(recording).hexdigest()
+        assert value['voice']['transcription']['capture_id']==explicit
+        assert value['voice']['avatar_interrupt'] is True
+        assert len(j.interrupts)==1 and len(j.packets)==3
+        assert j.row('SELECT count(*) FROM original_ingress_order WHERE event_id=?',(explicit,))==[(1,)]
+        j.finish(j.web_thread,j.web_turn);j.idle()
+
+        old,_=j.submit(binding,'Turn before a delayed transcript.')
+        j.wait(lambda:phase(old['id'])=='accepted')
+        late=str(uuid.uuid4())
+        assert upload(interrupt_path,phrases[3][1],late).status_code==200
+        j.wait(lambda:(j.root/'transcript-held').exists())
+        j.finish(j.web_thread,j.web_turn);j.idle()
+        successor,_=j.submit(binding,'A new turn while the transcript is held.')
+        j.wait(lambda:phase(successor['id'])=='accepted')
+        (j.root/'release-transcript').touch()
+        j.wait(lambda:phase(late)=='queued')
+        assert len(j.interrupts)==1,'A delayed command must not cancel a newer execution'
+        j.finish(j.web_thread,j.web_turn)
+        j.wait(lambda:phase(late)=='accepted')
+        assert j.packets[-1][1]['clientUserMessageId']=='conversation:'+late
+        assert len(j.interrupts)==1
+        j.finish(j.web_thread,j.web_turn);j.idle()
+        print('PASS prepared Avatar interruption, exact predecessor and delayed successor fence, unchanged ordinary steer, disagreement held and same-ID no replay; zero models')
+    finally:
+        if client:client.close()
+        j.close()
+
+
 if __name__=='__main__':
     if '--legacy-default-retention' in sys.argv[2:] or '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
     elif '--openai-profile' in sys.argv[2:]:qualify(sys.argv[1],profile=True)
     elif '--archive-hold' in sys.argv[2:]:archive_hold(sys.argv[1])
     elif '--archive-legacy' in sys.argv[2:]:archive_hold(sys.argv[1],legacy=True)
+    elif '--avatar-interrupt' in sys.argv[2:]:avatar_interrupt(sys.argv[1])
     else:
         qualify(sys.argv[1],profile=True)
         qualify(sys.argv[1],profile=True,default=True)
         foreground_capture(sys.argv[1])
+        avatar_interrupt(sys.argv[1])
         for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)
         archive_hold(sys.argv[1])
