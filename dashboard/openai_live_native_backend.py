@@ -8,6 +8,8 @@ import json
 import uuid
 
 from .codex_voice_history import history_lock
+from .openai_live import LiveUnavailable
+from scripts.speech_render import RenderError
 from .openai_live_originals import enroll_original
 from .openai_live_window import freeze_input_window
 from .openai_live_side_read import return_side_question, side_question
@@ -277,27 +279,49 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
     return None
 
 
-def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None,prior_visit_context=True):
-    """One owned foreground task alternates current work and historical origins.
+class NativeReturnNeedsReview(Exception):
+    """A single owned return is held. Unrelated returns may continue."""
+    def __init__(self, visit, delegation):
+        super().__init__('A voice result needs review')
+        self.source = (visit, delegation)
 
-    Discovery and native reads stay outside the browser-control loop. The
-    persisted flat cursor survives another voice replacement, not a model lease.
-    """
+
+def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None,
+                            prior_visit_context=True,held_returns=()):
+    """One owned foreground read per cycle, keeping failures local to their source."""
     if type(cycle) is not int or cycle<0:raise ValueError('Select a bounded return cycle')
     if stopped is not None and stopped.is_set():return None
-    if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
-        raise ProviderUnavailable('Native result owner changed')
+
+    def authorize():
+        if not provider.authorized(human) or provider.public_live_binding(owner['binding'])!=owner:
+            raise ProviderUnavailable('Native result owner changed')
+
+    authorize()
     value=history.read(ident,human,owner)
     ready=[key for key,work in value['delegations'].items()
-           if work.get('native_work',{}).get('state')=='observed']
+           if work.get('native_work',{}).get('state')=='observed' and (ident,key) not in held_returns]
     previous=None
     if prior_visit_context and (not ready or cycle%2):
         previous=history.native_return_origin(ident,human,owner)
+        if previous is not None and (previous['visit'],previous['delegation']) in held_returns:
+            previous=None
     if stopped is not None and stopped.is_set():return None
     if previous:
-        return return_one_native_part(history,ident,human,owner,previous['delegation'],provider,
-                                      sideband,stopped=stopped,source_visit=previous['visit'])
-    if ready:
-        return return_one_native_part(history,ident,human,owner,ready[(cycle//2 if prior_visit_context else cycle)%len(ready)],
-                                      provider,sideband,stopped=stopped)
-    return None
+        origin,delegation=previous['visit'],previous['delegation']
+    elif ready:
+        origin=ident
+        delegation=ready[(cycle//2 if prior_visit_context else cycle)%len(ready)]
+    else:
+        return None
+    try:
+        result=return_one_native_part(history,ident,human,owner,delegation,provider,
+                                      sideband,stopped=stopped,source_visit=origin)
+    except (OSError,ValueError,RenderError,ProviderUnavailable) as error:
+        if stopped is not None and stopped.is_set():return None
+        # A revoked owner still fails the entire reader. Only an exact
+        # source failure on an otherwise valid current owner can be isolated.
+        authorize()
+        raise NativeReturnNeedsReview(origin,delegation) from error
+    if result is not None and result.get('state')=='unconfirmed':
+        raise LiveUnavailable('native_result_append_unconfirmed')
+    return result

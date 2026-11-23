@@ -1598,3 +1598,9 @@ invokes no new native work or model turn. Normal unmarked utterances keep
 the existing native handoff. Hardware speech recognition of the spoken
 markers, automatic semantic route selection and prioritized interruption are
 separate acceptance work.
+
+A failed source-specific return is held for the rest of the current voice visit.
+The return reader continues checking other owned delegations while the same
+actor and entry binding remain verified. A changed binding, unreadable visit,
+or uncertain provider append still stops the return lane. Do not retry a held
+append or treat a successful injection as playback.
