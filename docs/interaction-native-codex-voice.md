@@ -1578,6 +1578,31 @@ unconfirmed send is never retried. Source seals, native submission, the actual
 answer, and hearing remain separate. Quiet progress does not expedite a
 native turn that is already queued.
 
+A native Avatar owner can select `project_voice_transcripts = false` to keep
+ambient provider deltas in the original voice journal. Conversation can still
+read those events. Deliberately admitted native originals and their exact
+returns continue through the existing Conversation writer. The projection
+selection is captured per visit; it cannot suppress a prior in-flight cursor
+or reclassify a completed receipt. The default still projects ambient speech.
+This option does not implement or select side-query classification,
+ephemeral inference, or prioritized interruption.
+
+With both startup controls for prior visits and ambient projection disabled,
+an owner can select `side_questions = true`. An exact leading `/btw` or
+`/side` marker (or its explicitly spoken “barra” or “slash” form) selects one
+bounded read of the same Integration conversation. The result is a short
+source excerpt, not an independently reasoned native answer. It is offered to
+the current GPT-Live delegation with a recorded exact command identity; an
+unknown append is never repeated. A missing excerpt stays missing. This
+invokes no new native work or model turn. When the startup snapshot has no
+match and older history is available, the reader checks up to six preceding
+presentation pages and three exact candidate revisions. A source has to match
+the current conversation binding and pass its correction checks.
+Normal unmarked utterances keep
+the existing native handoff. Hardware speech recognition of the spoken
+markers, automatic semantic route selection and prioritized interruption are
+separate acceptance work.
+
 A failed source-specific return is held for the rest of the current voice visit.
 The return reader continues checking other owned delegations while the same
 actor and entry binding remain verified. A changed binding, unreadable visit,

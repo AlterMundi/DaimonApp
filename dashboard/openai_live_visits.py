@@ -243,11 +243,13 @@ class LiveCreations:
                     'original_retained':any(r['ordinal']==ordinal for r in value['recordings'])}
                 self._write(value)
 
-    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False, conversation_delivery=None):
+    def prepare(self, ident, human, frozen, seconds=600, *, resume_spec=None, backend_mode=None, replacement=None, voice_choice=None, voice_continuation=None, renewal=None, select_current_voice=False, project_voice_transcripts=True, conversation_delivery=None):
         """Admit one finite microphone visit before permission or billable POST."""
         owner = self._owner(human, frozen)
         if backend_mode is not None and backend_mode not in ('responses','native'):
             raise ValueError('Select the admitted public voice backend')
+        if type(project_voice_transcripts) is not bool or (not project_voice_transcripts and backend_mode!='native'):
+            raise ValueError('Select the native voice transcript projection policy')
         if resume_spec is not None:
             creation_request('v=0 validation only',resume_spec)
             if resume_spec.get('store') is not True:raise ValueError('Stored continuation requires explicit project storage selection')
@@ -299,6 +301,7 @@ class LiveCreations:
                 'delegations':{}, 'max_input_pcm_bytes':seconds*32000,
                 'admission':{'epoch':self.epoch, 'expires':time.monotonic()+seconds, 'ended':False}}
             if backend_mode is not None:value['backend_mode']=backend_mode
+            if not project_voice_transcripts:value['project_voice_transcripts']=False
             if backend_mode=='native':
                 previous=[v for v,_ in records if v['owner']==owner and self.return_origin_eligible(v)
                           and v.get('backend_mode')=='native']
@@ -535,15 +538,15 @@ class LiveCreations:
             if event['type'] in ('session.thinking.appended','session.commentary.appended'):
                 from .openai_live_native_results import observe_append
                 changed = observe_append(value, event)
-                if event['type'] == 'session.thinking.appended':
-                    for work in value['delegations'].values():
-                        quiet = work.get('quiet_progress')
-                        if (quiet is not None and quiet['state'] == 'intent'
-                                and quiet['event_id'] == event.get('client_event_id')):
-                            quiet.update(state='context_injected', ack_source=event['event_id'])
-                            quiet.pop('ack_reserve', None)
-                            changed = True
-                            break
+                field = 'quiet_progress' if event['type'] == 'session.thinking.appended' else 'side_question'
+                for work in value['delegations'].values():
+                    receipt = work.get(field)
+                    if (receipt is not None and receipt['state'] == 'intent'
+                            and receipt['event_id'] == event.get('client_event_id')):
+                        receipt.update(state='context_injected', ack_source=event['event_id'])
+                        receipt.pop('ack_reserve', None)
+                        changed = True
+                        break
             if event['type']=='session.delegation.created':
                 delegation=event.get('delegation',{});key=delegation.get('id')
                 if (not _text(key,1024) or key in value['delegations'] and

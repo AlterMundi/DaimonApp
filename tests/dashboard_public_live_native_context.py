@@ -23,7 +23,7 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
     database=fixtures.Context.database
     owner=fixtures.Context.owner
 
-    def prepare(self):
+    def prepare(self, *, project_voice_transcripts=True):
         self.provider.public_live_integrator_context=lambda frozen,budget: {
             'kind':'current_integrator_conversation','thread':frozen['native_thread'],
             'messages':[{'role':'user','text':'Latest integrator correction: Saturday.'}],
@@ -31,7 +31,8 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         self.frozen={'binding':self.binding,'native_thread':'native',
             'entry_binding':[100,{'chat_id':100,'thread_id':1},1,'native']}
         self.visits=LiveCreations(Path(self.tmp.name)/'visits')
-        self.visits.prepare(self.dialogue,100,self.frozen,backend_mode='native')
+        self.visits.prepare(self.dialogue,100,self.frozen,backend_mode='native',
+                            project_voice_transcripts=project_voice_transcripts)
         client=type('Client',(),{'create':lambda s,*a:LiveCall('live:synthetic','v=0 answer')})()
         self.visits.create(self.dialogue,100,self.frozen,'v=0 offer',
             {'model':'gpt-live-1','instructions':'Synthetic','delegation':{'type':'client'}},client)
@@ -62,6 +63,21 @@ class PublicContext(unittest.IsolatedAsyncioTestCase):
         await self.producer._sync(record);self.assertEqual(len(self.provider.fresh),1)
         self.assertEqual(self.visits.read(self.dialogue,100,self.frozen)['native_context_cursor'],before)
         await self.producer.close()
+
+    async def test_visit_without_ambient_projection_keeps_raw_transcript_and_closes_native_context(self):
+        self.prepare(project_voice_transcripts=False)
+        input_event=self.event('A side question')
+        output_event=self.event('A side answer',speaker='output')
+        await self.producer.open()
+        await self.producer._sync(self.producer.record)
+        self.assertEqual(self.provider.fresh,[])
+        await self.producer.close()
+        self.assertEqual(self.producer.status,'closed')
+        retained=self.visits.read(self.dialogue,100,self.frozen)
+        self.assertIs(retained['project_voice_transcripts'],False)
+        self.assertNotIn('native_context_cursor',retained)
+        events=self.visits.source_page(self.dialogue,100,self.frozen['binding'])['items']
+        self.assertEqual([row['event'] for row in events],[input_event,output_event])
 
     async def test_valid_large_provider_delta_reaches_native_context_without_closing_voice(self):
         self.prepare()

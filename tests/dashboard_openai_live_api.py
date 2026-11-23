@@ -789,10 +789,16 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False):
+    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False,
+                             project_voice_transcripts=True,side_lookup=False):
         app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
+        if side_lookup:
+            owner.public_live_integrator_context=lambda *args:{
+                'thread':frozen['native_thread'],'earlier_history_available':side_lookup=='older',
+                'messages':[] if side_lookup=='older' else [{'item':'selected-source','revision':'e'*64,
+                    'role':'assistant','text':'La palabra clave es jacarandá.'}]}
         def trace(root):
             if slow_result:
                 entered.set();self.assertTrue(release.wait(3),'Native result read blocked voice Close')
@@ -812,8 +818,12 @@ class Mounted(unittest.TestCase):
         def delegate(body):
             calls['work']+=1;row=saved[body['id']]
             row['text']=self.read()['delegations']['native-task']['live_window']['text']
-            self.assertIn('native semantic producer',body['formulation'])
-            self.assertIn(self.ident,body['formulation'])
+            if project_voice_transcripts:
+                self.assertIn('native semantic producer',body['formulation'])
+                self.assertIn(self.ident,body['formulation'])
+            else:
+                self.assertNotIn('native semantic producer',body['formulation'])
+                self.assertIs(self.read()['project_voice_transcripts'],False)
             self.assertIn(self.ident,owner.journal.producers,'Context must be retained before native work')
             if unconfirmed_work:raise ProviderUnavailable('Synthetic lost native acknowledgment')
             row.update(phase='accepted',native_acceptance='observed',local_turn=42,foreground_delegation={
@@ -832,6 +842,26 @@ class Mounted(unittest.TestCase):
             'next_offset':None,'text':'Soy CompAII. Este resultado viene del integrador nativo.',
             'entry_binding':frozen['entry_binding'][:3]+[owner.binding],
             'kind':'integrator_answer','local_turn':42,'native_binding_current':True}
+        older_reads=[]
+        if side_lookup=='older':
+            def older(delivery,native,direction):
+                self.assertEqual(direction,'before')
+                older_reads.append((delivery,native))
+                if not native:
+                    return {'binding':owner.binding,'items':[{'id':'native:5','revision':'b'*64,
+                        'kind':'integrator_answer','preview':'La palabra clave es otra.',
+                        'current':False,'correction_pending':True}],'more':True,'cursor':{'delivery':0,'native':5}}
+                return {'binding':owner.binding,'items':[
+                    {'id':'native:4','revision':'d'*64,'kind':'integrator_answer','preview':'La palabra clave'},
+                    {'id':'native:3','revision':'e'*64,'kind':'integrator_answer','preview':'La palabra clave'}],
+                    'more':False,'cursor':{'delivery':0,'native':3}}
+            def part(id,revision,offset):
+                self.assertNotEqual(id,'native:5')
+                return {'id':id,'revision':revision,'offset':offset,'kind':'integrator_answer',
+                    'entry_binding':frozen['entry_binding'][:3]+[owner.binding if id=='native:3' else 'b'*64],
+                    'native_binding_current':True,'text':'La palabra clave es jacarandá.'}
+            owner.presentation_list=older
+            owner.presentation_part=part
         class Recognizer:
             model='gpt-transcribe'
             def transcribe(self,data):calls['asr']+=1;return '¿Quién sos y qué recordás?'
@@ -843,6 +873,8 @@ class Mounted(unittest.TestCase):
                     'client_event_id':event['event_id']})
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',
+            'project_voice_transcripts':project_voice_transcripts,
+            **({'side_questions':True,'prior_visit_context':False} if side_lookup else {}),
             **({'continuous_renewal':True} if automatic else {})}}
         install(app,config,owner,authorize,['https://example.test'])
         with patch.object(Client,'send',acknowledge):
@@ -851,7 +883,7 @@ class Mounted(unittest.TestCase):
                     native=self.start(socket);self.assertEqual(native.spec['delegation']['type'],'client')
                     self.assertNotIn('responses',native.spec['delegation'])
                     native.events.put({'type':'session.input_transcript.delta','event_id':'context-source',
-                        'delta':'Correction: Friday, not Thursday.','start_ms':0,'end_ms':50})
+                        'delta':'/btw cuál era la palabra clave' if side_lookup else 'Correction: Friday, not Thursday.','start_ms':0,'end_ms':50})
                     self.assertEqual(socket.receive_json()['event']['type'],'session.input_transcript.delta')
                     audio=wav_bytes(b'\1\0'*800)
                     self.assertEqual(client.post('/api/interaction/voice/gpt-live/visits/'+self.ident+'/recordings/0',
@@ -876,6 +908,22 @@ class Mounted(unittest.TestCase):
                     socket.send_json({'type':'source_sealed','request':request['request'],
                         'through_ordinal':1,'capture_bytes':len(audio)-44})
                     self.assertEqual(socket.receive_json()['type'],'source_seal_recorded')
+                    if side_lookup:
+                        self.assertEqual(socket.receive_json()['event']['type'],'session.commentary.appended')
+                        command=next(row for row in native.sent if row['type']=='session.commentary.append')
+                        self.assertIn('La palabra clave es jacarandá.',command['content'])
+                        self.assertEqual(command['delegation_id'],'native-task')
+                        retained=self.read()
+                        receipt=retained['delegations']['native-task']['side_question']
+                        self.assertEqual(receipt['state'],'context_injected')
+                        source='native:3' if side_lookup=='older' else 'selected-source'
+                        self.assertEqual(receipt['sources'],[{'source':source,'revision':'e'*64}])
+                        if side_lookup=='older':self.assertEqual(older_reads,[(0,0),(0,5)])
+                        self.assertNotIn('native_originals',retained)
+                        self.assertNotIn('native_work',retained['delegations']['native-task'])
+                        self.assertEqual(calls,{'asr':0,'work':0})
+                        self.close(socket)
+                        return
                     if unconfirmed_work:
                         notice=socket.receive_json()
                         self.assertEqual(notice,{'type':'notice','code':'native_handoff_unconfirmed'})
@@ -958,6 +1006,15 @@ class Mounted(unittest.TestCase):
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         self._native_backend_flow()
+
+    def test_explicit_side_question_uses_own_history_without_native_work(self):
+        self._native_backend_flow(project_voice_transcripts=False,side_lookup=True)
+
+    def test_side_question_reads_older_current_source_and_refuses_changed_owner(self):
+        self._native_backend_flow(project_voice_transcripts=False,side_lookup='older')
+
+    def test_exact_native_work_can_return_without_projecting_ambient_transcripts(self):
+        self._native_backend_flow(project_voice_transcripts=False)
 
     def test_uncertain_native_handoff_keeps_current_speech_until_explicit_stop_without_replay(self):
         self._native_backend_flow(unconfirmed_work=True)
