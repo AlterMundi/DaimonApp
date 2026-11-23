@@ -18,6 +18,7 @@ import urllib.request
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts.interaction_access_probe import BINDING_FAILURES, NoRedirect, UNAUTHENTICATED, read_response
+from dashboard.private_state import private_directory, write_json
 from dashboard.voice_admission import HEADER, COVERAGE_HEADER, COVERAGE, MAINTENANCE_FD, maintenance_guard
 
 
@@ -74,6 +75,23 @@ def access_state(opener, access_url):
     return None
 
 
+def claim_observer_repair(path, receipt):
+    """Retain the exact possible write before starting the selected operator."""
+    if not path.parent.is_dir():
+        raise ValueError('The selected private repair directory must already exist')
+    parent = private_directory(path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(receipt, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path,required=True)
@@ -83,6 +101,7 @@ def main(argv=None):
     parser.add_argument('--require-speech',action='store_true',help='Require the serving reader to fence Conversation synthesis too')
     parser.add_argument('--observer-preimage',type=Path)
     parser.add_argument('--receiver-sha256',help='Exact planned native configuration digest')
+    parser.add_argument('--observer-receipt',type=Path,help='One owner-private receipt per prepared repair')
     parser.add_argument('command',nargs=argparse.REMAINDER)
     args=parser.parse_args(argv)
     command=args.command[1:] if args.command[:1]==['--'] else args.command
@@ -92,6 +111,8 @@ def main(argv=None):
             or url.username or url.password or url.query or url.fragment):
         parser.error('Select the current private config, local health route and one bounded operator')
     repair=args.observer_preimage is not None
+    if args.observer_receipt is not None and (not repair or not args.observer_receipt.is_absolute()):
+        parser.error('Select an absolute receipt path for the exact observer repair')
     if (repair != (args.receiver_sha256 is not None) or repair and (
             not re.fullmatch(r'[a-f0-9]{64}',args.receiver_sha256)
             or url.hostname not in ('127.0.0.1','::1') or url.path!='/health' or not args.require_speech)):
@@ -129,21 +150,40 @@ def main(argv=None):
             if not receiver.is_absolute():
                 raise ValueError('Select the current receiver configuration')
             current=private_config(receiver,args.owner_uid)
-            observer_transition(private_config(args.observer_preimage,args.owner_uid),current,args.receiver_sha256)
+            preimage=private_config(args.observer_preimage,args.owner_uid)
+            observer_transition(preimage,current,args.receiver_sha256)
+            receipt_path=args.observer_receipt
+            if receipt_path is not None and (receipt_path.exists() or receipt_path.is_symlink()):
+                print('Observer repair has a retained attempt. Inspect that receipt.',file=sys.stderr)
+                return 80
             opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
             access_url=urllib.parse.urlunsplit((url.scheme,url.netloc,'/api/interaction/access','',''))
             if access_state(opener,access_url) not in BINDING_FAILURES.values():
                 raise ValueError('No matching Conversation binding fault is present')
-            if private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw:
+            if (private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw
+                    or private_config(args.observer_preimage,args.owner_uid)!=preimage):
                 raise ValueError('Selected receiver changed before maintenance')
+            if receipt_path is not None:
+                receipt=dict(schema='daimonapp.observer-repair-attempt/v1',state='attempt_claimed',
+                    receiver_sha256=args.receiver_sha256,preimage_sha256=hashlib.sha256(preimage).hexdigest(),
+                    config_sha256=hashlib.sha256(raw).hexdigest())
+                try:
+                    claim_observer_repair(receipt_path,receipt)
+                except FileExistsError:
+                    print('Observer repair has a retained attempt. Inspect that receipt.',file=sys.stderr)
+                    return 80
             operator_started=True
             environment={**os.environ,MAINTENANCE_FD:str(guard.fd)}
             outcome=subprocess.run(bounded,pass_fds=(guard.fd,),env=environment)
             if outcome.returncode:
+                if receipt_path is not None:
+                    write_json(receipt_path,{**receipt,'state':'recovery_unconfirmed','operator_exit':outcome.returncode})
                 return outcome.returncode
             if (private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw
                     or access_state(opener,access_url)!='anonymous_refused'):
                 raise ValueError('Conversation recovery is unconfirmed')
+            if receipt_path is not None:
+                write_json(receipt_path,{**receipt,'state':'recovery_verified','access_status':401})
             print('Conversation binding recovery verified by the anonymous access check.')
             return 0
     except BlockingIOError:
