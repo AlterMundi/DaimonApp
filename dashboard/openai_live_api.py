@@ -224,6 +224,7 @@ def install(app, config, provider, authorize, origins):
             if (owner_cleanup_finished and lease is not None and not context_operations and not context_syncs
                     and all(task is None or task.done() for task in (creating,preparing,returning,syncing))):
                 lease.release()
+        pre_offer_closed=False
         result_index=0;result_poll=0
         held_returns=set()
         preparation_stopped=threading.Event()
@@ -347,6 +348,16 @@ def install(app, config, provider, authorize, origins):
                     'mode':'public_live_native_comparison' if native_backend else 'public_live_responses_comparison',
                     'source_coverage':'sideband_before_media_answer'})
                 offer=await asyncio.wait_for(message(66000),min(seconds,300))
+                if offer.get('type')=='close' and set(offer)<={'type','reason'}:
+                    reason=offer.get('reason','explicit_stop')
+                    if not isinstance(reason,str) or reason not in history.close_reasons-{'transport_renewal'}:
+                        raise ValueError('Select a known voice close diagnostic')
+                    await recheck();await current_owner()
+                    await asyncio.to_thread(history.end_capture,visit,human,binding)
+                    with suppress(OSError,ValueError,RenderError):
+                        await asyncio.to_thread(history.record_close_reason,visit,human,owner,reason)
+                    pre_offer_closed=True
+                    return
                 if set(offer)!={'type','sdp'} or offer['type']!='offer':raise ValueError('Select one WebRTC offer')
                 await recheck();await current_owner()
                 startup_stage='creation'
@@ -611,6 +622,12 @@ def install(app, config, provider, authorize, origins):
                             renewal=await asyncio.to_thread(history.ready_for_renewal,visit,human,owner,
                                 allow_expired=True)
                             await send({'type':'successor_ready','id':visit,'renewal':renewal})
+                    if pre_offer_closed:
+                        # There was no provider creation. Acknowledge only after
+                        # releasing the old app lease so a fresh entry can proceed.
+                        owner_cleanup_finished=True
+                        release_owner_if_settled()
+                        with suppress(Exception):await send({'type':'startup_ended','id':visit})
                     with suppress(Exception):await asyncio.wait_for(socket.close(),1)
                 finally:
                     if lease is not None:
