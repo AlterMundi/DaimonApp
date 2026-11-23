@@ -10,6 +10,7 @@ import hashlib
 import http.server
 import html
 import json
+import os
 import pathlib
 import signal
 import socketserver
@@ -245,7 +246,20 @@ import_desktop_history=false
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             assert not self.errors, self.errors
-            assert self.process is None or self.process.poll() is None, 'bridge exited unexpectedly'
+            exit_code = self.process.poll() if self.process is not None else None
+            if exit_code is not None:
+                # A fixture child may still hold the pipe open after its parent exits.
+                # Preserve available startup diagnostics without waiting for that child.
+                fd = self.process.stderr.fileno()
+                os.set_blocking(fd, False)
+                try:
+                    detail = os.read(fd, 4096).decode(errors='replace')
+                except BlockingIOError:
+                    detail = ''
+                finally:
+                    os.set_blocking(fd, True)
+                detail = detail.replace('synthetic-question-token', '[redacted]').strip()
+                raise AssertionError(f'{self.mode}: bridge exited ({exit_code}); stderr: {detail or "(empty)"}')
             if condition():
                 return
             time.sleep(.02)
