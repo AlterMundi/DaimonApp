@@ -506,6 +506,9 @@ not recipient delivery; a signed receiving copy is not comprehension, task
 completion or human hearing. No-reply dispositions author no outgoing speech.
 
 Conversation labels peer speech explicitly and exposes source/receipt details.
+An outgoing item is partly delivered when a current receipt confirms some
+recipients and the complete delivery has not been proved. A sender's own copy
+does not count towards recipient delivery.
 The same signed event shown through ordinary results, own response receipts or
 inbox copies is represented once when those views meet. These raw message cards
 do not automatically speak as the local daimon or trigger avatar reply animation.
