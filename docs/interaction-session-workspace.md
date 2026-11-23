@@ -56,7 +56,9 @@ line highlights its unpin control while an explicit pin is active.
 
 ## Status and permissions
 
-The composer message notice can be dismissed locally. A refresh of the same
+A saved message waiting in the delivery queue shows its status on the message
+itself. An unresolved send that needs attention can still show a composer
+notice. The composer message notice can be dismissed locally. A refresh of the same
 message and status keeps it closed. A new message or a changed status can show
 a new notice. The message's own status check remains available in the history.
 Dismissing the notice does not send or withdraw the message.
