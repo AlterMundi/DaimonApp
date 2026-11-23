@@ -18,6 +18,7 @@ HEADER = 'X-DaimonApp-Voice-Admission'
 COVERAGE_HEADER = 'X-DaimonApp-Voice-Admission-Coverage'
 COVERAGE = 'live,preview,speech'
 SCOPE_KEY = 'daimon.voice_admission'
+MAINTENANCE_FD = 'DAIMONAPP_WEB_MAINTENANCE_FD'
 
 
 def _open(root, uid, create=False):
@@ -104,6 +105,29 @@ def maintenance_guard(root, *, owner_uid=None):
         yield Maintenance(fd,header)
     finally:
         os.close(fd)
+
+
+def inherited_maintenance(root, *, owner_uid=None):
+    """Verify the exact exclusive fence passed by the owning maintenance guard."""
+    value=os.environ.get(MAINTENANCE_FD,'')
+    if not value.isascii() or not value.isdecimal() or len(value)>8 or int(value)<3:
+        raise ValueError('The repair operator needs its inherited voice maintenance fence')
+    fd=int(value)
+    checked,header=_open(root,os.getuid() if owner_uid is None else owner_uid)
+    try:
+        if not os.path.samestat(os.fstat(fd),os.fstat(checked)):
+            raise ValueError('The inherited voice maintenance fence belongs to another receiver')
+        try:
+            fcntl.flock(checked,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        except BlockingIOError:
+            # A different open description of the same file cannot take over
+            # this lock. The original description can confirm it in place.
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        else:
+            raise ValueError('The inherited voice maintenance fence is not held exclusively')
+    finally:
+        os.close(checked)
+    return Maintenance(fd,header)
 
 
 class VoiceAdmissionError(ValueError):

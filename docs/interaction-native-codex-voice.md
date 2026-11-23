@@ -1589,6 +1589,15 @@ releases its app lease. The visit records the bounded browser reason and
 confirms startup ended without a provider creation or final usage claim.
 The browser keeps the local reason it already displayed.
 
+When matching the current Conversation reader, each manual native Avatar
+entry or reconnect reads the current OpenAI reading delivery instructions.
+The selected delivery stays with that logical visit across automatic transport
+renewal. Existing visits without a delivery snapshot use the process's
+validated startup delivery. Saved Studio revisions still use their exact
+retained voice and tuning. In the default Cedar profile, Conversation reads
+with Realtime synthesis and Avatar speaks with GPT-Live. The shared voice
+name and instructions do not guarantee identical rendered audio.
+
 An explicit leading `/interrupt` (or spoken “barra interrupt” / “slash
 interrupt”) followed by a request uses the native owner's existing exact
 execution cancellation token. The listener first validates the acoustic

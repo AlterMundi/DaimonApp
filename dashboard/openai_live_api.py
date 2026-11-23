@@ -85,14 +85,14 @@ def install(app, config, provider, authorize, origins):
         native_instructions=private_bytes(native_file,8192).decode()
     match_voice=selected.get('match_conversation_voice',False)
     if type(match_voice) is not bool:raise ValueError('Select explicit shared Conversation voice delivery')
-    if match_voice:
+    def conversation_delivery():
         reading=route(Path(config['speech_openai']['binding']))
         output_voice=selected.get('session_options',{}).get('audio',{}).get('output',{}).get('voice')
         if reading['provider']!='openai-realtime' or reading['voice']!=output_voice:
             raise ValueError('Match Avatar to the selected Conversation default voice')
-        delivery=reading.get('instruction','').strip()
-        if delivery:
-            native_instructions+='\nShared Conversation pronunciation and delivery preferences:\n'+delivery
+        return reading.get('instruction','').strip()
+
+    initial_delivery=conversation_delivery() if match_voice else None
     backend=None if native_backend else private_bytes(selected['backend_instructions_file'],8192).decode()
     context=selected.get('conversation_context',False)
     if type(context) is not bool:raise ValueError('Select owner conversation-context access')
@@ -325,9 +325,17 @@ def install(app, config, provider, authorize, origins):
                 admission=await asyncio.to_thread(history.prepare,visit,human,owner,seconds,
                     resume_spec=spec if resume=='stored_fork' else None,
                     backend_mode='native' if native_backend else 'responses',replacement=meta.get('replacement'),
-                    voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),renewal=meta.get('renewal'))
+                    voice_choice=voice_choice,select_current_voice=select_current_voice,voice_continuation=meta.get('voice_continuation'),
+                    renewal=meta.get('renewal'),
+                    conversation_delivery=await asyncio.to_thread(conversation_delivery) if select_current_voice else None)
                 admitted=True
                 startup_stage='configuration'
+                delivery=admission.pop('conversation_delivery',initial_delivery if match_voice and native_backend else None)
+                if delivery:
+                    instructions=spec['instructions']+'\nShared Conversation pronunciation and delivery preferences:\n'+delivery
+                    if len(instructions.encode())>8192:
+                        raise ValueError('Voice delivery exceeds the existing instruction bound')
+                    spec={**spec,'instructions':instructions}
                 if 'voice_choice' in admission:spec=apply_choice(spec,admission['voice_choice'],profiles)
                 if native_backend:
                     startup_stage='native_context'
