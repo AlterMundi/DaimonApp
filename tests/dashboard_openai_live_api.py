@@ -110,6 +110,35 @@ class Mounted(unittest.TestCase):
         Client.instances=[];Client.failure=None
         self.ident=str(uuid.uuid4());self.meta={'id':self.ident,'binding':'a'*64,'csrf':'fresh'}
         self.headers={'origin':'https://example.test','x-dashboard-csrf':'fresh','x-voice-binding':'a'*64}
+    def test_full_original_store_refuses_startup_before_microphone_or_provider(self):
+        store = Path(self.owner.receiver['db_path'] + '.voice')
+        store.mkdir(mode=0o700)
+        retained = {}
+        for number in range(128):
+            original = store / str(uuid.uuid4())
+            retained[original] = number.to_bytes(2, 'little')
+            original.write_bytes(retained[original])
+            original.chmod(0o600)
+
+        with self.socket() as socket:
+            socket.send_json(self.meta)
+            refusal = socket.receive_json()
+            self.assertEqual(refusal['type'], 'unconfirmed')
+            self.assertIn('no room to save a new recording', refusal['message'])
+        self.assertFalse((self.state / 'public-live-visits' / (self.ident + '.json')).exists())
+        self.assertEqual(Client.instances, [])
+        self.assertEqual({path: path.read_bytes() for path in store.iterdir()}, retained)
+
+        original.unlink()  # Simulate the archive owner releasing one test copy.
+        self.ident = str(uuid.uuid4())
+        self.meta['id'] = self.ident
+        with self.socket() as socket:
+            socket.send_json(self.meta)
+            self.prepared(socket)
+            self.assertEqual(Client.instances[-1].creations, 0)
+            socket.send_json({'type': 'close'})
+            self.assertEqual(socket.receive_json()['type'], 'startup_ended')
+
     def test_original_capacity_refusal_is_observed_before_body_read(self):
         history=LiveCreations(self.state/'public-live-visits')
         history.prepare(self.ident,100,self.owner.public_live_binding(self.owner.binding),300)
