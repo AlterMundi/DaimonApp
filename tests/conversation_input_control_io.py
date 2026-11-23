@@ -71,6 +71,68 @@ class Inputs(Goals):
 
 
 
+def reconsider_queued_steer(binary):
+    class RecoveringSteer(Inputs):
+        refused = None
+        mismatched = None
+
+        def handle_extra_rpc(self, message, send):
+            params = message.get('params', {})
+            if message.get('method') == 'turn/steer' and params.get('clientUserMessageId') == self.refused:
+                self.refused = None
+                self.packets.append(('turn/steer', params))
+                send({'id': message['id'], 'error': {'code': -32602, 'message': 'Synthetic definitive refusal'}})
+                return True
+            if message.get('method') == 'turn/steer' and params.get('clientUserMessageId') == self.mismatched:
+                self.packets.append(('turn/steer', params))
+                send({'id': message['id'], 'result': {'turnId': 'different-turn'}})
+                return True
+            return super().handle_extra_rpc(message, send)
+
+    journey = RecoveringSteer(binary)
+    try:
+        journey.start()
+        journey.admit('Seed integrating conversation', topic=1)
+        journey.wait(lambda: journey.has('Initial goal turn delivered.', 1))
+        journey.idle()
+        journey.wait_control_socket(journey.socket)
+        binding = journey.read('presentation', 'list', '0', '0')['result']['binding']
+        _, first = journey.submit(binding, 'Hold this native turn open.')
+        assert first['ok']
+        journey.wait(lambda: journey.web_turn is not None)
+        older = str(uuid.uuid4())
+        journey.refused = 'conversation:' + older
+        journey.submit(binding, 'Older message rejected by the active native turn.', older)
+        def phase(ident):
+            return journey.row('SELECT phase FROM conversation_inputs WHERE id=?', (ident,))[0][0]
+        journey.wait(lambda: phase(older) == 'queued')
+        assert journey.row("SELECT json_extract(doc,'$.steer_wait_reason') FROM conversation_inputs WHERE id=?", (older,)) == [('steer_rejected',)]
+        newer, _ = journey.submit(binding, 'New message after steer is available again.')
+        journey.wait(lambda: phase(older) == phase(newer['id']) == 'accepted')
+        active = journey.web_turn
+        sent = [(method, packet['clientUserMessageId']) for method, packet in journey.packets]
+        assert sent[-3:] == [
+            ('turn/steer', 'conversation:' + older),
+            ('turn/steer', 'conversation:' + older),
+            ('turn/steer', 'conversation:' + newer['id']),
+        ], sent
+        assert all(packet.get('expectedTurnId') == active for method, packet in journey.packets if method == 'turn/steer')
+        unknown = str(uuid.uuid4())
+        journey.mismatched = 'conversation:' + unknown
+        journey.submit(binding, 'The native acknowledgement does not match the original turn.', unknown)
+        journey.wait(lambda: phase(unknown) == 'uncertain')
+        later, _ = journey.submit(binding, 'This later message must not reoffer the uncertain original.')
+        journey.wait(lambda: phase(later['id']) == 'accepted')
+        assert phase(unknown) == 'uncertain'
+        assert sum(packet['clientUserMessageId'] == journey.mismatched for _, packet in journey.packets) == 1
+        journey.finish(journey.web_thread, active)
+        journey.idle()
+        assert sum(method == 'turn/start' for method, _ in journey.packets) == 1
+        print('PASS definitively refused older input is steered before later input exactly once, and the stale turn entry is skipped')
+    finally:
+        journey.close()
+
+
 def foreground_retention(binary):
     journey=Inputs(binary)
     try:
@@ -382,6 +444,7 @@ if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
     foreground_retention(binary)
     foreground_delegation(binary)
+    reconsider_queued_steer(binary)
     qualify(binary)
     mixed_origin_returns(binary)
     late_artifact_return(binary)
