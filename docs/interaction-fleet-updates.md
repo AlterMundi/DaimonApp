@@ -490,7 +490,11 @@ operator remains the command after `--`. This opt-in path compares the
 complete parsed configs with only `interaction.observer_model` excluded,
 pins the exact current file, requires the local serving voice fence and a
 known binding fault on the loopback access API, and runs the writer once.
-The writer inherits the already-held fence. After a successful command the
+The writer verifies the already-held fence using
+`dashboard.voice_admission.inherited_maintenance(state_dir)` instead of
+opening a second lock. This reader rejects an unheld lock, an unrelated
+receiver and a separate file descriptor held by another operation.
+After a successful command the
 guard verifies the local application's expected anonymous refusal. Code 75
 defers active voice, 78 means the writer never started, and 79 means an
 attempt ran with unconfirmed recovery. A nonzero operator result is preserved.

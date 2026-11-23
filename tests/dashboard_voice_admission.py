@@ -231,7 +231,15 @@ class Admission(unittest.TestCase):
         fault=(503,'Receiving control binding changed; operator must requalify Sessions')
         healthy=(401,'Shared browser sign-in required')
         health=self.server(self.admission.header,COVERAGE,lambda:healthy if target.exists() else fault)
-        code='from pathlib import Path;Path('+repr(str(target))+').write_text("repaired")'
+        code=(
+            'from pathlib import Path\n'
+            'from dashboard.voice_admission import inherited_maintenance, VoiceAdmission\n'
+            f'assert inherited_maintenance({str(self.root)!r}).header=={self.admission.header!r}\n'
+            f'try: VoiceAdmission({str(self.root)!r}).claim()\n'
+            "except BlockingIOError: pass\n"
+            "else: raise AssertionError('operator did not inherit the exclusive fence')\n"
+            f'Path({str(target)!r}).write_text("repaired")'
+        )
         result=self.observer_repair(health,code)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('recovery verified',result.stdout)
@@ -240,6 +248,25 @@ class Admission(unittest.TestCase):
         result=self.observer_repair(health,'pass')
         self.assertEqual(result.returncode,79,result.stderr)
         self.assertIn('recovery is unconfirmed',result.stderr)
+
+    def test_repair_operator_cannot_claim_an_unheld_or_foreign_fence(self):
+        from dashboard.voice_admission import inherited_maintenance, MAINTENANCE_FD
+        from unittest.mock import patch
+        other=self.root/'foreign'
+        other.mkdir(mode=0o700)
+        VoiceAdmission(other)
+        with maintenance_guard(other) as foreign, patch.dict(os.environ,{MAINTENANCE_FD:str(foreign.fd)}):
+            with self.assertRaises(ValueError):
+                inherited_maintenance(self.root)
+        fd=os.open(self.root/'voice-admission'/'.lock',os.O_RDONLY)
+        try:
+            with patch.dict(os.environ,{MAINTENANCE_FD:str(fd)}), self.assertRaises(ValueError):
+                inherited_maintenance(self.root)
+            with maintenance_guard(self.root), patch.dict(os.environ,{MAINTENANCE_FD:str(fd)}):
+                with self.assertRaises(BlockingIOError):
+                    inherited_maintenance(self.root)
+        finally:
+            os.close(fd)
 
     def test_observer_repair_refuses_other_receiver_changes_or_busy_voice(self):
         target=self.root/'must-not-apply'

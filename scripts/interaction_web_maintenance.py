@@ -18,7 +18,7 @@ import urllib.request
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts.interaction_access_probe import BINDING_FAILURES, NoRedirect, UNAUTHENTICATED, read_response
-from dashboard.voice_admission import HEADER, COVERAGE_HEADER, COVERAGE, maintenance_guard
+from dashboard.voice_admission import HEADER, COVERAGE_HEADER, COVERAGE, MAINTENANCE_FD, maintenance_guard
 
 
 def private_config(path, owner_uid):
@@ -137,7 +137,8 @@ def main(argv=None):
             if private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw:
                 raise ValueError('Selected receiver changed before maintenance')
             operator_started=True
-            outcome=subprocess.run(bounded,pass_fds=(guard.fd,))
+            environment={**os.environ,MAINTENANCE_FD:str(guard.fd)}
+            outcome=subprocess.run(bounded,pass_fds=(guard.fd,),env=environment)
             if outcome.returncode:
                 return outcome.returncode
             if (private_config(receiver,args.owner_uid)!=current or private_config(args.config,args.owner_uid)!=raw
