@@ -96,7 +96,7 @@ const server=http.createServer(async(req,res)=>{
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
    return json({schema:'daimon.session-view/v1',revision:'c'.repeat(64),before:50,after:250,has_earlier:false,more:false,
-    items:after?[]:[...(technical?[{id:'message',kind:'message',role:'user',text:'Show me what we discovered.',position:50,next_position:100}]:[]),
+    items:after?[]:[{id:'message',kind:'message',role:'user',text:'Show me what we discovered.',position:50,next_position:100},
      {id:'response',kind:'message',role:'assistant',text:'The first prototype is ready. Let us look together.',position:100,next_position:150},
      ...(technical?[{id:'tool',kind:'tool_call',name:'inspect_result',text:'{"result":"prototype"}',position:150,next_position:200},
       {id:'summary',kind:'reasoning_summary',role:'assistant',text:'Compare the measured result with our original question.',position:200,next_position:250}]:[])]});
@@ -822,21 +822,25 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.locator('.session-message').first().waitFor();
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I look around.');
- assert.equal(await page.getByText('Show me what we discovered.',{exact:true}).count(),0);
- await page.getByRole('button',{name:'Show session detail and tools'}).click();
+ assert(await page.locator('.session-messages[data-raw="false"] .human-message .reply-text').getByText('Show me what we discovered.',{exact:true}).isVisible());
+ assert.equal(await page.getByText('>_ inspect_result',{exact:true}).count(),0);
+ assert.equal(await page.locator('.session-input-target').textContent(),'To '+sessions[1].title);
+ await page.getByRole('button',{name:'Raw session view'}).click();
  await page.getByText('Show me what we discovered.',{exact:true}).waitFor();
  await page.getByText('>_ inspect_result',{exact:true}).waitFor();
  assert(await page.getByText('Reasoning summary',{exact:true}).isVisible());
  await page.screenshot({path:path.join(output,'desktop-technical.png')});
- await page.getByRole('button',{name:'Show session replies'}).click();
- await page.waitForFunction(()=>!document.querySelector('.session-messages').textContent.includes('Show me what we discovered.'));
+ await page.getByRole('button',{name:'Raw session view'}).click();
+ await page.locator('.session-messages[data-raw="false"] .human-message').waitFor();
+ assert.equal(await page.getByText('>_ inspect_result',{exact:true}).count(),0);
  assert.equal(await page.locator('#conversation-message').inputValue(),'Keep this draft while I look around.');
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  await page.getByRole('button',{name:'Back to the conversation',exact:true}).click();
  assert.equal(await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop),readingBefore,'Back restores the exact previous reading position');
- assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
+ assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:8');
  await page.locator('#conversation-send').click();await page.waitForFunction(()=>document.querySelector('#conversation-message').value==='');
- assert.equal(posts.at(-1).reply.source,'session:7');assert.equal(posts.at(-1).text,'Keep this draft while I look around.');
+ assert.equal(posts.at(-1).reply.source,'session:8');assert.equal(posts.at(-1).text,'Keep this draft while I look around.');
+ await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();
  assert.equal(await page.locator('#conversation-timeline .routing-trace').count(),0,'Conversation messages have no routing-path disclosure');
  assert(await page.locator('#conversation-diagnostics #conversation-inputs .routing-trace').count()>0,'Routing evidence remains under the hood');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
@@ -907,10 +911,15 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.locator('#conversation-timeline').evaluate(node=>{node.scrollTop=400;});await page.waitForTimeout(150);
   const before=await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop);assert(before>100);
   await page.getByRole('button',{name:'Show sessions',exact:true}).click();await page.getByRole('button',{name:sessions[1].title,exact:true}).click();await page.locator('.session-message').first().waitFor();
-  await page.getByRole('button',{name:'Show session detail and tools'}).click();await page.getByText('>_ inspect_result',{exact:true}).waitFor();
+  const selectedMessages=page.locator('.session-messages[data-raw="false"]');
+  assert(await selectedMessages.locator('.human-message').isVisible());
+  const inputBox=await page.locator('#conversation-message').boundingBox(),messageBox=await selectedMessages.boundingBox();
+  assert(inputBox&&messageBox&&inputBox.y>=messageBox.y+messageBox.height-1&&inputBox.y+inputBox.height<=844,
+    'Selected session keeps the composer below the message pane and within the viewport');
+  await page.getByRole('button',{name:'Raw session view'}).click();await page.getByText('>_ inspect_result',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Back to the conversation',exact:true}).click();
   assert.equal(await page.locator('#conversation-timeline').evaluate(node=>node.scrollTop),before,'Phone Back preserves reading position');
-  assert.equal(await page.locator('#conversation-message').inputValue(),draft);const restoredTarget=await page.evaluate(()=>workspaceFixture.microphone.getReply());assert.deepEqual(restoredTarget.reference,target.reference,'Phone Back restores the exact prior destination');assert(restoredTarget.version>target.version,'Navigation retains a fresh input-admission epoch, never reuses an old capture generation');
+  assert.equal(await page.locator('#conversation-message').inputValue(),draft);const restoredTarget=await page.evaluate(()=>workspaceFixture.microphone.getReply());assert.equal(restoredTarget.reference.source,'session:8','Phone Back leaves the named session pinned');assert(restoredTarget.version>(target?.version||0),'Navigation retains a fresh input-admission epoch, never reuses an old capture generation');
  }
  await page.setViewportSize({width:1280,height:800});
  await page.locator('#conversation-timeline').evaluate(node=>{node.scrollTop=0;});

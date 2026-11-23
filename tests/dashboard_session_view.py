@@ -34,9 +34,24 @@ class SelectedHistory(unittest.TestCase):
             {'type':'response_item','payload':{'type':'function_call_output','output':'Selected output','call_id':'1'}},
             message('An attributed harness input','user'))
         plain=read(self.path,'owned');technical=read(self.path,'owned',technical=True)
-        self.assertEqual([v['text'] for v in plain['items']],['Hello'])
+        self.assertEqual([v['text'] for v in plain['items']],['Hello','An attributed harness input'])
         self.assertEqual([v['kind'] for v in technical['items']],['message','reasoning_summary','tool_call','tool_output','message'])
         self.assertNotIn('private',json.dumps(technical));self.assertIn('not verified human speech',plain['role_meaning'])
+    def test_conversation_keeps_messages_and_raw_keeps_envelopes(self):
+        prompt='Chalk first.\n\n**Then** the prototype.'
+        managed='# AGENTS.md instructions for /fixture\nInternal context\n\nUser request:\n'+prompt
+        relay=('[Interaction controller]\nTransport provenance: {fixture}\nCurrent attributed input:\n'
+               'Check the prototype.\n\nReturn your answer followed by <daimon-result>')
+        self.append(message('<environment_context>\nInternal only\n</environment_context>','user'),
+                    message(managed,'user'),message(relay,'user'),message('The prototype is ready.'))
+        ordinary=read(self.path,'owned')
+        self.assertEqual([v['text'] for v in ordinary['items']],
+                         [prompt,'Check the prototype.','The prototype is ready.'])
+        raw=read(self.path,'owned',technical=True)
+        self.assertEqual([v['text'] for v in raw['items'][1:3]],[managed,relay])
+        first=ordinary['items'][0]
+        same=read(self.path,'owned',event=first['position'],revision=ordinary['revision'])
+        self.assertEqual(same['items'][0]['text'],prompt)
     def test_partial_append_is_not_acknowledged_and_completion_appears_once(self):
         self.append(message('First'))
         second=encoded(message('Second'))

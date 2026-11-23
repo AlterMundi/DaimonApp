@@ -27,6 +27,20 @@ def _text(value):
     return ''
 
 
+def _conversation_input(text):
+    # Match the native conversation's user-request envelope. Ordinary text is
+    # kept as written, including Markdown and paragraph spacing.
+    text=text.replace('\r\n','\n')
+    if text.lstrip().startswith(('# AGENTS.md instructions','<environment_context>')):
+        _,marker,text=text.rpartition('\n\nUser request:\n')
+        if not marker:return ''
+    if text.startswith('[Interaction controller]\n') and '\nTransport provenance: ' in text:
+        _,marker,text=text.partition('\nCurrent attributed input:\n')
+        if not marker:return ''
+        text=text.partition('\n\nReturn your answer followed by <daimon-result>')[0]
+    return text.partition('\n\nFollow these instructions for this turn:')[0]
+
+
 def _event(record,technical):
     if not isinstance(record,dict):return None
     p=record.get('payload',{})
@@ -34,11 +48,15 @@ def _event(record,technical):
     kind=p.get('type')
     if kind=='message':
         role=p.get('role')
-        if role not in ('user','assistant') or role=='user' and not technical:return None
+        if role not in ('user','assistant'):return None
         # Private analysis is never the CLI's exposed reasoning summary. Only
         # conversational assistant phases/channels enter either presentation.
         if role=='assistant' and (p.get('channel')=='analysis' or p.get('phase')=='analysis'):return None
-        return {'kind':'message','role':role,'text':_text(p.get('content'))}
+        text=_text(p.get('content'))
+        if not technical and role=='user':
+            text=_conversation_input(text)
+        if not technical and not text.strip():return None
+        return {'kind':'message','role':role,'text':text}
     if not technical:return None
     if kind in ('function_call','custom_tool_call'):
         value=p.get('arguments') if kind=='function_call' else p.get('input')
