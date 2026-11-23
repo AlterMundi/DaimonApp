@@ -451,7 +451,10 @@ Run `python3 -B scripts/interaction_access_probe.py HOME_ORIGIN ...` as a finite
 observation in the existing Cluster Sysops pass. Use the current Home roster,
 including Emma and each child. The probe checks the actual HTTPS access API and
 shared-login entry, verifies TLS and does not follow redirects. The expected
-application-specific anonymous HTTP 401 and the shared entry HTTP 200 both matter.
+application-specific anonymous HTTP 401, shared entry HTTP 200 and three
+same-origin bootstrap scripts must agree. The probe reads a small JavaScript
+prefix and compares the served ETag with the declared version when present.
+An HTML fallback, missing script or stale script is an entry failure.
 It uses no session cookies or credentials. Exit 0 means all selected entries
 passed their anonymous-path check. Exit 1 includes a bounded per-receiver result.
 A deadline or failed execution is an unavailable observation. Positive signed-in
