@@ -2447,30 +2447,43 @@ window.Conversation = (() => {
       const panel=node('details');panel.id='conversation-public-live-recovery';panel.hidden=true;
       panel.setAttribute('aria-label','Voice audio recovery');$('#conversation-compose-notices .composer-notice-panel').prepend(panel);
       let speech;const retained=[];
+      function renderPublicTranscript(values,previous){
+        const changed=new Map();
+        let current=previous;
+        for(const value of values){
+          const event=value?.item,role=event?.type==='session.input_transcript.delta'?'user':event?.type==='session.output_transcript.delta'?'assistant':undefined;
+          if(!role||typeof event.delta!=='string'||!event.delta||event.delta.length>32768)continue;
+          const observed=value.observed_at||new Date().toISOString();
+          for(let offset=0;offset<event.delta.length;){
+            if(!current||current.visit!==value.visit||current.role!==role||current.text.length>=16000){
+              const key='live:'+value.visit+':'+(value.history?String(value.source_order).padStart(8,'0'):event.event_id)+':'+offset;
+              const box=node('article',undefined,'reply'),body=node('div',undefined,'reply-text'),status=node('p',undefined,'reply-status'),time=node('time',undefined,'message-time');
+              box.append(node('h3',role==='user'?'You · voice':'Voice conversation'),status,body,time);
+              status.textContent='Voice transcript';status.title='Automatic transcript; may be partial or differ from speech.';
+              current={key,box,body,time,text:'',visit:value.visit,role,binding};retained.push(current);
+            }
+            const part=event.delta.slice(offset,offset+16000-current.text.length);offset+=part.length;current.text+=part;
+            changed.set(current,observed);
+          }
+        }
+        let size=retained.reduce((n,v)=>n+v.text.length,0);
+        while(retained.length>64||size>128*1024){
+          const old=retained.shift();size-=old.text.length;changed.delete(old);old.box.remove();
+        }
+        for(const [card,observed] of changed){
+          setReplyText(card.body,card.text);
+          if(!card.box.parentNode)$('#conversation-answers').append(card.box);
+          messageTime(card.time,observed);placeInTimeline(card.box,card.key,observed);
+        }
+        return current;
+      }
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
         onUsage:value=>{if(value.binding===binding)liveUsage?.observe(value);},
         onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;voiceHistoryPanel.hidden=codexHistoryTools.hidden&&publicHistoryTools.hidden;publicHistoryOlder.disabled=value.loading===true;
           publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
-        onItem:value=>{
-          const event=value?.item,role=event?.type==='session.input_transcript.delta'?'user':event?.type==='session.output_transcript.delta'?'assistant':undefined;
-          if(!role||typeof event.delta!=='string'||!event.delta||event.delta.length>32768)return;
-          const observed=value.observed_at||new Date().toISOString();
-          for(let offset=0;offset<event.delta.length;){
-            if(!speech||speech.visit!==value.visit||speech.role!==role||speech.text.length>=16000){
-              const key='live:'+value.visit+':'+(value.history?String(value.source_order).padStart(8,'0'):event.event_id)+':'+offset;
-              const box=node('article',undefined,'reply'),body=node('div',undefined,'reply-text'),status=node('p',undefined,'reply-status'),time=node('time',undefined,'message-time');
-              box.append(node('h3',role==='user'?'You · voice':'Voice conversation'),status,body,time);
-              speech={key,box,body,status,time,text:'',visit:value.visit,role,binding};retained.push(speech);
-              $('#conversation-answers').append(box);
-            }
-            const part=event.delta.slice(offset,offset+16000-speech.text.length);offset+=part.length;speech.text+=part;
-            setReplyText(speech.body,speech.text);speech.status.textContent='Voice transcript';speech.status.title='Automatic transcript; may be partial or differ from speech.';
-            messageTime(speech.time,observed);placeInTimeline(speech.box,speech.key,observed);
-          }
-          let size=retained.reduce((n,v)=>n+v.text.length,0);
-          while(retained.length>64||size>128*1024){const old=retained.shift();size-=old.text.length;old.box.remove();}
-          if(!value.history)voiceMode?.update({caption:speech.text.slice(-800)});
-        },
+        onCaption:text=>{if(isPublicLive()&&voiceMode?.active)voiceMode.update({caption:text});},
+        onItem:value=>{speech=renderPublicTranscript([value],speech);},
+        onHistoryItems:values=>renderPublicTranscript(values),
         onRecovery:values=>{
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
           panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
