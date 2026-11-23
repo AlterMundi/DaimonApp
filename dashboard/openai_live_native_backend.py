@@ -13,7 +13,7 @@ from scripts.speech_render import RenderError
 from .openai_live_originals import enroll_original
 from .openai_live_window import freeze_input_window
 from .openai_live_native_work import delegate_native
-from .openai_live_native_results import return_native_part, _origin_returns
+from .openai_live_native_results import read_return_source, return_native_part, _origin_returns
 from .provider import ProviderUnavailable
 
 
@@ -152,7 +152,8 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
         return view
     def current_trace():
         nonlocal trace
-        if trace is None:trace=checked_trace(provider.conversation_input_trace(work['native_work']['root']))
+        if trace is None:
+            trace=checked_trace(read_return_source(provider.conversation_input_trace,current,work['native_work']['root']))
         return trace
     def superseded_worker(row):
         if not row['source'].startswith('delivery:'):return False
@@ -161,7 +162,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                     for r in route.get('results',[]) if r.get('source')==row['source']]
         view=current_trace();matches=selected(view)
         if not matches and view.get('result_pages')=='v1':
-            exact=checked_trace(provider.conversation_input_trace_result(work['native_work']['root'],row['source']))
+            exact=checked_trace(read_return_source(provider.conversation_input_trace_result,current,work['native_work']['root'],row['source']))
             if exact.get('result_pages')!='v1':raise ValueError('Worker result page capability changed')
             matches=selected(exact)
         # Relevance changes the canonical revision too. Keep the acknowledged
@@ -207,7 +208,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                 raise ValueError('Worker result cursor changed')
             if scan['complete']:continue
             before=scan['before']
-            page=provider.conversation_input_trace_results(work['native_work']['root'],instruction,before)
+            page=read_return_source(provider.conversation_input_trace_results,current,work['native_work']['root'],instruction,before)
             current()
             selected=page.get('routes',[])
             if (page.get('id')!=work['native_work']['root'] or page.get('entry_binding')!=owner['entry_binding']
@@ -237,7 +238,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
                 retained[instruction]={'head':head,'before':after if more else before,'complete':not more}
                 history._write(latest)
             break
-    native=provider.conversation_input_status(work['native_work']['root'])
+    native=read_return_source(provider.conversation_input_status,current,work['native_work']['root'])
     current()
     if type(native.get('local_turn')) is not int: return None
     def scanned(after):
@@ -250,7 +251,7 @@ def return_one_native_part(history, ident, human, owner, delegation, provider, s
     cursor={'delivery':0,'native':work['native_pipeline'].get('return_after',work['native_work']['native_source_floor'])}
     for _ in range(8):
         current()
-        page=provider.presentation_list(cursor['delivery'],cursor['native'],'after')
+        page=read_return_source(provider.presentation_list,current,cursor['delivery'],cursor['native'],'after')
         current()
         if page.get('binding')!=owner['binding']:raise ProviderUnavailable('Native result conversation changed')
         for source in page['items']:

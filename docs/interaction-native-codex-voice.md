@@ -1592,7 +1592,10 @@ unconfirmed send is never retried. Source seals, native submission, the actual
 answer, and hearing remain separate. Quiet progress does not expedite a
 native turn that is already queued.
 
-A failed source-specific return is held for the rest of the current voice visit.
+The return reader retries a timed-out or disconnected source read once while the
+visit remains open, using the same source, revision and cursor. This happens
+before any new provider append is attempted. A persistent source-specific failure
+is held for the rest of the current voice visit.
 The return reader continues checking other owned delegations while the same
 actor and entry binding remain verified. A changed binding, unreadable visit,
 or uncertain provider append still stops the return lane. Do not retry a held
