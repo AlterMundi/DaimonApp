@@ -1597,3 +1597,10 @@ validated startup delivery. Saved Studio revisions still use their exact
 retained voice and tuning. In the default Cedar profile, Conversation reads
 with Realtime synthesis and Avatar speaks with GPT-Live. The shared voice
 name and instructions do not guarantee identical rendered audio.
+
+On fresh Avatar entry, recovery assembles intact local recording prefixes for
+the current Conversation. A fragment group with broken continuity or a hash
+mismatch stays in the existing recovery store and is shown as individual
+downloads. It cannot be uploaded as an assembled original or discarded from
+that view. Other intact groups remain recoverable and a fresh microphone
+visit can proceed. Failure to read the recovery store still blocks capture.

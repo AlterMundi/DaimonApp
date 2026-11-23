@@ -2426,7 +2426,7 @@ window.Conversation = (() => {
       onRecovery:values=>{
         const panel=$('#conversation-codex-recovery');if(!panel)return;
         panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
-        panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
+        panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These audio copies are still on this device. Download a copy for review or use the available saving controls after voice mode stops.','note'));
         for(const original of selected){
           const partial=original.captureStop==='interrupted_prefix';
           const row=node('div',undefined,'conversation-tools'),label=node('span',`${partial?'Recovered audio prefix':'Voice recording'} · ${Math.ceil((original.blob.size-44)/32000)}s · local copy${partial?' · ending may be missing':''}`);
@@ -2488,14 +2488,14 @@ window.Conversation = (() => {
           panel.replaceChildren();const selected=values.filter(value=>value.binding===binding);panel.hidden=!selected.length;
           panel.append(node('summary',`${selected.length} audio cop${selected.length===1?'y':'ies'} to review`),node('p','These recordings are still on this device. Saving may be pending or unconfirmed. After voice mode stops, you can try saving the audio, download a copy, or remove the device copy. This does not repeat your messages or restart work.','note'));
           for(const original of selected){
-            const row=node('div',undefined,'conversation-tools'),label=node('span',original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
+            const row=node('div',undefined,'conversation-tools'),label=node('span',original.downloadOnly?'Audio fragment · download to review':original.captureStop?'Recovered audio prefix · ending may be missing':'Voice recording · local copy');
             const retry=node('button','Try saving audio'),save=node('button','Download copy'),discard=node('button','Remove device copy');
             for(const button of [retry,save,discard])button.type='button';
             retry.title='Retain this same original; never resend speech or work';
             retry.addEventListener('click',async()=>{retry.disabled=true;try{await publicLiveSession.retry(original);}catch{label.textContent='Original not confirmed; your local copy is kept.';}finally{retry.disabled=false;}});
-            save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.voice_visit+'-'+original.ordinal+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+            save.addEventListener('click',()=>{const url=URL.createObjectURL(original.blob),link=node('a');link.href=url;link.download='voice-'+original.voice_visit+'-'+original.ordinal+(original.downloadOnly?'-'+original.id:'')+'.wav';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
             discard.addEventListener('click',async()=>{discard.disabled=true;try{await publicLiveSession.discard(original);}catch{label.textContent='Local audio is kept; capture may still be finishing in another page.';}finally{discard.disabled=false;}});
-            row.append(label,retry,save,discard);panel.append(row);
+            row.append(label,...(original.downloadOnly?[save]:[retry,save,discard]));panel.append(row);
           }
         },
         onState:value=>{
