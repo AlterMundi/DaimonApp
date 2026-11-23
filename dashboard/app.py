@@ -191,7 +191,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             if request.headers.get('origin') not in allowed:
                 return JSONResponse({'detail': 'Wrong request origin'}, status_code=403)
             # Bound chunked bodies as well as Content-Length before parsing them.
-            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/openai-live','/api/interaction/voice/openai-live/limited','/api/interaction/voice/previous-live','/api/interaction/voice/previous-live/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
+            if request.url.path in ('/api/interaction/voice','/api/interaction/voice/limited','/api/interaction/voice/openai','/api/interaction/voice/openai/limited','/api/interaction/voice/previous','/api/interaction/voice/previous/limited','/api/interaction/voice/openai-live','/api/interaction/voice/openai-live/limited','/api/interaction/voice/openai-live/interrupt','/api/interaction/voice/previous-live','/api/interaction/voice/previous-live/limited','/api/interaction/voice/recover','/api/interaction/visual','/api/interaction/files'):
                 try:
                     selected = await authorize_async(request)
                     if not secrets.compare_digest(request.headers.get('x-dashboard-csrf', ''), selected['csrf']):

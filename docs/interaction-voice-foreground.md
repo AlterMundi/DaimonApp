@@ -25,6 +25,26 @@ remain. Native Android PCM retains its existing separate player. These clock and
 scheduling tests do not establish physical click-free hearing or noisy-phone
 continuity.
 
+## Explicit Avatar interruption
+
+A confirmed leading `/interrupt` with a request selects the active owned native
+turn in the same general Conversation. In the prepared-audio path the browser
+marks the original and the verified transcript must independently confirm the
+command. The sealed Live-window path uses the validated acoustic text in the
+retained journal. Provider output and ordinary utterances carry no such authority.
+
+The original queues before the exact native interrupt is attempted. If the
+selected turn ended or had not started, the original queues normally. A missing
+interrupt acknowledgement preserves the queued original without automatically
+retrying the interrupt. Matching input admission is separate from confirmation
+that the interrupted turn ended.
+
+The paired Home and enrolled Companion share the existing voice upload bounds,
+binding and CSRF checks for the marked audio route. Marked browser originals
+use a v8 recovery envelope so older clients leave them intact. A preparation
+receipt keeps the local audio until matching input admission, or for manual
+review if preparation disagrees. No automatic retry of a marked upload.
+
 ## Conversation ownership
 
 The person talks to a fluent voice layer. It listens, discusses, asks useful

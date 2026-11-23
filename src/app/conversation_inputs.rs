@@ -542,10 +542,10 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         let _ingress = app.shared.conversation_ingress.lock().await;
         // Freeze the listener-owned execution before checking the journal.
         // A later execution cannot inherit the pending request's interrupt.
-        let interrupt_targets = if selected.live_window.is_some() {
-            super::voice::snapshot(app).await
+        let target = if selected.live_window.is_some() {
+            avatar_interrupt_snapshot(app, cfg.entry(), human).await
         } else {
-            Default::default()
+            None
         };
         let (input, fresh) = if let Some(window) = selected.live_window {
             #[cfg(unix)]
@@ -594,9 +594,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
                     delegation.live_window.is_some() && foreground_interrupt_requested(&input.text)
                 });
             if priority {
-                super::voice::INTERRUPT_TARGETS
-                    .scope(interrupt_targets, enqueue_avatar_interruption(app, &input))
-                    .await?;
+                enqueue_avatar_interruption(app, &input, target).await?;
             } else {
                 // Only the existing integrator decides downstream work.
                 submit(app.clone(), input.clone()).await?;
@@ -1162,7 +1160,43 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     Ok(())
 }
 
-async fn enqueue_avatar_interruption(app: &App, input: &ConversationInput) -> Result<()> {
+#[derive(PartialEq, Eq)]
+struct AvatarInterruptTarget {
+    local: i64,
+    thread: String,
+    physical: String,
+}
+
+async fn avatar_interrupt_snapshot(
+    app: &App,
+    entry: SessionKey,
+    human: i64,
+) -> Option<AvatarInterruptTarget> {
+    let workers = app.workers.lock().await;
+    let worker = workers.get(&entry)?;
+    let active = worker.steer.lock().expect("steer mutex poisoned").clone()?;
+    let physical = active
+        .physical_turn
+        .lock()
+        .expect("native correlation mutex poisoned")
+        .clone()?;
+    let thread = app
+        .shared
+        .store
+        .controller_native_turn(active.turn_id, entry, human)
+        .ok()?;
+    Some(AvatarInterruptTarget {
+        local: active.turn_id,
+        thread,
+        physical,
+    })
+}
+
+async fn enqueue_avatar_interruption(
+    app: &App,
+    input: &ConversationInput,
+    target: Option<AvatarInterruptTarget>,
+) -> Result<()> {
     let worker = app.worker_for(input.entry).await?;
     if input.phase == "retained" {
         app.shared
@@ -1170,8 +1204,21 @@ async fn enqueue_avatar_interruption(app: &App, input: &ConversationInput) -> Re
             .conversation_input_event(input.human, &input.id, E::Queue)?;
     }
     enqueue(app, input, worker.sender)?;
-    // Enqueue first. Failed admission or a duplicate cannot interrupt work.
-    super::voice::interrupt_snapshot(input.entry);
+    // Only the exact active execution selected at ingress can be interrupted.
+    // The original stays queued if that execution ended or its ACK is uncertain.
+    if let Some(target) = target
+        && avatar_interrupt_snapshot(app, input.entry, input.human)
+            .await
+            .as_ref()
+            == Some(&target)
+        && let Err(error) = app
+            .shared
+            .codex
+            .interrupt_selected_turn(&target.thread, &target.physical)
+            .await
+    {
+        tracing::warn!(%error, "Avatar interruption acknowledgement unavailable");
+    }
     Ok(())
 }
 
@@ -1351,7 +1398,13 @@ async fn voice_submit(
     {
         super::conversation_requests::validate_reply(app, human, request.reply.as_ref()).await?;
     }
-    let interruption_targets = if request.foreground_dialogue.is_some() {
+    let avatar_target = if request.avatar_interrupt {
+        avatar_interrupt_snapshot(app, entry, human).await
+    } else {
+        None
+    };
+    let interruption_targets = if request.foreground_dialogue.is_some() || request.avatar_interrupt
+    {
         Default::default()
     } else {
         super::voice::snapshot(app).await
@@ -1460,7 +1513,7 @@ async fn voice_submit(
                         .is_some_and(|v| v.avatar_interrupt == Some(true))
                     {
                         if foreground_interrupt_requested(&ready.text) {
-                            enqueue_avatar_interruption(&worker, &ready).await
+                            enqueue_avatar_interruption(&worker, &ready, avatar_target).await
                         } else {
                             Err(anyhow!("Prepared transcript does not confirm the explicit Avatar interruption"))
                         }

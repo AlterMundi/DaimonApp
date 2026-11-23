@@ -9,21 +9,25 @@ from pathlib import Path
 import sqlite3
 import struct
 import sys
+import time
+from threading import Event
 import uuid
 import wave
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
+from dashboard.companion import Grants
+from dashboard.private_state import read_json
 from dashboard.provider import Provider
 from dashboard.live_transcription import wav_bytes
 from conversation_requests_http_io import Requests
 
-def audio(frequency=440,silence=False):
+def audio(frequency=440,silence=False,frames=3200):
     target=io.BytesIO()
     with wave.open(target,'wb') as wav:
         wav.setparams((1,2,16000,0,'NONE','not compressed'))
-        wav.writeframes(b''.join(struct.pack('<h',0 if silence else int(5000*math.sin(2*math.pi*frequency*i/16000))) for i in range(3200)))
+        wav.writeframes(b''.join(struct.pack('<h',0 if silence else int(5000*math.sin(2*math.pi*frequency*i/16000))) for i in range(frames)))
     return target.getvalue()
 
 def qualify(binary, stop_reason="duration_limit", profile=False, default=False):
@@ -521,9 +525,16 @@ def avatar_interrupt(binary):
     class Interrupts(Requests):
         def __init__(self):
             self.interrupts=[]
+            self.hold_start=None
+            self.start_seen=Event()
+            self.release_start=Event()
             super().__init__(str(Path(binary).resolve()))
 
         def handle_extra_rpc(self,message,send):
+            if (message.get('method')=='turn/start' and self.hold_start
+                    and message['params'].get('clientUserMessageId')=='conversation:'+self.hold_start):
+                self.start_seen.set()
+                assert self.release_start.wait(timeout=12),'Synthetic native start was not released'
             if message.get('method')=='turn/interrupt':
                 params=message['params']
                 self.interrupts.append(params)
@@ -555,7 +566,9 @@ print(json.dumps({'text':item['text'],'final':True}))
         j.wait(lambda:j.has('Initial goal turn delivered.',1));j.idle()
         j.wait_control_socket(j.socket)
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),
-                'origin':'https://example.test','bot_id':123}
+                'origin':'https://example.test','bot_id':123,
+                'shared_auth':{'enabled':True,'home_origin':'https://example.test','human_ref':'human:telegram:100'},
+                'companion':{'enabled':True,'grants_dir':str(j.root/'grants')}}
         provider=Provider(config)
         client=TestClient(create_app(config,provider,lambda raw,bot:int(raw)),base_url=config['origin'])
         headers={'origin':config['origin']}
@@ -570,17 +583,18 @@ print(json.dumps({'text':item['text'],'final':True}))
             return j.row('SELECT phase FROM conversation_inputs WHERE id=?',(ident,))[0][0]
         j.wait(lambda:phase(start['id'])=='accepted')
         active=(j.web_thread,j.web_turn)
-        phrases=[('  /interrupt respondé ahora',audio(515)),
+        phrases=[('  /interrupt respondé ahora',audio(515,frames=16000)),
                  ('Comenté la palabra interrupt',audio(390)),
                  ('barra interrupt es una cita en micrófono común',audio(620)),
-                 ('/interrupt captura demorada',audio(730))]
+                 ('/interrupt captura demorada',audio(730)),
+                 ('/interrupt antes de que arranque',audio(810))]
         (j.root/'prepared.json').write_text(json.dumps({
             hashlib.sha256(data).hexdigest():{'text':text,'wait':index==3}
             for index,(text,data) in enumerate(phrases)}))
         ordinary_path='/api/interaction/voice/openai-live'
         interrupt_path=ordinary_path+'/interrupt'
-        def upload(path,data,ident):
-            return client.post(path,content=data,headers={**headers,'content-type':'audio/wav',
+        def upload(path,data,ident,actor_headers=headers):
+            return client.post(path,content=data,headers={**actor_headers,'content-type':'audio/wav',
                 'x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':hashlib.sha256(data).hexdigest()})
 
         mismatch=str(uuid.uuid4());mismatch_result=upload(interrupt_path,phrases[1][1],mismatch)
@@ -606,15 +620,34 @@ print(json.dumps({'text':item['text'],'final':True}))
         assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(explicit,))==[(0,)]
         assert not (Path(str(j.root/'state.sqlite')+'.voice')/explicit).exists()
         assert j.interrupts==[]
-        response=upload(interrupt_path,recording,explicit)
-        assert response.status_code==200,response.text
+        # Exercise the deployed Home end-to-end authority, including a recording
+        # larger than the ordinary JSON/control-route body limit.
+        assert len(recording)>16384
+        home={'origin':config['origin'],'cookie':'__Host-home='+'h'*43}
+        identity={'contract':'dm.home-session/v1','origin':config['origin'],
+                  'expires':int(time.time())+3600,'actor':{'kind':'human','ref':'human:telegram:100'}}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=client.get('/api/interaction/access',headers=home)
+            assert access.status_code==200,access.text
+            assert upload(interrupt_path,recording,explicit,home).status_code==403
+            home['x-dashboard-csrf']=access.json()['csrf']
+            assert upload(interrupt_path,recording,explicit,{**home,'origin':'https://other.test'}).status_code==403
+            assert j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(explicit,))==[(0,)]
+            response=upload(interrupt_path,recording,explicit,home)
+            assert response.status_code==200,response.text
         j.wait(lambda:phase(explicit)=='accepted')
         assert j.interrupts==[{'threadId':active[0],'turnId':active[1]}],j.interrupts
         method,packet=j.packets[-1]
         assert method=='turn/start' and packet['threadId']==active[0]
         assert packet['clientUserMessageId']=='conversation:'+explicit
         assert 'respondé ahora' in packet['input'][0]['text']
-        value=upload(interrupt_path,recording,explicit).json()
+        device_file=j.root/'device.json'
+        Grants(config,provider).enroll('Fixture device',device_file,3600)
+        device=read_json(device_file)
+        device_headers={'origin':config['origin'],'authorization':device['authorization'],'x-dashboard-csrf':device['csrf']}
+        repeated=upload(interrupt_path,recording,explicit,device_headers)
+        assert repeated.status_code==200,repeated.text
+        value=repeated.json()
         assert not value['new_input'] and value['phase']=='accepted'
         assert value['voice']['audio_sha256']==hashlib.sha256(recording).hexdigest()
         assert value['voice']['transcription']['capture_id']==explicit
@@ -639,8 +672,22 @@ print(json.dumps({'text':item['text'],'final':True}))
         assert j.packets[-1][1]['clientUserMessageId']=='conversation:'+late
         assert len(j.interrupts)==1
         j.finish(j.web_thread,j.web_turn);j.idle()
-        print('PASS prepared Avatar interruption, exact predecessor and delayed successor fence, unchanged ordinary steer, disagreement held and same-ID no replay; zero models')
+        j.hold_start=str(uuid.uuid4())
+        j.submit(binding,'A submitted turn has not started yet.',ident=j.hold_start)
+        assert j.start_seen.wait(timeout=5)
+        prestart=str(uuid.uuid4())
+        assert upload(interrupt_path,phrases[4][1],prestart).status_code==200
+        j.wait(lambda:phase(prestart)=='queued')
+        assert len(j.interrupts)==1,'A request without a started execution must not interrupt'
+        j.release_start.set()
+        j.wait(lambda:phase(j.hold_start)=='accepted')
+        j.finish(j.web_thread,j.web_turn)
+        j.wait(lambda:phase(prestart)=='accepted')
+        assert j.packets[-1][1]['clientUserMessageId']=='conversation:'+prestart
+        j.finish(j.web_thread,j.web_turn);j.idle()
+        print('PASS prepared Avatar interruption, exact predecessor, no pre-start cancellation or delayed successor cancellation, paired Home and Companion authority, large WAV, unchanged ordinary steer, disagreement held and same-ID no replay; zero models')
     finally:
+        j.release_start.set()
         if client:client.close()
         j.close()
 

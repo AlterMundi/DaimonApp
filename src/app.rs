@@ -186,6 +186,7 @@ struct SessionWorkerHandle {
 #[derive(Clone)]
 struct ActiveTurnSteerHandle {
     turn_id: i64,
+    physical_turn: Arc<StdMutex<Option<String>>>,
     sender: mpsc::UnboundedSender<CodexSteerRequest>,
     attachments: Arc<SteeredFiles>,
     controller_hint: Option<String>,

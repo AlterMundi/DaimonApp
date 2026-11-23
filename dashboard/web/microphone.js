@@ -35,11 +35,12 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
-      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7'].includes(old.schema)){
+      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)){
         if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(!old.schema.endsWith('/v5')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
+        if(old.items.some(v=>v.avatarInterrupt!==undefined&&(!old.schema.endsWith('/v8')||v.avatarInterrupt!==true||v.transcriptionProfile!=='openai-live'||v.dictation||v.foreground_dialogue)))throw Error('Interruption recovery is malformed');
         for(const item of old.items.filter(v=>v.dictation)){
           const d=item.dictation;
-          if(!old.schema.endsWith('/v7')||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
+          if(!['telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
         }
         return [...old.items];
       }
@@ -63,6 +64,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>v.avatarInterrupt))store.put({schema:'telecodex.voice-recovery/v8',items},key);
       else if(items.some(v=>v.dictation))store.put({schema:'telecodex.voice-recovery/v7',items},key);
       else if(items.some(v=>['openai-live','previous-live'].includes(v.transcriptionProfile)))store.put({schema:'telecodex.voice-recovery/v6',items},key);
       else if(items.some(v=>v.transcriptionProfile!==undefined))store.put({schema:'telecodex.voice-recovery/v5',items},key);
@@ -97,11 +99,19 @@ window.VoiceInput = (() => {
       put:(value,parallel=false)=>{
         const {blob,...meta}=value;
         if(value.native_fragment===true&&(key!=='codex_voice'||!value.fragment_group||!Number.isSafeInteger(value.fragment_offset)))return Promise.reject(Error('Invalid native recording fragment'));
+        if(value.avatarInterrupt!==undefined&&(value.avatarInterrupt!==true||value.transcriptionProfile!=='openai-live'||value.dictation||value.foreground_dialogue))return Promise.reject(Error('Invalid interruption recording'));
         if(!blob || blob.size>20*1024*1024 || new Blob([JSON.stringify(meta)]).size>65536)return Promise.reject(Error('Recording recovery limit reached'));
         return operation('readwrite',(store,old,other)=>{
           const items=records(old),index=items.findIndex(v=>v.id===value.id);
           if(value.native_fragment===true&&items.some(v=>v.id===value.fragment_group))throw Error('Native recording group is already sealed');
-          if(index>=0){if(items[index].audio_sha256!==value.audio_sha256)throw Error('Recording identity changed');items[index]=value;}
+          if(index>=0){
+            const prior=items[index];
+            const markBeforeSend=prior.avatarInterrupt===undefined&&value.avatarInterrupt===true
+              &&!prior.submissionRequested&&!prior.uncertainSubmission;
+            if(prior.audio_sha256!==value.audio_sha256||prior.binding!==value.binding
+                ||prior.avatarInterrupt!==value.avatarInterrupt&&!markBeforeSend)throw Error('Recording identity changed');
+            items[index]=value;
+          }
           else{
             if(items.length>=128||(parallel?items.filter(v=>v.native_review!==true&&v.reconnect_review!==true).length>=2:items.length>=1)||items.some(v=>v.binding!==value.binding))throw Error('Another unfinished recording is retained');
             items.push(value);
@@ -149,7 +159,7 @@ window.VoiceInput = (() => {
     let checking=false,statusTimer,noticeDismissible=false;const statusAttempts=new Map();
     function clearStatusTimer(){clearTimeout(statusTimer);statusTimer=undefined;}
     function scheduleStatus(immediate=false){
-      if(!available||pending?.retentionBlocked||!pending?.uncertainSubmission||pending.binding!==getBinding()||document.hidden||window.navigator.onLine===false)return;
+      if(!available||pending?.retentionBlocked||pending?.interruptionNeedsReview||!pending?.uncertainSubmission||pending.binding!==getBinding()||document.hidden||window.navigator.onLine===false)return;
       const used=statusAttempts.get(pending.id)||0;if(used>=4)return;
       if(statusTimer!==undefined&&!immediate)return;
       clearStatusTimer();statusTimer=setTimeout(()=>{statusTimer=undefined;void checkStatus(true);},immediate?0:[1000,3000,10000,30000][used]);
@@ -260,7 +270,7 @@ window.VoiceInput = (() => {
       if(pending)button.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5"/></svg>';
       button.setAttribute('aria-label',phase==='recording'?'Send voice message':phase==='ready'?'Send recording':pending?'Retry sending this recording':'Record a voice message');
       button.title=pending?'Retry sending the same recording':'Record a voice message';
-      button.disabled=!available || !getBinding() || !supported() || restoring || uploading || phase==='permission' || phase==='finalizing';
+      button.disabled=!available || !getBinding() || !supported() || restoring || uploading || pending?.interruptionNeedsReview || phase==='permission' || phase==='finalizing';
       button.setAttribute('aria-pressed',String(phase==='recording'));
       syncSend();
       discard.hidden=!noticeDismissible&&!pending&&!['permission','recording','editing','ready','finalizing'].includes(phase);discard.disabled=uploading;
@@ -308,6 +318,8 @@ window.VoiceInput = (() => {
       }catch(_){if(owned===generation)notice('Local recovery unavailable. Keep this page open until your recording is confirmed.',true);}
       finally{if(owned===generation){restoring=false;controls();scheduleStatus();}}
     }
+    const interruptionDelivered=value=>!value.retired&&['accepted','answered'].includes(value.phase);
+    const interruptionNeedsReview=value=>value.retired||['retained_unsent','preparation_unconfirmed','cancelled','rejected'].includes(value.phase);
     async function confirmed(value,frozen) {
       if(pending!==frozen || frozen.binding!==getBinding())return;
       if(value.id!==frozen.id || (frozen.dictation?value.text!==frozen.dictation.text:value.voice?.audio_sha256!==frozen.audio_sha256))throw Error('Voice capture does not match this recording.');
@@ -320,11 +332,18 @@ window.VoiceInput = (() => {
       if(frozen.foreground_dialogue&&['foreground_captured','preparing','preparation_unconfirmed'].includes(value.phase)){
         notice('Voice original saved, but its interpretation is not confirmed. Your local copy is kept. Retry resumes interpretation of this same original; Check delivery only reads its status.',true);controls();return;
       }
+      if(frozen.avatarInterrupt&&interruptionNeedsReview(value)){
+        lastConfirmed=value;onInput(value,frozen.focusVersion);
+        pending={...frozen,interruptionNeedsReview:true,submissionRequested:false};
+        notice('Recording saved, but no interruption was confirmed. You can save a copy or discard the local copy.',true);controls();return;
+      }
       clearStatusTimer();onTiming(frozen.id,'retained');
       latestSaved={id:frozen.id,binding:frozen.binding,audio_sha256:frozen.audio_sha256,phase:value.phase,preparedText:frozen.preparedText};
       lastConfirmed=value;
       onInput(value,frozen.focusVersion);onVisualSent(frozen.visual);onFilesSent(frozen.files);pending=undefined;phase='idle';
-      try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
+      if(!frozen.avatarInterrupt||interruptionDelivered(value)){
+        try{await recovery?.remove(frozen);if(recovery)recoveryFree=(await recovery.list()).length===0;}catch{recoveryFree=false;}
+      }
       notice(frozen.dictation&&!value.retired&&value.phase!=='retained_unsent'?'Edited message and originals saved.':value.phase==='foreground_captured'?'Voice original saved; its interpretation is pending. No work was started.':value.phase==='foreground'?'Voice original and interpretation saved in the foreground conversation.':value.phase==='answered'?'Recording and automatic transcript saved; answer recorded for the selected question.':value.retired?'This saved recording is no longer eligible to start work.':
         value.phase==='retained_unsent'?'Recording saved; no work was submitted. You can keep writing.':
         value.phase==='preparation_unconfirmed'?'Recording saved; transcription unconfirmed. Nothing was resubmitted.':
@@ -336,11 +355,23 @@ window.VoiceInput = (() => {
       if(!continuousOwned&&recovery)void restore();
     }
     function observe(value,message) {
+      if(value.voice?.avatar_interrupt===true&&interruptionDelivered(value)&&recovery&&pending?.id!==value.id){
+        const binding=getBinding();
+        if(binding&&(!value.binding||value.binding===binding)){
+          void recovery.list().then(async items=>{
+            const kept=items.find(item=>item.id===value.id&&item.binding===binding&&item.avatarInterrupt===true&&item.audio_sha256===value.voice.audio_sha256);
+            if(kept&&binding===getBinding()&&pending?.id!==value.id)await releaseContinuous(kept,kept.audio_sha256);
+          }).catch(()=>{});
+        }
+      }
       if(!latestSaved || pending || phase!=='idle' || latestSaved.binding!==getBinding()
         || latestSaved.id!==value.id || latestSaved.audio_sha256!==value.voice?.audio_sha256)return;
       latestSaved.phase=value.phase;controls();
       if(value.phase==='preparing'&&latestSaved.preparedText)caption(latestSaved.preparedText);
-      else notice('');
+      else if(value.voice?.avatar_interrupt===true&&interruptionNeedsReview(value)){
+        notice('Recording needs review. You can save a copy from Conversation.',true);
+        if(!continuousOwned&&recovery)void restore();
+      }else notice('');
     }
     async function uploadDictation(frozen,active){
       const d=frozen.dictation;
@@ -362,7 +393,7 @@ window.VoiceInput = (() => {
       await confirmed(value,frozen);
     }
     async function upload(automatic=false) {
-      if(!pending || uploading || pending.binding!==getBinding()||pending.dictation&&pending.retentionBlocked)return;
+      if(!pending || uploading || pending.binding!==getBinding()||pending.interruptionNeedsReview||pending.dictation&&pending.retentionBlocked)return;
       if(pending.needsVisualSelection&&!pending.uncertainSubmission){
         try{const original=pending,visual=await getVisual();if(pending!==original||original.binding!==getBinding())return;pending={...original,id:window.crypto.randomUUID(),visual,needsVisualSelection:false};}
         catch(_){notice('Point again or remove the image before retrying this recording.',true);return;}
@@ -391,7 +422,7 @@ window.VoiceInput = (() => {
           headers:{...headers(),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,
             'X-Audio-Sha256':frozen.audio_sha256,'X-Foreground-Dialogue':frozen.foreground_dialogue,
             ...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{})},body:frozen.blob
-        }):await fetch(route+(frozen.captureStop?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
+        }):await fetch(route+(frozen.captureStop&&!frozen.avatarInterrupt?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
           headers:{...headers(),...(frozen.reply?{'X-Reply-Source':(frozen.reply.context_only?'context:':'')+frozen.reply.source,'X-Reply-Revision':frozen.reply.revision}:{}),...(frozen.visual?{'X-Visual-Reference':JSON.stringify(frozen.visual)}:{}),...(frozen.playback?{'X-Playback-Context':JSON.stringify(frozen.playback)}:{}),...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{}),...(frozen.captureStop?{'X-Recording-Stop':frozen.captureStop}:{}),...(frozen.files?.length?{'X-File-References':encodeURIComponent(JSON.stringify(frozen.files))}:{}),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,'X-Audio-Sha256':frozen.audio_sha256},body:frozen.blob});
         const value=await response.json();
         if(!response.ok){const error=new Error('Recording not confirmed');error.status=response.status;if(response.status===507)error.retentionFull=true;if(value.code==='visual_reselection'&&value.submission_attempted===false)error.visualReselection=true;throw error;}
@@ -595,13 +626,13 @@ window.VoiceInput = (() => {
       notice('Recording copy offered for download. Check its saved status or retry the same original; nothing was resent.',true);
     });
     async function checkStatus(automatic=false){
-      if(!pending||uploading||checking||pending.binding!==getBinding()||automatic&&(!available||document.hidden||window.navigator.onLine===false))return;
+      if(!pending||uploading||checking||pending.binding!==getBinding()||automatic&&(pending.interruptionNeedsReview||!available||document.hidden||window.navigator.onLine===false))return;
       const frozen=pending,owned=generation;clearStatusTimer();
       if(automatic){const used=statusAttempts.get(frozen.id)||0;if(used>=4)return;statusAttempts.set(frozen.id,used+1);while(statusAttempts.size>2)statusAttempts.delete(statusAttempts.keys().next().value);}
       checking=true;notice('Your recording is kept. Checking whether the message arrived…');controls();
       try {await confirmed(await api(`interaction/inputs/${frozen.id}`),frozen);}
       catch(e){if(pending===frozen){
-        if(automatic && !frozen.retentionBlocked && e.status===404 && frozen.submissionRequested===true && (frozen.automaticRetries||0)<2
+        if(automatic && !frozen.avatarInterrupt && !frozen.retentionBlocked && e.status===404 && frozen.submissionRequested===true && (frozen.automaticRetries||0)<2
           && available && !document.hidden && window.navigator.onLine!==false && owned===generation){
           checking=false;notice('Message not received yet. Retrying the same recording…');await upload(true);
         }else{
