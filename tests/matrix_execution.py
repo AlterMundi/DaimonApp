@@ -88,6 +88,15 @@ class UsageReceiptCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(MatrixExecutionError, "exceeds bound"):
             self.selected("import sys; sys.stdin.read(); print('x' * 65537)")(request)
 
+    def test_receipt_command_does_not_inherit_listener_credentials(self):
+        callback = self.selected(
+            "import os, sys; sys.stdin.read(); "
+            "assert 'DM_TEST_PARENT_CREDENTIAL' not in os.environ; print('null')"
+        )
+        request = dict(deadline_unix_ms=int((time.time() + 10) * 1000))
+        with patch.dict(os.environ, {"DM_TEST_PARENT_CREDENTIAL": "synthetic"}):
+            self.assertIsNone(callback(request))
+
     def test_timeout_kills_and_reaps_the_owned_process(self):
         import subprocess
         original = subprocess.Popen

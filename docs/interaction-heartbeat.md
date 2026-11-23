@@ -384,8 +384,10 @@ an absolute command argv and `timeout_seconds` (1–60). The v1 binding remains
 observation-only. The one-shot accounting command receives only the bounded
 exact-attempt receipt request on stdin and returns JSON `null` or `{usage, proof}`
 on stdout, at most64KiB. It inherits the owned host process group and must not
-daemonize. No shell is used, stderr is discarded, and its timeout cannot exceed
-the original cycle deadline. Failure, excessive output or missing signatures
+daemonize. It starts with an empty environment, so the selected command must
+resolve its own custody without inheriting listener credentials. No shell is
+used, stderr is discarded, and its timeout cannot exceed the original cycle
+deadline. Failure, excessive output or missing signatures
 retains the existing maximum reservation. The child persists the observation
 before requesting a receipt once; duplicates and lost acknowledgments never
 rerun the command. Reconciliation of an independently recovered valid receipt
