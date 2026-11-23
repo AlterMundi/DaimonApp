@@ -259,7 +259,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   if(options.visualCapture)context.window.VisualInput={mount(){return {capture:options.visualCapture,consumed(){},reset(){}};}};
   if(options.webRtcDriver){
     const driver=options.webRtcDriver,name=driver.engine==='codex'?'CodexConversation':'PublicLiveConversation';
-    context.window[name]={supported:()=>true,create(hooks){driver.hooks=hooks;return driver.session={active:false,originals:[],start(){this.active=true;hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});},hold(){this.active=false;},setEnabled(){},restoreHistory:async()=>{},resetHistory(){}};}};
+    context.window[name]={supported:()=>true,create(hooks){driver.hooks=hooks;return driver.session={active:false,originals:[],start(){this.active=true;hooks.onState({active:true,starting:false,playback:'idle',outputLevel:0});},hold(){this.active=false;},setEnabled(){},restoreHistory:async()=>{},reconcileHistory:async()=>driver.reconcile?.(),resetHistory(){}};}};
   }
   if(options.replyActivity){
     const activity=options.replyActivity;activity.levels=[];activity.clears=0;
@@ -1765,6 +1765,25 @@ function boot(readOnly=false,standalone=false,options={}) {
     voiceAvatar.continuous().mode.close();assert.equal(activity.levels.at(-1),0,'Leaving clears the mouth before any late engine closure');
     driver.hooks.onState({active:false,starting:false,playback:'idle',outputLevel:1});assert.equal(activity.levels.at(-1),0,'Retired voice callbacks cannot reopen the mouth');voiceAvatar.ui.stop();
   }
+  const savedVoice={engine:'gpt-live'},voiceText=boot(false,true,{capture:true,continuous:true,webRtcDriver:savedVoice});
+  await voiceText.ui.refresh();const voiceSelector=voiceText.nodes.get('#conversation-voice-engine');
+  voiceSelector.value='gpt-live';voiceSelector.handlers.change();voiceText.continuous().mode.open();
+  const transcriptDelta=(visit,id,delta)=>({visit,item:{type:'session.output_transcript.delta',event_id:id,delta}});
+  const liveDelta=transcriptDelta('own-visit','one','One answer');
+  savedVoice.hooks.onItem(liveDelta);
+  savedVoice.hooks.onHistoryItems([{...transcriptDelta('other-visit','else','Older voice'),history:true,source_order:0}]);
+  const transcriptCards=()=>voiceText.nodes.get('#conversation-timeline').children.filter(card=>card.dataset.timelineKey?.startsWith('live:'));
+  const provisionalTranscript=transcriptCards().find(c=>c.dataset.timelineKey.includes('own-visit'));
+  assert(provisionalTranscript);
+  savedVoice.reconcile=()=>savedVoice.hooks.onHistoryItems([liveDelta,transcriptDelta('own-visit','two',' with its saved tail.')]
+    .map((value,source_order)=>({...value,history:true,source_order})));
+  voiceText.continuous().mode.close({returnToText:true});
+  await until(()=>provisionalTranscript.removed);
+  const ownCards=transcriptCards().filter(card=>card.dataset.timelineKey.includes('own-visit'));
+  assert.equal(ownCards.length,1,'The same visit has one transcript after returning to text');
+  assert.equal(ownCards[0].children.find(c=>c.className==='reply-text').textContent,'One answer with its saved tail.');
+  assert.equal(transcriptCards().length,2,'Another visit remains in the timeline');
+  assert.equal(voiceText.nativePosts.length,0);voiceText.ui.stop();
   // Real native engine mounted through the Conversation callbacks: a caption
   // and local energy must not leave its queued output muted by another owner.
   const nativeDriver={},joined=boot(false,true,{capture:true,continuous:true,nativeVoice:true,nativeDriver,clock:true});

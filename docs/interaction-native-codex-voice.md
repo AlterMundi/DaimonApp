@@ -1614,6 +1614,12 @@ session. Already-issued operations retain their exact outcome; the app lease
 and startup-ended acknowledgment wait for settlement. The browser keeps the
 local reason it already displayed.
 
+On return to Conversation, an answered GPT-Live visit gets one bounded
+read of its exact saved transcript. All retained pages of the same revision
+must be available before replacing that visit's provisional transcript cards.
+A failed or mismatched read leaves visible text intact. Older history keeps
+its existing cursor. The read does not send an original or restart voice work.
+
 When matching the current Conversation reader, each manual native Avatar
 entry or reconnect reads the current OpenAI reading delivery instructions.
 The selected delivery stays with that logical visit across automatic transport
