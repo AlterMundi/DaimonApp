@@ -468,7 +468,7 @@ window.Conversation = (() => {
     const cards = new Map(),progressCards=new Map(),settledProgress=new Map(),replyAnchors=new Map();
     // Device-local audio attention, scoped to this conversation binding. No
     // transcript, labels, native work state or playback backlog is persisted.
-    const mutedSessions=new Set(),soloSessions=new Set();let muteBinding,canReplyUpdates=false;
+    const mutedSessions=new Set(),soloSessions=new Set();let muteBinding,workspaceAudioScope,canReplyUpdates=false;
     function sessionKey(source){
       if(["integrator_answer","integrator_progress","integrator_live"].includes(source.kind) || source.kind==="native_question" && source.audio_track==="conversation")return "conversation";
       const target=source.target;
@@ -476,7 +476,12 @@ window.Conversation = (() => {
         || !Number.isSafeInteger(target.chat_id) || target.thread_id!=null && !Number.isSafeInteger(target.thread_id))return;
       return JSON.stringify([target.chat_id,target.thread_id??null]);
     }
-    const sessionMuted=source=>{const key=sessionKey(source);if(conversationOnly)return key!=="conversation";return key?mutedSessions.has(key)||soloSessions.size>0&&!soloSessions.has(key):soloSessions.size>0;};
+    function sessionMuted(source){
+      const key=sessionKey(source);
+      if(conversationOnly)return key!=="conversation";
+      if(workspaceAudioScope!==undefined)return key!==workspaceAudioScope||mutedSessions.has(key);
+      return key?mutedSessions.has(key)||soloSessions.size>0&&!soloSessions.has(key):soloSessions.size>0;
+    }
     function restoreSessionKeys(saved,target){
       if(!Array.isArray(saved)||saved.length>256)return;
       for(const key of saved){
@@ -502,8 +507,8 @@ window.Conversation = (() => {
         }
       }catch{}
     }
-    function audioFilterChanged(){
-      try{
+    function audioFilterChanged({persist=true,scopeChanged=false}={}){
+      if(persist)try{
         window.localStorage?.setItem("interaction-session-audio:"+binding,JSON.stringify({version:1,muted:[...mutedSessions],solo:[...soloSessions]}));
         window.localStorage?.removeItem?.("interaction-session-mutes:"+binding);
       }catch{}
@@ -511,7 +516,8 @@ window.Conversation = (() => {
       workspace?.syncAudio();
       if(prefetched && sessionMuted(prefetched.source||prefetched.owner)){prefetched.controller.abort();prefetched=undefined;}
       for(let n=voiceQueue.length-1;n>=0;n--)if(sessionMuted(voiceQueue[n]))removeQueued(n);
-      if(active?.queued && sessionMuted(active.source))stop("Automatic audio filtered for this session. Its updates remain visible.");
+      if(active&&(active.queued||scopeChanged||workspaceAudioScope!==undefined)&&sessionMuted(active.source))stop();
+      else if(scopeChanged&&speechWait?.source&&sessionMuted(speechWait.source)){cancelSpeechWait();voiceBusy=false;}
       voiceStatus();Promise.resolve().then(drainVoice);
     }
     function muteButtonState(card){
@@ -838,7 +844,8 @@ window.Conversation = (() => {
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
     const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
-      onTarget:()=>{clearFocus();syncTitleControls();},onReply:selectFocus,
+      onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();},
+      focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{
         const key=row&&workspaceAudioKey(row);
@@ -846,12 +853,20 @@ window.Conversation = (() => {
         else if(key&&action==="mute"){if(mutedSessions.has(key))mutedSessions.delete(key);else if(mutedSessions.size<256)mutedSessions.add(key);}
         else if(key&&action==="solo"){if(soloSessions.has(key))soloSessions.delete(key);else if(soloSessions.size<256)soloSessions.add(key);mutedSessions.clear();}
         audioFilterChanged();
-      },onReady:()=>syncTitleControls()
+      },onReady:()=>{syncTitleControls();syncWorkspaceAudio();}
     }):undefined;
     function inputReference(){
       if(replyFocus)return replyFocus.reference;
       const selection=workspace?.capture();
       return selection?selection.reference:voiceContext;
+    }
+    function syncWorkspaceAudio(){
+      const row=workspace?.audioScope?.();
+      const next=row?(workspaceAudioKey(row)??null):undefined;
+      if(next===workspaceAudioScope)return;
+      workspaceAudioScope=next;
+      sound?.update({sessionScoped:next!==undefined});
+      audioFilterChanged({persist:false,scopeChanged:true});
     }
     function workspaceAudioKey(row){
       if(row.is_entry)return "conversation";
@@ -2130,7 +2145,8 @@ window.Conversation = (() => {
     }
     async function startPlayback() {
       const selected = active;
-      if (!selected || !blobUrl || !playbackAllowed() || !enabled || captureBusy) return;
+      if (!selected || !blobUrl || !playbackAllowed() || !enabled || captureBusy
+        || workspaceAudioScope!==undefined&&sessionMuted(selected.source)) return;
       const owned = selected.generation;
       const position = selected.resumePosition ?? audio.currentTime;
       selected.verifying = true;
@@ -2279,6 +2295,7 @@ window.Conversation = (() => {
       })().catch(()=>{waiting.controller.abort();if(prefetched===waiting)prefetched=undefined;});
     }
     async function listenTo(source, offset = 0, chain) {
+      if(workspaceAudioScope!==undefined&&sessionMuted(source))return;
       window.PcmSpeech?.unlock();
       if(captureBusy)return;
       const key=preparationKey(source,offset);

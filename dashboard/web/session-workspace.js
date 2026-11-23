@@ -10,7 +10,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,toolbarHost,noticeHost,daimonName='Daimon',onTarget=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,toolbarHost,noticeHost,daimonName='Daimon',onTarget=()=>{},focusComposer=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -23,7 +23,7 @@
     const reset=button('↺ Reset','Hear all sessions: clear mute and solo',()=>{onAudio('reset');toggle.focus?.();});
     reset.className='session-workspace-reset';
     reset.innerHTML='<svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 10a9 9 0 1 1 1 7M3 4v6h6"/></svg><span>Reset</span>';
-    const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;expanded=undefined;leave();changed();});
+    const unpin=button('⌖','Send to the conversation',()=>{pin=undefined;changed();});
     unpin.innerHTML=pinIcon;
     const status=el('p','','session-workspace-status');status.setAttribute('role','status');status.setAttribute('data-attention','true');
     const retryStatus=button('Retry status','Retry session status',()=>refresh(binding));retryStatus.hidden=true;retryStatus.className='session-workspace-retry';
@@ -87,9 +87,12 @@
     function changed(){remember();renderSelection();onTarget();}
     function renderSelection(){
       const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';target.title=target.textContent;
-      back.hidden=!expanded||expanded.is_entry===true;
-      unpin.hidden=!current;unpin.setAttribute('aria-pressed',String(!!pin&&pin.id===current?.id));
-      unpin.title=pin?`Unpin ${pin.title}: send to the conversation`:'Send to the conversation';
+      back.hidden=!expanded;
+      const backLabel=expanded?.is_entry?'Show all session updates':'Back to the conversation';
+      back.title=backLabel;back.setAttribute('aria-label',backLabel);
+      unpin.hidden=!pin;unpin.setAttribute('aria-pressed',String(!!pin));
+      unpin.title=pin?`Unpin ${pin.title}`:'Send to the conversation';
+      unpin.setAttribute('aria-label',expanded?'Clear pinned input destination':'Send to the conversation');
       for(const [id,row] of rows){row.pin.setAttribute('aria-pressed',String(pin?.id===id));row.name.setAttribute('aria-current',String(expanded?.id===id));}
     }
     function sourceRow(source){
@@ -106,20 +109,17 @@
       if(!allowed||!row||!row.is_entry&&!row.destination)return false;
       if(row.is_entry)pin=undefined;
       else pin=pin?.id===row.id?undefined:{id:row.id,title:row.title,destination:copy(row.destination)};
-      if(expanded&&(!pin||expanded.id!==row.id)){expanded=undefined;leave();}
       changed();showRail(false);toggle.focus?.();return true;
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
     function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row,{restore=false}={}){
-      if(row.is_entry){pin=undefined;expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();toggle.focus?.();return;}
+      if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();if(!restore)focusComposer();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
-      const selection={id:row.id,title:row.title,destination:copy(row.destination)};
-      if(!restore)pin=selection;
-      expanded=selection;
+      expanded={id:row.id,title:row.title,destination:copy(row.destination),audio_key:row.audio_key};
       technical=false;syncView();clearHistory();view.hidden=false;timeline.hidden=true;heading.textContent=row.title;
-      showRail(false);changed();back.focus?.();void history();
+      showRail(false);changed();if(!restore)focusComposer();void history();
     }
     function annotate(row){
       const states=[];
@@ -309,7 +309,15 @@
       }
       finally{if(owned===historyEpoch)historyBusy=false;}
     }
-    return {refresh,capture,syncAudio,pinState,pinSource,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    function audioScope(){
+      if(!allowed||!expanded)return;
+      const current=inventory.get(expanded.id);
+      if(!current)return {};
+      if(current.is_entry===true&&expanded.is_entry===true)return current;
+      return current.destination?.source===expanded.destination?.source
+        &&expanded.destination&&current.destination.revision===expanded.destination.revision?current:{};
+    }
+    return {refresh,capture,syncAudio,pinState,pinSource,audioScope,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};
