@@ -56,6 +56,11 @@ line highlights its unpin control while an explicit pin is active.
 
 ## Status and permissions
 
+The composer message notice can be dismissed locally. A refresh of the same
+message and status keeps it closed. A new message or a changed status can show
+a new notice. The message's own status check remains available in the history.
+Dismissing the notice does not send or withdraw the message.
+
 The authorized inventory retains all owned sessions within the existing128-session
 bound. The rail shows sessions active within24hours, with fresh running/tool/active-
 goal sessions first, then recent conversation activity. A fresh currently working

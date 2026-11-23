@@ -1357,10 +1357,11 @@ html[data-style-policy="authored"] .standalone-conversation .pending-carousel .p
 
 /* Notices float above the composer; changing text never resizes its input. */
 #conversation-compose {position:relative;}
-#conversation-send-feedback {grid-column:1/-1;line-height:1.4;font-size:14px;}
-#conversation-send-feedback:not(:has([data-attention="true"]:not(:empty),button:not([hidden]))) {display:none;}
+#conversation-send-feedback {grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 8px;line-height:1.4;font-size:14px;}
+#conversation-send-feedback[hidden],#conversation-send-feedback:not(:has([data-attention="true"]:not(:empty),#conversation-send-check:not([hidden]))) {display:none;}
 #conversation-send-feedback p {margin:4px 0;color:var(--ink);}
-#conversation-send-feedback button:not([hidden]) {margin-block:2px 4px;}
+#conversation-send-check:not([hidden]) {grid-column:1;justify-self:start;margin-block:2px 4px;}
+#conversation-send-dismiss:not([hidden]) {grid-column:2;grid-row:1 / span 2;align-self:start;min-width:44px;min-height:44px;font-size:20px;}
 #conversation-compose-notices {position:absolute;right:4px;bottom:calc(100% + 2px);z-index:12;}
 #conversation-compose-notices:not(:has([data-attention="true"]:not(:empty),#conversation-recording-review:not([hidden]),#conversation-codex-recovery:not([hidden]),#conversation-public-live-recovery:not([hidden]),#conversation-voice-remaining:not([hidden]))) {display:none;}
 #conversation-compose-notices>summary {list-style:none;display:flex;align-items:center;justify-content:center;gap:4px;width:44px;min-height:44px;cursor:pointer;color:var(--warn);font-size:14px;}
