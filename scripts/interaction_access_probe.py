@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the existing public Conversation entry and its anonymous access fence."""
+"""Check the public Conversation entry, Home sign-in routes and anonymous fence."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -88,6 +88,29 @@ def entry_ready(opener, origin, body, deadline):
     return True
 
 
+def sign_in_ready(opener, origin, deadline):
+    def read(path, expected_status):
+        status, media, body, _ = read_probe_response(
+            opener, origin + path, "application/json", 4096, deadline)
+        if status != expected_status or media != "application/json" or len(body) > 4096:
+            return {}
+        try:
+            value = json.loads(body)
+        except (ValueError, RecursionError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    status = read("/access/status", 200)
+    if (status.get("contract") != "dm.home-browser/v1"
+            or status.get("shared_login") is not True
+            or status.get("signed_in") is not False):
+        return "status_unavailable"
+    identity = read("/access/identity", 401)
+    if identity.get("detail") != "human_browser_required":
+        return "identity_unavailable"
+    return "ready"
+
+
 def probe(origin):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     deadline = time.monotonic() + 7
@@ -108,9 +131,12 @@ def probe(origin):
             return {"origin": origin, "state": "unexpected_access_response", "access_status": status}
         entry_url = origin + ENTRY + "?view=conversation&client=standalone"
         entry_status, media, body, _ = read_probe_response(opener, entry_url, "text/html", 16384, deadline)
-        ready = entry_status == 200 and media == "text/html" and entry_ready(opener, origin, body, deadline)
+        entry_ok = entry_status == 200 and media == "text/html" and entry_ready(opener, origin, body, deadline)
+        sign_in = sign_in_ready(opener, origin, deadline) if entry_ok else None
+        ready = sign_in == "ready"
         return {"origin": origin, "state": "ready" if ready else "unexpected_entry_response",
-                "access_status": status, "entry_status": entry_status}
+                "access_status": status, "entry_status": entry_status,
+                **({"sign_in": sign_in} if sign_in is not None else {})}
     except (OSError, ValueError):
         return {"origin": origin, "state": "transport_unavailable", "access_status": status}
 
