@@ -73,6 +73,15 @@ The ordinary Talk credential can inspect its canonical web input traces. The
 separate monitor can also read retained legacy Telegram routing originals and
 has no input, playback or session-control authority.
 
+An explicitly selected original with one current accepted instruction can
+also carry `active_execution` on its route. The owner observes the exact
+instruction and local turn in its live routing handle and current retained
+native collection. The proof contains the running state, instruction ID and
+local turn ID. It disappears on terminal execution, changed binding or a
+held route. Admission remains recorded separately. Automatic fan-out and
+unqualified later physical continuations carry no active proof. This is an
+observation for a consuming app to recheck, not a new edit grant.
+
 The owner console also supports bounded original-scoped result continuation:
 `input trace-results ID INSTRUCTION BEFORE` and exact association readback with
 `input trace-result ID delivery:UUID`. Current traces advertise `result_pages=v1`

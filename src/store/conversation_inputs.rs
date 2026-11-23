@@ -1482,6 +1482,87 @@ impl Store {
         self.conversation_input_trace_selected(human, entry, id, None, 0, None)
     }
 
+    /// Select the current durable half of a single explicit routed execution.
+    /// A persisted running row alone is not proof that the owner is still executing.
+    pub(crate) fn conversation_active_route(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        original: &str,
+        instruction: &str,
+        target: SessionKey,
+    ) -> Result<Option<crate::interaction::Instruction>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = read_on(&conn, original, human)?;
+        let Some(route) = input.routing.as_ref() else {
+            return Ok(None);
+        };
+        if input.entry != entry
+            || input.phase != "routed"
+            || !matches!(
+                route.selection.as_str(),
+                "explicit_selector" | "reply" | "session_destination"
+            )
+            || route.instruction.as_deref() != Some(instruction)
+            || route.target != target
+            || eligible_on(&conn, &input).is_err()
+        {
+            return Ok(None);
+        }
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT i.doc FROM interaction_instructions i
+                 JOIN interaction_sources o ON o.id=i.input_id
+                 JOIN sessions s ON s.id=i.session_id
+                 JOIN users u ON u.tg_user_id=s.creator_user_id
+                 JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
+                 JOIN native_collections c ON c.local_turn=t.id
+                 WHERE i.id=?1 AND i.phase='accepted'
+                 AND o.channel='conversation' AND o.human_id=?2 AND o.event_id=?3
+                 AND o.origin_chat=?4 AND o.origin_thread=?5
+                 AND s.id=?6 AND s.chat_id=?7 AND s.thread_id=?8
+                 AND s.creator_user_id=?2 AND u.allowed=1 AND s.force_fresh_thread=0
+                 AND t.session_id=s.id AND t.from_user_id=?2 AND t.status='running'
+                 AND t.completed_at IS NULL AND t.native_thread_id=s.codex_thread_id
+                 AND t.native_thread_id=json_extract(i.doc,'$.native_thread')
+                 AND c.first_turn=json_extract(i.doc,'$.native_turn') AND c.first_turn<>''
+                 AND c.phase IN ('open','boundary')
+                 AND NOT EXISTS(
+                     SELECT 1 FROM interaction_instructions sibling
+                     WHERE sibling.input_id=o.id AND sibling.id<>i.id
+                 )",
+                params![
+                    instruction,
+                    human,
+                    original,
+                    entry.chat_id,
+                    entry.thread_id,
+                    route.session,
+                    target.chat_id,
+                    target.thread_id
+                ],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let active: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+        let epoch = super::stopping::admission_epoch_on(&conn, target)?;
+        if active.id != instruction
+            || active.target != target
+            || active.target_session != route.session
+            || active.human_id != human
+            || active.local_turn.is_none_or(|local| local <= 0)
+            || active.admission_epoch.as_deref() != Some(epoch.as_str())
+            || super::stopping::fenced_on(&conn, target)?
+            || super::maintenance_writer_held_on(&conn, target)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(active))
+    }
+
     /// Continue one original's exact instruction results, without scanning other work.
     pub fn conversation_input_trace_results(
         &self,

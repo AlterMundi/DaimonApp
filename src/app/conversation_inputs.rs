@@ -845,9 +845,27 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             .store
             .conversation_input_trace(human, cfg.entry(), id)?;
         if let Some(routes) = trace["routes"].as_array_mut() {
+            let single = routes.len() == 1;
             for route in routes {
                 let target: SessionKey = serde_json::from_value(route["target"].clone())?;
                 route["label"] = json!(super::routing::label(&app.shared, target));
+                if single
+                    && route["target_available"] == true
+                    && route["native_acceptance"] == true
+                    && let Some(instruction) = route["instruction"].as_str()
+                    && let Ok(Some(local)) = super::routing::active_conversation_turn(
+                        &app.shared,
+                        human,
+                        cfg.entry(),
+                        id,
+                        instruction,
+                        target,
+                    )
+                {
+                    route["active_execution"] = json!({
+                        "status":"running", "instruction":instruction, "local_turn":local,
+                    });
+                }
             }
         }
         return Ok(trace);
