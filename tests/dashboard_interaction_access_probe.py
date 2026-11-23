@@ -15,6 +15,7 @@ VERSIONED_JS = (206, "text/javascript", b"x", '"2d711642b726b044"')
 HOME_STATUS = (200, "application/json",
                b'{"contract":"dm.home-browser/v1","signed_in":false,"shared_login":true}', None)
 HOME_IDENTITY = (401, "application/json", b'{"detail":"human_browser_required"}', None)
+APP_IDENTITY = (401, "application/json", b'{"detail":"Sign in to your conversation"}', None)
 
 
 class AccessProbe(unittest.TestCase):
@@ -47,7 +48,7 @@ class AccessProbe(unittest.TestCase):
             if entry is not None:
                 results.extend([(*entry, None), *assets])
             if expected == "ready":
-                results.extend([HOME_STATUS, HOME_IDENTITY])
+                results.extend([HOME_STATUS, HOME_IDENTITY, APP_IDENTITY])
             with self.subTest(expected=expected, access=access[0]), patch(
                 "scripts.interaction_access_probe.read_probe_response", side_effect=results,
             ) as request:
@@ -61,7 +62,9 @@ class AccessProbe(unittest.TestCase):
                         ORIGIN + "/interaction/assets/app.js?v=2d711642b726b044",
                         ORIGIN + "/access/status",
                         ORIGIN + "/access/identity",
+                        ORIGIN + "/interaction/api/interaction/access",
                     ])
+                    self.assertTrue(request.call_args.kwargs["synthetic_session"])
 
     def test_real_http_shared_sign_in_failure_then_recovery(self):
         paths = {
@@ -76,12 +79,17 @@ class AccessProbe(unittest.TestCase):
             "/access/identity": HOME_IDENTITY,
         }
         seen = []
+        app_identity = (503, "application/json", b'{"detail":"Shared authentication unavailable; retry shortly"}', None)
 
         class Gateway(BaseHTTPRequestHandler):
             def do_GET(self):
                 seen.append(self.path.split("?")[0])
-                assert not self.headers.get("Authorization") and not self.headers.get("Cookie")
-                status, media, body, etag = paths[self.path.split("?")[0]]
+                assert not self.headers.get("Authorization")
+                cookie = self.headers.get("Cookie")
+                if cookie:
+                    assert self.path == "/interaction/api/interaction/access"
+                    assert cookie.startswith("__Host-home=") and len(cookie.split("=",1)[1])==43
+                status, media, body, etag = app_identity if cookie else paths[self.path.split("?")[0]]
                 self.send_response(status)
                 self.send_header("Content-Type", media)
                 self.send_header("Content-Length", str(len(body)))
@@ -108,6 +116,13 @@ class AccessProbe(unittest.TestCase):
                 self.assertEqual((broken["state"], broken["sign_in"]),
                                  ("unexpected_entry_response", "identity_unavailable"))
                 paths["/access/identity"] = HOME_IDENTITY
+                for unexpected in (app_identity, paths["/interaction/api/interaction/access"],
+                                   (200, "application/json", b"{}", None)):
+                    app_identity = unexpected
+                    broken = probe(origin)
+                    self.assertEqual((broken["state"], broken["sign_in"]),
+                                     ("unexpected_entry_response", "app_identity_unavailable"))
+                app_identity = APP_IDENTITY
                 ready = probe(origin)
                 self.assertEqual((ready["state"], ready["sign_in"]), ("ready", "ready"))
             finally:
