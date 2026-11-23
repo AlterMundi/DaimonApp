@@ -84,3 +84,31 @@ assert.equal(presentation(unloaded,now).detail,'Our conversation will be prepare
 assert.equal(state(unloaded,now),'unavailable','An unloaded thread is not fresh positive admission proof');
 assert.equal(presentation(unloaded,now+15000).label,'Status unavailable');
 assert.equal(presentation({...unloaded,operational_evidence:{...unloaded.operational_evidence,reason:'native_admission_unavailable'}},now).label,'Needs attention','An explicit native refusal still needs attention');
+
+const messagingPaused={...waiting,
+  lanes:{messaging:{generation:2,paused:true,supported:true}},
+  operational_evidence:{...waiting.operational_evidence,reason:'messaging_paused'}};
+assert.equal(presentation(messagingPaused,now).label,'Messages paused');
+assert.equal(state(messagingPaused,now),'unavailable','A lane pause never pulses as ready');
+assert.equal(presentation(messagingPaused,now+15000).label,'Status unavailable');
+assert.equal(presentation({...messagingPaused,lanes:{messaging:{generation:3,paused:true,supported:true}}},now).label,'Status unavailable');
+
+async function checkMountedExpiry() {
+  const nodes=new Map();
+  const element=()=>({dataset:{},hidden:true,style:{},addEventListener(){},setAttribute(){},append(){},replaceChildren(){}});
+  let time=now,timer,delay;
+  const root={querySelector(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},createElement:element};
+  const mountedWindow={addEventListener(){}};
+  const context={window:mountedWindow,document:{hidden:false,addEventListener(){}},
+    setTimeout(callback,ms){timer=callback;delay=ms;return 1;},clearTimeout(){timer=undefined;}};
+  vm.runInNewContext(fs.readFileSync('dashboard/web/heartbeat.js','utf8'),context);
+  const view=mountedWindow.InteractionHeartbeat.mount({api:async()=>messagingPaused,
+    authenticated:()=>true,root,clock:()=>time});
+  await view.refresh(true);
+  assert.equal(nodes.get('#heartbeat-status').textContent,'Heartbeat · Messages paused');
+  assert.equal(delay,15000,'Negative evidence must have a display deadline too');
+  time+=delay;
+  timer();
+  assert.equal(nodes.get('#heartbeat-status').textContent,'Heartbeat · Status unavailable');
+}
+checkMountedExpiry().catch(error=>{console.error(error);process.exitCode=1;});
