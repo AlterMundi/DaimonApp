@@ -184,8 +184,16 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const scanning=boot();await scanning.control.refresh('binding');scanning.scanPage(true);
   scanning.byText('Busy work').click();await tick();await scanning.control.refresh('binding');await tick();
   assert(scanning.reads.at(-1).includes('after=150')&&scanning.reads.at(-1).includes('scan=true'));
-  scanning.byLabel('Read earlier messages').click();await tick();
+  assert(!scanning.byText('Earlier')&&!scanning.byText('Newer'));
+  const messages=scanning.byLabel('Selected session messages');
+  assert.equal(messages.tabIndex,0);
+  messages.scrollTop=0;messages.events.wheel({deltaY:-40,deltaX:0});await tick();
   assert(scanning.reads.at(-1).includes('before=50')&&scanning.reads.at(-1).includes('scan=true'));
+  messages.events.touchstart({touches:[{clientY:80}]});
+  messages.events.touchend({changedTouches:[{clientY:140}]});await tick();
+  assert(scanning.reads.at(-1).includes('before=50'),'A touch gesture loads history even when the page is too short to scroll');
+  messages.scrollTop=messages.scrollHeight;messages.events.keydown({target:messages,key:'PageDown'});await tick();
+  assert(scanning.reads.at(-1).includes('after=150'),'Keyboard navigation reaches newer history');
   // Late selected-history reads cannot appear under another session's heading.
   const release=f.holdHistory();f.byText('Busy work').click();f.byText('Earlier work').click();await tick();
   release({schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{text:'Stale other session',kind:'message',role:'assistant',id:'stale',position:1,next_position:2}],before:1,after:2});await tick();

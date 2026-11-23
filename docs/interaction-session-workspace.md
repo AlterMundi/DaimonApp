@@ -96,6 +96,10 @@ assistant messages use Conversation styling and Markdown, with the composer
 fixed below the message pane. Routed human input uses the exact retained
 original for that instruction, owned session and human. Internal relay
 context and unresolved or session-authored packets stay in Raw.
+The ordinary view also omits the trailing Telecodex result declaration from
+assistant replies. Raw retains the original answer and declaration verbatim.
+Scrolling to the edges reads earlier or newer history without separate paging
+buttons. Keyboard, wheel and touch gestures also work on a short page.
 **Input** identifies the harness role.
 **Raw** toggles the retained technical view with harness envelopes, available
 tool calls and outputs, and exposed reasoning summaries. The toggle keeps the

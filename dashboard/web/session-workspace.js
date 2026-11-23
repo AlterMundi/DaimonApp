@@ -42,12 +42,37 @@
     }
     const technicalButton=button('Raw','Raw session view',()=>setView(!technical));
     technicalButton.setAttribute('aria-pressed','false');
-    const earlier=button('Earlier','Read earlier messages',()=>history('before'));
-    const newer=button('Newer','Read newer messages',()=>history('after'));
     const retryHistory=button('Retry reading','Retry reading this conversation',()=>history(retryDirection));retryHistory.hidden=true;
-    const entries=el('div',undefined,'session-messages');entries.setAttribute('role','log');entries.setAttribute('aria-label','Selected session messages');
+    const entries=el('div',undefined,'session-messages');entries.setAttribute('role','log');entries.setAttribute('aria-label','Selected session messages');entries.tabIndex=0;
     const historyStatus=el('p','','session-history-status');historyStatus.setAttribute('role','status');
-    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,retryHistory,earlier,entries,newer);
+    viewBar.append(heading,technicalButton);view.append(viewBar,historyStatus,retryHistory,entries);
+    let historyScrollTop=0,touchStart;
+    function pageAtEdge(direction){
+      if(view.hidden||!retryHistory.hidden||!activeHistory)return;
+      if(direction==='before'&&activeHistory.hasEarlier&&entries.scrollTop<=24)void history('before');
+      if(direction==='after'&&activeHistory.moreAfter&&entries.scrollHeight-entries.clientHeight-entries.scrollTop<=24)void history('after');
+    }
+    entries.addEventListener('scroll',()=>{
+      const previous=historyScrollTop;
+      historyScrollTop=entries.scrollTop;
+      if(historyScrollTop!==previous)pageAtEdge(historyScrollTop<previous?'before':'after');
+    },{passive:true});
+    // At the edge a wheel or swipe may produce no scroll event (including a
+    // short page). Use the gesture to keep the existing cursors reachable.
+    entries.addEventListener('wheel',event=>{
+      if(!event.ctrlKey&&Math.abs(event.deltaY)>Math.abs(event.deltaX))pageAtEdge(event.deltaY<0?'before':'after');
+    },{passive:true});
+    entries.addEventListener('touchstart',event=>{touchStart=event.touches.length===1?event.touches[0].clientY:undefined;},{passive:true});
+    entries.addEventListener('touchend',event=>{
+      const distance=event.changedTouches[0]?.clientY-touchStart;
+      touchStart=undefined;
+      if(Math.abs(distance)>24)pageAtEdge(distance>0?'before':'after');
+    },{passive:true});
+    entries.addEventListener('keydown',event=>{
+      if(event.target!==entries)return;
+      if(['PageUp','Home','ArrowUp'].includes(event.key))pageAtEdge('before');
+      if(['PageDown','End','ArrowDown'].includes(event.key))pageAtEdge('after');
+    });
     window.ConversationHeader?.mount({timeline:entries});
     shell.addEventListener('keydown',event=>{if(event.key==='Escape'&&!rail.hidden){showRail(false);toggle.focus?.();event.stopPropagation();}});
     let showAll=false;
@@ -113,7 +138,7 @@
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();earlier.hidden=true;newer.hidden=true;historyStatus.textContent='';retryHistory.hidden=true;}
+    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();historyScrollTop=0;touchStart=undefined;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row,{restore=false}={}){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();if(!restore)focusComposer();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -291,9 +316,10 @@
         // Keep only a bounded DOM window. Removed messages remain in native
         // history and can be read again with its existing cursors.
         trimHistory(direction==='before');
-        earlier.hidden=!activeHistory.hasEarlier;newer.hidden=!activeHistory.moreAfter;historyStatus.textContent=result.skipped_records?'Some content could not be previewed.':entries.children.length?'':'No messages yet.';
+        historyStatus.textContent=result.skipped_records?'Some content could not be previewed.':entries.children.length?'':'No messages yet.';
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
+        historyScrollTop=entries.scrollTop;
         onReady(true);
       }catch(error){
         if(owned===historyEpoch){

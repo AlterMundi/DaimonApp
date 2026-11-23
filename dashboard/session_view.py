@@ -48,6 +48,38 @@ def _conversation_input(text, routed_original):
     return text.partition('\n\nFollow these instructions for this turn:')[0]
 
 
+
+def _unique_fields(pairs):
+    fields=dict(pairs)
+    if len(fields)!=len(pairs):
+        raise ValueError('Repeated result field')
+    return fields
+
+
+def _conversation_answer(text):
+    # Match Telecodex's visible_answer projection. Only a trailing Coverage
+    # declaration is metadata; quoted, fenced and malformed text is still prose.
+    start, end='<daimon-result>', '</daimon-result>'
+    visible=text.rstrip()
+    if not visible.endswith(end):
+        return text
+    body, marker, raw=visible.rpartition('\n'+start)
+    if not marker:
+        if not visible.startswith(start):
+            return text
+        raw=visible[len(start):]
+    try:
+        fields=json.loads(raw[:-len(end)],object_pairs_hook=_unique_fields)
+    except (ValueError,RecursionError):
+        return text
+    if (not isinstance(fields,dict) or not {'requests','covered'}<=fields.keys()
+            or fields.keys()-{'requests','covered','completed','deferred'}
+            or any(not isinstance(items,list) or any(not isinstance(item,str) for item in items)
+                   for items in fields.values())):
+        return text
+    return body.rstrip()
+
+
 def _event(record,technical,routed_original):
     if not isinstance(record,dict):return None
     p=record.get('payload',{})
@@ -60,8 +92,8 @@ def _event(record,technical,routed_original):
         # conversational assistant phases/channels enter either presentation.
         if role=='assistant' and (p.get('channel')=='analysis' or p.get('phase')=='analysis'):return None
         text=_text(p.get('content'))
-        if not technical and role=='user':
-            text=_conversation_input(text,routed_original)
+        if not technical:
+            text=_conversation_input(text,routed_original) if role=='user' else _conversation_answer(text)
         if not technical and not text.strip():return None
         return {'kind':'message','role':role,'text':text}
     if not technical:return None
