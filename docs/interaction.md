@@ -936,6 +936,11 @@ can discover this operation through the stable controller's `capabilities` call.
 
 ## Switching between web and direct conversations
 
+When preparing a new native turn, Telecodex reads the recent rollout messages
+from the tail using a blocking worker. It retains message order, excludes
+commentary and keeps the earliest timestamp of adjacent duplicate entries.
+Select exact full-history readers for tasks that need older content.
+
 ### Requested next behavior: visible session parity — 2026-10-19
 
 The human requested that a session's Telegram topic also show the integrator

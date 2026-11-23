@@ -624,7 +624,7 @@ pub(super) async fn process_turn(
     let runtime_request = if queued.workflow_return.is_some() {
         runtime_request
     } else {
-        enrich_runtime_request_with_codex_history(&session, runtime_request)
+        enrich_runtime_request_with_codex_history(&session, runtime_request).await
     };
     let mut runtime_request = if queued.workflow_return.is_some() {
         runtime_request
@@ -2543,14 +2543,18 @@ async fn context_pressure_note_for_session(
     if note.is_empty() { None } else { Some(note) }
 }
 
-fn enrich_runtime_request_with_codex_history(
+async fn enrich_runtime_request_with_codex_history(
     session: &crate::models::SessionRecord,
     mut request: TurnRequest,
 ) -> TurnRequest {
-    let Some(thread_id) = session.codex_thread_id.as_deref() else {
+    let Some(thread_id) = session.codex_thread_id.clone() else {
         return request;
     };
-    let Ok(history) = read_thread_history(&default_codex_home(), thread_id, 8) else {
+    let Ok(Ok(history)) = tokio::task::spawn_blocking(move || {
+        read_thread_history(&default_codex_home(), &thread_id, 8)
+    })
+    .await
+    else {
         return request;
     };
     if history.is_empty() {
