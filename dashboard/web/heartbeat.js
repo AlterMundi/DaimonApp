@@ -28,9 +28,13 @@
     const producer=value?.producer,check=producer?.last_check;
     if(!check || !['in_progress','succeeded','failed'].includes(check.outcome))return '';
     const completed=time(check.completed_at_unix_ms),started=time(check.started_at_unix_ms);
-    if(check.outcome==='in_progress')return started?'Source check started '+started+'; completion not observed.':'';
-    if(!completed)return '';
     const different=check.generation!==value.generation || typeof check.activation?.lane!=='string' || !Number.isSafeInteger(check.activation?.generation) || check.activation.generation!==value.lanes?.[check.activation.lane]?.generation;
+    if(check.outcome==='in_progress'){
+      if(!started)return '';
+      return different?'Earlier or unverified source check started '+started+'; completion not observed.':
+        'Source check started '+started+'; completion not observed.';
+    }
+    if(!completed)return '';
     let text='Last source check '+check.outcome+' at '+completed+(different?' (different or unconfirmed control generation).':'.');
     const success=time(producer.last_success_at_unix_ms);
     if(check.outcome==='failed')text+=' Last successful source check: '+(success || 'not observed')+'.';

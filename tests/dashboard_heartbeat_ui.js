@@ -36,7 +36,12 @@ assert.match(observation({...checked,lanes:{messaging:{generation:8}}}),/differe
 const failed={...checked,producer:{...checked.producer,last_check:{...checked.producer.last_check,outcome:'failed',error:'arbitrary private adapter output'}}};
 assert.equal(observation(failed),'Last source check failed at 2023-11-14T22:13:21.000Z. Last successful source check: 2023-11-14T22:13:21.000Z.');
 assert.match(observation({...failed,producer:{...failed.producer,last_success_at_unix_ms:null}}),/not observed/);
-assert.match(observation({...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}}),/completion not observed/);
+const inProgress={...checked,producer:{last_check:{...checked.producer.last_check,outcome:'in_progress',completed_at_unix_ms:null}}};
+assert.match(observation(inProgress),/^Source check started .*completion not observed\.$/);
+assert.match(observation({...inProgress,lanes:{messaging:{generation:8,paused:true}}}),
+  /^Earlier or unverified source check started .*completion not observed\.$/);
+assert.match(observation({...inProgress,generation:2}),
+  /^Earlier or unverified source check started .*completion not observed\.$/);
 for(const value of [null,base,{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Infinity}}},{...checked,producer:{last_check:{outcome:'succeeded',completed_at_unix_ms:Number.MAX_SAFE_INTEGER}}}])assert.equal(observation(value),'');
 console.log('Heartbeat: expired/exhausted/stopped dependencies cannot pulse; source-check timestamps remain distinct from operational proof.');
 
