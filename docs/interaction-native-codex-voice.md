@@ -1658,3 +1658,9 @@ reply for explicit playback. The reader retains the verified playback
 position and continues with already queued independent replies; it does
 not automatically synthesize the failed part again or skip over it within
 the same reply. Text stays visible and input admission is independent.
+
+Conversation voice distinguishes a saved recording from native admission.
+While an original still waits, the Avatar shows that it is saved and leaves
+the microphone available. The existing Conversation refresh reads the same
+original ID and clears the notice when admission settles. This creates no
+separate polling, resubmission, priority lane, or automatic interruption.
