@@ -1,6 +1,7 @@
 """Real OS process exclusion and ASGI voice startup/cleanup; no model calls."""
 import asyncio
 import fcntl
+import hashlib
 import multiprocessing
 import json
 import subprocess
@@ -160,9 +161,15 @@ class Admission(unittest.TestCase):
         with maintenance_guard(self.root):pass
         with self.assertRaises(ValueError):
             with retained_voice(scope):pass
-    def server(self, header, coverage=None):
+    def server(self, header, coverage=None, access=None):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(inner):
+                if access is not None and inner.path=='/api/interaction/access':
+                    status,detail=access()
+                    inner.send_response(status)
+                    inner.send_header('Content-Type','application/json')
+                    inner.end_headers();inner.wfile.write(json.dumps({'detail':detail}).encode())
+                    return
                 inner.send_response(200)
                 if header:inner.send_header(HEADER,header)
                 if coverage:inner.send_header(COVERAGE_HEADER,coverage)
@@ -203,6 +210,47 @@ class Admission(unittest.TestCase):
         self.assertEqual(result.returncode,78,result.stderr);self.assertFalse(target.exists())
         result=self.command(self.server(self.admission.header,COVERAGE),code,require_speech=True)
         self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(target.read_text(),'effect')
+
+    def observer_repair(self, health, code, *, extra_change=False):
+        preimage=self.root/'receiver.previous.toml'
+        receiver=self.root/'receiver.toml'
+        config=self.root/'operator.toml'
+        preimage.write_text('[interaction]\nhuman_id=100\nobserver_model="old"\n')
+        upcoming='[interaction]\nhuman_id='+('101' if extra_change else '100')+'\nobserver_model="new"\n'
+        receiver.write_text(upcoming)
+        config.write_text('state_dir = '+json.dumps(str(self.root))+'\nreceiver_config = '+json.dumps(str(receiver))+'\n')
+        for path in (preimage,receiver,config):path.chmod(0o600)
+        script=Path(__file__).resolve().parents[1]/'scripts/interaction_web_maintenance.py'
+        return subprocess.run([sys.executable,str(script),'--config',str(config),
+            '--health-url',health,'--seconds','5','--require-speech','--observer-preimage',str(preimage),
+            '--receiver-sha256',hashlib.sha256(upcoming.encode()).hexdigest(),'--',sys.executable,'-c',code],
+            capture_output=True,text=True,timeout=12)
+
+    def test_observer_repair_runs_once_and_requires_confirmed_recovery(self):
+        target=self.root/'repair-state'
+        fault=(503,'Receiving control binding changed; operator must requalify Sessions')
+        healthy=(401,'Shared browser sign-in required')
+        health=self.server(self.admission.header,COVERAGE,lambda:healthy if target.exists() else fault)
+        code='from pathlib import Path;Path('+repr(str(target))+').write_text("repaired")'
+        result=self.observer_repair(health,code)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('recovery verified',result.stdout)
+        self.assertEqual(self.observer_repair(health,'raise AssertionError("replay")').returncode,78)
+        target.unlink()
+        result=self.observer_repair(health,'pass')
+        self.assertEqual(result.returncode,79,result.stderr)
+        self.assertIn('recovery is unconfirmed',result.stderr)
+
+    def test_observer_repair_refuses_other_receiver_changes_or_busy_voice(self):
+        target=self.root/'must-not-apply'
+        fault=(503,'Alerts receiving binding changed; operator must requalify Sessions')
+        health=self.server(self.admission.header,COVERAGE,lambda:fault)
+        code='from pathlib import Path;Path('+repr(str(target))+').touch()'
+        self.assertEqual(self.observer_repair(health,code,extra_change=True).returncode,78)
+        claim=self.admission.claim()
+        try:self.assertEqual(self.observer_repair(health,code).returncode,75)
+        finally:claim.release()
+        self.assertFalse(target.exists())
 
     def test_operator_deadline_retains_unknown_receipt_and_does_not_retry(self):
         target=self.root/'owned-intent'

@@ -482,3 +482,19 @@ verified unchanged journal entries and post-action readback. Defer busy or
 uncertain work. Repeated restarts alone cannot correct a persisted binding
 mismatch. Keep cadence, incident delivery, repair and per-user acceptance as
 separately observed outcomes.
+
+For an explicitly prepared observer-model transition, the web maintenance
+guard accepts `--observer-preimage PRIVATE_TOML --receiver-sha256 DIGEST`
+with `--require-speech`. The existing fixed, same-actor requalification
+operator remains the command after `--`. This opt-in path compares the
+complete parsed configs with only `interaction.observer_model` excluded,
+pins the exact current file, requires the local serving voice fence and a
+known binding fault on the loopback access API, and runs the writer once.
+The writer inherits the already-held fence. After a successful command the
+guard verifies the local application's expected anonymous refusal. Code 75
+defers active voice, 78 means the writer never started, and 79 means an
+attempt ran with unconfirmed recovery. A nonzero operator result is preserved.
+
+Cluster owns registration of the exact operator, its preimage and candidate
+digest. An incident alone grants no write. Use the existing Alerts observer
+for a fresh public readback and separately retain real authenticated evidence.
