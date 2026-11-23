@@ -1849,9 +1849,14 @@ window.Conversation = (() => {
       const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
       const visibility=source.kind==="matrix_visibility";
       const deliveryPhase=source.handling?.phase;
+      const delivery=source.handling?.outcome;
+      const sendingBeing=delivery?.author?.being_ref;
+      const partialDelivery=deliveryPhase==="submitted" && !!sendingBeing && Array.isArray(delivery.members) &&
+        delivery.members.some(member=>member?.being_ref && member.being_ref!==sendingBeing && member.receiving_copy==="proved");
       const diagnosticStatus = visibility ? "Durable communication copy. This record is not a human message or a delivery confirmation." : matrix ? (source.kind==="matrix_response" ?
         deliveryPhase==="recipient_copy_proved" ? "Recipient receiving copy proved. Reading and work completion are unconfirmed." :
         deliveryPhase==="uncertain" ? "Delivery uncertain. The original response intent is retained; it has not been resent." :
+        partialDelivery ? "Delivery confirmed for some recipients; the remaining recipients are unconfirmed." :
         deliveryPhase==="submitted" ? "Submitted; recipient delivery is not proved." : "Response intent retained; delivery is not proved."
         : source.direction==="outgoing" ? "Own message retained in the signed Matrix inbox. Recipient delivery is not established by this copy." : "SDK-authenticated incoming message. Peer speech is not human instruction or proof of completed work.") : progress ? "Progress update." : source.kind === "integrator_answer" ? "Reply from this conversation."
         : source.correction_pending ? "A later correction is pending."
@@ -1861,7 +1866,7 @@ window.Conversation = (() => {
         : source.completed ? "Session reports this request complete." : "Session progress; work may continue.";
       card.status.textContent = visibility ? "Communication" : matrix ? (
         source.kind==="matrix_response" ? deliveryPhase==="recipient_copy_proved" ? "Delivered" :
-          deliveryPhase==="submitted" ? "Sent" : "Delivery not confirmed" :
+          partialDelivery ? "Partly delivered" : deliveryPhase==="submitted" ? "Sent" : "Delivery not confirmed" :
           source.direction==="incoming" ? "Received" : "Message copy") : diagnosticStatus;
       if(matrix || visibility){
         if(!card.matrixDetails){

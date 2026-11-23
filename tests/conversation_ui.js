@@ -474,6 +474,28 @@ function boot(readOnly=false,standalone=false,options={}) {
     assert(!read.hidden);assert.equal(read.textContent,'Continue reading','The bounded reader must expose the remaining original');
     while(!read.hidden)await read.handlers.click();assert.equal(card.children[1].textContent,whole);view.ui.stop();
   }
+  const deliveryCards=boot(false,true);
+  const author={being_ref:"sender"};
+  const own={being_ref:"sender",receiving_copy:"proved"};
+  const peer={being_ref:"recipient",receiving_copy:"proved"};
+  const unconfirmed={being_ref:"another-recipient",receiving_copy:"unknown"};
+  const matrixStatus = (n, phase, members) => deliveryCards.overrideSource(n,{
+    kind:"matrix_response", direction:"outgoing", handling:{phase,outcome:{author,members}}
+  });
+  matrixStatus(8,"submitted",[own,peer,unconfirmed]);
+  matrixStatus(7,"submitted",[own,unconfirmed]);
+  matrixStatus(6,"recipient_copy_proved",[peer]);
+  matrixStatus(5,"uncertain",[]);
+  await deliveryCards.ui.refresh();
+  const plainStatus=n=>deliveryCards.nodes.get("#conversation-timeline").children
+    .find(card=>card.dataset.sourceId===`native:${n}`).children
+    .find(child=>child.className==="reply-status").textContent;
+  assert.equal(plainStatus(8),"Partly delivered");
+  assert.equal(plainStatus(7),"Sent","A sender copy does not count as recipient delivery");
+  assert.equal(plainStatus(6),"Delivered");
+  assert.equal(plainStatus(5),"Delivery not confirmed");
+  deliveryCards.ui.stop();
+
   const localProgress=boot(false,true,{autoText:true});
   const completeLocalProgress='Queda establecido: seguimos con el trabajo. '.repeat(80)+'La última palabra permanece completa.';
   localProgress.overrideSource(8,{kind:'integrator_progress',preview:completeLocalProgress.slice(0,240),text_characters:Array.from(completeLocalProgress).length});
