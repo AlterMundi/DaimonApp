@@ -22,6 +22,26 @@ both UUIDs. Cancellation or execution loss past that boundary keeps the
 original uncertain. A completed result is output for Gateway to commit and
 return to Matrix.
 
+### Gateway worker
+
+Launch `gateway-worker.mjs --profile <owner profile>` once for a selected
+foreground attempt. Gateway owns the process group, starts it with a cleared
+environment, and keeps both pipes open until the outcome. The worker's private,
+owner-owned profile selects the absolute SDK entry, Claude binary, working
+directory, home, Claude configuration directory, Matrix observation command,
+CLI version, model and body. Use the existing authorized Claude account in that
+configuration directory. Source content cannot select any of those settings.
+
+The UTF-8 newline-delimited protocol uses schema
+`daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
+`sessionId`. Gateway sends `start` with the retained `text`. After the identity
+and catalog checks, the worker emits `prepare_submission`. Gateway persists
+that exposure before sending `submission_decision` with `committed: true`.
+An absent, rejected or mismatched decision prevents prompt submission. The
+only terminal frame is `outcome`. A missing outcome after a recorded exposure
+keeps the attempt uncertain. A closed owner pipe cancels a running attempt.
+The worker neither retries nor writes to Matrix.
+
 ### Same-being conversation transport
 
 Gateway uses the existing Matrix `/we` conversation for a turn between bodies
@@ -71,7 +91,7 @@ fixture peer transport. It exercises refusal for a mismatched selection and
 one undetermined return. The Node boundary also checks that the prompt and tool
 input cannot substitute the command or receiving selection.
 
-A Gateway caller still has to bind this module to the selected foreground
+A Gateway caller still has to bind the worker to the selected foreground
 dispatch, journal and return route. Live Matrix credentials, provider
 inference, native session recovery, signed reply delivery and human readback
 require separate receiving evidence. This adapter currently claims only
