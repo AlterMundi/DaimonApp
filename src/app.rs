@@ -2998,7 +2998,10 @@ impl App {
                 let conversation_input_id = turn.conversation_input.clone();
                 if let Some(id) = conversation_input_id.as_deref() {
                     let _slot = steer.lock().expect("steer mutex poisoned");
-                    match shared.store.conversation_input_claim_queue_start(requester, id) {
+                    match shared
+                        .store
+                        .conversation_input_claim_queue_start(requester, id)
+                    {
                         Ok(true) => {}
                         Ok(false) => continue,
                         Err(error) => {

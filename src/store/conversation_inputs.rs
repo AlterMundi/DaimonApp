@@ -1950,7 +1950,10 @@ impl Store {
              ORDER BY o.id LIMIT ?6",
         )?;
         query
-            .query_map(params![session, human, native, self.instance_id, turn, limit], |r| r.get::<_, String>(0))?
+            .query_map(
+                params![session, human, native, self.instance_id, turn, limit],
+                |r| r.get::<_, String>(0),
+            )?
             .map(|id| read_on(&conn, &id?, human))
             .collect()
     }
@@ -2486,8 +2489,12 @@ mod tests {
         let (_file, store, key, binding) = setup();
         let capture = |text| {
             let id = Uuid::now_v7().to_string();
-            let (input, _) = store.conversation_input_capture(100, key, &binding, &id, text).unwrap();
-            store.conversation_input_event(100, &id, ConversationInputEvent::Queue).unwrap();
+            let (input, _) = store
+                .conversation_input_capture(100, key, &binding, &id, text)
+                .unwrap();
+            store
+                .conversation_input_event(100, &id, ConversationInputEvent::Queue)
+                .unwrap();
             input
         };
         let older = capture("Older original");
@@ -2496,29 +2503,87 @@ mod tests {
         let newer = capture("Newer original");
         let local = turn(&store, key);
         for input in [&newer, &claimed, &older] {
-            assert!(store.conversation_input_defer_steer(input, None, "steer_unavailable").unwrap());
+            assert!(
+                store
+                    .conversation_input_defer_steer(input, None, "steer_unavailable")
+                    .unwrap()
+            );
         }
-        assert!(store.conversation_input_claim_queue_start(100, &claimed.id).unwrap());
-        assert!(!store.conversation_input_claim_queue_start(100, &claimed.id).unwrap());
-        let begin = ConversationInputEvent::Begin { local_turn: local, steer: true };
-        store.conversation_input_event(100, &uncertain.id, begin).unwrap();
-        store.conversation_input_event(100, &uncertain.id,
-            ConversationInputEvent::Uncertain { local_turn: local }).unwrap();
-        assert!(!store.conversation_input_defer_steer(&uncertain, Some(local), "steer_rejected").unwrap());
-        let candidates = || store.conversation_input_steer_candidates(key, 100, local, 8).unwrap()
-            .into_iter().map(|input| input.id).collect::<Vec<_>>();
+        assert!(
+            store
+                .conversation_input_claim_queue_start(100, &claimed.id)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .conversation_input_claim_queue_start(100, &claimed.id)
+                .unwrap()
+        );
+        let begin = ConversationInputEvent::Begin {
+            local_turn: local,
+            steer: true,
+        };
+        store
+            .conversation_input_event(100, &uncertain.id, begin)
+            .unwrap();
+        store
+            .conversation_input_event(
+                100,
+                &uncertain.id,
+                ConversationInputEvent::Uncertain { local_turn: local },
+            )
+            .unwrap();
+        assert!(
+            !store
+                .conversation_input_defer_steer(&uncertain, Some(local), "steer_rejected")
+                .unwrap()
+        );
+        let candidates = || {
+            store
+                .conversation_input_steer_candidates(key, 100, local, 8)
+                .unwrap()
+                .into_iter()
+                .map(|input| input.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(candidates(), [older.id.clone(), newer.id.clone()]);
         for attempt in 0..2 {
-            store.conversation_input_event(100, &older.id, begin).unwrap();
-            assert!(!store.conversation_input_claim_queue_start(100, &older.id).unwrap());
-            assert!(store.conversation_input_defer_steer(&older, Some(local), "steer_rejected").unwrap());
+            store
+                .conversation_input_event(100, &older.id, begin)
+                .unwrap();
+            assert!(
+                !store
+                    .conversation_input_claim_queue_start(100, &older.id)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .conversation_input_defer_steer(&older, Some(local), "steer_rejected")
+                    .unwrap()
+            );
             assert_eq!(candidates().contains(&older.id), attempt == 0);
         }
-        assert!(store.conversation_input_claim_queue_start(100, &older.id).unwrap());
+        assert!(
+            store
+                .conversation_input_claim_queue_start(100, &older.id)
+                .unwrap()
+        );
         let next = turn(&store, key);
-        store.conversation_input_event(100, &newer.id,
-            ConversationInputEvent::Begin { local_turn: next, steer: true }).unwrap();
-        assert!(store.conversation_input_defer_steer(&newer, Some(next), "fresh_execution_required").unwrap());
+        store
+            .conversation_input_event(
+                100,
+                &newer.id,
+                ConversationInputEvent::Begin {
+                    local_turn: next,
+                    steer: true,
+                },
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_input_defer_steer(&newer, Some(next), "fresh_execution_required")
+                .unwrap()
+        );
         assert!(candidates().is_empty());
     }
 

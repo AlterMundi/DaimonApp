@@ -1078,10 +1078,19 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     steer(&app, input, &worker, active)
 }
 
-pub(super) async fn reconsider_at_native_start(app: &App, entry: SessionKey, human: i64, turn: i64) {
-    if !app.shared.config.interaction.as_ref().is_some_and(|config|
-        config.entry() == entry && config.human_id == human
-    ) {
+pub(super) async fn reconsider_at_native_start(
+    app: &App,
+    entry: SessionKey,
+    human: i64,
+    turn: i64,
+) {
+    if !app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .is_some_and(|config| config.entry() == entry && config.human_id == human)
+    {
         return;
     }
     let worker = app.workers.lock().await.get(&entry).cloned();
@@ -1109,7 +1118,10 @@ fn offer_older_inputs(
         .is_some();
     let limit = if ready { STEER_BATCH } else { 1 };
     let candidates = app.shared.store.conversation_input_steer_candidates(
-        entry, human, active.turn_id, limit,
+        entry,
+        human,
+        active.turn_id,
+        limit,
     )?;
     if !ready {
         // A new arrival may join an initial native packet, but it must not
@@ -1136,7 +1148,11 @@ fn defer_and_enqueue(
     attempted_turn: Option<i64>,
     reason: &str,
 ) -> Result<()> {
-    if app.shared.store.conversation_input_defer_steer(input, attempted_turn, reason)? {
+    if app
+        .shared
+        .store
+        .conversation_input_defer_steer(input, attempted_turn, reason)?
+    {
         enqueue(app, input, worker.sender.clone())?;
     }
     Ok(())
@@ -1213,9 +1229,10 @@ fn steer(
                         offer_older_inputs(&app, &worker, active, entry, human)?;
                     }
                 }
-                Ok(Ok(Err(error @ (
-                    CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired
-                )))) => {
+                Ok(Ok(Err(
+                    error
+                    @ (CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired),
+                ))) => {
                     let reason = match error {
                         CodexSteerError::FreshExecutionRequired => "fresh_execution_required",
                         _ => "steer_rejected",
