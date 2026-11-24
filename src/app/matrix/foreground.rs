@@ -67,9 +67,9 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
     let execution = tokio::select! {
         biased;
         _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
-        result = execute_worker(config, &id, &attempt.session_id, &text, body, || {
+        result = execute_worker(config, &id, &attempt.session_id, &text, body, |native_session| {
             exposed = store.we_transition(human, entry, &attempt,
-                WePhase::Starting, WePhase::ProviderExposed, Value::Null)?;
+                WePhase::Starting, WePhase::ProviderExposed, json!({"native_session_id":native_session}))?;
             Ok(exposed)
         }) => result,
     };
@@ -203,7 +203,7 @@ async fn execute_worker(
     session: &str,
     text: &str,
     body: Value,
-    commit: impl FnOnce() -> Result<bool>,
+    commit: impl FnOnce(&str) -> Result<bool>,
 ) -> Result<Value> {
     use std::{os::unix::process::CommandExt, process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -263,7 +263,14 @@ async fn execute_worker(
         .await?;
         let mut frame = receive(&mut output, id, session).await?;
         if frame["type"] == "prepare_submission" {
-            let committed = commit()?;
+            // Claude accepts the Gateway-selected UUID. Older workers omit
+            // the redundant native session field.
+            let native_session = frame.get("nativeSessionId");
+            anyhow::ensure!(
+                native_session.is_none_or(|value| value.as_str() == Some(session)),
+                "Claude preparation returned another native session"
+            );
+            let committed = commit(session)?;
             send(
                 &mut input,
                 json!({"schema":WORKER_SCHEMA,"type":"submission_decision",
@@ -306,7 +313,7 @@ async fn execute_worker(
     _session: &str,
     _text: &str,
     _body: Value,
-    _commit: impl FnOnce() -> Result<bool>,
+    _commit: impl FnOnce(&str) -> Result<bool>,
 ) -> Result<Value> {
     bail!("Claude worker requires Unix process groups")
 }

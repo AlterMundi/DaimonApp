@@ -3232,7 +3232,9 @@ else:
         phase, raw = conn.execute("select phase, submission from interaction_matrix_requests where source_event=?",
                                   [original["event_id"]]).fetchone()
     assert phase == "returning"
-    assert json.loads(raw) == dict(send_id=input["send_id"], text="Synthetic result")
+    retained = json.loads(raw)
+    assert retained.pop("native_session_id")
+    assert retained == dict(send_id=input["send_id"], text="Synthetic result")
     assert input["text"] == "Synthetic result"
     with open(marker, "a") as f:
         f.write("return\n")
@@ -3249,15 +3251,17 @@ if first["text"] == "reject-before-commit":
     print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
                       reason="claude_catalog_mismatch"))), flush=True)
     sys.exit(0)
-print(json.dumps(dict(ids, type="prepare_submission")), flush=True)
+native = "different-session" if first["text"] == "wrong-native-id" else first["sessionId"]
+print(json.dumps(dict(ids, type="prepare_submission", nativeSessionId=native)), flush=True)
 ack = json.loads(sys.stdin.readline())
 assert ack == dict(ids, type="submission_decision", committed=True)
 with sqlite3.connect(db) as conn:
-    phase, raw = conn.execute("select phase, doc from interaction_matrix_requests where source_event=?",
-                              [first["inputId"]]).fetchone()
+    phase, raw, submission = conn.execute("select phase, doc, submission from interaction_matrix_requests where source_event=?",
+                                          [first["inputId"]]).fetchone()
 assert phase == "provider_exposed"
 frozen = json.loads(raw)
-assert frozen["session_id"] == first["sessionId"] and frozen["original"]["text"] == first["text"]
+assert frozen["session_id"] == json.loads(submission)["native_session_id"] == first["sessionId"]
+assert frozen["original"]["text"] == first["text"]
 assert frozen["body"]["manifest_hash"] == first["body"]["manifestHash"]
 with open(marker, "a") as f:
     f.write("provider\n")
@@ -3282,6 +3286,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     let id = uuid::Uuid::now_v7().to_string();
     let uncertain = uuid::Uuid::now_v7().to_string();
     let refused = uuid::Uuid::now_v7().to_string();
+    let mismatched = uuid::Uuid::now_v7().to_string();
     let thread = uuid::Uuid::now_v7().to_string();
     let run = |id: &str, author: &str| {
         format!(
@@ -3295,6 +3300,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .await
         .unwrap();
     assert_eq!(delivered["phase"], "delivered");
+    assert_eq!(delivered["native_session_id"], delivered["session_id"]);
     let nonce = delivered["result"]["send_id"].as_str().unwrap();
     let lost = stopping::command(&app, 100, &run(&uncertain, "lose-provider-result"), None)
         .await
@@ -3304,7 +3310,13 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .await
         .unwrap();
     assert_eq!(rejection["phase"], "rejected");
+    assert!(rejection["native_session_id"].is_null());
     assert_eq!(rejection["result"]["reason"], "claude_catalog_mismatch");
+    let wrong = stopping::command(&app, 100, &run(&mismatched, "wrong-native-id"), None)
+        .await
+        .unwrap();
+    assert_eq!(wrong["phase"], "rejected");
+    assert!(wrong["native_session_id"].is_null());
     // Simulate a process dying after commit and before a worker outcome.
     let interrupted = uuid::Uuid::now_v7().to_string();
     let blocked = uuid::Uuid::now_v7().to_string();
@@ -3328,6 +3340,9 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .unwrap()
         .unwrap();
     assert!(
+        store.we_status(100, entry, &interrupted).unwrap().unwrap()["native_session_id"].is_null()
+    );
+    assert!(
         store
             .we_transition(
                 100,
@@ -3335,7 +3350,24 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
                 &attempt,
                 WePhase::Starting,
                 WePhase::ProviderExposed,
-                serde_json::Value::Null
+                json!({"native_session_id": "invalid identity"}),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.we_status(100, entry, &interrupted).unwrap().unwrap()["phase"],
+        "starting"
+    );
+    let native_session = "fixture-native-session-123";
+    assert!(
+        store
+            .we_transition(
+                100,
+                entry,
+                &attempt,
+                WePhase::Starting,
+                WePhase::ProviderExposed,
+                json!({"native_session_id": native_session})
             )
             .unwrap()
     );
@@ -3347,10 +3379,12 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     drop(app);
 
     let app = App::bootstrap(config).await.unwrap();
+    let interrupted_id = interrupted.clone();
     for (id, author, phase) in [
         (id, "fixture-sender", "delivered"),
         (uncertain, "lose-provider-result", "provider_uncertain"),
         (refused, "reject-before-commit", "rejected"),
+        (mismatched, "wrong-native-id", "rejected"),
         (interrupted, "fixture-sender", "provider_uncertain"),
     ] {
         let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
@@ -3363,6 +3397,10 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
                 .await
                 .unwrap()
         );
+        if id == interrupted_id {
+            assert_eq!(status["native_session_id"], native_session);
+            assert_ne!(status["native_session_id"], status["session_id"]);
+        }
         if phase == "delivered" {
             assert_eq!(status["result"]["send_id"], nonce);
         }

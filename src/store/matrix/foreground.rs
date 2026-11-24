@@ -130,11 +130,24 @@ fn view(request: &Request, mut phase: WePhase, mut result: Value, instance: &str
             phase => phase,
         };
     }
-    if let Some(outcome) = result.as_object_mut() {
+    let native_session_id = result.as_object_mut().and_then(|outcome| {
         outcome.remove("text");
+        outcome.remove("native_session_id")
+    });
+    if phase == WePhase::ProviderExposed && result.as_object().is_some_and(|obj| obj.is_empty()) {
+        result = Value::Null;
     }
+    let native_session_id = native_session_id
+        .as_ref()
+        .and_then(Value::as_str)
+        .or_else(|| {
+            // Legacy Claude attempts used the allocated UUID for both identities.
+            (!matches!(phase, WePhase::Starting | WePhase::Rejected))
+                .then_some(request.session_id.as_str())
+        });
     json!({"request_id":request.id,"input_id":request.original.event_id,
-        "session_id":request.session_id,"thread_id":request.original.thread_id,
+        "session_id":request.session_id,"native_session_id":native_session_id,
+        "thread_id":request.original.thread_id,
         "phase":phase,"result":result})
 }
 
@@ -268,12 +281,29 @@ impl Store {
                 return Ok(false);
             }
         }
-        let outcome = if previous == Returning {
+        let outcome = if next == ProviderExposed {
+            let native_session = outcome["native_session_id"]
+                .as_str()
+                .filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 256
+                        && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+                })
+                .context("Bounded native session identity required before provider exposure")?;
+            json!({"native_session_id":native_session})
+        } else if previous == Returning {
             // Retain the selected send UUID and model result alongside readback.
             json!({"send_id":retained["send_id"],"text":retained["text"],"delivery":outcome})
         } else {
             outcome
         };
+        let mut outcome = outcome;
+        if let Some(native_session) = retained.get("native_session_id") {
+            outcome
+                .as_object_mut()
+                .context("Foreground outcome must retain its native session")?
+                .insert("native_session_id".into(), native_session.clone());
+        }
         let raw = serde_json::to_string(&outcome)?;
         anyhow::ensure!(
             raw.len() <= 512 * 1024,

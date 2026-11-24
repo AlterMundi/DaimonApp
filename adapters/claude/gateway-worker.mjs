@@ -153,7 +153,8 @@ async function main() {
       },
       async beforeSubmit(inputId, sessionId) {
         if (inputId !== first.inputId || sessionId !== first.sessionId) return false;
-        await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission' }, stop.signal);
+        await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
+          nativeSessionId: sessionId }, stop.signal);
         const decision = (await input.next()).value;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'

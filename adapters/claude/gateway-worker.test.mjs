@@ -97,7 +97,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
           assert.deepEqual(JSON.parse((await lines.next()).value),
-            { ...correlation, type: 'prepare_submission' });
+            { ...correlation, type: 'prepare_submission', nativeSessionId: correlation.sessionId });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'disconnected') worker.stdin.end();
           else {

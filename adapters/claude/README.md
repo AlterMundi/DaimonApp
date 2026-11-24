@@ -47,9 +47,12 @@ The UTF-8 newline-delimited protocol uses schema
 `daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
 `sessionId`. Gateway sends `start` with the retained `text` and independently
 observed Matrix `body`. The worker requires that body to match its private
-profile. After the identity
-and catalog checks, the worker emits `prepare_submission`. Gateway persists
-that exposure before sending `submission_decision` with `committed: true`.
+profile. After the identity and catalog checks, the worker emits
+`prepare_submission` with the native session identity. Gateway records that
+binding and exposure together in the existing journal before returning
+`submission_decision` with `committed: true`. Claude uses the allocated UUID
+as its native session ID. Status presents both identities, including retained
+exposures after a process restart.
 An absent, rejected or mismatched decision prevents prompt submission. The
 only terminal frame is `outcome`. A missing outcome after a recorded exposure
 keeps the attempt uncertain. A closed owner pipe cancels a running attempt.
