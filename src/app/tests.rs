@@ -3332,7 +3332,6 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
             .we_transition(
                 100,
                 entry,
-                &interrupted,
                 &attempt,
                 WePhase::Starting,
                 WePhase::ProviderExposed,

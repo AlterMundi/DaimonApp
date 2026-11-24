@@ -91,6 +91,7 @@ pub(crate) struct WeAttempt {
     pub id: String,
     pub session_id: String,
     entry_session: i64,
+    original: String,
 }
 
 fn load(
@@ -216,6 +217,7 @@ impl Store {
             id: request.id,
             session_id: request.session_id,
             entry_session: session,
+            original: request.original.event_id,
         }))
     }
 
@@ -225,7 +227,6 @@ impl Store {
         &self,
         owner: i64,
         entry: SessionKey,
-        original: &str,
         attempt: &WeAttempt,
         previous: WePhase,
         next: WePhase,
@@ -249,7 +250,7 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let session = attempt.entry_session;
-        let Some((request, phase, retained)) = load(&tx, owner, session, original)? else {
+        let Some((request, phase, retained)) = load(&tx, owner, session, &attempt.original)? else {
             return Ok(false);
         };
         if request.id != attempt.id

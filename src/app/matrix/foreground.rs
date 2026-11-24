@@ -68,7 +68,7 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
         biased;
         _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
         result = execute_worker(config, &id, &attempt.session_id, &text, body, || {
-            exposed = store.we_transition(human, entry, &id, &attempt,
+            exposed = store.we_transition(human, entry, &attempt,
                 WePhase::Starting, WePhase::ProviderExposed, Value::Null)?;
             Ok(exposed)
         }) => result,
@@ -81,7 +81,6 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
             store.we_transition(
                 human,
                 entry,
-                &id,
                 &attempt,
                 WePhase::Starting,
                 WePhase::Rejected,
@@ -101,7 +100,6 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
                 && store.we_transition(
                     human,
                     entry,
-                    &id,
                     &attempt,
                     WePhase::ProviderExposed,
                     WePhase::Returning,
@@ -114,20 +112,11 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
                     result = host_command_mode(&config.transport, &host, Some("--we-return")) => result.ok(),
                 };
                 let (phase, delivery) = settle_return(delivery, &send_id, &selected.thread_id);
-                store.we_transition(
-                    human,
-                    entry,
-                    &id,
-                    &attempt,
-                    WePhase::Returning,
-                    phase,
-                    delivery,
-                )?;
+                store.we_transition(human, entry, &attempt, WePhase::Returning, phase, delivery)?;
             } else {
                 store.we_transition(
                     human,
                     entry,
-                    &id,
                     &attempt,
                     WePhase::ProviderExposed,
                     WePhase::ResultRetained,
@@ -139,7 +128,6 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
             store.we_transition(
                 human,
                 entry,
-                &id,
                 &attempt,
                 WePhase::ProviderExposed,
                 WePhase::ProviderUncertain,
