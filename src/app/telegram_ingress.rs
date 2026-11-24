@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     commands::default_bot_commands,
-    tele_daimon::{self, GatewayIngress, Lifecycle},
+    tele_daimon::{self, GatewayIngress, IngressReply, IngressRequest, Lifecycle},
     telegram::Update,
 };
 
@@ -28,8 +28,7 @@ pub(super) async fn connect(
 }
 
 impl App {
-    pub(super) async fn run_telegram_ingress(&self) -> Result<()> {
-        topic_publications::recover(self.shared.clone())?;
+    fn telegram_menu(&self) -> Vec<crate::telegram::BotCommand> {
         let mut menu = default_bot_commands();
         if self.shared.config.nexus.is_some() {
             menu.push(crate::telegram::BotCommand {
@@ -38,10 +37,13 @@ impl App {
                     .into(),
             });
         }
-        let mut gateway = TelegramGateway {
-            app: self.clone(),
-            dispatchers: HashMap::new(),
-        };
+        menu
+    }
+
+    pub(super) async fn run_telegram_ingress(&self) -> Result<()> {
+        topic_publications::recover(self.shared.clone())?;
+        let menu = self.telegram_menu();
+        let mut gateway = TelegramGateway::new(self.clone());
         tele_daimon::poll(
             &self.shared.telegram,
             &menu,
@@ -70,19 +72,60 @@ impl App {
 }
 
 type Capture = tokio::task::JoinHandle<Result<()>>;
-struct TelegramGateway {
+pub(super) struct TelegramGateway {
     app: App,
     dispatchers: HashMap<SessionKey, mpsc::UnboundedSender<(Update, Capture)>>,
 }
 
-impl GatewayIngress for TelegramGateway {
-    fn next_offset(&self) -> Result<Option<i64>> {
-        Ok(self.app.shared.store.last_update_id()?.map(|id| id + 1))
+impl TelegramGateway {
+    pub(super) fn new(app: App) -> Self {
+        Self {
+            app,
+            dispatchers: HashMap::new(),
+        }
     }
 
-    fn accept(&mut self, update: Update) -> Result<Option<i64>> {
+    pub(super) async fn external(&mut self, request: IngressRequest) -> Result<IngressReply> {
+        let bot_id = match &request {
+            IngressRequest::Ready { bot_id } | IngressRequest::Admit { bot_id, .. } => *bot_id,
+        };
+        let shared = &self.app.shared;
+        anyhow::ensure!(
+            shared.config.telegram.external_polling
+                && shared.telegram.is_available()
+                && shared.bot_id > 0
+                && shared.bot_id == bot_id,
+            "External Telegram ingress is unavailable for the selected bot"
+        );
+        match request {
+            IngressRequest::Ready { .. } => Ok(IngressReply::Ready {
+                next_offset: self.next_offset().await?,
+                menu: self.app.telegram_menu(),
+            }),
+            IngressRequest::Admit { update, .. } => Ok(IngressReply::Accepted {
+                next_offset: self.accept(*update).await?,
+            }),
+        }
+    }
+}
+
+impl GatewayIngress for TelegramGateway {
+    async fn next_offset(&self) -> Result<Option<i64>> {
+        self.app
+            .shared
+            .store
+            .last_update_id()?
+            .map(|id| id.checked_add(1).context("Telegram offset is exhausted"))
+            .transpose()
+    }
+
+    async fn accept(&mut self, update: Update) -> Result<Option<i64>> {
+        anyhow::ensure!(
+            (0..i64::MAX).contains(&update.update_id),
+            "Invalid Telegram update ID"
+        );
         let admitted = self.app.shared.store.admit_update(&update)?;
-        let next_offset = self.next_offset()?;
+        let next_offset = self.next_offset().await?;
         if !admitted {
             return Ok(next_offset);
         }

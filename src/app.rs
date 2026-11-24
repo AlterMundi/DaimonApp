@@ -472,7 +472,9 @@ impl App {
 
     pub async fn run(self) -> Result<()> {
         self.start_gateway().await?;
-        let telegram = self.shared.telegram.is_available().then(|| self.clone());
+        let telegram = (self.shared.telegram.is_available()
+            && !self.shared.config.telegram.external_polling)
+            .then(|| self.clone());
         if let Some(adapter) = telegram {
             if let Err(error) = adapter.run_telegram_ingress().await {
                 if self.shared.config.interaction.is_none() {
@@ -484,7 +486,13 @@ impl App {
                 shutdown_signal(self.shared.shutdown.clone()).await;
             }
         } else {
-            tracing::info!("DaimonGateway running without Telegram ingress");
+            if self.shared.telegram.is_available()
+                && self.shared.config.telegram.external_polling
+                && let Err(error) = topic_publications::recover(self.shared.clone())
+            {
+                tracing::error!("Telegram projection recovery unavailable: {error:#}");
+            }
+            tracing::info!("DaimonGateway running without embedded Telegram ingress");
             shutdown_signal(self.shared.shutdown.clone()).await;
         }
         Ok(())
@@ -3148,7 +3156,7 @@ fn is_text_only_steer_candidate(message: &Message, text: &str) -> bool {
             .is_none_or(|reply| reply.sticker.is_none())
 }
 
-async fn shutdown_signal(shutdown: CancellationToken) {
+pub(crate) async fn shutdown_signal(shutdown: CancellationToken) {
     #[cfg(unix)]
     {
         let mut terminate =

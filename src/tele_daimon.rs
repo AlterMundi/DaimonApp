@@ -3,6 +3,7 @@
 use std::{future::Future, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use crate::config::TelegramConfig;
@@ -13,11 +14,11 @@ use crate::telegram::{
 };
 
 pub(crate) trait GatewayIngress {
-    fn next_offset(&self) -> Result<Option<i64>>;
+    async fn next_offset(&self) -> Result<Option<i64>>;
 
     /// Return the next durable Telegram cursor after accepting this original.
     /// A duplicate may return the same cursor without creating native work.
-    fn accept(&mut self, update: Update) -> Result<Option<i64>>;
+    async fn accept(&mut self, update: Update) -> Result<Option<i64>>;
 }
 
 pub(crate) enum Lifecycle {
@@ -167,7 +168,7 @@ pub(crate) async fn poll<NoticeFuture: Future<Output = ()> + Send>(
         .await
         .context("failed to register bot commands")?;
     notify(Lifecycle::Started).await;
-    let mut offset = gateway.next_offset()?;
+    let mut offset = gateway.next_offset().await?;
     tokio::pin!(shutdown);
 
     loop {
@@ -180,7 +181,7 @@ pub(crate) async fn poll<NoticeFuture: Future<Output = ()> + Send>(
                 let delay = match result {
                     Ok(updates) => {
                         for update in updates {
-                            offset = gateway.accept(update)?;
+                            offset = gateway.accept(update).await?;
                         }
                         continue;
                     }
@@ -209,4 +210,107 @@ pub(crate) async fn poll<NoticeFuture: Future<Output = ()> + Send>(
             }
         }
     }
+}
+
+pub(crate) const INGRESS_FRAME_LIMIT: u64 = 1_048_832;
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum IngressRequest {
+    Ready { bot_id: i64 },
+    Admit { bot_id: i64, update: Box<Update> },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum IngressReply {
+    Ready {
+        next_offset: Option<i64>,
+        menu: Vec<BotCommand>,
+    },
+    Accepted {
+        next_offset: Option<i64>,
+    },
+}
+
+#[cfg(unix)]
+struct RemoteGateway<'a> {
+    socket: &'a Path,
+    bot_id: i64,
+    initial_offset: Option<i64>,
+}
+
+#[cfg(unix)]
+impl RemoteGateway<'_> {
+    async fn request(&self, selected: IngressRequest) -> Result<IngressReply> {
+        let reply = crate::control_client::request(
+            self.socket,
+            serde_json::json!({"telegram_ingress": selected}),
+        )
+        .await?;
+        anyhow::ensure!(
+            reply["ok"] == true,
+            "Gateway did not acknowledge the selected Telegram ingress operation"
+        );
+        Ok(serde_json::from_value(reply["result"].clone())?)
+    }
+}
+
+#[cfg(unix)]
+impl GatewayIngress for RemoteGateway<'_> {
+    async fn next_offset(&self) -> Result<Option<i64>> {
+        Ok(self.initial_offset)
+    }
+
+    async fn accept(&mut self, update: Update) -> Result<Option<i64>> {
+        let reply = self
+            .request(IngressRequest::Admit {
+                bot_id: self.bot_id,
+                update: Box::new(update),
+            })
+            .await?;
+        match reply {
+            IngressReply::Accepted { next_offset } => Ok(next_offset),
+            _ => bail!("Gateway returned an unexpected Telegram ingress response"),
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) async fn run_external(config: crate::config::TelegramPollConfig) -> Result<()> {
+    anyhow::ensure!(
+        config.telegram.enabled && config.telegram.external_polling,
+        "External Telegram polling is not selected"
+    );
+    let socket = &config.session_control.socket_path;
+    let client = client(&config.telegram)?;
+    let identity = client.get_me().await?;
+    let mut gateway = RemoteGateway {
+        socket,
+        bot_id: identity.id,
+        initial_offset: None,
+    };
+    let IngressReply::Ready { next_offset, menu } = gateway
+        .request(IngressRequest::Ready {
+            bot_id: identity.id,
+        })
+        .await?
+    else {
+        bail!("Gateway returned an unexpected Telegram readiness response");
+    };
+    gateway.initial_offset = next_offset;
+    poll(
+        &client,
+        &menu,
+        config.poll_timeout_seconds,
+        &mut gateway,
+        crate::app::shutdown_signal(tokio_util::sync::CancellationToken::new()),
+        |_| async {},
+    )
+    .await
+}
+
+#[cfg(not(unix))]
+pub(crate) async fn run_external(_config: crate::config::TelegramPollConfig) -> Result<()> {
+    bail!("External Telegram polling requires the owner-local Unix socket")
 }

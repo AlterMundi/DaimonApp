@@ -8,6 +8,8 @@ import errno
 import os
 import time
 import re
+import signal
+import socket
 from pathlib import Path
 import subprocess
 import sqlite3
@@ -491,10 +493,117 @@ def gateway_survives_telegram_failure(binary):
             journey.close()
     print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
 
+def independent_telegram_polling(binary):
+    journey = Inputs(binary)
+    journey.acknowledged_updates = True
+    original_config = journey.config.read_text()
+    external_config = original_config.replace(
+        "[telegram]\n", "[telegram]\nexternal_polling=true\n")
+    poll_config = journey.root / "poll.toml"
+    # The client needs only Bot API and the existing socket, with no native
+    # executable or database configured. Both processes use the same bot file.
+    telegram_settings = external_config.split("[session_control]", 1)[1]
+    poll_config.write_text("[session_control]" + telegram_settings.split("[codex]", 1)[0])
+    poll_config.chmod(0o600)
+    adapter = None
+
+    def start_adapter():
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(journey.root), "LANG": "C.UTF-8"}
+        return subprocess.Popen(
+            [binary, "--tele-daimon-poll", str(poll_config)],
+            cwd=journey.root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def stop_adapter(process):
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        _, error = process.communicate(timeout=8)
+        assert process.returncode == 0, error
+
+    def ingress(request):
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(5)
+            conn.connect(str(journey.socket))
+            conn.sendall(json.dumps({"telegram_ingress": request}).encode() + b"\n")
+            with conn.makefile("rb") as stream:
+                return json.loads(stream.readline())
+
+    def settled(update):
+        return journey.row(
+            "SELECT status FROM incoming_updates WHERE update_id=?", (update,)
+        ) == [("settled",)]
+
+    try:
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        seeded = journey.admit("Original from the embedded listener", topic=1)
+        journey.wait(lambda: settled(seeded))
+        journey.idle()
+        retained = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1")
+        journey.stop()
+        journey.config.write_text(external_config)
+        journey.telegram_methods.clear()
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        gateway_pid = journey.process.pid
+        assert ingress({"operation": "ready", "bot_id": 124})["ok"] is False
+        assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == seeded + 1
+        assert "getUpdates" not in journey.telegram_methods
+        first = journey.admit("Telegram through the separate adapter", topic=1)
+        with journey.lock:
+            duplicate = journey.updates[-1]
+        adapter = start_adapter()
+        journey.wait(lambda: settled(first))
+        journey.idle()
+        stop_adapter(adapter)
+        adapter = None
+        assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == first + 1
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        native_count = journey.native_turns
+        assert ingress({"operation": "admit", "bot_id": 123, "update": duplicate})["result"]["next_offset"] == first + 1
+        assert not ingress({"operation": "admit", "bot_id": 123,
+                            "update": {**duplicate, "message": {**duplicate["message"], "text": "Different bytes"}}})["ok"]
+        assert journey.native_turns == native_count
+        polls = journey.telegram_methods.count("getUpdates")
+        binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
+        original, reply = journey.submit(binding, "Keep working while TeleDaimon is stopped.")
+        assert reply["ok"]
+        journey.wait(lambda: journey.web_turn is not None)
+        journey.finish(journey.web_thread, journey.web_turn)
+        journey.wait(lambda: journey.row(
+            "SELECT count(*) FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        ) == [(1,)])
+        journey.idle()
+        assert journey.telegram_methods.count("getUpdates") == polls
+        assert journey.process.pid == gateway_pid and journey.process.poll() is None
+        assert len(journey.packets) == 1
+        assert journey.packets[0][1]["clientUserMessageId"] == "conversation:" + original["id"]
+
+        before = journey.native_turns
+        second = journey.admit("Retain this input while polling is stopped", topic=1)
+        adapter = start_adapter()
+        journey.wait(lambda: settled(second))
+        assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
+            (seeded,), (first,), (second,)
+        ]
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        assert journey.native_turns == before + 1
+        assert journey.process.pid == gateway_pid
+        stop_adapter(adapter)
+        adapter = None
+        print("PASS independent poller stop/restart, durable cursor, same native thread and one dispatch per original")
+    finally:
+        if adapter is not None and adapter.poll() is None:
+            adapter.kill()
+            adapter.communicate(timeout=8)
+        journey.close()
+
 
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
     gateway_survives_telegram_failure(binary)
+    independent_telegram_polling(binary)
     foreground_retention(binary)
     foreground_delegation(binary)
     reconsider_queued_steer(binary)

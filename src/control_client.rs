@@ -53,6 +53,27 @@ pub async fn controller(path: &std::path::Path, payload: &str) -> Result<()> {
 
 #[cfg(unix)]
 async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
+    let nonce = uuid::Uuid::now_v7().to_string();
+    let reply = request(
+        path,
+        serde_json::json!({"command": command, "nonce": nonce}),
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&reply)?);
+    if reply["ok"] != true {
+        bail!("Receiving control did not confirm success");
+    }
+    if reply["result"]["success"] == false {
+        bail!("Selected controller operation was refused");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) async fn request(
+    path: &std::path::Path,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use tokio::{
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -70,11 +91,12 @@ async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
         if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
             bail!("Receiving control peer owner mismatch");
         }
-        let nonce = uuid::Uuid::now_v7().to_string();
-        let mut request =
-            serde_json::to_vec(&serde_json::json!({"command":command,"nonce":nonce}))?;
-        request.push(b'\n');
-        stream.write_all(&request).await?;
+        let mut bytes = serde_json::to_vec(&request)?;
+        if bytes.len() as u64 >= crate::tele_daimon::INGRESS_FRAME_LIMIT {
+            bail!("Control request exceeds receiving bound");
+        }
+        bytes.push(b'\n');
+        stream.write_all(&bytes).await?;
         let mut bytes = Vec::new();
         BufReader::new(stream.take(262145))
             .read_until(b'\n', &mut bytes)
@@ -82,15 +104,7 @@ async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
         if bytes.len() > 262144 {
             bail!("Control reply exceeds bound");
         }
-        let reply: serde_json::Value = serde_json::from_slice(&bytes)?;
-        println!("{}", serde_json::to_string_pretty(&reply)?);
-        if reply["ok"] != true {
-            bail!("Receiving control did not confirm success");
-        }
-        if reply["result"]["success"] == false {
-            bail!("Selected controller operation was refused");
-        }
-        Ok(())
+        Ok(serde_json::from_slice(&bytes)?)
     })
     .await
     .context("Control acceptance unavailable; inspect the retained operation before retrying")?

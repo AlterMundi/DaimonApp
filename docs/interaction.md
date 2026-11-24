@@ -20,8 +20,24 @@ owner API. Web and Matrix are independent clients of the same Gateway.
 Keep one coordinator and journal. In particular, Telegram delivery failure
 does not change native admission or invalidate canonical output.
 
-The current compatible executable still embeds the optional Telegram client.
-The Gateway startup and Telegram polling have separate entry functions.
+The compatible executable supports embedded polling by default. To run polling
+as a separate process, keep the existing receiving database and owner control
+socket. Select `telegram.external_polling=true` in the existing configuration
+and start exactly one `telecodex --tele-daimon-poll CONFIG` alongside the
+Gateway. The process checks the configured Bot API identity against Gateway
+before polling. They communicate over the existing owner-only Unix socket.
+The poller opens neither the journal nor the native harness. The Gateway still
+owns the Bot API client for existing replies, media, and retained projections.
+
+For a scoped polling migration, stop the selected embedded consumer through
+the existing receiving service procedure. Start the Gateway with the same
+configuration, database and control socket and then start the external poller.
+Read back the retained cursor, the existing native conversation binding and one
+new durable admission before selecting this mode for ordinary use. To roll back,
+stop the external poller first, clear `external_polling` and restart the
+selected service with the same database. Preserve all earlier originals and
+uncertain receipts.
+
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission
 receipt. It advances only to the offset in that receipt. Gateway uses the

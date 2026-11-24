@@ -1306,7 +1306,7 @@ pub struct TopicIconSticker {
     pub custom_emoji_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotCommand {
     pub command: String,
     pub description: String,

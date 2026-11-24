@@ -80,6 +80,15 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
+    if args.get(1).map(String::as_str) == Some("--tele-daimon-poll") {
+        anyhow::ensure!(
+            args.len() == 3,
+            "Usage: telecodex --tele-daimon-poll CONFIG"
+        );
+        let path = std::path::Path::new(&args[2]);
+        return tele_daimon::run_external(config::TelegramPollConfig::load(path)?).await;
+    }
+
     if let Some(delay_ms) = restart_delay_ms_from_env() {
         sleep(Duration::from_millis(delay_ms)).await;
     }
