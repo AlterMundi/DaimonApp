@@ -1,39 +1,24 @@
-//! Optional Telegram Bot API ingress. The Gateway owns the shared store,
-//! session admission and native processing used by this adapter.
+//! Gateway admission and dispatch for the optional Telegram adapter.
 use super::*;
-use crate::commands::default_bot_commands;
+use crate::{
+    commands::default_bot_commands,
+    tele_daimon::{self, GatewayIngress, Lifecycle},
+    telegram::Update,
+};
 
 pub(super) async fn connect(
     config: &Config,
     store: &Store,
 ) -> Result<(TelegramClient, Option<crate::telegram::User>)> {
     if config.telegram.enabled {
-        let token = config.telegram.resolve_token()?;
-        let client = TelegramClient::new(token, config.telegram.api_base.clone())
-            .with_reaction_capture(config.telegram.capture_message_reactions)
-            .with_local_file_root(config.telegram.local_file_root.clone())?;
-        let identity = if config.interaction.is_some() {
-            tokio::time::timeout(Duration::from_secs(5), client.get_me()).await
-        } else {
-            Ok(client.get_me().await)
-        };
-        match identity {
-            Ok(Ok(me)) => {
-                store.save_bot_state("telegram_identity", &serde_json::to_string(&me)?)?;
-                return Ok((client, Some(me)));
-            }
-            // Keep standalone Conversation available. An unverified bot must
-            // never poll with a retained identity or project new outputs.
-            _ if config.interaction.is_some() => {
-                tracing::warn!(
-                    "Telegram identity unavailable; starting DaimonGateway without Telegram"
-                );
-                // Preserve configured projection intent for retained operations.
-                // The unavailable client refuses every Bot API side effect.
-            }
-            Ok(Err(error)) => return Err(error).context("telegram getMe failed"),
-            Err(error) => return Err(error).context("telegram getMe timed out"),
+        let client = tele_daimon::client(&config.telegram)?;
+        if let Some(identity) = tele_daimon::identify(&client, config.interaction.is_some()).await?
+        {
+            store.save_bot_state("telegram_identity", &serde_json::to_string(&identity)?)?;
+            return Ok((client, Some(identity)));
         }
+        tracing::warn!("Telegram identity unavailable; starting DaimonGateway without Telegram");
+        // Retained identity is presentation metadata. It cannot authorize polling.
     }
     let retained = store
         .bot_state_value("telegram_identity")?
@@ -53,105 +38,196 @@ impl App {
                     .into(),
             });
         }
-        self.shared
-            .telegram
-            .set_my_commands(&menu)
-            .await
-            .context("failed to register bot commands")?;
-        self.notify_primary_user(&format!("🟢 Telecodex {} started", app_version_label()))
-            .await;
-
-        // Polling must not wait for native steering, uploads or outbound rate limits.
-        // Preserve arrival order within a topic while other topics keep dispatching.
-        let mut dispatchers = HashMap::<
-            SessionKey,
-            mpsc::UnboundedSender<(crate::telegram::Update, tokio::task::JoinHandle<Result<()>>)>,
-        >::new();
-        let mut offset = self.shared.store.last_update_id()?.map(|value| value + 1);
-        tracing::info!("telecodex started {}", app_version_label());
-        let shutdown = shutdown_signal(self.shared.shutdown.clone());
-        tokio::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                _ = &mut shutdown => {
-                    tracing::info!("shutdown signal received");
-                    self.notify_primary_user(&format!("🔴 Telecodex {} stopped", app_version_label()))
-                        .await;
-                    return Ok(());
+        let mut gateway = TelegramGateway {
+            app: self.clone(),
+            dispatchers: HashMap::new(),
+        };
+        tele_daimon::poll(
+            &self.shared.telegram,
+            &menu,
+            self.shared.config.poll_timeout_seconds,
+            &mut gateway,
+            shutdown_signal(self.shared.shutdown.clone()),
+            |notice| {
+                let app = self.clone();
+                async move {
+                    let (icon, status) = match notice {
+                        Lifecycle::Started => ("🟢", "started"),
+                        Lifecycle::Stopped => ("🔴", "stopped"),
+                        Lifecycle::PollConflict => ("🔴", "stopped: getUpdates conflict"),
+                    };
+                    tracing::info!("Telegram ingress {status}");
+                    app.notify_primary_user(&format!(
+                        "{icon} Telecodex {} {status}",
+                        app_version_label()
+                    ))
+                    .await;
                 }
-                result = self
-                    .shared
-                    .telegram
-                    .get_updates(offset, self.shared.config.poll_timeout_seconds) => {
-                    match result {
-                        Ok(updates) => {
-                            for update in updates {
-                                let admitted = self.shared.store.admit_update(&update)?;
-                                offset = self.shared.store.last_update_id()?.map(|id| id + 1);
-                                if !admitted {
-                                    continue;
-                                }
-                                // Capture independently of topic work and further polling. A slow
-                                // Nexus provider must not serialize unrelated updates or controls.
-                                let capture_input = nexus::prepare_ingress(&self.shared, &update)?;
-                                let capture_shared = self.shared.clone();
-                                let capture_id = update.update_id;
-                                let capture = tokio::spawn(async move {
-                                    nexus::capture_ingress(&capture_shared, capture_id, capture_input).await
-                                });
-                                let message = update.message.as_ref().or_else(|| {
-                                    update.callback_query.as_ref().and_then(|callback| callback.message.as_ref())
-                                });
-                                let key = message.map(|message| SessionKey {
-                                    chat_id: message.chat.id,
-                                    thread_id: message.message_thread_id.unwrap_or(0),
-                                }).unwrap_or(SessionKey { chat_id: 0, thread_id: 0 });
-                                let sender = dispatchers.entry(key).or_insert_with(|| {
-                                    let (sender, mut receiver) = mpsc::unbounded_channel::<(crate::telegram::Update, tokio::task::JoinHandle<Result<()>>)>();
-                                    let app = self.clone();
-                                    tokio::spawn(async move {
-                                        while let Some((update, capture)) = receiver.recv().await {
-                                            let update_id = update.update_id;
-                                            let result = async {
-                                                // Admission capture runs even while a previous
-                                                // message holds this topic dispatcher.
-                                                capture.await.context("Nexus ingress capture task interrupted")??;
-                                                app.shared.store.begin_update(update_id)?;
-                                                HUMAN_UPDATE_ID.scope(update_id, app.process_update(update)).await
-                                            }.await;
-                                            if let Err(error) = app.shared.store.finish_update_dispatch(update_id, result.is_ok()) {
-                                                tracing::error!("failed to record update dispatch: {error:#}");
-                                            }
-                                            if let Err(error) = result {
-                                                tracing::error!("update processing failed: {error:#}");
-                                            }
-                                        }
-                                    });
-                                    sender
-                                });
-                                sender.send((update, capture)).map_err(|_| anyhow!("topic update dispatcher dropped"))?;
-                            }
-                        }
-                        Err(error) => {
-                            if telegram_status(&error) == Some(reqwest::StatusCode::CONFLICT) {
-                                self.notify_primary_user(&format!("🔴 Telecodex {} stopped: getUpdates conflict", app_version_label()))
-                                    .await;
-                                return Err(anyhow!(
-                                    "telegram getUpdates conflict: another bot instance is already running"
-                                ));
-                            }
-                            if let Some(retry_after) = telegram_retry_after(&error) {
-                                tracing::warn!("telegram asked to back off for {retry_after}s");
-                                sleep(Duration::from_secs(retry_after)).await;
-                            } else {
-                                tracing::error!("getUpdates failed: {error:#}");
-                                sleep(Duration::from_secs(3)).await;
-                            }
-                        }
+            },
+        )
+        .await
+    }
+}
+
+type Capture = tokio::task::JoinHandle<Result<()>>;
+struct TelegramGateway {
+    app: App,
+    dispatchers: HashMap<SessionKey, mpsc::UnboundedSender<(Update, Capture)>>,
+}
+
+impl GatewayIngress for TelegramGateway {
+    fn next_offset(&self) -> Result<Option<i64>> {
+        Ok(self.app.shared.store.last_update_id()?.map(|id| id + 1))
+    }
+
+    fn accept(&mut self, update: Update) -> Result<Option<i64>> {
+        let admitted = self.app.shared.store.admit_update(&update)?;
+        let next_offset = self.next_offset()?;
+        if !admitted {
+            return Ok(next_offset);
+        }
+        // Capture independently of per-topic dispatch and further polling.
+        let capture_input = nexus::prepare_ingress(&self.app.shared, &update)?;
+        let capture_shared = self.app.shared.clone();
+        let capture_id = update.update_id;
+        let capture = tokio::spawn(async move {
+            nexus::capture_ingress(&capture_shared, capture_id, capture_input).await
+        });
+        let message = update.message.as_ref().or_else(|| {
+            update
+                .callback_query
+                .as_ref()
+                .and_then(|callback| callback.message.as_ref())
+        });
+        let key = message.map_or(
+            SessionKey {
+                chat_id: 0,
+                thread_id: 0,
+            },
+            |message| SessionKey {
+                chat_id: message.chat.id,
+                thread_id: message.message_thread_id.unwrap_or(0),
+            },
+        );
+        let sender = self.dispatchers.entry(key).or_insert_with(|| {
+            let (sender, mut receiver) = mpsc::unbounded_channel::<(Update, Capture)>();
+            let app = self.app.clone();
+            tokio::spawn(async move {
+                while let Some((update, capture)) = receiver.recv().await {
+                    let update_id = update.update_id;
+                    let result = async {
+                        capture
+                            .await
+                            .context("Nexus ingress capture task interrupted")??;
+                        app.shared.store.begin_update(update_id)?;
+                        HUMAN_UPDATE_ID
+                            .scope(update_id, app.process_update(update))
+                            .await
+                    }
+                    .await;
+                    if let Err(error) = app
+                        .shared
+                        .store
+                        .finish_update_dispatch(update_id, result.is_ok())
+                    {
+                        tracing::error!("failed to record update dispatch: {error:#}");
+                    }
+                    if let Err(error) = result {
+                        tracing::error!("update processing failed: {error:#}");
                     }
                 }
+            });
+            sender
+        });
+        sender
+            .send((update, capture))
+            .map_err(|_| anyhow!("topic update dispatcher dropped"))?;
+        Ok(next_offset)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn telegram_client_reconnect_preserves_the_gateway_offset_and_native_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("gateway.sqlite");
+        let mut config =
+            super::super::tests::cold_interaction_config(database.clone(), root.path().into(), 100);
+        config.telegram.enabled = true;
+        let entry = config.interaction.as_ref().unwrap().entry();
+        let me = json!({"ok":true,"result":{
+            "id":101,"is_bot":true,"first_name":"Fixture","username":"fixture_bot"
+        }});
+        let menu_ack = json!({"ok":true,"result":true});
+        let conflict = json!({"ok":false,"error_code":409,"description":"Fixture conflict"});
+        let update = |id| json!({"update_id":id});
+        for (expected_before, updates, expected_after) in [
+            (None, vec![update(41)], 42),
+            (Some(42), vec![update(41), update(42)], 43),
+        ] {
+            let (url, server) = crate::telegram::tests::serve_api(vec![
+                (200, me.clone()),
+                (200, menu_ack.clone()),
+                (200, json!({"ok":true,"result":updates})),
+                (409, conflict.clone()),
+            ]);
+            config.telegram.api_base = url;
+            let app = App::bootstrap(config.clone()).await.unwrap();
+            if expected_before.is_none() {
+                app.shared
+                    .store
+                    .set_session_codex_thread(entry, "retained-native")
+                    .unwrap();
             }
+            let error = app.run_telegram_ingress().await.unwrap_err();
+            assert!(error.to_string().contains("getUpdates conflict"));
+            assert_eq!(
+                app.shared.store.last_update_id().unwrap(),
+                Some(expected_after - 1)
+            );
+            let requests = server.join().unwrap();
+            for (request, offset) in [
+                (&requests[2], expected_before),
+                (&requests[3], Some(expected_after)),
+            ] {
+                assert!(request.0.contains("/getUpdates "));
+                assert_eq!(request.1["offset"], json!(offset));
+            }
+            let retained_writer = Arc::downgrade(&app.shared);
+            drop(app);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while retained_writer.upgrade().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("The previous Gateway must drain its admitted dispatch before reopening");
+
+            let mut standalone = config.clone();
+            standalone.telegram.enabled = false;
+            standalone.telegram.bot_token = None;
+            let gateway = App::bootstrap(standalone).await.unwrap();
+            assert!(!gateway.shared.telegram.is_available());
+            assert_eq!(
+                gateway.shared.store.last_update_id().unwrap(),
+                Some(expected_after - 1)
+            );
+            let session = gateway.shared.store.get_session(entry).unwrap().unwrap();
+            assert_eq!(session.codex_thread_id.as_deref(), Some("retained-native"));
         }
+        let conn = rusqlite::Connection::open(database).unwrap();
+        let counts: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM incoming_updates),
+                    (SELECT count(*) FROM original_ingress_order WHERE channel='telegram')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (2, 2));
     }
 }

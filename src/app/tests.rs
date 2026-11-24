@@ -3186,7 +3186,7 @@ async fn backend_serves_owner_controls_with_no_telegram_credentials_or_api() {
         .unwrap();
 }
 
-fn cold_interaction_config(database: PathBuf, cwd: PathBuf, human: i64) -> Config {
+pub(super) fn cold_interaction_config(database: PathBuf, cwd: PathBuf, human: i64) -> Config {
     let mut config = sample_config(database, cwd);
     config.startup_admin_ids = vec![100];
     config.telegram.enabled = false;

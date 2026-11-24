@@ -21,7 +21,13 @@ Keep one coordinator and journal. In particular, Telegram delivery failure
 does not change native admission or invalidate canonical output.
 
 The current compatible executable still embeds the optional Telegram client.
-The Gateway startup and Telegram polling now have separate entry functions.
+The Gateway startup and Telegram polling have separate entry functions.
+TeleDaimon's polling loop depends on two Gateway operations. It reads the
+retained next offset and submits a Telegram original for a durable admission
+receipt. It advances only to the offset in that receipt. Gateway uses the
+existing admission journal and dispatches each new original once. Reconnecting
+the adapter resumes from the retained cursor, including when Gateway has run
+independently in between.
 With `telegram.enabled=false`, Gateway opens the same owner API without a
 Telegram token. In a combined instance with an independent Conversation,
 unavailable Bot API identity leaves Gateway available with Telegram transport

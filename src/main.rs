@@ -13,6 +13,7 @@ mod models;
 mod nexus;
 mod render;
 mod store;
+mod tele_daimon;
 mod telegram;
 mod transcribe;
 mod user_input;
