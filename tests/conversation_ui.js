@@ -187,7 +187,7 @@ function boot(readOnly=false,standalone=false,options={}) {
         if(optionsForFixture.incremental){
           const chars=Array.from(replyTexts.get(selected.source)||'Selected reply'),end=Math.min(chars.length,selected.offset+(selected.offset===0?120:300));
           const text=chars.slice(selected.offset,end).join(''),sha=require('node:crypto').createHash('sha256').update(text).digest('hex');
-          const response=new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'',...(optionsForFixture.liveLookahead && end<chars.length && end+300<chars.length?{'x-presentation-lookahead-offset':String(end+300)}:{}),'x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}});
+          const response=new Response(data,{headers:{...(optionsForFixture.progressive?{'content-type':'application/x-ndjson','x-audio-encoding':optionsForFixture.audioEncoding||'mp3'}:{}),'x-presentation-source':selected.source,'x-presentation-revision':selected.revision,'x-presentation-offset':String(selected.offset),'x-presentation-next-offset':end<chars.length?String(end):'',...(optionsForFixture.liveLookahead && end<chars.length && end+300<chars.length?{'x-presentation-lookahead-offset':String(end+300)}:{}),'x-presentation-end-offset':String(end),'x-presentation-text-sha256':sha,'x-presentation-prefetch':'true','x-audio-sha256':hash}});
           if(optionsForFixture.futureReleases && selected.offset>0)return new Promise((resolve,reject)=>{optionsForFixture.futureReleases.set(selected.offset,()=>resolve(response));options.signal.addEventListener('abort',()=>reject(new Error('Synthetic preparation cancelled')),{once:true});});
           return Promise.resolve(response);
         }
@@ -219,8 +219,9 @@ function boot(readOnly=false,standalone=false,options={}) {
     }
     context.window.ConversationVoiceMode={mount(hooks){let enabled=false,direct=false;return continuousMode={active:false,updates:[],configure(value,next){if(this.active&&(!value||direct!==next))this.close();enabled=value;direct=next;},update(v){this.updates.push(v);if(v.connected===false)this.close();},open(){if(!enabled||!hooks.canEnter())return;hooks.onEnter();this.active=true;hooks.onSpeak();},suspend(){if(this.active)hooks.onSuspend();},reconnect(){if(hooks.canReconnect())return hooks.onReconnect();},resumeAudio(){hooks.onResumeAudio?.();},close(options){if(!this.active)return;this.active=false;hooks.onLeave(options);}};}};
   }
-  if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal){
-    const value={url:'blob:fixture-stream',signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(fn){this.transportError=fn;}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
+  Object.assign(context.window.navigator,options.device);
+  if(options.progressive)context.window.SpeechStream={available:()=>true,open(_response,signal,{bufferedPcm}={}){
+    const value={url:bufferedPcm?undefined:'blob:fixture-stream',bufferedPcm,signal,done:options.streamDone || Promise.resolve({complete:true,blob:new Blob(['verified encoded sample'],{type:'audio/mpeg'})}),onDecoderError(fn){this.decoderError=fn;},position:seconds=>options.wordPosition?.(seconds,Number(_response.headers.get("x-presentation-offset"))),cancelled:false,cancel(){this.cancelled=true;},onError(fn){this.transportError=fn;}};if(options.streamReady)value.ready=options.streamReady;streamedTransports.push(value);return value;
   }};
   if(options.liveSpeech)vm.runInContext(fs.readFileSync("dashboard/web/live-speech.js", "utf8"), context);
   if(options.timingEvents)context.window.ConversationTiming={mount:()=>Object.fromEntries(["bind","mark","input","source","pauseApplied"].map(name=>[name,(...args)=>options.timingEvents.push([name,...args])]))};
@@ -1364,6 +1365,25 @@ function boot(readOnly=false,standalone=false,options={}) {
     if(outcome==='ready')assert.equal(player.muted,false,'A current source becomes audible after readiness');
     else assert(player.muted||player.paused,'Stop and changed sources cannot become audible after readiness');
     reserved.ui.stop();
+  }
+  for(const outcome of ['ready','stop','changed','incomplete']){
+    let finish;
+    const streamDone=new Promise(resolve=>{finish=resolve;});
+    const mobile=boot(false,true,{incremental:true,progressive:true,audioEncoding:'pcm_s16le',device:{userAgent:'Android'},streamDone});
+    mobile.audio();mobile.replyTexts.set('native:8','The selected sentence.');await mobile.ui.refresh();
+    const card=mobile.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8');
+    const listening=listenButton(card).handlers.click();await new Promise(setImmediate);
+    const player=mobile.nodes.get('#conversation-audio');
+    assert.equal(mobile.streamedTransports[0].bufferedPcm,true);
+    assert(player.paused && !player.src,'Mobile PCM cannot start on partial audio');
+    if(outcome==='stop')mobile.ui.stop();
+    if(outcome==='changed')mobile.replyTexts.set('native:8','Changed source text.');
+    finish(outcome==='incomplete'?{complete:false}:{complete:true,blob:new Blob(['verified PCM WAV'],{type:'audio/wav'})});
+    await listening;
+    assert.equal(mobile.audioCalls.length,1,'Buffered playback must never synthesize again');
+    if(outcome==='ready')assert(!player.paused && !player.muted && player.src.startsWith('blob:'),'A current verified WAV must play');
+    else assert(player.paused||player.muted,'Only a current, complete part may become audible');
+    mobile.ui.stop();
   }
   const buffering=boot(false,true,{incremental:true,progressive:true});buffering.audio();await buffering.ui.refresh();
   const heldBuffer=buffering.holdReplyText('native:8');

@@ -2273,10 +2273,23 @@ window.Conversation = (() => {
             || response.headers.get("x-presentation-revision") !== source.revision
             || response.headers.get("x-presentation-offset") !== String(offset)) throw new Error("Audio source mismatch");
         if(response.headers.get("content-type")?.startsWith("application/x-ndjson")){
-          if(!canStreamSpeech || !window.SpeechStream?.available() || !["mp3","pcm_s16le"].includes(response.headers.get("x-audio-encoding")))throw Error("Unexpected streaming audio");
+          const encoding=response.headers.get("x-audio-encoding");
+          if(!canStreamSpeech || !window.SpeechStream?.available() || !["mp3","pcm_s16le"].includes(encoding))throw Error("Unexpected streaming audio");
           const nextHeader=response.headers.get("x-presentation-next-offset"),next=nextHeader===""?null:Number(nextHeader),end=Number(response.headers.get("x-presentation-end-offset"));
           if(!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end)throw Error("Invalid stream boundary");
-          return {streaming:window.SpeechStream.open(response,controller.signal),next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:true};
+          const device=window.navigator;
+          const bufferedPcm=encoding==="pcm_s16le" && (device.userAgentData?.mobile===true
+            || /Android|iPhone|iPad|iPod/i.test(device.userAgent||"")
+            || device.platform==="MacIntel" && device.maxTouchPoints>1);
+          const streaming=window.SpeechStream.open(response,controller.signal,{bufferedPcm});
+          const metadata={streaming,next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:true};
+          if(!bufferedPcm)return metadata;
+          // Give the phone's media element one verified part. Provider gaps and
+          // delayed browser timers must not drain the player mid-part.
+          const completed=await streaming.done;
+          if(controller.signal.aborted)throw new DOMException("Audio preparation ended", "AbortError");
+          if(!completed.complete || !completed.blob?.size)throw Error("Audio stopped before it was ready. The reply is still available to read.");
+          return {...metadata,blob:completed.blob,usingBlob:true};
         }
         const stream = response.body.getReader(); const chunks = []; let length = 0;
         while (true) {

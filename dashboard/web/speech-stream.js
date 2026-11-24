@@ -4,16 +4,17 @@ window.SpeechStream=(()=>{
   const nativeAvailable=()=>window.NativeSpeechAudio?.progressive===true && typeof window.NativeSpeechAudio.openStream==="function";
   const available=encoding=>encoding==="pcm_s16le"?!!window.PcmSpeech?.available():encoding==="mp3"?nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg"):!!window.PcmSpeech?.available()||nativeAvailable()||!!window.MediaSource?.isTypeSupported?.("audio/mpeg");
   const digest=async bytes=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(n=>n.toString(16).padStart(2,"0")).join("");
-  function open(response,signal){
+  function open(response,signal,{bufferedPcm=false}={}){
     const encoding=response.headers?.get?.("x-audio-encoding")||"mp3";
-    if(!["mp3","pcm_s16le"].includes(encoding)||!available(encoding))throw Error("Progressive audio unavailable");
     const pcm=encoding==="pcm_s16le";
-    const native=pcm?window.PcmSpeech?.open():nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
-    if(pcm&&!native)throw Error("PCM audio playback unavailable");
-    const media=native?undefined:new window.MediaSource(),url=native?.url||URL.createObjectURL(media),reader=response.body.getReader();
+    const buffered=pcm && bufferedPcm;
+    if(!["mp3","pcm_s16le"].includes(encoding) || !(buffered?window.PcmSpeech?.wav:available(encoding)))throw Error("Progressive audio unavailable");
+    const native=buffered?undefined:pcm?window.PcmSpeech.open():nativeAvailable()?window.NativeSpeechAudio.openStream():undefined;
+    const media=native||buffered?undefined:new window.MediaSource();
+    const url=native?.url||(media?URL.createObjectURL(media):undefined),reader=response.body.getReader();
     let buffer,queue=[],all=[],readyWaiters=new Set(),bytes=0,sequence=0,complete=false,closed=false,failure,handler,decoderError,decoderHandler,verifiedBlob,words,alignmentOffset;
     const timer=setTimeout(()=>fail(Error("Speech stream deadline exceeded")),145000);
-    function buffered(position){
+    function bufferedSeconds(position){
       const ranges=buffer?.buffered;
       if(!ranges)return 0;
       for(let n=0;n<ranges.length;n++)if(ranges.start(n)<=position+.05&&ranges.end(n)>position)return ranges.end(n)-position;
@@ -29,7 +30,7 @@ window.SpeechStream=(()=>{
         const finish=error=>{clearTimeout(waiting);readyWaiters.delete(check);error?reject(error):resolve();};
         const check=()=>{
           if(failure||closed||decoderError)return finish(failure||decoderError||Error('Speech stream closed'));
-          if(complete||buffered(position)>=1.2)finish();
+          if(complete||bufferedSeconds(position)>=1.2)finish();
         };
         readyWaiters.add(check);waiting=setTimeout(()=>finish(Error('Audio buffering delayed')),12000);check();
       });
@@ -38,7 +39,7 @@ window.SpeechStream=(()=>{
       if(closed)return;closed=true;clearTimeout(timer);signal?.removeEventListener("abort",cancel);
       Promise.resolve(reader.cancel()).catch(()=>{});queue=[];all=[];
       try{if(buffer?.updating)buffer.abort();}catch{}
-      if(native)native.cancel();else URL.revokeObjectURL(url);notifyReady();
+      if(native)native.cancel();else if(url)URL.revokeObjectURL(url);notifyReady();
     }
     function fail(error){if(closed)return;failure=error;cancel();handler?.(error);}
     function decoderFail(error){
@@ -72,13 +73,15 @@ window.SpeechStream=(()=>{
           const raw=Uint8Array.from(atob(value.data),c=>c.charCodeAt(0));
           if(!raw.length || raw.length>32768 || await digest(raw)!==value.sha256)throw Error("Audio chunk integrity failed");
           if(closed)return;
-          bytes+=raw.length;if(bytes>8*1024*1024)throw Error("Audio stream exceeds playback bound");
+          bytes+=raw.length;
+          if(bytes>8*1024*1024-(pcm?44:0) || pcm&&raw.length%2)throw Error("Audio stream exceeds playback bound or has an incomplete sample");
           sequence++;all.push(raw);
-          if(native)native.append(raw,value.sha256);else if(!decoderError)queue.push(raw);
+          if(native)native.append(raw,value.sha256);else if(media&&!decoderError)queue.push(raw);
           pump();
         }else if(value.type==="end"){
           const merged=new Uint8Array(bytes);let offset=0;for(const part of all){merged.set(part,offset);offset+=part.length;}
           if(!bytes || value.audio_bytes!==bytes || await digest(merged)!==value.audio_sha256)throw Error("Incomplete audio stream");
+          if(pcm && (value.format?.encoding!==encoding || value.format.sample_rate_hz!==24000 || value.format.channels!==1))throw Error("PCM completion format mismatch");
           if(closed)return;
           const candidate=value.alignment?.words;
           if(Number.isSafeInteger(value.alignment?.offset) && value.alignment.offset>=0 && value.alignment.offset<=1000000 && Array.isArray(candidate) && candidate.length>0 && candidate.length<=512){
