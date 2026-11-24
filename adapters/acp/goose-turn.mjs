@@ -64,7 +64,10 @@ export async function runGooseTurn({
   try {
     stop.throwIfAborted();
     child = spawn(binary, [], {
-      cwd, env: { ...env, GOOSE_DISABLE_SESSION_NAMING: 'true' },
+      cwd, env: {
+        ...env, GOOSE_DISABLE_SESSION_NAMING: 'true',
+        GOOSE_DISABLE_SKILLS: 'true', GOOSE_SLASH_COMMANDS_ENABLED: 'false',
+      },
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     child.on('error', () => {});
@@ -117,6 +120,9 @@ export async function runGooseTurn({
     if (initialized?.protocolVersion !== 1) throw new Error('Goose ACP v1 required');
 
     reason = 'goose_catalog_unverified';
+    if (initialized.agentCapabilities?._meta?.goose?.nativeSkills?.enabled !== false) {
+      throw new Error('The ACP process did not verify that native skills are disabled');
+    }
     const configured = await request(PREFIX + 'config/extensions/list', {});
     if (!Array.isArray(configured?.extensions)) throw new Error('Goose extensions unavailable');
     // The owner-selected profile disables bundled extensions. Preflight reads

@@ -3252,7 +3252,8 @@ if first["text"] == "reject-before-commit":
     print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
                       reason="claude_catalog_mismatch"))), flush=True)
     sys.exit(0)
-native = first["sessionId"]
+goose = first["schema"] == "daimon-gateway.goose-turn/v1"
+native = "goose-native-id" if goose else first["sessionId"]
 if first["text"] == "wrong-native-id":
     native = "different-session"
 print(json.dumps(dict(ids, type="prepare_submission", nativeSessionId=native)), flush=True)
@@ -3265,6 +3266,8 @@ assert phase == "provider_exposed"
 frozen = json.loads(raw)
 assert frozen["session_id"] == first["sessionId"]
 assert json.loads(submission)["native_session_id"] == native
+if goose:
+    assert json.loads(submission)["engine"] == "goose"
 assert frozen["original"]["text"] == first["text"]
 assert frozen["body"]["manifest_hash"] == first["body"]["manifestHash"]
 with open(marker, "a") as f:
@@ -3315,15 +3318,11 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     assert_eq!(duplicate, delivered);
     let goose = stopping::command(&app, 100, &goose_run(&goose_id), None)
         .await
-        .unwrap_err();
-    assert!(goose.to_string().contains("catalog cannot be verified"));
-    assert!(
-        app.shared
-            .store
-            .we_status(100, config.interaction.as_ref().unwrap().entry(), &goose_id)
-            .unwrap()
-            .is_none()
-    );
+        .unwrap();
+    assert_eq!(goose["phase"], "delivered");
+    assert_eq!(goose["engine"], "goose");
+    assert_eq!(goose["native_session_id"], "goose-native-id");
+    assert_ne!(goose["native_session_id"], goose["session_id"]);
     let nonce = delivered["result"]["send_id"].as_str().unwrap();
     let lost = stopping::command(&app, 100, &run(&uncertain, "lose-provider-result"), None)
         .await
@@ -3362,7 +3361,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .we_start(
             100,
             entry,
-            crate::interaction::ForegroundEngine::Goose,
+            crate::interaction::ForegroundEngine::Claude,
             source,
             json!({}),
             original,
@@ -3409,6 +3408,10 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     drop(app);
 
     let app = App::bootstrap(config).await.unwrap();
+    let retained_goose = stopping::command(&app, 100, &run(&goose_id, "fixture-sender"), None)
+        .await
+        .unwrap();
+    assert_eq!(retained_goose, goose);
     let interrupted_id = interrupted.clone();
     for (id, author, phase) in [
         (id, "fixture-sender", "delivered"),
@@ -3428,7 +3431,6 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
                 .unwrap()
         );
         if id == interrupted_id {
-            assert_eq!(status["engine"], "goose");
             assert_eq!(status["native_session_id"], native_session);
             assert_ne!(status["native_session_id"], status["session_id"]);
         }
@@ -3438,7 +3440,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     }
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
-        "provider\nreturn\nprovider\n"
+        "provider\nreturn\nprovider\nreturn\nprovider\n"
     );
     let database = rusqlite::Connection::open(database).unwrap();
     for table in ["turns", "incoming_updates"] {

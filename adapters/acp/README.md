@@ -31,12 +31,17 @@ replay an uncertain original.
 
 ## Selecting Goose in Gateway
 
-Goose v1.60.2 includes `load_skill` in the model-facing catalog even with all
-extensions disabled. Its ACP catalog omits this native operation. The
-combined real-worker test detects that difference at the synthetic provider.
-Gateway refuses new Goose runs until a compatible worker verifies the complete
-provider catalog before accepting an original. Existing status readback is
-available through the same journal.
+Stock Goose v1.60.2 includes `load_skill` in the model-facing catalog even
+with all extensions disabled. Its ACP catalog omits that native operation.
+Use the [pinned native skills patch](goose-v1.60.2-native-skills.patch) on
+[Goose v1.60.2](https://github.com/aaif-goose/goose/tree/v1.60.2)
+(commit `fb55b5a6d7f5b5df96c8f817f1cde6a81880d9f1`, [Apache-2.0](https://github.com/aaif-goose/goose/blob/v1.60.2/LICENSE)) and build
+`cargo build --locked -p goose --bin goose-acp --no-default-features`.
+The worker disables the native skills operation and slash commands in that
+process. It requires the running ACP connection to report skills disabled
+before creating a native session or authorizing provider exposure. Stock
+builds lack that signal and refuse before dispatch. The joined provider and
+DMK test also checks the actual inference catalog.
 
 The private `interaction.goose_foreground` configuration uses the same
 `transport` and `worker_command` shape as `interaction.claude_foreground`.
@@ -76,7 +81,7 @@ node --test adapters/acp/*.test.mjs
 ```
 
 For the real-binary contract set `GOOSE_TEST_ACP_BINARY` to a SHA-256-verified
-v1.60.2 Linux `goose-acp` binary and run the same command in an isolated network
+v1.60.2 patched Linux `goose-acp` binary and run the same command in an isolated network
 with only loopback enabled. The test starts its own synthetic HTTP endpoint and
 uses no provider account. It covers catalog discovery, one response and
 interruption after provider entry. Signed private Matrix exchange, approved DMK

@@ -169,7 +169,7 @@ print(json.dumps(memory._read_chapter(selected)))
     assert.ok(!JSON.stringify(outcome).includes(text));
   });
   if (binary) {
-    await t.test('real worker uses the DMK record and exposes the stock provider catalog gap', async t => {
+    await t.test('real worker uses the DMK record and offers only the approved tools', async t => {
       const key = await isolatedGooseProfile(root);
       const requests = [];
       const tool = 'matrix__dmk_read_selected';
@@ -233,7 +233,7 @@ exec "$0.native" "$@"
       });
       assert.deepEqual(result.outcome, { phase: 'completed', sessionId: result.nativeSessionId, text: answer });
       assert.deepEqual(requests, [false, true].map(hasSource => ({
-        committed: true, path: '/v1/chat/completions', toolNames: ['load_skill', 'matrix__daimon_status', tool], hasSource,
+        committed: true, path: '/v1/chat/completions', toolNames: ['matrix__daimon_status', tool], hasSource,
       })));
     });
   }

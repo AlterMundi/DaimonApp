@@ -38,7 +38,9 @@ input.on('line', line => {
     }});
   }
   const result = ({
-    initialize: { protocolVersion: 1 },
+    initialize: { protocolVersion: 1, agentCapabilities: { _meta: { goose: {
+      nativeSkills: { enabled: process.env.GOOSE_DISABLE_SKILLS !== 'true' || process.env.OUTCOME === 'skills-on' },
+    } } } },
     '_goose/unstable/config/extensions/list': { extensions: [{ enabled: false }] },
     'session/new': { sessionId },
     '_goose/unstable/tools/list': { tools: process.env.TOOLS.split(' ').map(name => ({ name })) },
@@ -52,6 +54,8 @@ input.on('line', line => {
     binary, cwd, env: { MARKER: marker, TOOLS: tools, OUTCOME: outcome ?? '' },
     mcpServers: [], toolNames: [toolName], text: 'Original 42', beforeSubmit,
   });
+  const skills = await run(toolName, () => assert.fail('skill loader reached journal'), 'skills-on');
+  assert.deepEqual(skills, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
   const wrong = await run(toolName + ' unexpected_tool', () => assert.fail('catalog drift reached journal'));
   assert.deepEqual(wrong, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
   const veto = await run(toolName, session => {
@@ -65,6 +69,18 @@ input.on('line', line => {
   const lost = await run(toolName, () => true, 'lost');
   assert.deepEqual(lost, { phase: 'uncertain', reason: 'native_result_unconfirmed', sessionId: 'native-session-42' });
   assert.equal(await readFile(marker, 'utf8'), 'provider\nprovider\n');
+});
+
+test('stock Goose cannot authorize a provider prompt', {
+  skip: !process.env.GOOSE_TEST_STOCK_ACP_BINARY,
+}, async t => {
+  const cwd = await temp(t);
+  assert.deepEqual(await runGooseTurn({
+    binary: process.env.GOOSE_TEST_STOCK_ACP_BINARY, cwd,
+    env: { PATH: '/usr/bin:/bin', HOME: cwd },
+    mcpServers: [], toolNames: [toolName], text: 'Synthetic refusal fixture',
+    beforeSubmit: () => assert.fail('unverified provider catalog reached journal'),
+  }), { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
 });
 
 test('pinned real Goose uses only the local provider after the journal acknowledges', {
