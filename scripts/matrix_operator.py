@@ -29,7 +29,14 @@ from matrix_execution import (
     destination,
     identifier,
     strict_json,
+    text,
 )
+
+MESSAGING_METHODS = frozenset(
+    {"messaging.send", "messaging.delivery", "messaging.reply", "messaging.inbox"}
+)
+WE_METHODS = frozenset({"we.conversation.page", "we.converse"})
+WE_RETURN_TTL_MS = 30_000
 
 
 def host_timeout():
@@ -53,6 +60,7 @@ class NativeOwnerClient:
     observation: object
     timeout_seconds: float = 10
     deadline_ns: int | None = None
+    conversation_methods: frozenset[str] = MESSAGING_METHODS
 
     def __post_init__(self):
         if (
@@ -72,12 +80,7 @@ class NativeOwnerClient:
     def invoke(self, method, params):
         if method == "runtime.status":
             client = self.observation
-        elif method in (
-            "messaging.send",
-            "messaging.delivery",
-            "messaging.reply",
-            "messaging.inbox",
-        ):
+        elif method in self.conversation_methods:
             client = self.messaging
         else:
             raise MatrixExecutionError("Unsupported technical host operation")
@@ -132,11 +135,22 @@ def verified_enrollment(client, source, enrollment):
     return dict(source)
 
 
-def configured_client(path, source, *, required_methods=("messaging.send",)):
-    from daimon_matrix.client import ClientConfig, LocalClient
+def configured_client(path, source, *, required_methods=("messaging.send",),
+                      same_being=False, body_status_only=False):
     from daimon_matrix.messaging_config import protected_read
 
     raw = strict_json(protected_read(path))
+    we_schema = "daimon-gateway.matrix-we-binding/v1"
+    if same_being or (body_status_only and isinstance(raw, dict) and raw.get("schema") == we_schema):
+        binding = closed(raw, ("schema", "conversation", "observation", "source"))
+        if binding["schema"] != we_schema or binding["source"] != source:
+            raise MatrixExecutionError("Explicit same-being owner binding required")
+        conversation = load_sdk_reference(binding["conversation"])
+        observation = load_sdk_reference(binding["observation"])
+        if (set(conversation.config.capability.methods) != WE_METHODS
+                or set(observation.config.capability.methods) != {"runtime.status"}):
+            raise MatrixExecutionError("Separate same-being and runtime observation grants required")
+        return NativeOwnerClient(conversation, observation, conversation_methods=WE_METHODS)
     enrolled = raw.get("schema") == "telecodex.matrix-host-binding/v2" if isinstance(raw, dict) else False
     names = ("schema", "messaging", "enrollment" if enrolled else "observation", "source")
     if enrolled and "intake_after" in raw:
@@ -150,38 +164,32 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
     if binding["source"] != source:
         raise MatrixExecutionError("Owner binding differs from selected source")
 
-    def load(value):
-        closed(value, ("socket", "client_config", "client_key"))
-        for field in value:
-            if (
-                not isinstance(value[field], str)
-                or not Path(value[field]).is_absolute()
-            ):
-                raise MatrixExecutionError(
-                    "Owner-local absolute SDK reference required"
-                )
-        config = ClientConfig.load(
-            Path(value["client_config"]),
-            protected_read(Path(value["client_key"]), size=32),
-        )
-        return LocalClient(Path(value["socket"]), config)
-
-    messaging = load(binding["messaging"])
+    messaging = load_sdk_reference(binding["messaging"])
     methods = set(messaging.config.capability.methods)
-    if not set(required_methods) <= methods or not methods <= {
-        "messaging.send",
-        "messaging.reply",
-        "messaging.inbox",
-        "messaging.delivery",
-    }:
+    if not set(required_methods) <= methods <= MESSAGING_METHODS:
         raise MatrixExecutionError("Existing messaging-only capability required")
     if enrolled:
         return EnrolledOwnerClient(messaging, verified_enrollment(messaging, source, binding["enrollment"]),
                                    intake_after=intake_after)
-    observation = load(binding["observation"])
+    observation = load_sdk_reference(binding["observation"])
     if "runtime.status" not in observation.config.capability.methods:
         raise MatrixExecutionError("Existing source observation capability required")
     return NativeOwnerClient(messaging, observation)
+
+
+def load_sdk_reference(value):
+    from daimon_matrix.client import ClientConfig, LocalClient
+    from daimon_matrix.messaging_config import protected_read
+
+    closed(value, ("socket", "client_config", "client_key"))
+    for item in value.values():
+        if not isinstance(item, str) or not Path(item).is_absolute():
+            raise MatrixExecutionError("Owner-local absolute SDK reference required")
+    config = ClientConfig.load(
+        Path(value["client_config"]),
+        protected_read(Path(value["client_key"]), size=32),
+    )
+    return LocalClient(Path(value["socket"]), config)
 
 
 def body_status(value, client, *, timeout=10):
@@ -210,6 +218,109 @@ def body_status(value, client, *, timeout=10):
             "incarnation_id": origin["incarnation_id"],
         },
     }
+
+
+def we_original(original, local_body, client):
+    """Resolve one selected event and this body's semantic intake receipt."""
+    closed(original, ("author", "cursor", "event_id", "thread_id"))
+    author = text(original["author"], 128)
+    if author == local_body:
+        raise MatrixExecutionError("Select an original from another embodiment")
+    event_id = identifier(original["event_id"])
+    thread_id = identifier(original["thread_id"])
+    cursor = original["cursor"]
+    if cursor is not None:
+        text(cursor, 2048)
+    message = None
+    receipt = None
+    # A fresh demo thread starts from an owner-selected cursor. Only the
+    # selected thread is read, with no durable frontier advancement.
+    for _ in range(16):
+        _, response = client.invoke(
+            "we.conversation.page", {"cursor": cursor, "limit": 4, "thread_id": thread_id}
+        )
+        page = response.get("result", {}) if response.get("ok") is True else {}
+        if page.get("schema") != "dm.we.conversation-page/v2":
+            raise MatrixExecutionError("Same-being conversation unavailable")
+        for entry in page["entries"]:
+            if entry["thread_id"] != thread_id:
+                raise MatrixExecutionError("Same-being conversation differs from selection")
+            if (entry["event_id"] == event_id and entry["kind"] == "message"
+                    and entry["author"] == author and local_body in entry["addressees"]):
+                message = text(entry["text"])
+            if (entry["kind"] == "receipt" and entry["author"] == local_body
+                    and entry["message_id"] == event_id and entry["outcome"] == "delivered"):
+                receipt = identifier(entry["event_id"])
+        if message is not None and receipt is not None:
+            return {
+                "event_id": event_id,
+                "author": author,
+                "thread_id": thread_id,
+                "receipt_event_id": receipt,
+                "text": message,
+            }
+        if not page["more"]:
+            break
+        next_cursor = text(page["cursor"], 2048)
+        if next_cursor == cursor:
+            break
+        cursor = next_cursor
+    raise MatrixExecutionError("Selected same-being original and intake receipt unavailable")
+
+
+def we_conversation(value, client, *, timeout, respond=False):
+    """One explicitly selected read or one submit of a retained return intent."""
+    client = replace(client, timeout_seconds=timeout,
+                     deadline_ns=time.monotonic_ns() + int(timeout * 1_000_000_000))
+    observed = body_status(value, client, timeout=timeout)
+    if observed != value["body"]:
+        raise MatrixExecutionError("Authenticated body generation differs from selection")
+    original = we_original(value["original"], observed["local_origin"]["embodiment_id"], client)
+    if not respond:
+        return {"schema": "daimon-gateway.matrix-we-original/v1", **original}
+
+    request_id = identifier(value["send_id"])
+    params = {
+        "request_id": request_id,
+        "thread_id": original["thread_id"],
+        "addressees": [original["author"]],
+        "text": text(value["text"]),
+        "ttl_ms": WE_RETURN_TTL_MS,
+    }
+    outcome = {
+        "schema": "daimon-gateway.matrix-we-return/v1",
+        "request_id": request_id,
+        "state": "undetermined",
+    }
+    from daimon_matrix.client import ClientError
+
+    try:
+        _, response = client.invoke("we.converse", params)
+    except (ClientError, OSError):
+        return outcome
+    result = response.get("result", {}) if response.get("ok") is True else {}
+    if (
+        result.get("schema") != "dm.we.converse-result/v1"
+        or result.get("thread_id") != params["thread_id"]
+        or result.get("addressees") != params["addressees"]
+        or not isinstance(result.get("message_hash"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", result["message_hash"])
+        or not isinstance(result.get("deliveries"), list)
+    ):
+        return outcome
+    outcome.update(
+        message_id=identifier(result["message_id"]),
+        message_hash=result["message_hash"],
+        thread_id=result["thread_id"],
+    )
+    # Other signed sibling copies do not prove that the original author heard.
+    for delivery in result["deliveries"]:
+        if delivery["embodiment_id"] == original["author"] and delivery["state"] == "delivered":
+            outcome.update(
+                state="delivered", receipt_event_id=identifier(delivery["receipt_event_id"])
+            )
+            break
+    return outcome
 
 
 def send(value, client, *, timeout=10, coordination=None):
@@ -714,6 +825,8 @@ def receiving_command(
     response_status_only=False,
     native_owner_only=False,
     body_status_only=False,
+    we_read_only=False,
+    we_return_only=False,
     funding_binding=None,
 ):
     """Bootstrap this host module in the existing receiving owner's SDK context.
@@ -722,7 +835,9 @@ def receiving_command(
     native connection each invocation so an SDK successor cannot leave a cached
     host interpreter/import selection. Do not execute a connection's code string.
     """
-    if sum((receive_only, inbox_only, respond_only, response_status_only, native_owner_only, body_status_only)) > 1:
+    modes = (receive_only, inbox_only, respond_only, response_status_only,
+             native_owner_only, body_status_only, we_read_only, we_return_only)
+    if sum(modes) > 1:
         raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
         raw = stream.read(65537)
@@ -772,7 +887,7 @@ def receiving_command(
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'native-owner':['--native-owner'],'body-status':['--body-status'],'send':[]}[receive_mode])+extra\n"
+        "sys.argv=[script,'--binding',binding]+([receive_mode] if receive_mode else [])+extra\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -787,20 +902,18 @@ def receiving_command(
         command[13],
         script,
         str(binding),
-        "native-owner"
-        if native_owner_only
-        else "respond"
-        if respond_only
-        else "response-status"
-        if response_status_only
-        else "body-status"
-        if body_status_only
-        else "inbox"
-        if inbox_only
-        else "receive"
-        if receive_only
-        else "send",
+        next((flag for active, flag in zip(
+            modes, ("--receive", "--inbox", "--respond", "--response-status",
+                    "--native-owner", "--body-status", "--we-read", "--we-return"),
+        ) if active), ""),
     ] + (["--funding-binding", str(funding_binding)] if native_owner_only else [])
+
+
+def write_host_outcome(result):
+    output = canonical(result)
+    if len(output.encode()) > 65536:
+        raise MatrixExecutionError("Bounded host outcome required")
+    print(output)
 
 
 def main(*, clock=time.time, monotonic=time.monotonic):
@@ -838,6 +951,10 @@ def main(*, clock=time.time, monotonic=time.monotonic):
     )
     modes.add_argument("--body-status", action="store_true",
                        help="Read authenticated Matrix body metadata; never send")
+    modes.add_argument("--we-read", action="store_true",
+                       help="Read one exact original and its same-being intake receipt")
+    modes.add_argument("--we-return", action="store_true",
+                       help="Submit one retained return to the original same-being author")
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
@@ -848,6 +965,7 @@ def main(*, clock=time.time, monotonic=time.monotonic):
             respond_only=args.respond,
             response_status_only=args.response_status,
             native_owner_only=args.native_owner, body_status_only=args.body_status,
+            we_read_only=args.we_read, we_return_only=args.we_return,
             funding_binding=args.funding_binding,
         )
         os.execv(command[0], command)
@@ -861,6 +979,14 @@ def main(*, clock=time.time, monotonic=time.monotonic):
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")
+    if args.we_read or args.we_return:
+        fields = ("source", "body", "original")
+        if args.we_return:
+            fields += ("send_id", "text")
+        value = closed(strict_json(raw), fields)
+        client = configured_client(args.binding, value["source"], same_being=True)
+        write_host_outcome(we_conversation(value, client, timeout=host_timeout(), respond=args.we_return))
+        return
     value = closed(
         strict_json(raw),
         ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms")
@@ -901,12 +1027,10 @@ def main(*, clock=time.time, monotonic=time.monotonic):
         if args.receive
         else ("messaging.send",)
     )
-    client = configured_client(args.binding, value["source"], required_methods=required)
+    client = configured_client(args.binding, value["source"], required_methods=required,
+                               body_status_only=args.body_status)
     result = operation(value, client, timeout=host_timeout())
-    output = canonical(result)
-    if len(output.encode()) > 65536:
-        raise MatrixExecutionError("Bounded host outcome required")
-    print(output)
+    write_host_outcome(result)
 
 
 if __name__ == "__main__":
