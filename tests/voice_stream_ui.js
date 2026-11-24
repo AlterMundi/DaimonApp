@@ -255,6 +255,24 @@ function boot(fail){
  assert.equal(live.preparedText,'Single live words');assert.equal(single.events[0].data.type,'audio/wav');
  assert.equal(single.sockets.length,1,'One live recognition, never another transcription');
 
+ const interrupted=boot();let notices=0;
+ const saved=await interrupted.create(undefined,{transcriptionProvider:'openai',onUnavailable:()=>notices++});
+ const [transport]=interrupted.sockets,[mic]=interrupted.worklets;
+ saved.start();transport.open();transport.message({type:'ready'});
+ const beforeReset=pcm(1000,2000),afterReset=pcm(3000,4000);
+ mic.emit({pcm:beforeReset});transport.message({type:'partial',text:'Earlier partial'});
+ transport.message({type:'unavailable'});await new Promise(setImmediate);
+ transport.onerror();transport.message({type:'partial',text:'Late text'});
+ assert.equal(notices,1,'The prepared microphone reports the loss once');
+ assert.equal(saved.state,'recording');assert(!interrupted.contexts[0].closed);
+ assert.deepEqual(interrupted.captions,['Earlier partial']);
+ mic.emit({pcm:afterReset});saved.stop();mic.emit({finished:true});
+ assert.deepEqual(interrupted.events.map(e=>e.type),['data','stop']);
+ const originalSamples=Buffer.from(await interrupted.events[0].data.arrayBuffer()).subarray(44);
+ assert(originalSamples.equals(Buffer.concat([Buffer.from(beforeReset),Buffer.from(afterReset)])));
+ assert.equal(saved.preparedText,undefined);
+ assert.equal(interrupted.sockets.length,1,'A failed live recognizer never replays the original');
+
  const canonicalActivity=boot(),openingDirect=canonicalActivity.window.StreamingVoice.openActivity({headers:()=>({}),binding,id:uuid,transcriptionProvider:'openai'});
  assert.equal(canonicalActivity.sockets[0].url,'wss://example.invalid/interaction/api/interaction/voice/openai/activity');
  canonicalActivity.sockets[0].open();canonicalActivity.sockets[0].message({type:'ready',id:uuid,analysis_only:true});
