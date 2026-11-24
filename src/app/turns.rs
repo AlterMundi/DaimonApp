@@ -827,6 +827,15 @@ pub(super) async fn process_turn(
                 let requester_user_id = queued.request.from_user_id;
                 let session_key = session.key;
                 let voice_update = queued.update_id;
+                // A control may retain a Telegram update ID while starting a
+                // native goal/merge/Nexus prompt. That is not raw human input.
+                let direct_parent_start=local_work_session
+                    && queued.goal.is_none()
+                    && queued.nexus.is_none()
+                    && queued.merge.is_none()
+                    && queued.stop_resume.is_none()
+                    && queued.workflow_return.is_none()
+                    && queued.tribu_admission.is_none();
                 let initial_binding=initial_binding.clone();
                 let preserve_thread_binding = queued.request.review_mode.is_none();
                 let admission=queued.tribu_admission.clone();
@@ -990,7 +999,7 @@ pub(super) async fn process_turn(
                                 shared.store.native_input_receipt(turn_id,None,&native_id)?;
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;}
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
-                                else if local_work_session && let Some(client)=client_message_id.as_deref() {
+                                else if direct_parent_start && let Some(client)=client_message_id.as_deref() {
                                     super::session_requests::record_direct_parent(&shared,session_key,requester_user_id,turn_id,&native_id,client);
                                 }
                                 if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
