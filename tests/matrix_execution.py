@@ -1822,9 +1822,10 @@ class AuthenticatedWeHostTests(unittest.TestCase):
 
         def deliver(payload, **kwargs):
             return_attempts.append(kwargs["correlation_id"])
+            receipt = sdk.lane("legion", at_ms=now + 15).intake(payload)
             if len(return_attempts) > 1:
                 raise PeerTransportAmbiguous("outcome lost")
-            return sdk.lane("legion", at_ms=now + 15).intake(payload)
+            return receipt
 
         def peer(embodiment):
             self.assertEqual(embodiment, author)
@@ -1926,11 +1927,15 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         self.assertEqual(receipt["origin"]["embodiment_id"], author)
         self.assertEqual(receipt["payload"]["message_ref"]["event_hash"], reply["message_hash"])
 
-        uncertain = dict(intent, send_id=str(uuid.uuid4()))
+        uncertain = dict(intent, send_id=str(uuid.uuid4()), text="Reply with a lost receipt")
         outcome = operator_we_conversation(uncertain, client, timeout=5, respond=True)
         self.assertEqual(outcome["state"], "undetermined")
         self.assertNotIn("receipt_event_id", outcome)
         self.assertEqual(return_attempts, [intent["send_id"], uncertain["send_id"]])
+        self.assertTrue(any(
+            row["subject"] == "communication" and row["payload"]["body"]["text"] == uncertain["text"]
+            for row in sdk.ledger_a.conversation_evidence()
+        ))
 
 
 class AuthenticatedGroupHostTests(unittest.TestCase):
