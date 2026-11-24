@@ -48,7 +48,6 @@ from tests import test_dm025_client as client_fixtures
 from tests import test_execution_store as store_fixtures
 from tests import test_group_messaging_runtime as group_fixtures
 from tests import test_passive_messaging_execution as runner_fixtures
-from tests import test_we_messaging as we_fixtures
 
 
 class HostDeadline(unittest.TestCase):
@@ -1802,6 +1801,7 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         from daimon_matrix.peer_transport import PeerTransportAmbiguous
         from daimon_matrix.scopes import ScopeResolver
         from daimon_matrix.service import HostedWeave
+        from tests import test_we_messaging as we_fixtures
 
         sdk = we_fixtures.WeLaneTests()
         sdk.setUp()
