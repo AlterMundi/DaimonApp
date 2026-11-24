@@ -44,6 +44,7 @@ pub struct InteractionConfig {
     pub matrix_transport: Option<MatrixTransportConfig>,
     pub claude_foreground: Option<ForegroundConfig>,
     pub goose_foreground: Option<ForegroundConfig>,
+    pub antigravity_foreground: Option<ForegroundConfig>,
     /// Owner-only durable visibility publication; never a model signing API.
     pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
@@ -104,6 +105,7 @@ pub struct ForegroundConfig {
 pub(crate) enum ForegroundEngine {
     Claude,
     Goose,
+    Antigravity,
 }
 
 impl ForegroundEngine {
@@ -111,6 +113,7 @@ impl ForegroundEngine {
         match self {
             Self::Claude => "claude",
             Self::Goose => "goose",
+            Self::Antigravity => "antigravity",
         }
     }
 }
@@ -317,9 +320,13 @@ impl InteractionConfig {
         if let Some(publication) = &self.matrix_publication {
             publication.validate()?;
         }
-        for foreground in [&self.claude_foreground, &self.goose_foreground]
-            .into_iter()
-            .flatten()
+        for foreground in [
+            &self.claude_foreground,
+            &self.goose_foreground,
+            &self.antigravity_foreground,
+        ]
+        .into_iter()
+        .flatten()
         {
             let host = &foreground.transport;
             host.source.validate()?;
@@ -749,6 +756,7 @@ mod tests {
             matrix_transport: None,
             claude_foreground: None,
             goose_foreground: None,
+            antigravity_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![

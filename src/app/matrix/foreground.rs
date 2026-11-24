@@ -26,6 +26,7 @@ pub(super) async fn owner(
     let config = match engine {
         ForegroundEngine::Claude => cfg.claude_foreground.as_ref(),
         ForegroundEngine::Goose => cfg.goose_foreground.as_ref(),
+        ForegroundEngine::Antigravity => cfg.antigravity_foreground.as_ref(),
     }
     .context("Selected native foreground route is unavailable")?;
     let MatrixDestination::Body {
@@ -251,6 +252,7 @@ async fn execute_worker(
     let schema = match engine {
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v1",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
+        ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let mut command = Command::new(&config.worker_command[0]);
     command
@@ -294,6 +296,14 @@ async fn execute_worker(
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
                     .context("Goose preparation omitted its native session")?,
+                ForegroundEngine::Antigravity
+                    if observed.and_then(Value::as_str) == Some(session) =>
+                {
+                    session
+                }
+                ForegroundEngine::Antigravity => {
+                    bail!("Antigravity preparation did not attest the selected native session")
+                }
             };
             let committed = commit(selected)?;
             if committed {
