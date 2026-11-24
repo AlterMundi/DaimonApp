@@ -43,6 +43,17 @@ and a workspace suitable for the approved provider. The configured status comman
 read the same authenticated body before submission and for each status tool
 call. The MCP server returns only the verified binding fields.
 
+For an explicitly approved memory read, set optional `selectedMemory` to
+`command` (the absolute DMK reader command with its existing owner-local
+`--binding` argument), `inputId` (the original event UUID), `pool`,
+`recordUid`, `revision` and the configured DMK `bodyRef`. Only that original
+can see the extra `dmk_read_selected` tool. Its empty input schema lets the
+model read the selected record. The broker independently rechecks Matrix
+identity and DMK binding, record identity and revision. It returns up to
+8 KiB of complete original text and attribution. Unavailable, longer,
+changed or incomplete records are refused. The reader exposes no search,
+arbitrary selection or write through this profile.
+
 Use `matrix goose run JSON` with the same owner-selected original shape as
 Claude, and `matrix goose status EVENT_ID` for authoritative readback. A
 repeated original returns the retained phase, engine and native identity even
@@ -63,3 +74,8 @@ with only loopback enabled. The test starts its own synthetic HTTP endpoint and
 uses no provider account. It covers catalog discovery, one response and
 interruption after provider entry. Signed private Matrix exchange, approved DMK
 and live Gateway acceptance require separate receiving evidence.
+
+Set `DMK_TEST_SCRIPTS` to the installed DMK scripts directory and
+`DMK_TEST_PYTHON` to its interpreter for the read contract. This creates a
+disposable synthetic pool, which verifies the returned native record, the
+other-record refusal, revision drift and byte-for-byte datastore preservation.

@@ -1,5 +1,5 @@
 // The owner selects this command and its binding, not Claude or the input.
-import { inspectMatrixStatus } from '../matrix-status.mjs';
+import { inspectMatrixStatus } from '../owner-observation.mjs';
 
 /** Build the private status read and Claude's tool over one owner selection. */
 export function createMatrixStatusBroker({ command, source, createSdkMcpServer, tool, signal }) {

@@ -2,22 +2,37 @@ import { lstat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { inspectMatrixStatus } from '../matrix-status.mjs';
+import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mjs';
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
 
 const SCHEMA = 'daimon-gateway.goose-turn/v1';
-const TOOL = 'daimon_status';
+const STATUS = 'daimon_status';
+const MEMORY = 'dmk_read_selected';
 const BINDING = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
+
+function validCommand(command) {
+  return Array.isArray(command) && command.length > 0 && command.length <= 16
+    && command.every(arg => typeof arg === 'string' && arg.length <= 4096)
+    && isAbsolute(command[0]);
+}
+
+function validMemory(value) {
+  return closed(value, ['command', 'inputId', 'pool', 'recordUid', 'revision', 'bodyRef'])
+    && validCommand(value.command)
+    && typeof value.inputId === 'string' && UUID.test(value.inputId)
+    && typeof value.pool === 'string' && /^[a-z][a-z0-9_-]{0,39}$/.test(value.pool)
+    && typeof value.recordUid === 'string' && UUID.test(value.recordUid)
+    && Number.isSafeInteger(value.revision) && value.revision > 0
+    && typeof value.bodyRef === 'string' && value.bodyRef.length > 0 && value.bodyRef.length <= 240;
+}
 
 function validBinding(profile) {
   return closed(profile.body, BINDING)
     && BINDING.every(key => typeof profile.body[key] === 'string'
       && profile.body[key].length > 0 && profile.body[key].length <= 240)
-    && Array.isArray(profile.matrixStatusCommand) && profile.matrixStatusCommand.length > 0
-    && profile.matrixStatusCommand.length <= 16
-    && profile.matrixStatusCommand.every(arg => typeof arg === 'string' && arg.length <= 4096)
-    && isAbsolute(profile.matrixStatusCommand[0]);
+    && validCommand(profile.matrixStatusCommand)
+    && (profile.selectedMemory === undefined || validMemory(profile.selectedMemory));
 }
 
 async function observe(profile, signal) {
@@ -34,6 +49,34 @@ async function observe(profile, signal) {
   return body;
 }
 
+async function readSelectedMemory(binding, signal) {
+  const memory = binding.selectedMemory;
+  await observe(binding, signal);
+  const payload = await readDmkObservation(memory.command, {
+    action: 'read', pool: memory.pool, record_uid: memory.recordUid, expected_revision: memory.revision,
+    offset: 0,
+  }, signal);
+  const page = payload?.pools?.[0];
+  const result = page?.result;
+  if (payload?.being_ref !== binding.body.beingRef || payload.body_ref !== memory.bodyRef
+      || !Array.isArray(payload.pools) || payload.pools.length !== 1 || page.pool !== memory.pool
+      || result?.status !== 'ok' || result.record?.record_uid !== memory.recordUid
+      || result.record.revision !== memory.revision || result.complete !== true
+      || result.raw_offset !== 0 || result.next_offset !== null || typeof result.raw !== 'string'
+      || Buffer.byteLength(result.raw) > 8192) {
+    throw new Error('Selected DMK record unavailable');
+  }
+  return { pool: memory.pool, record_uid: memory.recordUid, revision: memory.revision, text: result.raw,
+    ...(typeof result.authority_note === 'string' ? { authority_note: result.authority_note } : {}),
+  };
+}
+
+function toolDefinition(name, description) {
+  return { name, description, annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  };
+}
+
 async function serveMcp(binding) {
   if (!validBinding(binding)) throw new Error('Invalid MCP binding');
   for await (const request of frames(process.stdin)) {
@@ -48,19 +91,21 @@ async function serveMcp(binding) {
         };
         break;
       case 'tools/list':
-        response.result = { tools: [{
-          name: TOOL, description: 'Read authenticated metadata for this Matrix body.',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-        }] };
+        response.result = { tools: [
+          toolDefinition(STATUS, 'Read authenticated metadata for this Matrix body.'),
+          ...(binding.selectedMemory ? [toolDefinition(MEMORY, 'Read the one memory selected by the owner.')] : []),
+        ] };
         break;
       case 'tools/call':
-        if (params?.name === TOOL
+        if ((params?.name === STATUS || (params?.name === MEMORY && binding.selectedMemory))
             && (params.arguments === undefined || closed(params.arguments, []))) {
           try {
-            const body = await observe(binding, AbortSignal.timeout(8_000));
-            response.result = { content: [{ type: 'text', text: JSON.stringify(body) }] };
+            const signal = AbortSignal.timeout(8_000);
+            const value = params.name === STATUS
+              ? await observe(binding, signal) : await readSelectedMemory(binding, signal);
+            response.result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
           } catch {
-            response.result = { isError: true, content: [{ type: 'text', text: 'Matrix body unavailable.' }] };
+            response.result = { isError: true, content: [{ type: 'text', text: 'Selected observation unavailable.' }] };
           }
           break;
         }
@@ -79,9 +124,11 @@ async function main(path) {
   const pipe = frames(process.stdin);
   try {
     const profile = JSON.parse(await privateBytes(path, 16 * 1024));
-    if (!closed(profile, [
+    const fields = [
       'binary', 'cwd', 'stateRoot', 'provider', 'model', 'providerKeyFile', 'matrixStatusCommand', 'body',
-    ]) || !validBinding(profile)
+    ];
+    if (profile && Object.hasOwn(profile, 'selectedMemory')) fields.push('selectedMemory');
+    if (!closed(profile, fields) || !validBinding(profile)
         || ![profile.binary, profile.cwd, profile.stateRoot, profile.providerKeyFile]
           .every(item => typeof item === 'string' && isAbsolute(item))
         || !['openai', 'anthropic'].includes(profile.provider)
@@ -110,14 +157,15 @@ async function main(path) {
       GOOSE_PROVIDER: profile.provider, GOOSE_MODEL: profile.model, GOOSE_MAX_TURNS: '2',
       [profile.provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY']: key,
     };
-    const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand };
+    const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
+    const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand, selectedMemory };
     const outcome = await runGooseTurn({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       mcpServers: [{ name: 'matrix', command: process.execPath,
         args: [fileURLToPath(import.meta.url), '--matrix-mcp'],
         env: [{ name: 'DAIMON_OBSERVATION', value: JSON.stringify(binding) }],
       }],
-      toolNames: ['matrix__' + TOOL], text: first.text,
+      toolNames: ['matrix__' + STATUS, ...(selectedMemory ? ['matrix__' + MEMORY] : [])], text: first.text,
       async beforeSubmit(nativeSessionId) {
         await observe(binding, stop.signal);
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId }, stop.signal);
