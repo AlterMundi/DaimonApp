@@ -1836,8 +1836,8 @@ class AuthenticatedWeHostTests(unittest.TestCase):
                 not_before_ms=now - 100, not_after_ms=now + 60_000,
             )
             for purpose, key, methods in (
-                ("conversation", b"w" * 32, ["we.converse", "we.conversation.page"]),
-                ("observation", b"o" * 32, ["runtime.status"]),
+                ("conversation", b"w" * 32, ["we.converse"]),
+                ("observation", b"o" * 32, ["runtime.status", "we.conversation.page"]),
             )
         }
         service = HostedWeave(

@@ -7,6 +7,7 @@ or uncertain native send retried. --receive reads one selected-thread page;
 model work. --native-owner is a separate, explicitly configured account-owner
 pipe session over the existing signed work/journal; it never starts a model or
 selects funding values. The controller owns execution and its resource contract.
+--we-read and --we-return address one selected original in a same-being thread.
 """
 
 import argparse
@@ -35,7 +36,8 @@ from matrix_execution import (
 MESSAGING_METHODS = frozenset(
     {"messaging.send", "messaging.delivery", "messaging.reply", "messaging.inbox"}
 )
-WE_METHODS = frozenset({"we.conversation.page", "we.converse"})
+WE_SEND_METHODS = frozenset({"we.converse"})
+WE_OBSERVATION_METHODS = frozenset({"runtime.status", "we.conversation.page"})
 WE_RETURN_TTL_MS = 30_000
 
 
@@ -61,6 +63,7 @@ class NativeOwnerClient:
     timeout_seconds: float = 10
     deadline_ns: int | None = None
     conversation_methods: frozenset[str] = MESSAGING_METHODS
+    observation_methods: frozenset[str] = frozenset({"runtime.status"})
 
     def __post_init__(self):
         if (
@@ -78,7 +81,7 @@ class NativeOwnerClient:
         return self.messaging.config
 
     def invoke(self, method, params):
-        if method == "runtime.status":
+        if method in self.observation_methods:
             client = self.observation
         elif method in self.conversation_methods:
             client = self.messaging
@@ -147,10 +150,16 @@ def configured_client(path, source, *, required_methods=("messaging.send",),
             raise MatrixExecutionError("Explicit same-being owner binding required")
         conversation = load_sdk_reference(binding["conversation"])
         observation = load_sdk_reference(binding["observation"])
-        if (set(conversation.config.capability.methods) != WE_METHODS
-                or set(observation.config.capability.methods) != {"runtime.status"}):
-            raise MatrixExecutionError("Separate same-being and runtime observation grants required")
-        return NativeOwnerClient(conversation, observation, conversation_methods=WE_METHODS)
+        if (
+            not WE_SEND_METHODS <= set(conversation.config.capability.methods)
+            or not WE_OBSERVATION_METHODS <= set(observation.config.capability.methods)
+            or conversation.config.capability.capability_id == observation.config.capability.capability_id
+        ):
+            raise MatrixExecutionError("Separate same-being send and observation grants required")
+        return NativeOwnerClient(
+            conversation, observation, conversation_methods=WE_SEND_METHODS,
+            observation_methods=WE_OBSERVATION_METHODS,
+        )
     enrolled = raw.get("schema") == "telecodex.matrix-host-binding/v2" if isinstance(raw, dict) else False
     names = ("schema", "messaging", "enrollment" if enrolled else "observation", "source")
     if enrolled and "intake_after" in raw:

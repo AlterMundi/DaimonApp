@@ -42,9 +42,10 @@ undetermined, including when another sibling has received a copy.
 
 The owner-only `daimon-gateway.matrix-we-binding/v1` document identifies the
 source and holds `conversation` and `observation` SDK references to the same
-authenticated daemon. The conversation grant contains `we.conversation.page`
-and `we.converse`. The observation grant contains `runtime.status`. Use the
-standard private sibling-conversation disclosure policy for the demo. The
+authenticated daemon. Select the maintained Matrix weave grant for
+`we.converse` and the observation grant for `runtime.status` and
+`we.conversation.page`. The host exposes only those selected operations.
+Use the standard private sibling-conversation disclosure policy for the demo. The
 signed optional Telegram disclosure must be checked on both demo bodies before
 live use. This host adapter provides no enrollment or disclosure writer.
 
