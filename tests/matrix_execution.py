@@ -35,6 +35,7 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
+from matrix_operator import body_status as operator_body_status
 from matrix_operator import host_timeout, usage_receipt_command
 from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
@@ -1912,6 +1913,14 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                     messaging=replace(loaded.messaging, clock=group.lane.clock),
                     observation=replace(loaded.observation, clock=group.lane.clock),
                 )
+                observed = operator_body_status({"source": source}, host)
+                self.assertEqual(observed["being_ref"], source["being_ref"])
+                self.assertEqual(observed["local_origin"]["embodiment_id"], source["embodiment_id"])
+                self.assertEqual(observed["local_origin"]["incarnation_id"], group.ledger.local_origin["incarnation_id"])
+                self.assertEqual(set(observed), {"schema", "integrity", "being_ref", "manifest_hash", "local_origin"})
+                with self.assertRaises(MatrixExecutionError):
+                    operator_body_status({"source": {**source, "embodiment_id": "another-body"}}, host)
+
                 status = sdk.technical_status()
                 outcome = operator_send({"status": status, "source": source}, host)
                 transport = MatrixConversationTransport(status, source, host)

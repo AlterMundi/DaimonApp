@@ -184,6 +184,34 @@ def configured_client(path, source, *, required_methods=("messaging.send",)):
     return NativeOwnerClient(messaging, observation)
 
 
+def body_status(value, client, *, timeout=10):
+    """Expose only identity metadata from an authenticated runtime observation."""
+    source = closed(value["source"], ("being_ref", "embodiment_id"))
+    selected = replace(client, timeout_seconds=timeout)
+    _, observed = selected.invoke("runtime.status", {})
+    runtime = observed.get("result", {}) if observed.get("ok") is True else {}
+    origin = runtime.get("local_origin", {})
+    if (
+        runtime.get("schema") != "dm.runtime.status/v1"
+        or runtime.get("integrity") != "ok"
+        or runtime.get("being_ref") != source["being_ref"]
+        or origin.get("embodiment_id") != source["embodiment_id"]
+        or not isinstance(origin.get("incarnation_id"), str)
+        or not isinstance(runtime.get("manifest_hash"), str)
+    ):
+        raise MatrixExecutionError("Authenticated body observation differs from selection")
+    return {
+        "schema": runtime["schema"],
+        "integrity": runtime["integrity"],
+        "being_ref": runtime["being_ref"],
+        "manifest_hash": runtime["manifest_hash"],
+        "local_origin": {
+            "embodiment_id": origin["embodiment_id"],
+            "incarnation_id": origin["incarnation_id"],
+        },
+    }
+
+
 def send(value, client, *, timeout=10, coordination=None):
     """Trusted controller snapshot plus already authenticated client; no runner."""
     closed(value, ("status", "source"))
@@ -685,6 +713,7 @@ def receiving_command(
     respond_only=False,
     response_status_only=False,
     native_owner_only=False,
+    body_status_only=False,
     funding_binding=None,
 ):
     """Bootstrap this host module in the existing receiving owner's SDK context.
@@ -693,7 +722,7 @@ def receiving_command(
     native connection each invocation so an SDK successor cannot leave a cached
     host interpreter/import selection. Do not execute a connection's code string.
     """
-    if sum((receive_only, inbox_only, respond_only, response_status_only, native_owner_only)) > 1:
+    if sum((receive_only, inbox_only, respond_only, response_status_only, native_owner_only, body_status_only)) > 1:
         raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
         raw = stream.read(65537)
@@ -743,7 +772,7 @@ def receiving_command(
         " print(json.dumps({'error':type(error).__name__}),file=sys.stderr)\n"
         " raise SystemExit(1)\n"
         "sys.path.insert(0,os.path.dirname(script))\n"
-        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'native-owner':['--native-owner'],'send':[]}[receive_mode])+extra\n"
+        "sys.argv=[script,'--binding',binding]+({'receive':['--receive'],'inbox':['--inbox'],'respond':['--respond'],'response-status':['--response-status'],'native-owner':['--native-owner'],'body-status':['--body-status'],'send':[]}[receive_mode])+extra\n"
         "runpy.run_path(script,run_name='__main__')\n"
     )
     return [
@@ -764,6 +793,8 @@ def receiving_command(
         if respond_only
         else "response-status"
         if response_status_only
+        else "body-status"
+        if body_status_only
         else "inbox"
         if inbox_only
         else "receive"
@@ -805,6 +836,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
         action="store_true",
         help="Inspect that retained intent; never send",
     )
+    modes.add_argument("--body-status", action="store_true",
+                       help="Read authenticated Matrix body metadata; never send")
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
@@ -814,7 +847,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
             inbox_only=args.inbox,
             respond_only=args.respond,
             response_status_only=args.response_status,
-            native_owner_only=args.native_owner, funding_binding=args.funding_binding,
+            native_owner_only=args.native_owner, body_status_only=args.body_status,
+            funding_binding=args.funding_binding,
         )
         os.execv(command[0], command)
     if args.native_owner:
@@ -831,6 +865,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
         strict_json(raw),
         ("source", "channel_id", "parent", "send_id", "text", "effect_not_after_ms")
         if args.respond or args.response_status
+        else ("source",)
+        if args.body_status
         else ("source", "channel_id", "after", "limit")
         if args.inbox
         else ("status", "source", "after", "limit")
@@ -844,6 +880,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
             )
         )
         if args.respond or args.response_status
+        else body_status
+        if args.body_status
         else inbox
         if args.inbox
         else receive
@@ -853,6 +891,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
     required = (
         ("messaging.inbox", "messaging.reply")
         if args.respond
+        else ()
+        if args.body_status
         else ("messaging.delivery",)
         if args.response_status
         else ("messaging.inbox",)
