@@ -28,6 +28,16 @@ pub struct TelegramClient {
 }
 
 #[derive(Debug)]
+pub(crate) struct AttachmentTooLarge;
+
+impl fmt::Display for AttachmentTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Telegram attachment exceeds transfer limit")
+    }
+}
+impl Error for AttachmentTooLarge {}
+
+#[derive(Debug)]
 pub struct PublicationRetired;
 impl fmt::Display for PublicationRetired {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -105,7 +115,7 @@ pub(crate) fn open_local_file(
 
 const TELEGRAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TELEGRAM_GET_UPDATES_GRACE: Duration = Duration::from_secs(15);
-const TELEGRAM_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const TELEGRAM_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const TELEGRAM_UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 pub const TELEGRAM_GROUP_OUTBOUND_INTERVAL_MS: u64 = 3_500;
 pub const TELEGRAM_PRIVATE_OUTBOUND_INTERVAL_MS: u64 = 1_000;
@@ -558,7 +568,7 @@ impl TelegramClient {
             .await
     }
 
-    pub async fn get_file(&self, file_id: &str) -> Result<File> {
+    pub(crate) async fn get_file(&self, file_id: &str) -> Result<File> {
         #[derive(Serialize)]
         struct Payload<'a> {
             file_id: &'a str,
@@ -570,6 +580,93 @@ impl TelegramClient {
             TELEGRAM_DOWNLOAD_TIMEOUT,
         )
         .await
+    }
+
+    /// Resolve and save a Telegram original in the Gateway's chosen workspace.
+    pub(crate) async fn save_attachment(
+        &self,
+        file_id: &str,
+        max_bytes: Option<u64>,
+        destination: impl FnOnce(&str) -> (std::path::PathBuf, String),
+    ) -> Result<(std::path::PathBuf, String)> {
+        self.check_adapter()?;
+        #[cfg(unix)]
+        if let Some((socket, bot)) = &self.direct_relay {
+            let download = crate::tele_daimon::projection::Download::open(
+                socket,
+                *bot,
+                file_id,
+                max_bytes,
+                || self.check_publication(),
+            )
+            .await?;
+            let (path, name) = destination(download.extension());
+            let (temporary, mut output) = Self::attachment_temporary(&path)?;
+            download
+                .copy_into(&mut output, || self.check_publication())
+                .await?;
+            Self::publish_attachment(temporary, output, &path).await?;
+            return Ok((path, name));
+        }
+        let file = self
+            .get_file(file_id)
+            .await
+            .context("telegram getFile failed")?;
+        let source = file.file_path.context("telegram file_path missing")?;
+        let (path, name) = destination(Self::attachment_extension(&source));
+        if let Some(limit) = max_bytes {
+            self.download_file_limited(&source, &path, file.file_size, limit)
+                .await?;
+        } else {
+            self.download_file(&source, &path, file.file_size).await?;
+        }
+        Ok((path, name))
+    }
+
+    pub(crate) fn attachment_extension(source: &str) -> &str {
+        std::path::Path::new(source)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("bin")
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn attachment_relay_extension<'a>(&self, source: &'a str) -> &'a str {
+        let extension = Self::attachment_extension(source);
+        if extension.is_empty()
+            || extension.len() > 64
+            || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            || (!self.token.is_empty() && extension.contains(&self.token))
+        {
+            return "bin";
+        }
+        extension
+    }
+
+    fn attachment_temporary(
+        destination: &std::path::Path,
+    ) -> Result<(tempfile::NamedTempFile, tokio::fs::File)> {
+        let directory = destination
+            .parent()
+            .context("attachment destination has no parent")?;
+        let temporary = tempfile::NamedTempFile::new_in(directory)?;
+        let output = tokio::fs::File::from_std(temporary.reopen()?);
+        Ok((temporary, output))
+    }
+
+    async fn publish_attachment(
+        temporary: tempfile::NamedTempFile,
+        mut output: tokio::fs::File,
+        destination: &std::path::Path,
+    ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        output.flush().await?;
+        output.sync_all().await?;
+        drop(output);
+        temporary
+            .persist_noclobber(destination)
+            .map_err(|error| error.error)?;
+        Ok(())
     }
 
     /// Stream into a private temporary file; publish only a complete download.
@@ -625,10 +722,24 @@ impl TelegramClient {
         timeout: Duration,
         max_bytes: Option<u64>,
     ) -> Result<()> {
+        let (temporary, mut output) = Self::attachment_temporary(destination)?;
+        self.copy_attachment(file_path, expected_size, timeout, max_bytes, &mut output)
+            .await?;
+        Self::publish_attachment(temporary, output, destination).await
+    }
+
+    pub(crate) async fn copy_attachment(
+        &self,
+        file_path: &str,
+        expected_size: Option<u64>,
+        timeout: Duration,
+        max_bytes: Option<u64>,
+        output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    ) -> Result<u64> {
         self.check_adapter()?;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         if max_bytes.is_some_and(|limit| expected_size.is_some_and(|size| size > limit)) {
-            bail!("Telegram attachment exceeds transfer limit");
+            return Err(AttachmentTooLarge.into());
         }
 
         if file_path.starts_with('/') {
@@ -636,44 +747,31 @@ impl TelegramClient {
                 "unsupported Telegram file path: trusted local storage is not configured",
             )?;
             let source = open_local_file(root, std::path::Path::new(file_path), false)?;
-            let directory = destination
-                .parent()
-                .context("attachment destination has no parent")?;
-            let temporary = tempfile::NamedTempFile::new_in(directory)?;
-            let mut output = tokio::fs::File::from_std(temporary.reopen()?);
             let mut source = tokio::fs::File::from_std(source);
             let expected = source.metadata().await?.len();
             if expected_size.is_some_and(|size| size != expected) {
                 bail!("local Telegram attachment size differs from getFile");
             }
             if max_bytes.is_some_and(|limit| expected > limit) {
-                bail!("Telegram attachment exceeds transfer limit");
+                return Err(AttachmentTooLarge.into());
             }
             let received = if let Some(limit) = max_bytes {
                 tokio::time::timeout(
                     timeout,
-                    tokio::io::copy(
-                        &mut (&mut source).take(limit.saturating_add(1)),
-                        &mut output,
-                    ),
+                    tokio::io::copy(&mut (&mut source).take(limit.saturating_add(1)), output),
                 )
                 .await
             } else {
-                tokio::time::timeout(timeout, tokio::io::copy(&mut source, &mut output)).await
+                tokio::time::timeout(timeout, tokio::io::copy(&mut source, output)).await
             }
             .context("local attachment copy timed out")??;
             if max_bytes.is_some_and(|limit| received > limit) {
-                bail!("Telegram attachment exceeds transfer limit");
+                return Err(AttachmentTooLarge.into());
             }
             if received != expected || source.metadata().await?.len() != expected {
                 bail!("incomplete local Telegram file copy");
             }
-            output.sync_all().await?;
-            drop(output);
-            temporary
-                .persist_noclobber(destination)
-                .map_err(|error| error.error)?;
-            return Ok(());
+            return Ok(received);
         }
         if file_path.contains('\\')
             || file_path
@@ -701,14 +799,9 @@ impl TelegramClient {
         if !status.is_success() {
             bail!("telegram file download failed with status {status}");
         }
-        let directory = destination
-            .parent()
-            .context("attachment destination has no parent")?;
-        let temporary = tempfile::NamedTempFile::new_in(directory)?;
-        let mut output = tokio::fs::File::from_std(temporary.reopen()?);
         let expected = response.content_length();
         if max_bytes.is_some_and(|limit| expected.is_some_and(|size| size > limit)) {
-            bail!("Telegram attachment exceeds transfer limit");
+            return Err(AttachmentTooLarge.into());
         }
         let mut received = 0u64;
         while let Some(chunk) = response
@@ -720,7 +813,7 @@ impl TelegramClient {
                 .checked_add(chunk.len() as u64)
                 .context("Telegram attachment size overflow")?;
             if max_bytes.is_some_and(|limit| received > limit) {
-                bail!("Telegram attachment exceeds transfer limit");
+                return Err(AttachmentTooLarge.into());
             }
             output.write_all(&chunk).await?;
         }
@@ -729,13 +822,7 @@ impl TelegramClient {
         {
             bail!("incomplete Telegram file download");
         }
-        output.flush().await?;
-        output.sync_all().await?;
-        drop(output);
-        temporary
-            .persist_noclobber(destination)
-            .map_err(|error| error.error)?;
-        Ok(())
+        Ok(received)
     }
 
     async fn post<T, R>(&self, method: &str, payload: Option<&T>) -> Result<R>
@@ -776,9 +863,7 @@ impl TelegramClient {
         R: DeserializeOwned,
     {
         #[cfg(unix)]
-        if let Some((socket, bot)) = &self.direct_relay
-            && method != "getFile"
-        {
+        if let Some((socket, bot)) = &self.direct_relay {
             let operation = crate::tele_daimon::projection::JsonMethod::from_api(method)
                 .context("Unsupported direct Telegram operation")?;
             let document = payload.map(serde_json::to_value).transpose()?;

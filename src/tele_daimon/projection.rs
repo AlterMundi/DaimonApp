@@ -1,4 +1,4 @@
-//! One retained Telegram projection per owner-local connection.
+//! One owner-local Telegram operation per connection.
 use super::{Delivery, Projection, file_field};
 use crate::{
     control_client,
@@ -19,6 +19,9 @@ use tokio::{
     sync::Semaphore,
     time::timeout,
 };
+
+mod download;
+pub(crate) use download::Download;
 
 const MAX_METADATA: u32 = 131_072;
 const MAX_JSON_RESULT: u32 = 4 * 1024 * 1024;
@@ -43,6 +46,11 @@ pub(super) enum Payload<'a> {
     Json {
         method: JsonMethod,
         document: Option<serde_json::Value>,
+    },
+    Download {
+        #[serde(borrow)]
+        file_id: Cow<'a, str>,
+        max_bytes: Option<u64>,
     },
     Upload {
         #[serde(borrow)]
@@ -375,6 +383,7 @@ pub(super) async fn serve(
     let uid = unsafe { libc::geteuid() };
     let connections = Arc::new(Semaphore::new(16));
     let files = Arc::new(Semaphore::new(2));
+    let downloads = Arc::new(Semaphore::new(2));
     loop {
         let permit = connections.clone().acquire_owned().await?;
         let (stream, _) = listener.accept().await?;
@@ -383,9 +392,10 @@ pub(super) async fn serve(
         }
         let client = client.clone();
         let files = files.clone();
+        let downloads = downloads.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = receive(stream, &client, bot, &files).await;
+            let _ = receive(stream, &client, bot, &files, &downloads).await;
         });
     }
 }
@@ -395,6 +405,7 @@ async fn receive(
     client: &crate::telegram::TelegramClient,
     bot: i64,
     files: &Semaphore,
+    downloads: &Semaphore,
 ) -> Result<()> {
     let metadata = timeout(OPEN, async {
         let size = stream.read_u32().await?;
@@ -411,6 +422,9 @@ async fn receive(
     );
     if let Payload::Json { method, document } = offer.payload {
         return receive_json(stream, client, method, document).await;
+    }
+    if let Payload::Download { file_id, max_bytes } = offer.payload {
+        return download::receive(stream, client, &file_id, max_bytes, downloads).await;
     }
     if let Payload::Upload { file } = offer.payload {
         let _permit = timeout(WAIT, files.acquire()).await??;
@@ -452,7 +466,7 @@ async fn receive(
     .await??;
 
     let result = match offer.payload {
-        Payload::Json { .. } | Payload::Upload { .. } => {
+        Payload::Json { .. } | Payload::Upload { .. } | Payload::Download { .. } => {
             unreachable!("Direct operations use a typed result")
         }
         Payload::Text { markdown } => {

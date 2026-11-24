@@ -255,21 +255,36 @@ def distinct_adapter_endpoint(journey):
             content_type = self.headers.get("Content-Type", "application/json")
             received = data if self.headers.get_content_maintype() == "multipart" else json.loads(data or b"{}")
             observed.append((method, received))
+            local_paths = getattr(j, "adapter_local_files", {})
+            if method == "getFile" and received["file_id"] in local_paths:
+                source = local_paths[received["file_id"]]
+                self.reply(200, json.dumps({"ok": True, "result": {
+                    "file_path": str(source), "file_size": source.stat().st_size,
+                }}).encode())
+                return
+            self.forward(data, {"Content-Type": content_type})
+
+        def do_GET(self):
+            observed.append(("download", self.path.rsplit("/", 1)[-1]))
+            self.forward(None, {})
+
+        def forward(self, data, headers):
             conn = http.client.HTTPConnection("127.0.0.1", j.telegram.server_port, timeout=10)
             try:
-                conn.request("POST", self.path, data,
-                             {"Content-Type": content_type})
+                conn.request(self.command, self.path, data, headers)
                 reply = conn.getresponse()
-                body = reply.read()
-                self.send_response(reply.status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                try:
-                    self.wfile.write(body)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
+                self.reply(reply.status, reply.read())
             finally:
                 conn.close()
+
+        def reply(self, status, body):
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def log_message(self, *_):
             pass
@@ -311,9 +326,58 @@ def direct_json_ownership(binary):
             j.close()
 
 
+def direct_download_ownership(binary):
+    class Downloads(Projected):
+        def __init__(self, binary):
+            self.native_files = set()
+            super().__init__(binary)
+
+        def handle_extra_rpc(self, message, send):
+            if message.get("method") == "turn/start":
+                self.native_files.update(
+                    path.read_bytes() for path in self.root.glob(".telecodex/inbox/*/*_text.txt")
+                )
+            return super().handle_extra_rpc(message, send)
+
+    j = Downloads(str(Path(binary).resolve()))
+    j.external = True
+    data = b'Synthetic attachment crosses a bounded chunk.\n' * 4000
+    file_id = 'relay-attachment.txt'
+    j.media_files = {file_id: data}
+    local_id = 'relay-local-attachment'
+    local_root = j.root / "adapter-only"
+    local_root.mkdir(mode=0o700)
+    source = local_root / "bot-private-route.txt"
+    source.write_bytes(data[::-1])
+    j.adapter_local_files = {local_id: source}
+
+    with distinct_adapter_endpoint(j) as observed:
+        try:
+            j.adapter_config.write_text(j.adapter_config.read_text().replace(
+                "[telegram]\n", f'[telegram]\nlocal_file_root="{local_root}"\n'))
+            j.start()
+            j.wait_control_socket(j.socket)
+            for entry_id in (file_id, local_id):
+                with j.lock:
+                    original = j.admit(topic=7)
+                    message = j.updates[-1]["message"]
+                    message["caption"] = "Use the attached fixture text."
+                    message["document"] = {"file_id": entry_id, "mime_type": "text/plain"}
+                j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
+                       == [('settled',)])
+                j.idle()
+            assert j.native_files == {data, data[::-1]}
+            assert [payload["file_id"] for method, payload in observed if method == "getFile"] == [file_id, local_id]
+            assert [name for method, name in observed if method == "download"] == [file_id]
+            print("PASS adapter resolves getFile, downloads HTTP bytes and copies trusted local bytes before Gateway admission")
+        finally:
+            j.close()
+
+
 
 if __name__ == '__main__':
     external = "--external" in sys.argv[2:]
     qualify(sys.argv[1], external=external)
     if external:
         direct_json_ownership(sys.argv[1])
+        direct_download_ownership(sys.argv[1])

@@ -32,12 +32,16 @@ operations, and direct multipart uploads in this mode. Commands, status messages
 and topic operations go through the same owner-local transport. Gateway
 rechecks publication authorization after TeleDaimon confirms readiness. It
 receives typed provider errors without falling back to a second send. Initial
-bot identification and incoming attachment downloads still use the
-compatibility client. For an ordinary upload the Gateway opens the selected
+bot identification still uses the compatibility client. For an ordinary upload the Gateway opens the selected
 local file, and the adapter prepares the destination. The Gateway rechecks
 authorization, then streams exactly the declared size. TeleDaimon sends the
 multipart body and returns a typed Bot API result over that same connection.
 The relay transfers file bytes without disclosing the Gateway's source path.
+For an incoming attachment, TeleDaimon resolves the retained Telegram file
+identifier and sends the extension, optional size, and bounded byte chunks.
+The Bot API path and local Bot API storage stay with TeleDaimon. Gateway
+retains the existing transfer limit and writes into its private temporary file.
+A verified complete transfer is required before publishing the local filename.
 
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Start the Gateway with the same
