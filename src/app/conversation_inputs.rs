@@ -1064,20 +1064,106 @@ async fn apply_route(
     submit(app.clone(), input).await
 }
 
+const STEER_BATCH: usize = 8;
+
 async fn submit(app: App, input: ConversationInput) -> Result<()> {
-    let handle = app.worker_for(input.entry).await?;
-    let active = handle.steer.lock().expect("steer mutex poisoned").clone();
-    let Some(active) = active else {
-        return enqueue(&app, &input, handle.sender);
+    let worker = app.worker_for(input.entry).await?;
+    let slot = worker.steer.lock().expect("steer mutex poisoned");
+    let Some(active) = slot.as_ref() else {
+        return defer_and_enqueue(&app, &input, &worker, None, "steer_unavailable");
     };
-    app.shared.store.conversation_input_event(
-        input.human,
-        &input.id,
-        E::Begin {
-            local_turn: active.turn_id,
-            steer: true,
-        },
+    if offer_older_inputs(&app, &worker, active, input.entry, input.human)? {
+        return defer_and_enqueue(&app, &input, &worker, None, "older_inputs_waiting");
+    }
+    steer(&app, input, &worker, active)
+}
+
+pub(super) async fn reconsider_at_native_start(
+    app: &App,
+    entry: SessionKey,
+    human: i64,
+    turn: i64,
+) {
+    if !app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .is_some_and(|config| config.entry() == entry && config.human_id == human)
+    {
+        return;
+    }
+    let worker = app.workers.lock().await.get(&entry).cloned();
+    if let Some(worker) = worker {
+        let slot = worker.steer.lock().expect("steer mutex poisoned");
+        if let Some(active) = slot.as_ref().filter(|v| v.turn_id == turn)
+            && let Err(error) = offer_older_inputs(app, &worker, active, entry, human)
+        {
+            tracing::warn!(%error, "Could not reconsider queued Conversation inputs");
+        }
+    }
+}
+
+fn offer_older_inputs(
+    app: &App,
+    worker: &SessionWorkerHandle,
+    active: &ActiveTurnSteerHandle,
+    entry: SessionKey,
+    human: i64,
+) -> Result<bool> {
+    let ready = active
+        .physical_turn
+        .lock()
+        .expect("native correlation mutex poisoned")
+        .is_some();
+    let limit = if ready { STEER_BATCH } else { 1 };
+    let candidates = app.shared.store.conversation_input_steer_candidates(
+        entry,
+        human,
+        active.turn_id,
+        limit,
     )?;
+    if !ready {
+        // A new arrival may join an initial native packet, but it must not
+        // bypass older saved inputs waiting for the actual native start.
+        return Ok(!candidates.is_empty());
+    }
+    let mut offered = 0;
+    for input in candidates {
+        if steer(app, input, worker, active).is_ok() {
+            offered += 1;
+        } else {
+            // The ordinary queue still owns this original. A binding or fence
+            // may have changed since it was selected for reconsideration.
+            tracing::warn!("A queued Conversation input could not be steered");
+        }
+    }
+    Ok(offered == STEER_BATCH)
+}
+
+fn defer_and_enqueue(
+    app: &App,
+    input: &ConversationInput,
+    worker: &SessionWorkerHandle,
+    attempted_turn: Option<i64>,
+    reason: &str,
+) -> Result<()> {
+    if app
+        .shared
+        .store
+        .conversation_input_defer_steer(input, attempted_turn, reason)?
+    {
+        enqueue(app, input, worker.sender.clone())?;
+    }
+    Ok(())
+}
+
+fn steer(
+    app: &App,
+    input: ConversationInput,
+    worker: &SessionWorkerHandle,
+    active: &ActiveTurnSteerHandle,
+) -> Result<()> {
     let (send, receive) = oneshot::channel();
     let shared = app.shared.clone();
     let id = input.id.clone();
@@ -1115,19 +1201,20 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
         goal: None,
         response: send,
     };
+    app.shared.store.conversation_input_event(
+        input.human,
+        &input.id,
+        E::Begin {
+            local_turn: active.turn_id,
+            steer: true,
+        },
+    )?;
+    let turn = active.turn_id;
     if active.sender.send(packet).is_err() {
-        app.shared.store.conversation_input_event(
-            human,
-            &input.id,
-            E::Rejected {
-                local_turn: active.turn_id,
-            },
-        )?;
-        app.shared
-            .store
-            .conversation_input_event(human, &input.id, E::Queue)?;
-        return enqueue(&app, &input, handle.sender);
+        return defer_and_enqueue(app, &input, worker, Some(turn), "steer_channel_closed");
     }
+    let app = app.clone();
+    let worker = worker.clone();
     tokio::spawn(async move {
         let result: Result<()> = async {
             match tokio::time::timeout(Duration::from_secs(10), receive).await {
@@ -1135,33 +1222,29 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
                     app.shared.store.conversation_input_event(
                         human,
                         &input.id,
-                        E::Accepted {
-                            local_turn: active.turn_id,
-                        },
+                        E::Accepted { local_turn: turn },
                     )?;
+                    let slot = worker.steer.lock().expect("steer mutex poisoned");
+                    if let Some(active) = slot.as_ref().filter(|v| v.turn_id == turn) {
+                        offer_older_inputs(&app, &worker, active, entry, human)?;
+                    }
                 }
                 Ok(Ok(Err(
-                    CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired,
+                    error
+                    @ (CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired),
                 ))) => {
-                    app.shared.store.conversation_input_event(
-                        human,
-                        &input.id,
-                        E::Rejected {
-                            local_turn: active.turn_id,
-                        },
-                    )?;
-                    app.shared
-                        .store
-                        .conversation_input_event(human, &input.id, E::Queue)?;
-                    enqueue(&app, &input, handle.sender)?;
+                    let reason = match error {
+                        CodexSteerError::FreshExecutionRequired => "fresh_execution_required",
+                        _ => "steer_rejected",
+                    };
+                    let _slot = worker.steer.lock().expect("steer mutex poisoned");
+                    defer_and_enqueue(&app, &input, &worker, Some(turn), reason)?;
                 }
                 _ => {
                     app.shared.store.conversation_input_event(
                         human,
                         &input.id,
-                        E::Uncertain {
-                            local_turn: active.turn_id,
-                        },
+                        E::Uncertain { local_turn: turn },
                     )?;
                 }
             }

@@ -499,7 +499,9 @@ impl Store {
             id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,session_id INTEGER NOT NULL,
             native_thread TEXT NOT NULL,phase TEXT NOT NULL,local_turn INTEGER,retired INTEGER NOT NULL DEFAULT 0,
             doc TEXT NOT NULL,instance_id TEXT NOT NULL,created_at TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS conversation_inputs_entry ON conversation_inputs(session_id,human_id,native_thread);")?;
+            CREATE INDEX IF NOT EXISTS conversation_inputs_entry ON conversation_inputs(session_id,human_id,native_thread);
+            CREATE INDEX IF NOT EXISTS conversation_inputs_queued ON conversation_inputs(session_id,human_id,native_thread,instance_id)
+                WHERE phase='queued' AND retired=0;")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS conversation_returns(
             human_id INTEGER NOT NULL,native_thread TEXT NOT NULL,source_input TEXT NOT NULL,
@@ -1897,6 +1899,79 @@ impl Store {
         Ok(())
     }
 
+    /// Keep one bounded reason per original. Only a submission that never
+    /// entered the channel or received a definitive rejection can rejoin the
+    /// steer candidates. In-flight and uncertain submissions cannot use this.
+    pub fn conversation_input_defer_steer(
+        &self,
+        input: &ConversationInput,
+        attempted_turn: Option<i64>,
+        reason: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE conversation_inputs SET phase='queued',local_turn=NULL,
+                 doc=json_set(doc,'$.steer_wait_reason',?4,'$.last_steer_turn',?5,
+                     '$.steer_refusals_total',COALESCE(json_extract(doc,'$.steer_refusals_total'),0) + (?5 IS NOT NULL),
+                     '$.steer_refusals',CASE
+                       WHEN ?5 IS NULL THEN 0
+                       WHEN json_extract(doc,'$.last_steer_turn') IS ?5
+                       THEN COALESCE(json_extract(doc,'$.steer_refusals'),0)+1
+                       ELSE 1 END)
+             WHERE id=?1 AND human_id=?2 AND instance_id=?3 AND retired=0
+               AND ((?5 IS NULL AND phase='queued' AND local_turn IS NULL)
+                 OR (?5 IS NOT NULL AND phase='steering' AND local_turn=?5))",
+            params![input.id, input.human, self.instance_id, reason, attempted_turn],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn conversation_input_steer_candidates(
+        &self,
+        key: SessionKey,
+        human: i64,
+        turn: i64,
+        limit: usize,
+    ) -> Result<Vec<ConversationInput>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (session, native) = super::presentation::entry_on(&conn, human, key)?;
+        let mut query = conn.prepare(
+            "SELECT c.id FROM conversation_inputs c
+             JOIN original_ingress_order o ON o.channel='conversation' AND o.event_id=c.id
+             WHERE c.session_id=?1 AND c.human_id=?2 AND c.native_thread=?3
+               AND c.instance_id=?4 AND c.phase='queued' AND c.retired=0
+               AND json_extract(c.doc,'$.queue_start_claimed') IS NULL
+               AND COALESCE(json_extract(c.doc,'$.steer_refusals_total'),0) < 3
+               AND json_extract(c.doc,'$.steer_wait_reason')
+                   IN ('steer_unavailable','steer_channel_closed','steer_rejected','older_inputs_waiting')
+               AND (json_extract(c.doc,'$.last_steer_turn') IS NOT ?5
+                 OR (json_extract(c.doc,'$.steer_wait_reason')='steer_rejected'
+                   AND json_extract(c.doc,'$.steer_refusals')=1))
+             ORDER BY o.id LIMIT ?6",
+        )?;
+        query
+            .query_map(
+                params![session, human, native, self.instance_id, turn, limit],
+                |r| r.get::<_, String>(0),
+            )?
+            .map(|id| read_on(&conn, &id?, human))
+            .collect()
+    }
+
+    /// The worker and steer dispatcher use the same session mutex when
+    /// choosing between this local queue entry and a steer. Retain that
+    /// choice before any turn setup can yield. Stale copies are discarded.
+    pub fn conversation_input_claim_queue_start(&self, human: i64, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let changed = conn.execute(
+            "UPDATE conversation_inputs SET doc=json_set(doc,'$.queue_start_claimed',json('true'))
+             WHERE id=?1 AND human_id=?2 AND instance_id=?3 AND phase='queued'
+               AND json_extract(doc,'$.queue_start_claimed') IS NULL",
+            params![id, human, self.instance_id],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Begin events validate the current owner/binding/epoch in the same SQLite
     /// transaction. Observed acknowledgments remain recordable after revocation
     /// or a fence: recording an effect does not authorize future execution.
@@ -2407,6 +2482,109 @@ mod tests {
             .unwrap()
             .to_string();
         (file, store, key, binding)
+    }
+
+    #[test]
+    fn queued_steer_only_selects_known_unsent_originals_in_capture_order() {
+        let (_file, store, key, binding) = setup();
+        let capture = |text| {
+            let id = Uuid::now_v7().to_string();
+            let (input, _) = store
+                .conversation_input_capture(100, key, &binding, &id, text)
+                .unwrap();
+            store
+                .conversation_input_event(100, &id, ConversationInputEvent::Queue)
+                .unwrap();
+            input
+        };
+        let older = capture("Older original");
+        let claimed = capture("Claimed by queue worker");
+        let uncertain = capture("Unknown receipt");
+        let newer = capture("Newer original");
+        let local = turn(&store, key);
+        for input in [&newer, &claimed, &older] {
+            assert!(
+                store
+                    .conversation_input_defer_steer(input, None, "steer_unavailable")
+                    .unwrap()
+            );
+        }
+        assert!(
+            store
+                .conversation_input_claim_queue_start(100, &claimed.id)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .conversation_input_claim_queue_start(100, &claimed.id)
+                .unwrap()
+        );
+        let begin = ConversationInputEvent::Begin {
+            local_turn: local,
+            steer: true,
+        };
+        store
+            .conversation_input_event(100, &uncertain.id, begin)
+            .unwrap();
+        store
+            .conversation_input_event(
+                100,
+                &uncertain.id,
+                ConversationInputEvent::Uncertain { local_turn: local },
+            )
+            .unwrap();
+        assert!(
+            !store
+                .conversation_input_defer_steer(&uncertain, Some(local), "steer_rejected")
+                .unwrap()
+        );
+        let candidates = || {
+            store
+                .conversation_input_steer_candidates(key, 100, local, 8)
+                .unwrap()
+                .into_iter()
+                .map(|input| input.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(candidates(), [older.id.clone(), newer.id.clone()]);
+        for attempt in 0..2 {
+            store
+                .conversation_input_event(100, &older.id, begin)
+                .unwrap();
+            assert!(
+                !store
+                    .conversation_input_claim_queue_start(100, &older.id)
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .conversation_input_defer_steer(&older, Some(local), "steer_rejected")
+                    .unwrap()
+            );
+            assert_eq!(candidates().contains(&older.id), attempt == 0);
+        }
+        assert!(
+            store
+                .conversation_input_claim_queue_start(100, &older.id)
+                .unwrap()
+        );
+        let next = turn(&store, key);
+        store
+            .conversation_input_event(
+                100,
+                &newer.id,
+                ConversationInputEvent::Begin {
+                    local_turn: next,
+                    steer: true,
+                },
+            )
+            .unwrap();
+        assert!(
+            store
+                .conversation_input_defer_steer(&newer, Some(next), "fresh_execution_required")
+                .unwrap()
+        );
+        assert!(candidates().is_empty());
     }
 
     #[test]

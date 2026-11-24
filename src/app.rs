@@ -2996,6 +2996,20 @@ impl App {
                 let nexus_id = turn.nexus.clone();
                 let merge_id = turn.merge.clone();
                 let conversation_input_id = turn.conversation_input.clone();
+                if let Some(id) = conversation_input_id.as_deref() {
+                    let _slot = steer.lock().expect("steer mutex poisoned");
+                    match shared
+                        .store
+                        .conversation_input_claim_queue_start(requester, id)
+                    {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            tracing::warn!(%error, "Could not claim a queued Conversation input");
+                            continue;
+                        }
+                    }
+                }
                 let workflow_return_id = turn.workflow_return.as_ref().and_then(|id| {
                     shared
                         .store

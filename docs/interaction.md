@@ -936,6 +936,17 @@ can discover this operation through the stable controller's `capabilities` call.
 
 ## Switching between web and direct conversations
 
+Conversation gives the active native turn first opportunity to steer. An
+original deferred without transmission or definitively refused can be offered
+again, oldest first, when a native turn starts or new input arrives. A
+definitive refusal permits one further offer in the same turn, with at most
+three refused offers per original before it stays in the sequential queue. Inputs requiring
+fresh execution stay in the sequential queue. A missing acknowledgment remains
+uncertain. The receiver retains the queue reason and the turn of the refusal
+with the original, using no message text in logs. Reconsidered originals reuse
+their existing ID and admission checks; once they leave the queue, stale worker
+entries cannot start a duplicate turn.
+
 ### Requested next behavior: visible session parity — 2026-10-19
 
 The human requested that a session's Telegram topic also show the integrator
