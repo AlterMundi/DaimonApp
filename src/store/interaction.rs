@@ -78,6 +78,17 @@ pub(super) fn admit_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
+    admit_with_presentation_on(tx, source, target, relation, instance, true)
+}
+
+pub(super) fn admit_with_presentation_on(
+    tx: &Connection,
+    source: &crate::interaction::SourceInput,
+    target: SessionKey,
+    relation: crate::interaction::RequestRelation,
+    instance: &str,
+    select_return: bool,
+) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
         tx,
@@ -207,7 +218,8 @@ pub(super) fn admit_on(
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
-    if source.origin.message_id.is_none()
+    if select_return
+        && source.origin.message_id.is_none()
         && let Some(native) = native.as_deref()
     {
         super::conversation_inputs::select_return_on(
@@ -514,14 +526,27 @@ impl Store {
         local: i64,
         human: i64,
     ) -> Result<Vec<crate::interaction::Instruction>> {
+        self.turn_inputs(local, human, false)
+    }
+
+    pub(super) fn turn_inputs(
+        &self,
+        local: i64,
+        human: i64,
+        include_direct_parents: bool,
+    ) -> Result<Vec<crate::interaction::Instruction>> {
         let mut ids = {
             let conn = self.conn.lock().expect("store mutex poisoned");
             let mut stmt = conn.prepare("SELECT i.id FROM interaction_instructions i
                 JOIN interaction_sources s ON s.id=i.input_id JOIN turns t ON t.session_id=i.session_id
                 WHERE t.id=?1 AND t.from_user_id=?2 AND s.human_id=?2
-                AND json_extract(i.doc,'$.local_turn')=?1 ORDER BY i.sequence DESC LIMIT 256")?;
-            stmt.query_map(params![local, human], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
+                AND json_extract(i.doc,'$.local_turn')=?1
+                AND (?3 OR NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id))
+                ORDER BY i.sequence DESC LIMIT 256")?;
+            stmt.query_map(params![local, human, include_direct_parents], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
         };
         ids.reverse();
         ids.into_iter()
