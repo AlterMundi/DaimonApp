@@ -169,7 +169,7 @@ window.StreamingVoice=(()=>{
       }catch{ready=false;socket.close();if(ending&&!canonicalRecorder)complete();}
     }
     socket.onopen=()=>{
-      if(done)return;
+      if(done||recorder.transcriptionUnavailable)return;
       try{
         const values=headers(),authorization=values.Authorization||values.authorization;
         socket.send(JSON.stringify({id,binding,...(canonicalRecorder?{mode:'captions'}:transcriptionProvider==='openai'?{mode:'prepared'}:{}),...(turnDetection?{turn_detection:true}:{}),csrf:values['X-Dashboard-CSRF']||values['x-dashboard-csrf'],...(authorization?{authorization}:{})}));
@@ -188,7 +188,7 @@ window.StreamingVoice=(()=>{
           }
     }
     socket.onmessage=event=>{
-      if(discarded||done)return;
+      if(discarded||done||recorder.transcriptionUnavailable)return;
       try{
         if(typeof event.data!=='string'||event.data.length>65536)throw Error('Invalid caption event');
         const value=JSON.parse(event.data);
@@ -207,9 +207,14 @@ window.StreamingVoice=(()=>{
     };
     const unavailable=()=>{
       ready=false;
-      if(canonicalRecorder&&!ending&&!discarded&&!done&&!disposed)onUnavailable();
+      if(!ending&&!discarded&&!done&&!disposed&&!recorder.transcriptionUnavailable){
+        recorder.transcriptionUnavailable=true;
+        onUnavailable();
+      }
       if(turnDetection&&!detectorFailed&&!ending&&!discarded&&!done){detectorFailed=true;onDetectionUnavailable();}
-      if(canonicalRecorder){parts=[];dispose();}else if(ending&&!canonicalRecorder)complete();
+      if(canonicalRecorder){parts=[];dispose();}
+      else if(ending)complete();
+      else if(socket.readyState!==WebSocket.CLOSED)socket.close();
     };
     socket.onclose=unavailable;socket.onerror=unavailable;
     try{unsubscribe=capture.subscribe(data=>{
@@ -237,7 +242,7 @@ window.StreamingVoice=(()=>{
         const input=message.data.pcm,remaining=120*32000-bytes;
         const pcm=input.byteLength>remaining?input.slice(0,remaining):input;
         if(pcm.byteLength){try{onPCM(pcm);}catch{/* Optional presentation cannot interrupt capture. */}bytes+=pcm.byteLength;parts.push(pcm);pump();}
-        if(canonicalRecorder&&parts.reduce((n,p)=>n+p.byteLength,0)>256*1024){ready=false;dispose();parts=[];}
+        if(canonicalRecorder&&parts.reduce((n,p)=>n+p.byteLength,0)>256*1024)unavailable();
         if(bytes===120*32000){recorder.captureStop='duration_limit';recorder.stop();}
       }
       if(message.data.finished){
@@ -256,7 +261,7 @@ window.StreamingVoice=(()=>{
       }
     });}catch(error){dispose();throw error;}
     function previewFailed(){
-      if(canonicalRecorder){ready=false;parts=[];onUnavailable();dispose();}
+      if(canonicalRecorder)unavailable();
       else{event('error');recorder.discard();}
     }
     recorder.start=(timeslice)=>{

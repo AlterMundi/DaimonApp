@@ -340,9 +340,15 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
         incoming = None
         detector_reader = None
         sending = asyncio.Lock()
+        async def observe_failure(boundary, operation, *args):
+            try:
+                return await operation(*args)
+            except Exception:
+                diagnostic.setdefault('failure_boundary', boundary)
+                raise
         async def send(value):
             async with sending:
-                await socket.send_json(value)
+                await observe_failure('browser_write', socket.send_json, value)
         opening_lock, abandoned, opened = threading.Lock(), threading.Event(), []
         if socket.headers.get('origin') not in origins:
             await socket.close(code=1008); return
@@ -364,7 +370,9 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                     raise ValueError('Conversational analysis unavailable')
                 provider.input_id(meta['id'])
                 diagnostic['capture_id'] = meta['id']
-                session, recheck, _actor = await bind_voice(socket, meta)
+                session, check_actor, _actor = await bind_voice(socket, meta)
+                async def recheck():
+                    await observe_failure('receiving_authorization', check_actor)
                 owner = (session['human'], meta['id'])
                 if owner in active or len(active) >= 2:
                     owner = None
@@ -421,7 +429,9 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                         except (OSError,ValueError,TranscriptionUnavailable):
                             # No PCM can be accepted before ready. Once advertised,
                             # never replay this capture into another paid stream.
-                            if ready.is_set() or candidate_index+1>=len(candidates):raise
+                            if ready.is_set() or candidate_index+1>=len(candidates):
+                                diagnostic.setdefault('failure_boundary', 'recognizer_read')
+                                raise
                             await recheck()
                             old=stream
                             await asyncio.to_thread(old.close)
@@ -457,7 +467,7 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                 reader = asyncio.create_task(receive_provider())
                 checked = time.monotonic()
                 while not finished.is_set():
-                    incoming = asyncio.create_task(socket.receive())
+                    incoming = asyncio.create_task(observe_failure('browser_read', socket.receive))
                     waiting=[incoming,reader]
                     if detector_reader is not None:
                         if detector_reader.done():
@@ -485,7 +495,7 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                     if 'bytes' in message and message['bytes'] is not None:
                         if not ready.is_set():raise ValueError('Wait for recognition readiness')
                         data = message['bytes']
-                        await asyncio.to_thread(stream.append,data)
+                        await observe_failure('recognizer_write', asyncio.to_thread, stream.append, data)
                         diagnostic['audio_bytes'] += len(data)
                         diagnostic['stage'] = 'receiving_audio'
                         if mode=='prepared':
@@ -508,14 +518,15 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                         elapsed('finish_authorization')
                         diagnostic['stage'] = 'provider_finalize'
                         preparation_started['provider_final'] = time.monotonic()
-                        await asyncio.to_thread(stream.finish)
+                        await observe_failure('recognizer_finish', asyncio.to_thread, stream.finish)
                         await reader
                         break
         except (HTTPException, ValueError, OSError, UnicodeError, TranscriptionUnavailable,
                 WebSocketDisconnect, TimeoutError, RenderError) as error:
             diagnostic['error_type'] = type(error).__name__
             with suppress(Exception):
-                await send({'type':'unavailable','message':admission_failure(error) or 'Live transcription unavailable. Your recording has not been submitted.'})
+                async with sending:
+                    await socket.send_json({'type':'unavailable','message':admission_failure(error) or 'Live transcription unavailable. Your recording has not been submitted.'})
         finally:
             # One metadata-only line under the existing bounded system journal.
             # Never include provider events, exception messages, speech or keys.
