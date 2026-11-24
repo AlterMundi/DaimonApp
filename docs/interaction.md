@@ -28,6 +28,16 @@ receipt. It advances only to the offset in that receipt. Gateway uses the
 existing admission journal and dispatches each new original once. Reconnecting
 the adapter resumes from the retained cursor, including when Gateway has run
 independently in between.
+
+For retained topic and artifact publications, Gateway selects the audience
+and freezes the parts in the existing journal. TeleDaimon formats and sends
+those parts. After the Telegram cooldown, it calls back into Gateway to
+recheck authorization and reserve the exact part immediately before the
+request. It returns an acknowledgement only for the selected chat and topic.
+Gateway commits that acknowledgement and its reply mapping together. An
+explicit rate-limit refusal can release the reserved part for retry. An
+unconfirmed send remains uncertain through restart.
+
 With `telegram.enabled=false`, Gateway opens the same owner API without a
 Telegram token. In a combined instance with an independent Conversation,
 unavailable Bot API identity leaves Gateway available with Telegram transport

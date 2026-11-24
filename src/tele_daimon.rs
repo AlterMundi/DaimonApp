@@ -1,12 +1,16 @@
 //! Telegram transport. The Gateway acknowledges admission before TeleDaimon
 //! advances the polling cursor.
-use std::{future::Future, time::Duration};
+use std::{future::Future, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use tokio::time::sleep;
 
 use crate::config::TelegramConfig;
-use crate::telegram::{BotCommand, TelegramClient, TelegramError, Update, User};
+use crate::render::render_markdown_to_html;
+pub(crate) use crate::render::split_text as projection_parts;
+use crate::telegram::{
+    BotCommand, Message, SendMessage, TelegramClient, TelegramError, Update, User,
+};
 
 pub(crate) trait GatewayIngress {
     fn next_offset(&self) -> Result<Option<i64>>;
@@ -20,6 +24,111 @@ pub(crate) enum Lifecycle {
     Started,
     Stopped,
     PollConflict,
+}
+
+/// A transport observation. Gateway owns its canonical interpretation and row.
+pub(crate) enum Delivery {
+    Unsent,
+    Acknowledged(i64),
+    CoolingDown,
+    Rejected,
+    Unconfirmed,
+}
+
+pub(crate) struct Projection<'a> {
+    pub client: &'a TelegramClient,
+    pub chat: i64,
+    pub topic: Option<i64>,
+}
+
+pub(crate) struct ProjectedFile<'a> {
+    pub name: &'a str,
+    pub bytes: Vec<u8>,
+    pub mime: Option<&'a str>,
+    pub caption: &'a str,
+}
+
+impl Projection<'_> {
+    pub(crate) async fn text(
+        &self,
+        markdown: &str,
+        reserve: impl FnOnce() -> Result<bool>,
+    ) -> Result<Delivery> {
+        let mut reserved = false;
+        let result = self
+            .client
+            .send_message_checked(self.chat, || {
+                reserved = reserve()?;
+                Ok(reserved.then(|| {
+                    (
+                        SendMessage::html(self.chat, self.topic, render_markdown_to_html(markdown)),
+                        (),
+                    )
+                }))
+            })
+            .await
+            .map(|result| result.map(|(message, ())| message));
+        self.receipt(reserved, result)
+    }
+
+    pub(crate) async fn file(
+        &self,
+        file: ProjectedFile<'_>,
+        reserve: impl FnOnce() -> Result<bool>,
+    ) -> Result<Delivery> {
+        let extension = Path::new(file.name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let field = match extension.as_str() {
+            "png" | "jpg" | "jpeg" | "webp" => "photo",
+            "mp3" | "wav" | "m4a" | "ogg" => "audio",
+            "mp4" | "mov" | "webm" => "video",
+            _ => "document",
+        };
+        let mut reserved = false;
+        let result = self
+            .client
+            .send_file_bytes_checked(
+                self.chat,
+                self.topic,
+                field,
+                file.bytes,
+                file.name,
+                file.mime,
+                Some(file.caption),
+                || {
+                    reserved = reserve()?;
+                    Ok(reserved)
+                },
+            )
+            .await;
+        self.receipt(reserved, result)
+    }
+
+    fn receipt(&self, reserved: bool, result: Result<Option<Message>>) -> Result<Delivery> {
+        match result {
+            Ok(None) => Ok(Delivery::Unsent),
+            Ok(Some(message))
+                if message.chat.id == self.chat
+                    && message.message_thread_id.unwrap_or(0) == self.topic.unwrap_or(0)
+                    && message.message_id > 0 =>
+            {
+                Ok(Delivery::Acknowledged(message.message_id))
+            }
+            Ok(Some(_)) => Ok(Delivery::Unconfirmed),
+            Err(error) if !reserved => Err(error),
+            Err(error) => {
+                let telegram = error.downcast_ref::<TelegramError>();
+                Ok(match telegram {
+                    Some(response) if response.retry_after.is_some() => Delivery::CoolingDown,
+                    Some(response) if response.status.is_client_error() => Delivery::Rejected,
+                    _ => Delivery::Unconfirmed,
+                })
+            }
+        }
+    }
 }
 
 pub(crate) fn client(config: &TelegramConfig) -> Result<TelegramClient> {
