@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -32,11 +33,7 @@ print(json.dumps({"schema": "dm.runtime.status/v1", "integrity": "ok",
 }
 
 
-test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {
-  skip: !binary,
-}, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'goose-gateway-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+async function isolatedGooseProfile(root) {
   const config = join(root, 'config', 'goose');
   await mkdir(config, { recursive: true });
   const extensions = Object.fromEntries(['developer', 'extensionmanager', 'summon', 'tom', 'todo', 'summarize']
@@ -44,6 +41,41 @@ test('Goose worker reaches the owner decision with its selected status MCP on th
   await writeFile(join(config, 'config.yaml'), JSON.stringify({ extensions }), { mode: 0o600 });
   const key = join(root, 'provider-fixture');
   await writeFile(key, 'fixture-only\n', { mode: 0o600 });
+  return key;
+}
+
+async function runWorker(t, profile, text, beforeDecision) {
+  const child = spawn(process.execPath, [worker, '--profile', profile], {
+    env: {}, stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  const finished = once(child, 'close');
+  t.after(() => { child.kill('SIGKILL'); });
+  const messages = frames(child.stdout);
+  const same = { schema: 'daimon-gateway.goose-turn/v1',
+    inputId, sessionId: '00000000-0000-4000-8000-000000000002' };
+  await writeFrame(child.stdin, { ...same, type: 'start', text, body });
+  const first = (await messages.next()).value;
+  assert.equal(first.type, 'prepare_submission', JSON.stringify(first));
+  assert.notEqual(first.nativeSessionId, same.sessionId);
+  const { nativeSessionId, ...correlation } = first;
+  assert.ok(nativeSessionId);
+  assert.deepEqual(correlation, { ...same, type: 'prepare_submission' });
+  await writeFrame(child.stdin, {
+    ...same, type: 'submission_decision', committed: beforeDecision(nativeSessionId),
+  });
+  const settled = (await messages.next()).value;
+  assert.deepEqual(settled, { ...same, type: 'outcome', outcome: settled.outcome });
+  child.stdin.end();
+  assert.deepEqual(await finished, [0, null]);
+  return { nativeSessionId, outcome: settled.outcome };
+}
+
+test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {
+  skip: !binary,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'goose-gateway-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const key = await isolatedGooseProfile(root);
   const matrixStatusCommand = await fixtureObservation(root);
   const marker = join(root, 'early-memory-read');
   const reader = join(root, 'dmk-fixture.py');
@@ -62,27 +94,8 @@ raise SystemExit(2)
       recordUid: '00000000-0000-4000-8000-000000000003', revision: 1, bodyRef: 'fixture:goose',
     },
   }), { mode: 0o600 });
-  const child = spawn(process.execPath, [worker, '--profile', profile], {
-    env: {}, stdio: ['pipe', 'pipe', 'ignore'],
-  });
-  const finished = once(child, 'close');
-  t.after(() => { child.kill('SIGKILL'); });
-  const messages = frames(child.stdout);
-  const same = { schema: 'daimon-gateway.goose-turn/v1',
-    inputId, sessionId: '00000000-0000-4000-8000-000000000002' };
-  await writeFrame(child.stdin, { ...same, type: 'start', text: 'Synthetic fixture only', body });
-  const first = (await messages.next()).value;
-  assert.equal(first.type, 'prepare_submission', JSON.stringify(first));
-  assert.notEqual(first.nativeSessionId, same.sessionId);
-  const { nativeSessionId, ...correlation } = first;
-  assert.ok(nativeSessionId);
-  assert.deepEqual(correlation, { ...same, type: 'prepare_submission' });
-  await writeFrame(child.stdin, { ...same, type: 'submission_decision', committed: false });
-  assert.deepEqual((await messages.next()).value, {
-    ...same, type: 'outcome', outcome: { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' },
-  });
-  child.stdin.end();
-  assert.deepEqual(await finished, [0, null]);
+  const { outcome } = await runWorker(t, profile, 'Synthetic fixture only', () => false);
+  assert.deepEqual(outcome, { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' });
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
 
@@ -155,5 +168,74 @@ print(json.dumps(memory._read_chapter(selected)))
     assert.equal(outcome.isError, true);
     assert.ok(!JSON.stringify(outcome).includes(text));
   });
+  if (binary) {
+    await t.test('real worker uses the DMK record and exposes the stock provider catalog gap', async t => {
+      const key = await isolatedGooseProfile(root);
+      const requests = [];
+      const tool = 'matrix__dmk_read_selected';
+      const answer = 'The approved marker was blue.';
+      const prompt = 'Use the approved memory to tell me the marker color.';
+      let committed = false;
+      const server = createServer(async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(404).end();
+          return;
+        }
+        let raw = '';
+        for await (const part of request) raw += part;
+        const data = JSON.parse(raw);
+        const toolNames = data.tools?.map(value => value.function.name).sort();
+        const messages = data.messages;
+        const hasSource = messages.some(message => message.role === 'tool'
+          && JSON.stringify(message).includes(text));
+        requests.push({ committed, path: request.url, toolNames, hasSource });
+        if (!committed || request.url !== '/v1/chat/completions' || requests.length > 2
+            || JSON.stringify(messages).includes('This decoy must stay private.')) {
+          response.writeHead(400).end();
+          return;
+        }
+        function chunk(delta, finish_reason) {
+          return { id: 'fixture-memory-401', model: 'gpt-4o-mini',
+            created: 1766229303, object: 'chat.completion.chunk',
+            choices: [{ index: 0, delta, finish_reason }],
+          };
+        }
+        const content = hasSource
+          ? [chunk({ role: 'assistant', content: answer }, null), chunk({}, 'stop')]
+          : [chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_memory_401',
+            type: 'function', function: { name: tool, arguments: '{}' } }] }, null), chunk({}, 'tool_calls')];
+        const usage = { prompt_tokens: 8, completion_tokens: 7, total_tokens: 15 };
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        for (const item of [...content, { ...chunk({}, null), choices: [], usage }]) {
+          response.write('data: ' + JSON.stringify(item) + '\n\n');
+        }
+        response.end('data: [DONE]\n\n');
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      t.after(() => { server.closeAllConnections(); server.close(); });
+      const wrapper = join(root, 'goose-loopback');
+      await symlink(binary, wrapper + '.native');
+      await writeFile(wrapper, `#!/bin/sh
+export OPENAI_HOST=http://127.0.0.1:${server.address().port}
+exec "$0.native" "$@"
+`, { mode: 0o700 });
+      const profile = join(root, 'profile.json');
+      const selectedMemory = {
+        command, inputId, pool: 'main', recordUid: selected.record_uid, revision: selected.revision, bodyRef,
+      };
+      await writeFile(profile, JSON.stringify({ binary: wrapper, cwd: root, stateRoot: root,
+        provider: 'openai', model: 'gpt-4o-mini', providerKeyFile: key, matrixStatusCommand, body, selectedMemory,
+      }), { mode: 0o600 });
+      const result = await runWorker(t, profile, prompt, () => {
+        assert.equal(requests.length, 0);
+        committed = true;
+        return true;
+      });
+      assert.deepEqual(result.outcome, { phase: 'completed', sessionId: result.nativeSessionId, text: answer });
+      assert.deepEqual(requests, [false, true].map(hasSource => ({
+        committed: true, path: '/v1/chat/completions', toolNames: ['load_skill', 'matrix__daimon_status', tool], hasSource,
+      })));
+    });
+  }
   assert.deepEqual(await readFile(database), before);
 });

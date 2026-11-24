@@ -31,6 +31,13 @@ replay an uncertain original.
 
 ## Selecting Goose in Gateway
 
+Goose v1.60.2 includes `load_skill` in the model-facing catalog even with all
+extensions disabled. Its ACP catalog omits this native operation. The
+combined real-worker test detects that difference at the synthetic provider.
+Gateway refuses new Goose runs until a compatible worker verifies the complete
+provider catalog before accepting an original. Existing status readback is
+available through the same journal.
+
 The private `interaction.goose_foreground` configuration uses the same
 `transport` and `worker_command` shape as `interaction.claude_foreground`.
 Select a Goose Matrix body, its authorized `/we` transport and the absolute

@@ -28,6 +28,12 @@ pub(super) async fn owner(
         ForegroundEngine::Goose => cfg.goose_foreground.as_ref(),
     }
     .context("Selected native foreground route is unavailable")?;
+    // Goose's ACP list omits its model-facing skill loader. Until the worker
+    // can verify the complete provider catalog, leave the original unadmitted.
+    anyhow::ensure!(
+        engine != ForegroundEngine::Goose,
+        "The Goose tool catalog cannot be verified before submission"
+    );
     let MatrixDestination::Body {
         being_ref,
         embodiment_id,
