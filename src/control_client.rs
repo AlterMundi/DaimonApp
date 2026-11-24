@@ -66,12 +66,13 @@ async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
         bail!("Unsafe receiving control socket");
     }
     // One selected foreground run includes three bounded Matrix host calls
-    // and one bounded Claude worker. Status reads retain the ordinary limit.
-    let timeout = if command.starts_with("matrix claude run ") {
-        320
-    } else {
-        30
-    };
+    // and one bounded native worker. Status reads retain the ordinary limit.
+    let timeout =
+        if command.starts_with("matrix claude run ") || command.starts_with("matrix goose run ") {
+            320
+        } else {
+            30
+        };
     tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
         let mut stream = UnixStream::connect(path).await?;
         if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {

@@ -1,22 +1,5 @@
 // The owner selects this command and its binding, not Claude or the input.
-import { execFile } from 'node:child_process';
-
-function inspect(command, source, signal) {
-  return new Promise((resolve, reject) => {
-    const child = execFile(command[0], [...command.slice(1), '--body-status'], {
-      signal, timeout: 8_000, maxBuffer: 16 * 1024, encoding: 'utf8',
-    }, (error, stdout) => {
-      if (error) {
-        reject(new Error('Authenticated Matrix body observation unavailable'));
-        return;
-      }
-      try { resolve(JSON.parse(stdout)); }
-      catch { reject(new Error('Invalid authenticated Matrix body observation')); }
-    });
-    child.stdin.on('error', reject);
-    child.stdin.end(JSON.stringify({ source }));
-  });
-}
+import { inspectMatrixStatus } from '../matrix-status.mjs';
 
 /** Build the private status read and Claude's tool over one owner selection. */
 export function createMatrixStatusBroker({ command, source, createSdkMcpServer, tool, signal }) {
@@ -26,7 +9,7 @@ export function createMatrixStatusBroker({ command, source, createSdkMcpServer, 
   }
   const selectedCommand = [...command];
   const selectedSource = { being_ref: source.being_ref, embodiment_id: source.embodiment_id };
-  const readStatus = () => inspect(selectedCommand, selectedSource, signal);
+  const readStatus = () => inspectMatrixStatus(selectedCommand, selectedSource, signal);
   const read = tool('daimon_status', 'Read authenticated metadata for this Matrix body.', {}, async () => {
     try {
       const status = await readStatus();

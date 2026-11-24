@@ -1,5 +1,6 @@
 //! Foreground /we requests share the canonical Matrix request journal.
 use super::*;
+use crate::interaction::ForegroundEngine;
 use serde_json::Value;
 
 // Each entry may run one undispatched foreground turn at a time. Bound the
@@ -130,11 +131,22 @@ fn view(request: &Request, mut phase: WePhase, mut result: Value, instance: &str
             phase => phase,
         };
     }
+    let stored_engine = result
+        .as_object_mut()
+        .and_then(|outcome| outcome.remove("engine"));
+    let engine = stored_engine
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or(ForegroundEngine::Claude.name());
     let native_session_id = result.as_object_mut().and_then(|outcome| {
         outcome.remove("text");
         outcome.remove("native_session_id")
     });
-    if phase == WePhase::ProviderExposed && result.as_object().is_some_and(|obj| obj.is_empty()) {
+    if matches!(
+        phase,
+        WePhase::Starting | WePhase::Rejected | WePhase::ProviderExposed
+    ) && result.as_object().is_some_and(|obj| obj.is_empty())
+    {
         result = Value::Null;
     }
     let native_session_id = native_session_id
@@ -142,11 +154,12 @@ fn view(request: &Request, mut phase: WePhase, mut result: Value, instance: &str
         .and_then(Value::as_str)
         .or_else(|| {
             // Legacy Claude attempts used the allocated UUID for both identities.
-            (!matches!(phase, WePhase::Starting | WePhase::Rejected))
-                .then_some(request.session_id.as_str())
+            (engine == ForegroundEngine::Claude.name()
+                && !matches!(phase, WePhase::Starting | WePhase::Rejected))
+            .then_some(request.session_id.as_str())
         });
     json!({"request_id":request.id,"input_id":request.original.event_id,
-        "session_id":request.session_id,"native_session_id":native_session_id,
+        "engine":engine,"session_id":request.session_id,"native_session_id":native_session_id,
         "thread_id":request.original.thread_id,
         "phase":phase,"result":result})
 }
@@ -172,6 +185,7 @@ impl Store {
         &self,
         owner: i64,
         entry: SessionKey,
+        engine: ForegroundEngine,
         source: MatrixAuthor,
         body: Value,
         original: WeOriginal,
@@ -221,9 +235,10 @@ impl Store {
             "Foreground Matrix admission is fenced"
         );
         tx.execute(
-            "INSERT INTO interaction_matrix_requests(id,human_id,entry_session,source_channel,source_event,doc,phase,created_at)
-             VALUES(?1,?2,?3,'/we',?4,?5,'starting',?6)",
-            params![request.id, owner, session, request.original.event_id, serde_json::to_string(&request)?, now_string()],
+            "INSERT INTO interaction_matrix_requests(id,human_id,entry_session,source_channel,source_event,doc,phase,created_at,submission)
+             VALUES(?1,?2,?3,'/we',?4,?5,'starting',?6,?7)",
+            params![request.id, owner, session, request.original.event_id, serde_json::to_string(&request)?, now_string(),
+                (engine != ForegroundEngine::Claude).then(|| json!({"engine":engine.name()}).to_string())],
         )?;
         tx.commit()?;
         Ok(Some(WeAttempt {
@@ -298,11 +313,13 @@ impl Store {
             outcome
         };
         let mut outcome = outcome;
-        if let Some(native_session) = retained.get("native_session_id") {
-            outcome
-                .as_object_mut()
-                .context("Foreground outcome must retain its native session")?
-                .insert("native_session_id".into(), native_session.clone());
+        for field in ["native_session_id", "engine"] {
+            if let Some(bound) = retained.get(field) {
+                outcome
+                    .as_object_mut()
+                    .context("Foreground outcome must retain its attempt binding")?
+                    .insert(field.into(), bound.clone());
+            }
         }
         let raw = serde_json::to_string(&outcome)?;
         anyhow::ensure!(
