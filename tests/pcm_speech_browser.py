@@ -57,6 +57,34 @@ async def main():
           const abort=new AbortController(),pending=SpeechStream.open(waiting,abort.signal);abort.abort();await pending.done;
           assert(closed,'Cancel did not close original stream');
           source.disconnect();for(const track of capture.getTracks())track.stop();await observed.close();
+          // Simulate the irregular delivery that could previously punctuate phone
+          // output with a refill wait. Only the completed part reaches the player.
+          const pcmResponse=()=>new Response(new ReadableStream({start(c){writer=c;}}),{headers:{'x-audio-encoding':'pcm_s16le'}});
+          const mobile=SpeechStream.open(pcmResponse(),undefined,{bufferedPcm:true});
+          sequence=0;
+          let settled=false;
+          const mobileDone=mobile.done.then(value=>{settled=true;return value;});
+          const terminal={type:'end',audio_bytes:raw.length,audio_sha256:await hash(raw),format:{encoding:'pcm_s16le',sample_rate_hz:24000,channels:1}};
+          const sendEnd=value=>{writer.enqueue(new TextEncoder().encode(JSON.stringify(value)+'\\n'));writer.close();};
+          await frame(raw.subarray(0,30000));await wait(1320);
+          assert(!mobile.url&&!settled,'Partial bytes must not reach the mobile media element');
+          await frame(raw.subarray(30000));sendEnd(terminal);
+          const mobileAudio=await mobileDone;
+          const mobileBytes=new Uint8Array(await mobileAudio.blob.arrayBuffer());
+          assert(mobileAudio.complete && await hash(mobileBytes.subarray(44))===terminal.audio_sha256,'Buffered WAV changed the verified PCM');
+          const mobileUrl=URL.createObjectURL(mobileAudio.blob);
+          audio.src=mobileUrl;audio.muted=false;
+          let played=false,stalls=0;
+          element.addEventListener('playing',()=>{played=true;});
+          for(const name of ['waiting','stalled'])element.addEventListener(name,()=>{if(played&&!audio.ended)stalls++;});
+          const mobileEnded=new Promise(resolve=>element.addEventListener('ended',resolve,{once:true}));
+          await audio.play();await Promise.race([mobileEnded,wait(3000).then(()=>{throw Error('Buffered WAV did not end');})]);
+          assert(played&&!stalls&&Math.abs(audio.currentTime-1.25)<.002,'Buffered WAV must play continuously at its native duration');
+          audio.removeAttribute('src');audio.load();URL.revokeObjectURL(mobileUrl);mobile.cancel();
+          const badFormat=SpeechStream.open(pcmResponse(),undefined,{bufferedPcm:true});
+          sequence=0;await frame(raw.subarray(0,30000));await frame(raw.subarray(30000));
+          sendEnd({...terminal,format:{...terminal.format,sample_rate_hz:16000}});
+          assert(!(await badFormat.done).blob,'Incorrect PCM format must not become playable');
           // Drive the scheduler clock deterministically after verifying the
           // actual output graph. A late but still timely block must stay
           // contiguous; a true underrun must retain its scheduling lead.
@@ -96,7 +124,7 @@ async def main():
             assert(starts.length===2&&Math.abs(starts[1]-1.325)<.001,'A verified short final tail still plays');
             tail.cancel();
           }finally{window.AudioContext=NativeContext;window.setInterval=id;}
-          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:1.25,cancellation:true,contiguous_pcm_boundary:true,rebuffering_and_verified_tail:true,prepared_players_max:3,hardware_hearing:'not_observed'};
+          return {first_nonzero_browser_pcm_ms:first,terminal_waited_until_after_playback:true,pause_silence:true,exact_pcm_bytes:raw.length,complete_duration_seconds:1.25,cancellation:true,contiguous_pcm_boundary:true,rebuffering_and_verified_tail:true,prepared_players_max:3,mobile_delayed_delivery_ms:1320,mobile_mid_play_stalls:stalls,mobile_wrong_format_rejected:true,hardware_hearing:'not_observed'};
         }''')
         print(json.dumps(result,indent=2));await browser.close()
 asyncio.run(main())
