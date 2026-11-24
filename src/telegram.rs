@@ -799,9 +799,14 @@ impl TelegramClient {
         method: &str,
         document: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let mut result = self
+        let result = self
             .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT)
             .await?;
+        Ok(self.redact_relay_value(result))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn redact_relay_value(&self, mut result: serde_json::Value) -> serde_json::Value {
         fn redact(value: &mut serde_json::Value, token: &str) {
             match value {
                 serde_json::Value::String(text) if text.contains(token) => {
@@ -824,7 +829,7 @@ impl TelegramClient {
         if !self.token.is_empty() {
             redact(&mut result, &self.token);
         }
-        Ok(result)
+        result
     }
 
     async fn post_local<T, R>(
@@ -914,6 +919,36 @@ impl TelegramClient {
         file_name: &str,
         mime_type: Option<&str>,
     ) -> Result<Message> {
+        #[cfg(unix)]
+        if let Some((socket, bot)) = &self.direct_relay {
+            let file = tokio::fs::File::open(path)
+                .await
+                .context("Open Telegram upload")?;
+            let metadata = file.metadata().await?;
+            if !metadata.is_file() {
+                bail!("Telegram upload requires a regular file");
+            }
+            self.wait_projection(chat_id).await?;
+            let result = crate::tele_daimon::projection::upload(
+                socket,
+                *bot,
+                chat_id,
+                message_thread_id,
+                crate::tele_daimon::projection::Upload {
+                    field: crate::tele_daimon::projection::UploadKind::from_field(file_field)?,
+                    size: metadata.len(),
+                    name: file_name.into(),
+                    mime: mime_type.map(Into::into),
+                },
+                file,
+                || self.check_publication(),
+            )
+            .await;
+            if let Err(error) = &result {
+                self.outbound.note_retry_after(chat_id, error).await;
+            }
+            return result;
+        }
         let bytes = tokio::fs::read(path)
             .await
             .with_context(|| format!("failed to read upload file {}", path.display()))?;
@@ -991,7 +1026,6 @@ impl TelegramClient {
         mime_type: Option<&str>,
         caption: Option<&str>,
     ) -> Result<Message> {
-        let url = format!("{}/bot{}/{}", self.api_base, self.token, method);
         let part = if let Some(mime_type) = mime_type {
             match Part::bytes(bytes.clone())
                 .file_name(file_name.to_string())
@@ -1004,6 +1038,72 @@ impl TelegramClient {
             Part::bytes(bytes).file_name(file_name.to_string())
         };
 
+        self.post_multipart_part(
+            method,
+            chat_id,
+            message_thread_id,
+            file_field,
+            part,
+            caption,
+        )
+        .await
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn upload_stream(
+        &self,
+        chat: i64,
+        topic: Option<i64>,
+        upload: crate::tele_daimon::projection::Upload<'_>,
+        input: tokio::net::unix::OwnedReadHalf,
+    ) -> Result<Message> {
+        use tokio::io::AsyncReadExt;
+        let bytes = futures_util::stream::try_unfold(
+            (input, upload.size),
+            |(mut input, remaining)| async move {
+                if remaining == 0 {
+                    return Ok(None);
+                }
+                let mut chunk = vec![0u8; remaining.min(64 * 1024) as usize];
+                let count = input.read(&mut chunk).await?;
+                if count == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "Incomplete Telegram upload stream",
+                    ));
+                }
+                chunk.truncate(count);
+                Ok(Some((chunk, (input, remaining - count as u64))))
+            },
+        );
+        let mut part = Part::stream_with_length(reqwest::Body::wrap_stream(bytes), upload.size)
+            .file_name(upload.name.into_owned());
+        if let Some(mime) = upload.mime
+            && Part::bytes(Vec::new()).mime_str(&mime).is_ok()
+        {
+            part = part.mime_str(&mime)?;
+        }
+        self.post_multipart_part(
+            upload.field.method(),
+            chat,
+            topic,
+            upload.field.field(),
+            part,
+            None,
+        )
+        .await
+    }
+
+    async fn post_multipart_part(
+        &self,
+        method: &str,
+        chat_id: i64,
+        message_thread_id: Option<i64>,
+        file_field: &str,
+        part: Part,
+        caption: Option<&str>,
+    ) -> Result<Message> {
+        let url = format!("{}/bot{}/{}", self.api_base, self.token, method);
         let mut form = Form::new()
             .text("chat_id", chat_id.to_string())
             .part(file_field.to_string(), part);

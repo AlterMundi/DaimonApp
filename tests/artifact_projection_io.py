@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Immutable source-file projection over the real queue and multipart HTTP; zero models."""
+from contextlib import nullcontext
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -7,7 +8,7 @@ import sys
 import threading
 import re
 from artifact_return_io import ArtifactRouting, prepare
-from topic_projection_io import Projected
+from topic_projection_io import Projected, distinct_adapter_endpoint
 
 
 class ProjectedFiles(ArtifactRouting,Projected):
@@ -98,13 +99,15 @@ def qualify(binary, *, external=False):
         j.release_upload.set();j.close()
 
 
-def unenrolled_direct_files(binary):
+def unenrolled_direct_files(binary, *, external=False):
+    exact = b'Exact unenrolled direct bytes.\n' * (4300 if external else 1)
+
     class Direct(ProjectedFiles):
         def handle_extra_rpc(self,message,send):
             p=message.get('params',{})
             if message.get('method')=='turn/start' and p['input'][0].get('text')=='Unenrolled direct file request.':
                 out=Path(re.search(r'\n([^\n]+/out)\n',''.join(v['value'] for k,v in sorted(p['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))).group(1))
-                (out/'direct.txt').write_bytes(b'Exact unenrolled direct bytes.\n')
+                (out/'direct.txt').write_bytes(exact)
                 native=p['threadId'];turn='unenrolled-direct'
                 self.native_turns+=1
                 send({'id':message['id'],'result':{'turn':{'id':turn}}})
@@ -121,23 +124,29 @@ def unenrolled_direct_files(binary):
                 if part.get_filename():files.append((part.get_filename(),part.get_payload(decode=True)))
                 else:fields[part.get_param('name',header='content-disposition')]=part.get_payload(decode=True).decode()
             assert fields['chat_id']=='100' and fields['message_thread_id']=='17'
-            assert files==[('direct.txt',b'Exact unenrolled direct bytes.\n')]
+            assert files==[('direct.txt',exact)]
             assert not fields.get('caption','').startswith('File ·'), 'Ordinary file delivery entered opt-in projection'
             self.uploads.append(files[0])
             return {'ok':True,'result':{'message_id':990,'chat':{'id':100,'type':'private'},'message_thread_id':17}}
 
     j=Direct(str(Path(binary).resolve()))
-    try:
-        prepare(j,projection=True)
-        j.admit('Unenrolled direct file request.',topic=17)
-        j.wait(lambda:len(j.uploads)==1);j.idle()
-        assert j.instructions(17)==[]
-        assert j.row("SELECT json_extract(j.doc,'$.publish_files') FROM interaction_artifact_jobs j JOIN turns t ON t.id=j.local JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=17")==[(0,)]
-        print('PASS ordinary direct file bytes outside enrollment retain legacy delivery and do not enable opt-in source projection; zero models')
-    finally:j.close()
+    j.external=external
+    with (distinct_adapter_endpoint(j) if external else nullcontext()) as observed:
+        try:
+            prepare(j,projection=True)
+            j.admit('Unenrolled direct file request.',topic=17)
+            j.wait(lambda:len(j.uploads)==1);j.idle()
+            assert j.instructions(17)==[]
+            assert j.row("SELECT json_extract(j.doc,'$.publish_files') FROM interaction_artifact_jobs j JOIN turns t ON t.id=j.local JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=17")==[(0,)]
+            if external:
+                uploads = [body for method, body in observed if method == "sendDocument"]
+                assert len(uploads) == 1 and exact in uploads[0]
+            print('PASS ordinary multipart file crosses the selected Bot API with exact bytes and no source projection; zero models')
+        finally:j.close()
+
 
 
 if __name__=='__main__':
-    qualify(sys.argv[1], external="--external" in sys.argv[2:])
-    if "--external" not in sys.argv[2:]:
-        unenrolled_direct_files(sys.argv[1])
+    external = "--external" in sys.argv[2:]
+    qualify(sys.argv[1], external=external)
+    unenrolled_direct_files(sys.argv[1], external=external)

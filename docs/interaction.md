@@ -27,13 +27,17 @@ and start exactly one `telecodex --tele-daimon-poll CONFIG` alongside the
 Gateway. The process checks the configured Bot API identity against Gateway
 before polling. They communicate over the existing owner-only Unix socket.
 The process opens neither the journal nor the native harness. TeleDaimon
-executes retained text and file projections and ordinary JSON Bot API
-operations in this mode. Commands, status messages, drafts, callback answers,
+executes retained text and file projections, ordinary JSON Bot API
+operations, and direct multipart uploads in this mode. Commands, status messages, drafts, callback answers,
 and topic operations go through the same owner-local transport. Gateway
 rechecks publication authorization after TeleDaimon confirms readiness. It
 receives typed provider errors without falling back to a second send. Initial
-bot identification and ordinary media transfer still use the compatibility
-client.
+bot identification and incoming attachment downloads still use the
+compatibility client. For an ordinary upload the Gateway opens the selected
+local file, and the adapter prepares the destination. The Gateway rechecks
+authorization, then streams exactly the declared size. TeleDaimon sends the
+multipart body and returns a typed Bot API result over that same connection.
+The relay transfers file bytes without disclosing the Gateway's source path.
 
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Start the Gateway with the same

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Actual bridge/SQLite/native-peer/Telegram-HTTP projection; all identities synthetic."""
+from contextlib import contextmanager
 import http.client
 import http.server
 import json
@@ -242,20 +243,22 @@ def qualify(binary, *, external=False):
         j.release_echo.set()
         j.close()
 
-def direct_json_ownership(binary):
-    j = Projected(str(Path(binary).resolve()))
-    j.external = True
+@contextmanager
+def distinct_adapter_endpoint(journey):
+    j = journey
     observed = []
 
     class AdapterAPI(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
             data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             method = self.path.rsplit("/", 1)[-1]
-            observed.append((method, json.loads(data or b"{}")))
+            content_type = self.headers.get("Content-Type", "application/json")
+            received = data if self.headers.get_content_maintype() == "multipart" else json.loads(data or b"{}")
+            observed.append((method, received))
             conn = http.client.HTTPConnection("127.0.0.1", j.telegram.server_port, timeout=10)
             try:
                 conn.request("POST", self.path, data,
-                             {"Content-Type": "application/json"})
+                             {"Content-Type": content_type})
                 reply = conn.getresponse()
                 body = reply.read()
                 self.send_response(reply.status)
@@ -280,23 +283,32 @@ def direct_json_ownership(binary):
         j.adapter_config.write_text(base.replace("[telegram]\n", "[telegram]\nexternal_polling=true\n")
                                     .replace(f":{j.telegram.server_port}", f":{relay.server_port}"))
         j.adapter_config.chmod(0o600)
-        j.start()
-        j.admit('Establish an existing native conversation', topic=7)
-        j.wait(lambda: j.has('Initial goal turn delivered.', 7))
-        j.idle()
-        before = len(observed)
-        original = j.admit('/status', topic=7)
-        j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
-               == [('handled',)])
-        assert any(method == "sendMessage" and payload["message_thread_id"] == 7
-                   for method, payload in observed[before:]), observed[before:]
-        assert len(j.row("SELECT id FROM turns")) == 1
-        print("PASS direct Telegram status reached only the adapter Bot API endpoint")
+        yield observed
     finally:
-        j.close()
         relay.shutdown()
         relay.server_close()
         thread.join(timeout=5)
+
+
+def direct_json_ownership(binary):
+    j = Projected(str(Path(binary).resolve()))
+    j.external = True
+    with distinct_adapter_endpoint(j) as observed:
+        try:
+            j.start()
+            j.admit('Establish an existing native conversation', topic=7)
+            j.wait(lambda: j.has('Initial goal turn delivered.', 7))
+            j.idle()
+            before = len(observed)
+            original = j.admit('/status', topic=7)
+            j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
+                   == [('handled',)])
+            assert any(method == "sendMessage" and payload["message_thread_id"] == 7
+                       for method, payload in observed[before:]), observed[before:]
+            assert len(j.row("SELECT id FROM turns")) == 1
+            print("PASS direct Telegram status reached only the adapter Bot API endpoint")
+        finally:
+            j.close()
 
 
 

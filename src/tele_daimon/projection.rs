@@ -3,7 +3,7 @@ use super::{Delivery, Projection, file_field};
 use crate::{
     control_client,
     render::render_markdown_to_html,
-    telegram::{SendMessage, TelegramError},
+    telegram::{Message, SendMessage, TelegramError},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,10 @@ pub(super) enum Payload<'a> {
         method: JsonMethod,
         document: Option<serde_json::Value>,
     },
+    Upload {
+        #[serde(borrow)]
+        file: Upload<'a>,
+    },
     Text {
         #[serde(borrow)]
         markdown: Cow<'a, str>,
@@ -57,6 +61,56 @@ pub(super) enum Payload<'a> {
         #[serde(borrow)]
         caption: Cow<'a, str>,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Upload<'a> {
+    pub field: UploadKind,
+    pub size: u64,
+    #[serde(borrow)]
+    pub name: Cow<'a, str>,
+    #[serde(borrow)]
+    pub mime: Option<Cow<'a, str>>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UploadKind {
+    Photo,
+    Audio,
+    Video,
+    Document,
+}
+
+impl UploadKind {
+    pub(crate) fn from_field(field: &str) -> Result<Self> {
+        match field {
+            "photo" => Ok(Self::Photo),
+            "audio" => Ok(Self::Audio),
+            "video" => Ok(Self::Video),
+            "document" => Ok(Self::Document),
+            _ => anyhow::bail!("Unsupported Telegram upload"),
+        }
+    }
+
+    pub(crate) fn field(self) -> &'static str {
+        match self {
+            Self::Photo => "photo",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::Document => "document",
+        }
+    }
+
+    pub(crate) fn method(self) -> &'static str {
+        match self {
+            Self::Photo => "sendPhoto",
+            Self::Audio => "sendAudio",
+            Self::Video => "sendVideo",
+            Self::Document => "sendDocument",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -173,21 +227,25 @@ pub(crate) async fn json(
         "TeleDaimon did not prepare the operation"
     );
     authorize()?;
-    let result: JsonResult = timeout(OPEN, async {
+    timeout(OPEN, async {
         stream.write_u8(1).await?;
-        let size = stream.read_u32().await?;
-        ensure!(
-            size <= MAX_JSON_RESULT,
-            "Telegram response exceeds transport bounds"
-        );
-        let mut bytes = vec![0; size as usize];
-        stream.read_exact(&mut bytes).await?;
-        // Do not include a reflected body fragment in a protocol error.
-        serde_json::from_slice(&bytes)
-            .map_err(|_| anyhow::anyhow!("Malformed Telegram operation response"))
+        read_result(&mut stream).await
     })
     .await
-    .context("Telegram operation outcome unconfirmed")??;
+    .context("Telegram operation outcome unconfirmed")?
+}
+
+async fn read_result(input: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<serde_json::Value> {
+    let size = input.read_u32().await?;
+    ensure!(
+        size <= MAX_JSON_RESULT,
+        "Telegram response exceeds transport bounds"
+    );
+    let mut bytes = vec![0; size as usize];
+    input.read_exact(&mut bytes).await?;
+    // Do not include a reflected body fragment in a protocol error.
+    let result: JsonResult = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("Malformed Telegram operation response"))?;
     match result {
         JsonResult::Confirmed { value } => Ok(value),
         JsonResult::Provider {
@@ -202,6 +260,57 @@ pub(crate) async fn json(
         .into()),
         JsonResult::Unconfirmed => anyhow::bail!("Telegram operation outcome unconfirmed"),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn upload(
+    owner: &Path,
+    bot: i64,
+    chat: i64,
+    topic: Option<i64>,
+    upload: Upload<'_>,
+    file: tokio::fs::File,
+    authorize: impl FnOnce() -> Result<()>,
+) -> Result<Message> {
+    let size = upload.size;
+    let mut stream = open_offer(
+        owner,
+        &Offer {
+            bot,
+            chat,
+            topic,
+            payload: Payload::Upload { file: upload },
+        },
+        &[],
+    )
+    .await?;
+    ensure!(
+        timeout(WAIT, stream.read_u8()).await?? == 1,
+        "TeleDaimon did not prepare the upload"
+    );
+    authorize()?;
+    timeout(RECEIPT, async {
+        stream.write_u8(1).await?;
+        let (mut input, mut output) = stream.into_split();
+        let transfer = async {
+            let copied = tokio::io::copy(&mut file.take(size), &mut output).await;
+            let shutdown = output.shutdown().await;
+            let count = copied?;
+            shutdown?;
+            ensure!(
+                count == size,
+                "Telegram upload source ended before its declared size"
+            );
+            Ok::<_, anyhow::Error>(())
+        };
+        let (transfer, receipt) = tokio::join!(transfer, read_result(&mut input));
+        let receipt = receipt?;
+        transfer?;
+        serde_json::from_value(receipt)
+            .map_err(|_| anyhow::anyhow!("Malformed Telegram upload receipt"))
+    })
+    .await
+    .context("Telegram upload outcome unconfirmed")?
 }
 
 pub(super) async fn send(
@@ -303,6 +412,25 @@ async fn receive(
     if let Payload::Json { method, document } = offer.payload {
         return receive_json(stream, client, method, document).await;
     }
+    if let Payload::Upload { file } = offer.payload {
+        let _permit = timeout(WAIT, files.acquire()).await??;
+        timeout(WAIT, async {
+            client.wait_projection(offer.chat).await?;
+            stream.write_u8(1).await?;
+            ensure!(
+                stream.read_u8().await? == 1,
+                "Telegram upload was not authorized"
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        let (input, mut output) = stream.into_split();
+        let result = client
+            .upload_stream(offer.chat, offer.topic, file, input)
+            .await
+            .and_then(|message| Ok(client.redact_relay_value(serde_json::to_value(message)?)));
+        return write_result(&mut output, result).await;
+    }
     let mut file_permit = None;
     let mut bytes = Vec::new();
     if let Payload::File { size, .. } = offer.payload {
@@ -324,7 +452,9 @@ async fn receive(
     .await??;
 
     let result = match offer.payload {
-        Payload::Json { .. } => unreachable!("JSON operations use their own typed receipt"),
+        Payload::Json { .. } | Payload::Upload { .. } => {
+            unreachable!("Direct operations use a typed result")
+        }
         Payload::Text { markdown } => {
             client
                 .projection_text(
@@ -388,23 +518,31 @@ async fn receive_json(
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    let result = match client.direct_json(method.api(), document.as_ref()).await {
+    let result = client.direct_json(method.api(), document.as_ref()).await;
+    if let Err(error) = &result
+        && let Some(provider) = error.downcast_ref::<TelegramError>()
+        && let Some(seconds) = provider.retry_after
+        && let Some(chat) = document
+            .as_ref()
+            .and_then(|value| value["chat_id"].as_i64())
+    {
+        client.projection_backoff(chat, seconds).await;
+    }
+    write_result(&mut stream, result).await
+}
+
+async fn write_result(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    result: Result<serde_json::Value>,
+) -> Result<()> {
+    let result = match result {
         Ok(value) => JsonResult::Confirmed { value },
         Err(error) => match error.downcast_ref::<TelegramError>() {
-            Some(provider) => {
-                if let Some(seconds) = provider.retry_after
-                    && let Some(chat) = document
-                        .as_ref()
-                        .and_then(|value| value["chat_id"].as_i64())
-                {
-                    client.projection_backoff(chat, seconds).await;
-                }
-                JsonResult::Provider {
-                    status: provider.status.as_u16(),
-                    description: provider.description.chars().take(1024).collect(),
-                    retry_after: provider.retry_after,
-                }
-            }
+            Some(provider) => JsonResult::Provider {
+                status: provider.status.as_u16(),
+                description: provider.description.chars().take(1024).collect(),
+                retry_after: provider.retry_after,
+            },
             None => JsonResult::Unconfirmed,
         },
     };
@@ -414,8 +552,8 @@ async fn receive_json(
         "Telegram response exceeds transport bounds"
     );
     timeout(OPEN, async {
-        stream.write_u32(bytes.len() as u32).await?;
-        stream.write_all(&bytes).await
+        output.write_u32(bytes.len() as u32).await?;
+        output.write_all(&bytes).await
     })
     .await??;
     Ok(())
@@ -465,5 +603,57 @@ mod tests {
         assert_eq!(requests[0].1["text"], "Authorized");
         assert_eq!(requests[0].1["message_thread_id"], 3);
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn truncated_file_cannot_be_confirmed_even_if_a_receipt_arrives() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("control.sock");
+        let listener = bind(&socket).await.unwrap();
+        let transfer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let size = stream.read_u32().await.unwrap();
+            let mut metadata = vec![0; size as usize];
+            stream.read_exact(&mut metadata).await.unwrap();
+            let offer: Offer<'_> = serde_json::from_slice(&metadata).unwrap();
+            assert!(matches!(offer.payload, Payload::Upload { file } if file.size == 8));
+            stream.write_u8(1).await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), 1);
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, b"short");
+            write_result(
+                &mut stream,
+                Ok(json!({
+                    "message_id": 123, "chat": {"id": 100, "type": "private"},
+                    "message_thread_id": 2
+                })),
+            )
+            .await
+            .unwrap();
+        });
+        let file = root.path().join("truncated.txt");
+        tokio::fs::write(&file, b"short").await.unwrap();
+        let result = timeout(
+            OPEN,
+            upload(
+                &socket,
+                101,
+                100,
+                Some(2),
+                Upload {
+                    field: UploadKind::Document,
+                    size: 8,
+                    name: "truncated.txt".into(),
+                    mime: None,
+                },
+                tokio::fs::File::open(file).await.unwrap(),
+                || Ok(()),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.unwrap_err().to_string().contains("declared size"));
+        transfer.await.unwrap();
     }
 }
