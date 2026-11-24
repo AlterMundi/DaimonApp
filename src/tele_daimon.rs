@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 #[cfg(unix)]
-mod projection;
+pub(crate) mod projection;
 
 use crate::config::TelegramConfig;
 use crate::render::render_markdown_to_html;

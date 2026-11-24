@@ -16,6 +16,8 @@ use tokio::time::sleep;
 #[derive(Clone)]
 pub struct TelegramClient {
     enabled: bool,
+    #[cfg(unix)]
+    direct_relay: Option<(std::path::PathBuf, i64)>,
     http: reqwest::Client,
     token: String,
     api_base: String,
@@ -120,6 +122,12 @@ impl TelegramClient {
         self
     }
 
+    #[cfg(unix)]
+    pub(crate) fn with_direct_relay(mut self, socket: std::path::PathBuf, bot: i64) -> Self {
+        self.direct_relay = Some((socket, bot));
+        self
+    }
+
     pub fn is_available(&self) -> bool {
         self.enabled
     }
@@ -144,6 +152,8 @@ impl TelegramClient {
     pub fn new(token: String, api_base: String) -> Self {
         Self {
             enabled: true,
+            #[cfg(unix)]
+            direct_relay: None,
             http: reqwest::Client::new(),
             token,
             api_base: api_base.trim_end_matches('/').to_string(),
@@ -756,6 +766,68 @@ impl TelegramClient {
     }
 
     async fn post_with_timeout<T, R>(
+        &self,
+        method: &str,
+        payload: Option<&T>,
+        timeout: Duration,
+    ) -> Result<R>
+    where
+        T: Serialize + ?Sized,
+        R: DeserializeOwned,
+    {
+        #[cfg(unix)]
+        if let Some((socket, bot)) = &self.direct_relay
+            && method != "getFile"
+        {
+            let operation = crate::tele_daimon::projection::JsonMethod::from_api(method)
+                .context("Unsupported direct Telegram operation")?;
+            let document = payload.map(serde_json::to_value).transpose()?;
+            let result =
+                crate::tele_daimon::projection::json(socket, *bot, operation, document, || {
+                    self.check_publication()
+                })
+                .await?;
+            return serde_json::from_value(result)
+                .map_err(|_| anyhow::anyhow!("telegram {method} JSON decode failed"));
+        }
+        self.post_local(method, payload, timeout).await
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn direct_json(
+        &self,
+        method: &str,
+        document: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let mut result = self
+            .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT)
+            .await?;
+        fn redact(value: &mut serde_json::Value, token: &str) {
+            match value {
+                serde_json::Value::String(text) if text.contains(token) => {
+                    *text = text.replace(token, "[redacted]");
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        redact(item, token);
+                    }
+                }
+                serde_json::Value::Object(entries) => {
+                    entries.retain(|key, _| !key.contains(token));
+                    for item in entries.values_mut() {
+                        redact(item, token);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !self.token.is_empty() {
+            redact(&mut result, &self.token);
+        }
+        Ok(result)
+    }
+
+    async fn post_local<T, R>(
         &self,
         method: &str,
         payload: Option<&T>,

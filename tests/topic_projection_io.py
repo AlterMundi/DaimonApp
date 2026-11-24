@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Actual bridge/SQLite/native-peer/Telegram-HTTP projection; all identities synthetic."""
+import http.client
+import http.server
 import json
 import signal
 import subprocess
@@ -21,6 +23,7 @@ class Projected(CanonicalRouting):
         self.rejections = 0
         self.external = False
         self.adapter = None
+        self.adapter_config = None
         super().__init__(binary)
 
     def start(self):
@@ -35,7 +38,7 @@ class Projected(CanonicalRouting):
     def start_adapter(self):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "C.UTF-8"}
         self.adapter = subprocess.Popen(
-            [self.binary, "--tele-daimon-poll", str(self.config)], cwd=self.root,
+            [self.binary, "--tele-daimon-poll", str(self.adapter_config or self.config)], cwd=self.root,
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
 
@@ -239,6 +242,66 @@ def qualify(binary, *, external=False):
         j.release_echo.set()
         j.close()
 
+def direct_json_ownership(binary):
+    j = Projected(str(Path(binary).resolve()))
+    j.external = True
+    observed = []
+
+    class AdapterAPI(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            method = self.path.rsplit("/", 1)[-1]
+            observed.append((method, json.loads(data or b"{}")))
+            conn = http.client.HTTPConnection("127.0.0.1", j.telegram.server_port, timeout=10)
+            try:
+                conn.request("POST", self.path, data,
+                             {"Content-Type": "application/json"})
+                reply = conn.getresponse()
+                body = reply.read()
+                self.send_response(reply.status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            finally:
+                conn.close()
+
+        def log_message(self, *_):
+            pass
+
+    relay = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AdapterAPI)
+    thread = threading.Thread(target=relay.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = j.config.read_text()
+        j.adapter_config = j.root / "adapter.toml"
+        j.adapter_config.write_text(base.replace("[telegram]\n", "[telegram]\nexternal_polling=true\n")
+                                    .replace(f":{j.telegram.server_port}", f":{relay.server_port}"))
+        j.adapter_config.chmod(0o600)
+        j.start()
+        j.admit('Establish an existing native conversation', topic=7)
+        j.wait(lambda: j.has('Initial goal turn delivered.', 7))
+        j.idle()
+        before = len(observed)
+        original = j.admit('/status', topic=7)
+        j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
+               == [('handled',)])
+        assert any(method == "sendMessage" and payload["message_thread_id"] == 7
+                   for method, payload in observed[before:]), observed[before:]
+        assert len(j.row("SELECT id FROM turns")) == 1
+        print("PASS direct Telegram status reached only the adapter Bot API endpoint")
+    finally:
+        j.close()
+        relay.shutdown()
+        relay.server_close()
+        thread.join(timeout=5)
+
+
 
 if __name__ == '__main__':
-    qualify(sys.argv[1], external="--external" in sys.argv[2:])
+    external = "--external" in sys.argv[2:]
+    qualify(sys.argv[1], external=external)
+    if external:
+        direct_json_ownership(sys.argv[1])

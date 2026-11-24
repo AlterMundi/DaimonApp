@@ -15,6 +15,13 @@ pub(super) async fn connect(
         if let Some(identity) = tele_daimon::identify(&client, config.interaction.is_some()).await?
         {
             store.save_bot_state("telegram_identity", &serde_json::to_string(&identity)?)?;
+            #[cfg(unix)]
+            let client = match config.session_control.as_ref() {
+                Some(control) if config.telegram.external_polling => {
+                    client.with_direct_relay(control.socket_path.clone(), identity.id)
+                }
+                _ => client,
+            };
             return Ok((client, Some(identity)));
         }
         tracing::warn!("Telegram identity unavailable; starting DaimonGateway without Telegram");
