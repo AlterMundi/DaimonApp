@@ -264,7 +264,7 @@ pub(crate) const INGRESS_FRAME_LIMIT: u64 = 1_048_832;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum IngressRequest {
-    Ready { bot_id: i64 },
+    Ready { bot_id: i64, identity: Option<User> },
     ProjectionReady { bot_id: i64 },
     Admit { bot_id: i64, update: Box<Update> },
 }
@@ -341,6 +341,7 @@ pub(crate) async fn run_external(config: crate::config::TelegramPollConfig) -> R
     let IngressReply::Ready { next_offset, menu } = gateway
         .request(IngressRequest::Ready {
             bot_id: identity.id,
+            identity: Some(identity.clone()),
         })
         .await?
     else {

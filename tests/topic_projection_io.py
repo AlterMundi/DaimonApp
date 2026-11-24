@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import http.client
 import http.server
 import json
+import re
 import signal
 import subprocess
 from pathlib import Path
@@ -28,9 +29,18 @@ class Projected(CanonicalRouting):
         super().__init__(binary)
 
     def start(self):
-        if self.external and "external_polling=true" not in self.config.read_text():
-            self.config.write_text(self.config.read_text().replace(
-                "[telegram]\n", "[telegram]\nexternal_polling=true\n"))
+        if self.external:
+            config = self.config.read_text()
+            if "external_polling=true" not in config:
+                config = config.replace("[telegram]\n",
+                    "[telegram]\nexternal_polling=true\nexternal_bot_id=123\n")
+            if self.adapter_config is None:
+                self.adapter_config = self.root / "adapter.toml"
+                self.adapter_config.write_text(config)
+                self.adapter_config.chmod(0o600)
+            config = re.sub(r"^(?:bot_token(?:_env|_file)?|api_base)=.*\n", "", config, flags=re.M)
+            self.config.write_text(config.replace(
+                "[telegram]\n", '[telegram]\napi_base="http://127.0.0.1:1"\n'))
         super().start()
         if self.external:
             self.wait_control_socket(self.socket)
@@ -315,7 +325,7 @@ def direct_json_ownership(binary):
             j.wait(lambda: j.has('Initial goal turn delivered.', 7))
             j.idle()
             before = len(observed)
-            original = j.admit('/status', topic=7)
+            original = j.admit('/status@FixtureBot', topic=7)
             j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
                    == [('handled',)])
             assert any(method == "sendMessage" and payload["message_thread_id"] == 7

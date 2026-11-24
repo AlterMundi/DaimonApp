@@ -258,8 +258,7 @@ mod tests {
                 let _ = socket.write_u64(5).await;
             }
         });
-        let gateway = TelegramClient::new("local-token".into(), "http://127.0.0.1:1".into())
-            .with_direct_relay(owner, 101);
+        let gateway = TelegramClient::new_relay(owner, 101);
         for mode in ["short", "over_limit", "complete"] {
             let destination = root.path().join(mode);
             let result = gateway

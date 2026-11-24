@@ -494,17 +494,30 @@ def gateway_survives_telegram_failure(binary):
     print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
 
 def independent_telegram_polling(binary):
-    journey = Inputs(binary)
+    class MigratingInputs(Inputs):
+        def handle_extra_rpc(self, message, send):
+            if message.get("method") == "thread/goal/snapshot":
+                thread = message["params"]["threadId"]
+                send({"id": message["id"], "result": {
+                    "goal": self.goals.get(thread), "revision": "migration-fixture:1",
+                }})
+                return True
+            return super().handle_extra_rpc(message, send)
+
+    journey = MigratingInputs(binary)
     journey.acknowledged_updates = True
     original_config = journey.config.read_text()
     external_config = original_config.replace(
         "[telegram]\n", "[telegram]\nexternal_polling=true\n")
     poll_config = journey.root / "poll.toml"
-    # The client needs only Bot API and the existing socket, with no native
-    # executable or database configured. Both processes use the same bot file.
+    # The adapter needs only Bot API and the existing socket. Gateway retains
+    # its old journal and gets neither the bot token nor a working API endpoint.
     telegram_settings = external_config.split("[session_control]", 1)[1]
     poll_config.write_text("[session_control]" + telegram_settings.split("[codex]", 1)[0])
     poll_config.chmod(0o600)
+    external_config = re.sub(r"^(?:bot_token(?:_env|_file)?|api_base)=.*\n", "", external_config, flags=re.M)
+    external_config = external_config.replace(
+        "[telegram]\n", '[telegram]\napi_base="http://127.0.0.1:1"\n')
     adapter = None
 
     def start_adapter():
@@ -540,7 +553,23 @@ def independent_telegram_polling(binary):
         journey.wait(lambda: settled(seeded))
         journey.idle()
         retained = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1")
+        thread = retained[0][0]
+        journey.goals[thread] = {
+            "threadId": thread, "objective": "Retained paused migration fixture",
+            "status": "paused", "tokenBudget": 120, "tokensUsed": 47,
+            "timeUsedSeconds": 6, "createdAt": 1, "updatedAt": 2,
+        }
+        original_goal = journey.read("goal", "inspect", "100", "1")["result"]["snapshot"]
+        assert original_goal["goal"]["status"] == "paused"
+        assert original_goal["goal"]["tokensUsed"] == 47
         journey.stop()
+        wrong_bot = journey.root / "wrong-bot.toml"
+        wrong_bot.write_text(external_config.replace(
+            "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n"))
+        rejected = subprocess.run([binary, str(wrong_bot)], cwd=journey.root,
+                                  env={"PATH": "/usr/bin:/bin", "HOME": str(journey.root)},
+                                  capture_output=True, text=True, timeout=12)
+        assert rejected.returncode != 0 and "does not match the journal identity" in rejected.stderr
         journey.config.write_text(external_config)
         journey.telegram_methods.clear()
         journey.start()
@@ -548,11 +577,17 @@ def independent_telegram_polling(binary):
         gateway_pid = journey.process.pid
         assert ingress({"operation": "ready", "bot_id": 124})["ok"] is False
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == seeded + 1
-        assert "getUpdates" not in journey.telegram_methods
+        assert not journey.telegram_methods
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        fake_identity = {"id": 123, "is_bot": False, "first_name": "Not a bot"}
+        assert not ingress({"operation": "ready", "bot_id": 123, "identity": fake_identity})["ok"]
+        assert not ingress({"operation": "admit", "bot_id": 123, "update": {"update_id": 199}})["ok"]
         first = journey.admit("Telegram through the separate adapter", topic=1)
         with journey.lock:
             duplicate = journey.updates[-1]
         adapter = start_adapter()
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
         journey.wait(lambda: settled(first))
         journey.idle()
         stop_adapter(adapter)
@@ -583,6 +618,8 @@ def independent_telegram_polling(binary):
         before = journey.native_turns
         second = journey.admit("Retain this input while polling is stopped", topic=1)
         adapter = start_adapter()
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
         journey.wait(lambda: settled(second))
         assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
             (seeded,), (first,), (second,)
@@ -590,9 +627,12 @@ def independent_telegram_polling(binary):
         assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
         assert journey.native_turns == before + 1
         assert journey.process.pid == gateway_pid
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        assert not any(request.get("method") in ("thread/goal/set", "thread/goal/clear", "turn/interrupt")
+                       for request in journey.rpc)
         stop_adapter(adapter)
         adapter = None
-        print("PASS independent poller stop/restart, durable cursor, same native thread and one dispatch per original")
+        print("PASS tokenless Gateway migration, retained bot, cursor, thread and paused goal accounting; unverified ingress refused and one dispatch per original")
     finally:
         if adapter is not None and adapter.poll() is None:
             adapter.kill()

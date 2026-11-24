@@ -20,20 +20,27 @@ owner API. Web and Matrix are independent clients of the same Gateway.
 Keep one coordinator and journal. In particular, Telegram delivery failure
 does not change native admission or invalidate canonical output.
 
-The compatible executable supports embedded polling by default. To run polling
-as a separate process, keep the existing receiving database and owner control
-socket. Select `telegram.external_polling=true` in the existing configuration
-and start exactly one `telecodex --tele-daimon-poll CONFIG` alongside the
-Gateway. The process checks the configured Bot API identity against Gateway
-before polling. They communicate over the existing owner-only Unix socket.
+The compatible executable supports embedded polling by default. To run
+TeleDaimon separately, select `telegram.external_polling=true` on the Gateway
+and keep its existing database and owner control socket. Gateway uses the bot
+ID retained in the journal. For a fresh journal, set `telegram.external_bot_id`
+to the owner-selected bot. An ID that conflicts with the retained journal
+identity is refused. Gateway needs no Bot API token or endpoint in this mode.
+
+Start exactly one `telecodex --tele-daimon-poll ADAPTER_CONFIG` with the bot
+credential and the same owner socket. TeleDaimon performs `getMe` and reports
+the verified identity before polling. Gateway accepts the report only for its
+selected bot over the existing owner-only Unix socket.
+
 The process opens neither the journal nor the native harness. TeleDaimon
 executes retained text and file projections, ordinary JSON Bot API
-operations, and direct multipart uploads in this mode. Commands, status messages, drafts, callback answers,
-and topic operations go through the same owner-local transport. Gateway
+operations, and direct multipart uploads in this mode. Commands, status
+messages, drafts, callback answers, and topic operations use the same
+owner-local transport. Gateway
 rechecks publication authorization after TeleDaimon confirms readiness. It
-receives typed provider errors without falling back to a second send. Initial
-bot identification still uses the compatibility client. For an ordinary upload the Gateway opens the selected
-local file, and the adapter prepares the destination. The Gateway rechecks
+receives typed provider errors without falling back to a second send. For an
+ordinary upload the Gateway opens the selected local file, and the adapter
+prepares the destination. The Gateway rechecks
 authorization, then streams exactly the declared size. TeleDaimon sends the
 multipart body and returns a typed Bot API result over that same connection.
 The relay transfers file bytes without disclosing the Gateway's source path.
@@ -44,12 +51,15 @@ retains the existing transfer limit and writes into its private temporary file.
 A verified complete transfer is required before publishing the local filename.
 
 For a scoped polling migration, stop the selected embedded consumer through
-the existing receiving service procedure. Start the Gateway with the same
-configuration, database and control socket and then start the external poller.
-Read back the retained cursor, the existing native conversation binding and one
-new durable admission before selecting this mode for ordinary use. To roll back,
-stop the external poller first, clear `external_polling` and restart the
-selected service with the same database. Preserve all earlier originals and
+the existing receiving service procedure. Remove the Gateway's Telegram token
+setting and environment binding. Start Gateway on the same database and
+control socket, then start the external poller with its separate configuration.
+Read back the retained cursor, native conversation binding, pending originals,
+uncertain receipts and preserved paused goal accounting. Verify a new durable
+admission after TeleDaimon connects and one independent Gateway original while
+TeleDaimon is stopped. To roll back,
+stop the external poller first, restore the original token configuration, clear
+`external_polling` and restart the selected service with the same database. Preserve all earlier originals and
 uncertain receipts.
 
 TeleDaimon's polling loop depends on two Gateway operations. It reads the

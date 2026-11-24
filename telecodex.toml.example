@@ -27,6 +27,7 @@ batch_size = 4
 enabled = true
 # Optional separate polling process via the existing owner socket.
 # external_polling = true
+# external_bot_id = 123456789 # Required for a fresh tokenless Gateway; existing journals retain their bot ID.
 bot_token_env = "TELEGRAM_BOT_TOKEN"
 api_base = "https://api.telegram.org"
 # Pending/history labels: "en" (default) or "es"; independent of journal payloads.

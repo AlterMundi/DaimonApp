@@ -594,8 +594,7 @@ mod tests {
             TelegramClient::new("adapter-token".into(), api),
             101,
         ));
-        let gateway = TelegramClient::new("gateway-token".into(), "http://127.0.0.1:1".into())
-            .with_direct_relay(socket, 101);
+        let gateway = TelegramClient::new_relay(socket, 101);
         let retired = gateway.clone().with_publication_guard(|| Ok(false));
         let error = retired
             .send_message(SendMessage::html(100, Some(2), "Retired".into()))

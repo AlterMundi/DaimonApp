@@ -10,27 +10,41 @@ pub(super) async fn connect(
     config: &Config,
     store: &Store,
 ) -> Result<(TelegramClient, Option<crate::telegram::User>)> {
-    if config.telegram.enabled {
+    if config.telegram.enabled && !config.telegram.external_polling {
         let client = tele_daimon::client(&config.telegram)?;
         if let Some(identity) = tele_daimon::identify(&client, config.interaction.is_some()).await?
         {
             store.save_bot_state("telegram_identity", &serde_json::to_string(&identity)?)?;
-            #[cfg(unix)]
-            let client = match config.session_control.as_ref() {
-                Some(control) if config.telegram.external_polling => {
-                    client.with_direct_relay(control.socket_path.clone(), identity.id)
-                }
-                _ => client,
-            };
             return Ok((client, Some(identity)));
         }
         tracing::warn!("Telegram identity unavailable; starting DaimonGateway without Telegram");
-        // Retained identity is presentation metadata. It cannot authorize polling.
     }
-    let retained = store
+    let retained: Option<crate::telegram::User> = store
         .bot_state_value("telegram_identity")?
         .map(|value| serde_json::from_str(&value))
         .transpose()?;
+    #[cfg(unix)]
+    if config.telegram.enabled && config.telegram.external_polling {
+        let selected = config.telegram.external_bot_id;
+        let previous = retained.as_ref().map(|bot| bot.id);
+        anyhow::ensure!(
+            selected
+                .zip(previous)
+                .is_none_or(|(selected, previous)| selected == previous),
+            "External Telegram bot does not match the journal identity"
+        );
+        if let Some(id) = selected.or(previous).filter(|id| *id > 0) {
+            let control = config
+                .session_control
+                .as_ref()
+                .context("Missing owner control socket")?;
+            return Ok((
+                TelegramClient::new_relay(control.socket_path.clone(), id),
+                retained,
+            ));
+        }
+        tracing::warn!("External Telegram requires a selected bot ID; Gateway remains available");
+    }
     Ok((TelegramClient::disabled(), retained))
 }
 
@@ -81,6 +95,7 @@ impl App {
 type Capture = tokio::task::JoinHandle<Result<()>>;
 pub(super) struct TelegramGateway {
     app: App,
+    adapter_identified: bool,
     dispatchers: HashMap<SessionKey, mpsc::UnboundedSender<(Update, Capture)>>,
 }
 
@@ -88,13 +103,14 @@ impl TelegramGateway {
     pub(super) fn new(app: App) -> Self {
         Self {
             app,
+            adapter_identified: false,
             dispatchers: HashMap::new(),
         }
     }
 
     pub(super) async fn external(&mut self, request: IngressRequest) -> Result<IngressReply> {
         let bot_id = match &request {
-            IngressRequest::Ready { bot_id }
+            IngressRequest::Ready { bot_id, .. }
             | IngressRequest::ProjectionReady { bot_id }
             | IngressRequest::Admit { bot_id, .. } => *bot_id,
         };
@@ -107,19 +123,45 @@ impl TelegramGateway {
             "External Telegram ingress is unavailable for the selected bot"
         );
         match request {
-            IngressRequest::Ready { .. } => Ok(IngressReply::Ready {
-                next_offset: self.next_offset().await?,
-                menu: self.app.telegram_menu(),
-            }),
+            IngressRequest::Ready { identity, .. } => {
+                if let Some(identity) = identity {
+                    anyhow::ensure!(
+                        identity.is_bot && identity.id == bot_id,
+                        "Telegram bot identity mismatch"
+                    );
+                    shared
+                        .store
+                        .save_bot_state("telegram_identity", &serde_json::to_string(&identity)?)?;
+                    *shared
+                        .bot_metadata
+                        .lock()
+                        .expect("bot metadata lock poisoned") = Some(identity);
+                    self.adapter_identified = true;
+                }
+                Ok(IngressReply::Ready {
+                    next_offset: self.next_offset().await?,
+                    menu: self.app.telegram_menu(),
+                })
+            }
             IngressRequest::ProjectionReady { .. } => {
+                anyhow::ensure!(
+                    self.adapter_identified,
+                    "TeleDaimon has not identified the selected bot"
+                );
                 topic_publications::recover(self.app.shared.clone())?;
                 Ok(IngressReply::Accepted {
                     next_offset: self.next_offset().await?,
                 })
             }
-            IngressRequest::Admit { update, .. } => Ok(IngressReply::Accepted {
-                next_offset: self.accept(*update).await?,
-            }),
+            IngressRequest::Admit { update, .. } => {
+                anyhow::ensure!(
+                    self.adapter_identified,
+                    "TeleDaimon has not identified the selected bot"
+                );
+                Ok(IngressReply::Accepted {
+                    next_offset: self.accept(*update).await?,
+                })
+            }
         }
     }
 }

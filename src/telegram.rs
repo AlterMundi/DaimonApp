@@ -133,9 +133,20 @@ impl TelegramClient {
     }
 
     #[cfg(unix)]
-    pub(crate) fn with_direct_relay(mut self, socket: std::path::PathBuf, bot: i64) -> Self {
-        self.direct_relay = Some((socket, bot));
-        self
+    pub(crate) fn new_relay(socket: std::path::PathBuf, bot: i64) -> Self {
+        let mut client = Self::disabled();
+        client.enabled = true;
+        client.direct_relay = Some((socket, bot));
+        client
+    }
+
+    fn check_provider(&self) -> Result<()> {
+        self.check_adapter()?;
+        #[cfg(unix)]
+        if self.direct_relay.is_some() {
+            bail!("The Gateway relay owns no Bot API connection");
+        }
+        Ok(())
     }
 
     pub fn is_available(&self) -> bool {
@@ -736,7 +747,7 @@ impl TelegramClient {
         max_bytes: Option<u64>,
         output: &mut (impl tokio::io::AsyncWrite + Unpin),
     ) -> Result<u64> {
-        self.check_adapter()?;
+        self.check_provider()?;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         if max_bytes.is_some_and(|limit| expected_size.is_some_and(|size| size > limit)) {
             return Err(AttachmentTooLarge.into());
@@ -927,6 +938,7 @@ impl TelegramClient {
         T: Serialize + ?Sized,
         R: DeserializeOwned,
     {
+        self.check_provider()?;
         let url = format!("{}/bot{}/{}", self.api_base, self.token, method);
         let mut request = self.http.post(url);
         if let Some(payload) = payload {
@@ -1188,6 +1200,7 @@ impl TelegramClient {
         part: Part,
         caption: Option<&str>,
     ) -> Result<Message> {
+        self.check_provider()?;
         let url = format!("{}/bot{}/{}", self.api_base, self.token, method);
         let mut form = Form::new()
             .text("chat_id", chat_id.to_string())

@@ -107,9 +107,8 @@ struct AppShared {
     store: Store,
     telegram: TelegramClient,
     codex: CodexRunner,
-    bot_username: Option<String>,
     bot_id: i64,
-    bot_has_topics: bool,
+    bot_metadata: StdMutex<Option<crate::telegram::User>>,
     service_user_id: i64,
     handy_model_dir: Option<PathBuf>,
     voice_preparations: Arc<tokio::sync::Semaphore>,
@@ -340,6 +339,25 @@ struct TurnWorkspace {
     out_anchor: Option<Arc<fs::File>>,
 }
 
+impl AppShared {
+    fn bot_username(&self) -> Option<String> {
+        self.bot_metadata
+            .lock()
+            .expect("bot metadata lock poisoned")
+            .as_ref()
+            .and_then(|bot| bot.username.clone())
+    }
+
+    fn bot_has_topics(&self) -> bool {
+        self.bot_metadata
+            .lock()
+            .expect("bot metadata lock poisoned")
+            .as_ref()
+            .and_then(|bot| bot.has_topics_enabled)
+            .unwrap_or(false)
+    }
+}
+
 impl App {
     const BACKGROUND_MAINTENANCE_INTERVAL_SECONDS: u64 = 60;
     const HISTORY_PAGE_CACHE_MAX_ENTRIES: usize = 64;
@@ -428,6 +446,17 @@ impl App {
                 .as_ref()
                 .map_or(2, |c| c.max_active_workers),
         );
+        // A configured external ID selects the journal; names and topic
+        // presentation come from the last verified metadata.
+        let bot_id = if config.telegram.enabled && config.telegram.external_polling {
+            config
+                .telegram
+                .external_bot_id
+                .or_else(|| me.as_ref().map(|bot| bot.id))
+        } else {
+            me.as_ref().map(|bot| bot.id)
+        }
+        .unwrap_or(0);
         Ok(Self {
             shared: Arc::new(AppShared {
                 heartbeat_loop: StdMutex::new(None),
@@ -438,13 +467,8 @@ impl App {
                 store,
                 telegram,
                 codex,
-                bot_username: me.as_ref().and_then(|m| m.username.clone()),
-                // Zero denotes absent transport identity, never an actual bot.
-                bot_id: me.as_ref().map_or(0, |m| m.id),
-                bot_has_topics: me
-                    .as_ref()
-                    .and_then(|m| m.has_topics_enabled)
-                    .unwrap_or(false),
+                bot_id,
+                bot_metadata: StdMutex::new(me),
                 service_user_id,
                 handy_model_dir,
                 voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -733,7 +757,7 @@ impl App {
         if tribu::handle_topic_control(self, &message, from.id, text).await? {
             return Ok(());
         }
-        if is_foreign_bot_command(text, self.shared.bot_username.as_deref()) {
+        if is_foreign_bot_command(text, self.shared.bot_username().as_deref()) {
             return Ok(());
         }
         if routing::explicit(text) && routing::handle(self, &message, from.id, text).await? {
@@ -1025,7 +1049,7 @@ impl App {
         text: &str,
     ) -> Result<bool> {
         let session_key = SessionKey::new(message.chat.id, message.message_thread_id);
-        let Some((command, args)) = normalize_command(text, self.shared.bot_username.as_deref())
+        let Some((command, args)) = normalize_command(text, self.shared.bot_username().as_deref())
         else {
             return Ok(false);
         };
@@ -2147,7 +2171,7 @@ impl App {
             .unwrap_or(message.chat.id);
         if self.shared.config.telegram.primary_forum_chat_id.is_none()
             && !message.chat.is_forum.unwrap_or(false)
-            && !(message.chat.kind == "private" && self.shared.bot_has_topics)
+            && !(message.chat.kind == "private" && self.shared.bot_has_topics())
         {
             anyhow::bail!("Enable Telegram topics before using /fork");
         }
@@ -2402,7 +2426,7 @@ impl App {
             .unwrap_or(message.chat.id);
         if self.shared.config.telegram.primary_forum_chat_id.is_none()
             && !message.chat.is_forum.unwrap_or(false)
-            && !(message.chat.kind == "private" && self.shared.bot_has_topics)
+            && !(message.chat.kind == "private" && self.shared.bot_has_topics())
         {
             self.send_status(
                 message.chat.id,

@@ -150,6 +150,9 @@ pub struct TelegramConfig {
     pub enabled: bool,
     #[serde(default)]
     pub external_polling: bool,
+    /// Owner-selected bot for a fresh standalone Gateway. An existing journal
+    /// can supply its previously identified bot when the option is omitted.
+    pub external_bot_id: Option<i64>,
     pub bot_token: Option<String>,
     pub bot_token_env: Option<String>,
     pub bot_token_file: Option<PathBuf>,
@@ -452,7 +455,7 @@ impl Config {
             );
         }
 
-        if self.telegram.enabled {
+        if self.telegram.enabled && !self.telegram.external_polling {
             let token = self.telegram.resolve_token()?;
             if token.trim().is_empty() {
                 bail!("telegram bot token is empty");
@@ -461,6 +464,9 @@ impl Config {
         if self.telegram.external_polling && self.telegram.enabled && self.session_control.is_none()
         {
             bail!("External Telegram polling requires the owner control socket");
+        }
+        if self.telegram.external_bot_id.is_some_and(|id| id <= 0) {
+            bail!("External Telegram bot ID must be positive");
         }
         if let Some(days) = self.telegram.stale_topic_days {
             if days < 1 {

@@ -301,6 +301,7 @@ fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
         telegram: crate::config::TelegramConfig {
             enabled: true,
             external_polling: false,
+            external_bot_id: None,
             capture_message_reactions: false,
             bot_token: Some("test-token".to_string()),
             bot_token_env: None,
@@ -411,8 +412,7 @@ fn sample_app() -> (App, NamedTempFile) {
         ),
         codex: CodexRunner::new(PathBuf::from("codex")),
         bot_id: 123,
-        bot_username: None,
-        bot_has_topics: false,
+        bot_metadata: StdMutex::new(None),
         service_user_id: 0,
         handy_model_dir: None,
         voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -862,7 +862,13 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
     ]);
     let (mut app, _db) = sample_app();
     let shared = Arc::get_mut(&mut app.shared).unwrap();
-    shared.bot_has_topics = true;
+    *shared.bot_metadata.get_mut().unwrap() = Some(crate::telegram::User {
+        id: 123,
+        is_bot: true,
+        first_name: "Fixture".into(),
+        username: None,
+        has_topics_enabled: Some(true),
+    });
     shared.telegram = TelegramClient::new("synthetic".to_string(), api);
     let key = SessionKey::new(100, Some(12));
     shared
@@ -2434,8 +2440,7 @@ fn rebinds_stale_session_to_latest_active_thread_for_same_cwd() {
         ),
         codex: CodexRunner::new(PathBuf::from("codex")),
         bot_id: 123,
-        bot_username: None,
-        bot_has_topics: false,
+        bot_metadata: StdMutex::new(None),
         service_user_id: 0,
         handy_model_dir: None,
         voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -2566,8 +2571,7 @@ fn keeps_truly_archived_session_unbound_when_no_active_replacement_exists() {
         ),
         codex: CodexRunner::new(PathBuf::from("codex")),
         bot_id: 123,
-        bot_username: None,
-        bot_has_topics: false,
+        bot_metadata: StdMutex::new(None),
         service_user_id: 0,
         handy_model_dir: None,
         voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -3130,7 +3134,7 @@ async fn backend_serves_owner_controls_with_no_telegram_credentials_or_api() {
     });
     let app = App::bootstrap(config).await.unwrap();
     assert_eq!(app.shared.bot_id, 0);
-    assert!(app.shared.bot_username.is_none());
+    assert!(app.shared.bot_username().is_none());
     let cancellation = app.shared.shutdown.clone();
     let mut running = tokio::spawn(app.run());
     let mut stream = tokio::time::timeout(Duration::from_secs(5), async {
