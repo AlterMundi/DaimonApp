@@ -73,6 +73,15 @@ class Journey:
                 method = self.path.rsplit('/', 1)[-1]
                 if hasattr(owner,'telegram_methods'):owner.telegram_methods.append(method)
                 raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                failure = getattr(owner, 'telegram_failures', {}).get(method)
+                if failure is not None:
+                    body = json.dumps({'ok': False, 'error_code': failure,
+                                       'description': 'Synthetic Bot API failure'}).encode()
+                    self.send_response(failure)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.headers.get_content_type()=='multipart/form-data':
                     assert hasattr(owner,'multipart_reply'),'Unexpected multipart upload'
                     response=owner.multipart_reply(method,self.headers,raw)

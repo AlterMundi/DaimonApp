@@ -4,6 +4,40 @@ Product direction: [full roadmap and current continuous-voice plan](interaction-
 Current execution: [milestone9](https://github.com/AlterMundi/telecodex/milestone/9).
 Remaining v0.2 obligations: [milestone8](https://github.com/AlterMundi/telecodex/milestone/8).
 
+## DaimonGateway and TeleDaimon boundary
+
+DaimonGateway owns the authenticated owner socket, canonical originals,
+session routing, one writer per native turn, pending work, recovery and
+canonical results. Native harness adapters own execution and report the
+session identity, submission outcome and controls they actually support.
+Matrix authenticates bodies and records their authorized communication.
+Codex and Claude are execution choices made by Gateway for new work.
+
+TeleDaimon owns the Telegram Bot API, polling offsets, Telegram-specific
+media, topic bindings and outbound delivery receipts. It should exchange
+originals and authorized projections with DaimonGateway through the existing
+owner API. Web and Matrix are independent clients of the same Gateway.
+Keep one coordinator and journal. In particular, Telegram delivery failure
+does not change native admission or invalidate canonical output.
+
+The current compatible executable still embeds the optional Telegram client.
+The Gateway startup and Telegram polling now have separate entry functions.
+With `telegram.enabled=false`, Gateway opens the same owner API without a
+Telegram token. In a combined instance with an independent Conversation,
+unavailable Bot API identity leaves Gateway available with Telegram transport
+disabled for that process. Startup does not use the retained identity to
+poll. Menu or terminal polling failures leave the owner API available.
+Configured Telegram destinations and pending receipts keep their existing
+semantics. Restore a failed Telegram adapter through the ordinary operator
+startup path once its connection is healthy.
+
+Track the remaining client extraction in [DaimonApp #452](https://github.com/AlterMundi/DaimonApp/issues/452)
+and the native dispatch boundary in [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
+Retire the Telecodex binary and product name after the independent clients
+have passed receiving acceptance and existing installations have a migration
+path. The MIT license retains the upstream copyright and Telecodex provenance.
+No separate repository or second durable store is required for the cutover.
+
 ## Current repair direction — human correction, 2026-10-19
 
 The delivered pilot did not establish a coherent daily experience. The owner observed hidden progress in ordinary Telegram topics, repeated copies of shared answers and verbose relay packets. Prior completion records retain their bounded evidence but do not establish completion of the repaired product.

@@ -120,6 +120,10 @@ impl TelegramClient {
         self
     }
 
+    pub fn is_available(&self) -> bool {
+        self.enabled
+    }
+
     fn check_adapter(&self) -> Result<()> {
         if !self.enabled {
             bail!("Telegram adapter disabled; no API operation was attempted");

@@ -464,8 +464,37 @@ def canonical_turn_skips_unused_limits_history(binary):
         journey.close()
 
 
+def gateway_survives_telegram_failure(binary):
+    for method, status in (('getMe', 503), ('setMyCommands', 503), ('getUpdates', 409)):
+        journey = Inputs(binary)
+        try:
+            journey.telegram_failures = {method: status}
+            journey.start()
+            journey.wait(lambda: method in journey.telegram_methods)
+            journey.wait_control_socket(journey.socket)
+            binding = journey.read('presentation', 'list', '0', '0')['result']['binding']
+            original, outcome = journey.submit(binding, 'Continue without Telegram.')
+            assert outcome['ok'] and outcome['result']['new_input']
+            journey.wait(lambda: journey.row('SELECT phase FROM conversation_inputs WHERE id=?',
+                                             (original['id'],)) == [('accepted',)])
+            journey.finish(journey.web_thread, journey.web_turn)
+            journey.wait(lambda: journey.row(
+                "SELECT count(*) FROM interaction_native_messages WHERE text='Initial goal turn delivered.'"
+            ) == [(1,)])
+            assert len(journey.packets) == 1
+            assert journey.row('SELECT count(*) FROM incoming_updates') == [(0,)]
+            assert not journey.messages
+            assert journey.process.poll() is None
+            if method == 'getMe':
+                assert journey.telegram_methods == ['getMe']
+        finally:
+            journey.close()
+    print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
+
+
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
+    gateway_survives_telegram_failure(binary)
     foreground_retention(binary)
     foreground_delegation(binary)
     reconsider_queued_steer(binary)
