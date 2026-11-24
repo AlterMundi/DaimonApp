@@ -402,7 +402,7 @@ impl Store {
             ).optional()?;
             if order.is_none_or(|order| order <= captured)
                 || conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE update_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM interaction_sources o JOIN interaction_instructions i ON i.input_id=o.id WHERE o.update_id=?1 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id))",
                     [update.update_id],
                     |r| r.get::<_, bool>(0),
                 )?
@@ -429,7 +429,7 @@ impl Store {
     ) -> Result<Vec<serde_json::Value>> {
         use serde_json::{Value, json};
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL) AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
+        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL) AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
         let rows = query.query_map(
             params![
                 key.chat_id,
