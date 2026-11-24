@@ -29,8 +29,19 @@ foreground attempt. Gateway owns the process group, starts it with a cleared
 environment, and keeps both pipes open until the outcome. The worker's private,
 owner-owned profile selects the absolute SDK entry, Claude binary, working
 directory, home, Claude configuration directory, Matrix observation command,
-CLI version, model and body. Use the existing authorized Claude account in that
-configuration directory. Source content cannot select any of those settings.
+CLI version, model and body. Use an isolated Claude configuration directory.
+The profile's `apiKeyFile` is an absolute owner-local path to the authorized
+Anthropic Console key. Store the single key in an owner-readable regular file
+with no group or other permissions. Claude's local authentication status must
+identify the selected first-party API key before the SDK starts. The key is
+passed only in the environment of the native SDK launch and its authentication
+probe. Source content cannot select any of these settings.
+
+Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
+worker permits up to two agent turns for the one read tool and reply. The SDK
+estimate can overrun its limit, so applicable provider-side limits still control
+spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
+[Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
 The UTF-8 newline-delimited protocol uses schema
 `daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
@@ -82,9 +93,11 @@ Set `CLAUDE_TEST_SDK_PATH` to the pinned SDK entry point and
 preflight test. `CLAUDE_TEST_CLI_VERSION` defaults to 2.1.323. Run the test in an
 environment without provider credentials or external network access. The
 fixture covers SDK 0.3.323 with CLI 2.1.323 and SDK 0.3.325 with CLI 2.1.325.
-The real CLI checks use a synthetic Matrix broker and intentionally stop at
-the submission boundary. The terminal and lost-output checks use a
-deterministic SDK double.
+The isolated native checks use a synthetic Matrix broker. The CLI auth probe
+selects the synthetic API key against the fixture SDK. The real SDK catalog
+probe runs without a key and stops before prompt submission. Native bootstrap
+with a synthetic key timed out on the isolated network. The terminal and
+lost-output checks use a deterministic SDK double.
 
 The broker's host operation and the same-being transport are tested through an
 authenticated Matrix socket with synthetic authority. The round trip runs

@@ -1,9 +1,11 @@
 // One foreground turn on a Gateway-owned pair of pipes.
 import { once } from 'node:events';
+import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import { createMatrixStatusBroker } from './matrix-broker.mjs';
 import { runClaudeTurn } from './turn.mjs';
@@ -12,6 +14,7 @@ const MAX_FRAME = 128 * 1024;
 const MAX_OUTCOME_FRAME = 512 * 1024;
 const VERSION = 'daimon-gateway.claude-turn/v1';
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const exec = promisify(execFile);
 
 function closed(value, fields) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -44,7 +47,7 @@ async function writeFrame(stream, value, signal) {
   if (!stream.write(data)) await once(stream, 'drain', { signal });
 }
 
-async function ownerProfile(path) {
+async function privateBytes(path, limit) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new Error('Owner profile required');
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -52,7 +55,7 @@ async function ownerProfile(path) {
     if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) || info.nlink !== 1) {
       throw new Error('Owner profile must be private');
     }
-    const buffer = Buffer.alloc(16 * 1024 + 1);
+    const buffer = Buffer.alloc(limit + 1);
     let size = 0;
     while (size < buffer.length) {
       const { bytesRead } = await fd.read(buffer, size, buffer.length - size);
@@ -60,24 +63,47 @@ async function ownerProfile(path) {
       size += bytesRead;
     }
     if (size === buffer.length) throw new Error('Owner profile exceeds bound');
-    const value = JSON.parse(buffer.subarray(0, size));
-    if (!closed(value, ['sdk', 'binary', 'cwd', 'home', 'configurationDirectory',
-      'cliVersion', 'model', 'matrixStatusCommand', 'body'])
+    return buffer.subarray(0, size);
+  } finally {
+    await fd.close();
+  }
+}
+
+async function ownerProfile(path) {
+  const value = JSON.parse(await privateBytes(path, 16 * 1024));
+  if (!closed(value, ['sdk', 'binary', 'cwd', 'home', 'configurationDirectory',
+      'cliVersion', 'model', 'apiKeyFile', 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
-      || ![value.sdk, value.binary, value.cwd, value.home, value.configurationDirectory]
+      || ![value.sdk, value.binary, value.cwd, value.home, value.configurationDirectory, value.apiKeyFile]
         .every(item => typeof item === 'string' && isAbsolute(item))
+      || !Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0
       || ![value.cliVersion, value.model, ...Object.values(value.body)]
         .every(item => typeof item === 'string' && item.length > 0 && item.length <= 240)
       || !Array.isArray(value.matrixStatusCommand)
       || value.matrixStatusCommand.length < 1 || value.matrixStatusCommand.length > 16
       || !value.matrixStatusCommand.every(item => typeof item === 'string' && item.length <= 4096)
       || !isAbsolute(value.matrixStatusCommand[0])) {
-      throw new Error('Invalid owner profile');
-    }
-    return value;
-  } finally {
-    await fd.close();
+    throw new Error('Invalid owner profile');
   }
+  return value;
+}
+
+async function providerEnvironment(profile, signal) {
+  const key = (await privateBytes(profile.apiKeyFile, 4096)).toString('utf8').trim();
+  if (!/^[!-~]+$/.test(key)) throw new Error('Invalid provider credential');
+  const env = {
+    PATH: '/usr/bin:/bin', HOME: profile.home, CLAUDE_CONFIG_DIR: profile.configurationDirectory,
+    ANTHROPIC_API_KEY: key, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  };
+  const { stdout } = await exec(profile.binary, ['auth', 'status'], {
+    cwd: profile.cwd, env, signal, timeout: 5000, maxBuffer: 8192,
+  });
+  const auth = JSON.parse(stdout);
+  if (auth.loggedIn !== true || auth.authMethod !== 'api_key'
+    || auth.apiKeySource !== 'ANTHROPIC_API_KEY' || auth.apiProvider !== 'firstParty') {
+    throw new Error('Selected API authentication unavailable');
+  }
+  return env;
 }
 
 async function main() {
@@ -100,8 +126,17 @@ async function main() {
       || !Object.keys(profile.body).every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid foreground start');
     }
-    const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const correlation = { schema: VERSION, inputId: first.inputId, sessionId: first.sessionId };
+    let env;
+    try {
+      env = await providerEnvironment(profile, stop.signal);
+    } catch {
+      await writeFrame(process.stdout, { ...correlation, type: 'outcome',
+        outcome: { phase: 'not_submitted', reason: 'claude_api_auth_unverified' },
+      }, stop.signal);
+      return;
+    }
+    const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, source: {
@@ -113,12 +148,8 @@ async function main() {
       input: { id: first.inputId, sessionId: first.sessionId, text: first.text },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
-        model: profile.model, persistSession: true,
-        env: {
-          PATH: '/usr/bin:/bin', HOME: profile.home,
-          CLAUDE_CONFIG_DIR: profile.configurationDirectory,
-          DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1',
-        },
+        model: profile.model, persistSession: true, maxTurns: 2,
+        maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {
         if (inputId !== first.inputId || sessionId !== first.sessionId) return false;

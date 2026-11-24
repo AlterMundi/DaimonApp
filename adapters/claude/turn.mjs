@@ -89,6 +89,7 @@ export async function runClaudeTurn({
       options: {
         abortController, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
         env: profile.env, model: profile.model, sessionId: input.sessionId,
+        maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
         settingSources: [], strictMcpConfig: true, tools: [], allowedTools,
         mcpServers: { [SERVER]: broker.server }, permissionMode: 'dontAsk',
         permissionPrompts: 'none', persistSession: profile.persistSession === true,
