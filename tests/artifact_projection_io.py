@@ -52,8 +52,9 @@ class ProjectedFiles(ArtifactRouting,Projected):
             'chat':{'id':100,'type':'private'},'message_thread_id':7}}
 
 
-def qualify(binary):
+def qualify(binary, *, external=False):
     j=ProjectedFiles(str(Path(binary).resolve()))
+    j.external=external
     try:
         _,binding=prepare(j,projection=True)
         original,_=j.submit(binding,'#Alpha Create deliverables and preserve their exact bytes.')
@@ -137,5 +138,6 @@ def unenrolled_direct_files(binary):
 
 
 if __name__=='__main__':
-    qualify(sys.argv[1])
-    unenrolled_direct_files(sys.argv[1])
+    qualify(sys.argv[1], external="--external" in sys.argv[2:])
+    if "--external" not in sys.argv[2:]:
+        unenrolled_direct_files(sys.argv[1])

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Actual bridge/SQLite/native-peer/Telegram-HTTP projection; all identities synthetic."""
 import json
+import signal
+import subprocess
 from pathlib import Path
 import sys
 import threading
@@ -13,10 +15,49 @@ class Projected(CanonicalRouting):
         self.direct_packets = []
         self.echo_held, self.release_echo = threading.Event(), threading.Event()
         self.hold_echo = False
+        self.hold_match = "First projected input"
         self.drop_answer = False
         self.reject_echo = False
         self.rejections = 0
+        self.external = False
+        self.adapter = None
         super().__init__(binary)
+
+    def start(self):
+        if self.external and "external_polling=true" not in self.config.read_text():
+            self.config.write_text(self.config.read_text().replace(
+                "[telegram]\n", "[telegram]\nexternal_polling=true\n"))
+        super().start()
+        if self.external:
+            self.wait_control_socket(self.socket)
+            self.start_adapter()
+
+    def start_adapter(self):
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "C.UTF-8"}
+        self.adapter = subprocess.Popen(
+            [self.binary, "--tele-daimon-poll", str(self.config)], cwd=self.root,
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+
+    def stop_adapter(self):
+        if self.adapter is None:
+            return
+        adapter, self.adapter = self.adapter, None
+        if adapter.poll() is None:
+            adapter.send_signal(signal.SIGINT)
+        try:
+            _, error = adapter.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            adapter.kill()
+            adapter.communicate(timeout=8)
+            raise
+        assert adapter.returncode == 0, error
+
+    def stop(self):
+        try:
+            self.stop_adapter()
+        finally:
+            super().stop()
 
     def handle_extra_rpc(self, message, send):
         method, params = message.get('method'), message.get('params', {})
@@ -42,7 +83,7 @@ class Projected(CanonicalRouting):
 
     def before_send_message_reply(self, payload):
         text = payload['text']
-        if self.hold_echo and 'First projected input' in text:
+        if self.hold_echo and self.hold_match in text:
             self.echo_held.set()
             assert self.release_echo.wait(timeout=30), 'Synthetic mirror hold expired'
         if self.drop_answer and 'Lost mirror acknowledgment.' == text:
@@ -82,8 +123,9 @@ class Projected(CanonicalRouting):
                    for message, _ in self.messages)
 
 
-def qualify(binary):
+def qualify(binary, *, external=False):
     j = Projected(str(Path(binary).resolve()))
+    j.external = external
     try:
         j.start()
         for topic in (7, 8, 1):
@@ -155,6 +197,43 @@ def qualify(binary):
         assert j.rejections == 1
         assert j.sent('Lost mirror acknowledgment.', 7) == 1
         assert len(j.worker_packets['native-topic-7']) == 3
+        if external:
+            j.stop_adapter()
+            pending = 'Retained projection with "quoted text".'
+            j.submit(binding, '#Alpha Continue with TeleDaimon stopped')
+            j.wait(lambda: len(j.instructions(7)) == 4 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, pending + '\n\nSecond paragraph.')
+            j.wait(lambda: j.primary('Retained projection with'))
+            j.wait(lambda: j.row(
+                "SELECT p.phase,COALESCE(x.phase,'ready') FROM topic_publications p "
+                "LEFT JOIN topic_publication_parts x ON x.publication=p.id "
+                "WHERE p.body LIKE 'Retained projection with%'"
+            ) == [('ready', 'ready')])
+            assert not any(pending in m["text"] for m, _ in j.messages)
+            j.start_adapter()
+            j.wait(lambda: sum(pending in m["text"] and 'Second paragraph.' in m["text"]
+                              for m, _ in j.messages) == 1)
+            assert j.sent('Lost mirror acknowledgment.', 7) == 1
+            print('PASS stopped projection adapter leaves a ready part; reconnect publishes it once')
+            j.hold_echo = True
+            j.hold_match = 'Transport interrupted after submission.'
+            j.echo_held.clear()
+            j.release_echo.clear()
+            j.submit(binding, '#Alpha Keep the independently retained result')
+            j.wait(lambda: len(j.instructions(7)) == 5 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, j.hold_match)
+            assert j.echo_held.wait(timeout=10)
+            j.stop_adapter()
+            j.release_echo.set()
+            j.wait(lambda: j.row(
+                "SELECT phase FROM topic_publications WHERE body=?", (j.hold_match,)
+            ) == [('uncertain',)])
+            j.wait(lambda: j.primary(j.hold_match))
+            polls = j.telegram_methods.count("getUpdates")
+            j.start_adapter()
+            j.wait(lambda: j.telegram_methods.count("getUpdates") > polls)
+            assert j.sent(j.hold_match, 7) == 1
+            print('PASS adapter stop after Bot API submission preserves uncertainty and the canonical result')
         print('PASS canonical event/destination identity, attributed echoes, independent return/parallel topic, direct switch, bot feedback, duplicate/restart/lost ACK and known rejection')
     finally:
         j.release_echo.set()
@@ -162,4 +241,4 @@ def qualify(binary):
 
 
 if __name__ == '__main__':
-    qualify(sys.argv[1])
+    qualify(sys.argv[1], external="--external" in sys.argv[2:])

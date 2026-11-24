@@ -87,7 +87,9 @@ impl TelegramGateway {
 
     pub(super) async fn external(&mut self, request: IngressRequest) -> Result<IngressReply> {
         let bot_id = match &request {
-            IngressRequest::Ready { bot_id } | IngressRequest::Admit { bot_id, .. } => *bot_id,
+            IngressRequest::Ready { bot_id }
+            | IngressRequest::ProjectionReady { bot_id }
+            | IngressRequest::Admit { bot_id, .. } => *bot_id,
         };
         let shared = &self.app.shared;
         anyhow::ensure!(
@@ -102,6 +104,12 @@ impl TelegramGateway {
                 next_offset: self.next_offset().await?,
                 menu: self.app.telegram_menu(),
             }),
+            IngressRequest::ProjectionReady { .. } => {
+                topic_publications::recover(self.app.shared.clone())?;
+                Ok(IngressReply::Accepted {
+                    next_offset: self.next_offset().await?,
+                })
+            }
             IngressRequest::Admit { update, .. } => Ok(IngressReply::Accepted {
                 next_offset: self.accept(*update).await?,
             }),

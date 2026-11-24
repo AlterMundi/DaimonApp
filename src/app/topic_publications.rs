@@ -82,6 +82,12 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
             client: &shared.telegram,
             chat: publication.target.chat_id,
             topic: Some(publication.target.thread_id).filter(|id| *id > 0),
+            remote: shared
+                .config
+                .session_control
+                .as_ref()
+                .filter(|_| shared.config.telegram.external_polling)
+                .map(|control| (control.socket_path.as_path(), shared.bot_id)),
         };
         for (part, body) in parts {
             let result = if publication.kind == "artifact" {
@@ -123,7 +129,7 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
                     )?;
                 }
                 Delivery::Unsent => break,
-                Delivery::CoolingDown => {
+                Delivery::CoolingDown(_) => {
                     shared.store.topic_publication_retry(publication.id, part)?;
                     continue 'queue; // Telegram transport owns the cooldown.
                 }

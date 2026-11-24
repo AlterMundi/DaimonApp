@@ -486,12 +486,6 @@ impl App {
                 shutdown_signal(self.shared.shutdown.clone()).await;
             }
         } else {
-            if self.shared.telegram.is_available()
-                && self.shared.config.telegram.external_polling
-                && let Err(error) = topic_publications::recover(self.shared.clone())
-            {
-                tracing::error!("Telegram projection recovery unavailable: {error:#}");
-            }
             tracing::info!("DaimonGateway running without embedded Telegram ingress");
             shutdown_signal(self.shared.shutdown.clone()).await;
         }

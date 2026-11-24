@@ -6,6 +6,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
+#[cfg(unix)]
+mod projection;
+
 use crate::config::TelegramConfig;
 use crate::render::render_markdown_to_html;
 pub(crate) use crate::render::split_text as projection_parts;
@@ -28,10 +31,11 @@ pub(crate) enum Lifecycle {
 }
 
 /// A transport observation. Gateway owns its canonical interpretation and row.
+#[derive(Deserialize, Serialize)]
 pub(crate) enum Delivery {
     Unsent,
     Acknowledged(i64),
-    CoolingDown,
+    CoolingDown(u64),
     Rejected,
     Unconfirmed,
 }
@@ -40,6 +44,7 @@ pub(crate) struct Projection<'a> {
     pub client: &'a TelegramClient,
     pub chat: i64,
     pub topic: Option<i64>,
+    pub remote: Option<(&'a Path, i64)>,
 }
 
 pub(crate) struct ProjectedFile<'a> {
@@ -55,6 +60,22 @@ impl Projection<'_> {
         markdown: &str,
         reserve: impl FnOnce() -> Result<bool>,
     ) -> Result<Delivery> {
+        if let Some((socket, bot)) = self.remote {
+            #[cfg(unix)]
+            return projection::send(
+                socket,
+                self,
+                bot,
+                projection::Payload::Text {
+                    markdown: markdown.into(),
+                },
+                &[],
+                reserve,
+            )
+            .await;
+            #[cfg(not(unix))]
+            bail!("External Telegram projection requires Unix");
+        }
         let mut reserved = false;
         let result = self
             .client
@@ -77,17 +98,26 @@ impl Projection<'_> {
         file: ProjectedFile<'_>,
         reserve: impl FnOnce() -> Result<bool>,
     ) -> Result<Delivery> {
-        let extension = Path::new(file.name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let field = match extension.as_str() {
-            "png" | "jpg" | "jpeg" | "webp" => "photo",
-            "mp3" | "wav" | "m4a" | "ogg" => "audio",
-            "mp4" | "mov" | "webm" => "video",
-            _ => "document",
-        };
+        if let Some((socket, bot)) = self.remote {
+            #[cfg(unix)]
+            return projection::send(
+                socket,
+                self,
+                bot,
+                projection::Payload::File {
+                    name: file.name.into(),
+                    size: u32::try_from(file.bytes.len())?,
+                    mime: file.mime.map(Into::into),
+                    caption: file.caption.into(),
+                },
+                &file.bytes,
+                reserve,
+            )
+            .await;
+            #[cfg(not(unix))]
+            bail!("External Telegram projection requires Unix");
+        }
+        let field = file_field(file.name);
         let mut reserved = false;
         let result = self
             .client
@@ -123,12 +153,29 @@ impl Projection<'_> {
             Err(error) => {
                 let telegram = error.downcast_ref::<TelegramError>();
                 Ok(match telegram {
-                    Some(response) if response.retry_after.is_some() => Delivery::CoolingDown,
+                    Some(TelegramError {
+                        retry_after: Some(seconds),
+                        ..
+                    }) => Delivery::CoolingDown(*seconds),
                     Some(response) if response.status.is_client_error() => Delivery::Rejected,
                     _ => Delivery::Unconfirmed,
                 })
             }
         }
+    }
+}
+
+fn file_field(name: &str) -> &'static str {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" => "photo",
+        "mp3" | "wav" | "m4a" | "ogg" => "audio",
+        "mp4" | "mov" | "webm" => "video",
+        _ => "document",
     }
 }
 
@@ -218,6 +265,7 @@ pub(crate) const INGRESS_FRAME_LIMIT: u64 = 1_048_832;
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum IngressRequest {
     Ready { bot_id: i64 },
+    ProjectionReady { bot_id: i64 },
     Admit { bot_id: i64, update: Box<Update> },
 }
 
@@ -299,15 +347,26 @@ pub(crate) async fn run_external(config: crate::config::TelegramPollConfig) -> R
         bail!("Gateway returned an unexpected Telegram readiness response");
     };
     gateway.initial_offset = next_offset;
-    poll(
-        &client,
-        &menu,
-        config.poll_timeout_seconds,
-        &mut gateway,
-        crate::app::shutdown_signal(tokio_util::sync::CancellationToken::new()),
-        |_| async {},
-    )
-    .await
+    let listener = projection::bind(socket).await?;
+    let IngressReply::Accepted { .. } = gateway
+        .request(IngressRequest::ProjectionReady {
+            bot_id: identity.id,
+        })
+        .await?
+    else {
+        bail!("Gateway did not acknowledge Telegram projection readiness");
+    };
+    tokio::select! {
+        result = projection::serve(listener, client.clone(), identity.id) => result,
+        result = poll(
+            &client,
+            &menu,
+            config.poll_timeout_seconds,
+            &mut gateway,
+            crate::app::shutdown_signal(tokio_util::sync::CancellationToken::new()),
+            |_| async {},
+        ) => result,
+    }
 }
 
 #[cfg(not(unix))]

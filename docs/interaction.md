@@ -26,8 +26,10 @@ socket. Select `telegram.external_polling=true` in the existing configuration
 and start exactly one `telecodex --tele-daimon-poll CONFIG` alongside the
 Gateway. The process checks the configured Bot API identity against Gateway
 before polling. They communicate over the existing owner-only Unix socket.
-The poller opens neither the journal nor the native harness. The Gateway still
-owns the Bot API client for existing replies, media, and retained projections.
+The process opens neither the journal nor the native harness. TeleDaimon
+executes retained text and file projections in this mode. The Gateway still
+uses its compatibility Bot API client for direct Telegram interaction and
+media ingestion.
 
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Start the Gateway with the same
@@ -52,7 +54,15 @@ recheck authorization and reserve the exact part immediately before the
 request. It returns an acknowledgement only for the selected chat and topic.
 Gateway commits that acknowledgement and its reply mapping together. An
 explicit rate-limit refusal can release the reserved part for retry. An
-unconfirmed send remains uncertain through restart.
+unconfirmed send remains uncertain through restart. In external mode, the
+owner-only socket next to the Gateway control socket streams one bounded offer.
+TeleDaimon prepares it and waits for the cooldown before requesting permission
+to send. Gateway reserves the exact part once and grants egress. Loss before
+the reservation leaves the part ready. Loss after the reservation records an
+uncertain delivery. TeleDaimon readiness wakes the existing journal so ready
+parts can continue without replaying uncertain sends. The compatibility calls
+and the external projection share the Gateway pacing and rate-limit backoff
+during this migration.
 
 With `telegram.enabled=false`, Gateway opens the same owner API without a
 Telegram token. In a combined instance with an independent Conversation,

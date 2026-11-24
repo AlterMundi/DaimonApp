@@ -338,6 +338,8 @@ jobs:
       - run: python3 -B tests/artifact_return_io.py target/release/telecodex
       - run: python3 -B tests/artifact_recovery_io.py target/release/telecodex
       - run: python3 -B tests/artifact_projection_io.py target/release/telecodex
+      - run: python3 -B tests/topic_projection_io.py target/release/telecodex --external
+      - run: python3 -B tests/artifact_projection_io.py target/release/telecodex --external
       - name: Qualify isolated interaction journeys
         run: |
           python3 - <<'PYTHON'

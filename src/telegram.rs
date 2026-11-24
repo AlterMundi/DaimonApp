@@ -244,6 +244,22 @@ impl TelegramClient {
         let Some((message, context)) = prepare()? else {
             return Ok(None);
         };
+        self.projection_text(chat, message)
+            .await
+            .map(|message| Some((message, context)))
+    }
+
+    pub(crate) async fn wait_projection(&self, chat: i64) -> Result<()> {
+        self.check_adapter()?;
+        self.outbound.wait(chat).await;
+        Ok(())
+    }
+
+    pub(crate) async fn projection_backoff(&self, chat: i64, seconds: u64) {
+        self.outbound.backoff(chat, seconds).await;
+    }
+
+    pub(crate) async fn projection_text(&self, chat: i64, message: SendMessage) -> Result<Message> {
         if message.chat_id != chat {
             bail!("Checked publication changed its return chat");
         }
@@ -251,7 +267,7 @@ impl TelegramClient {
         if let Err(error) = &result {
             self.outbound.note_retry_after(chat, error).await;
         }
-        result.map(|message| Some((message, context)))
+        result
     }
 
     /// Open Telegram's reply composer while retaining the same delivery limits.
@@ -860,7 +876,26 @@ impl TelegramClient {
     where
         F: FnOnce() -> Result<bool>,
     {
-        self.check_adapter()?;
+        self.wait_projection(chat).await?;
+        if !prepare()? {
+            return Ok(None);
+        }
+        self.projection_file(chat, topic, field, bytes, name, mime, caption)
+            .await
+            .map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn projection_file(
+        &self,
+        chat: i64,
+        topic: Option<i64>,
+        field: &str,
+        bytes: Vec<u8>,
+        name: &str,
+        mime: Option<&str>,
+        caption: Option<&str>,
+    ) -> Result<Message> {
         let method = match field {
             "photo" => "sendPhoto",
             "audio" => "sendAudio",
@@ -868,13 +903,8 @@ impl TelegramClient {
             "document" => "sendDocument",
             _ => bail!("Unsupported retained file transport"),
         };
-        self.outbound.wait(chat).await;
-        if !prepare()? {
-            return Ok(None);
-        }
         self.post_multipart_bytes(method, chat, topic, field, bytes, name, mime, caption)
             .await
-            .map(Some)
     }
 
     #[allow(clippy::too_many_arguments)]
