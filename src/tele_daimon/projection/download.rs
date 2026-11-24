@@ -226,7 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_publishes_only_a_complete_bounded_download() {
-        let root = tempfile::tempdir().unwrap();
+        let root = super::super::private_test_socket_dir();
         let owner = root.path().join("control.sock");
         let listener = super::super::bind(&owner).await.unwrap();
         let server = tokio::spawn(async move {

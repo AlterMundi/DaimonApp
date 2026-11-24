@@ -574,6 +574,15 @@ async fn write_result(
 }
 
 #[cfg(test)]
+fn private_test_socket_dir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::telegram::{PublicationRetired, TelegramClient, tests::serve_api};
@@ -581,7 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn direct_relay_checks_gateway_permission_and_preserves_a_known_provider_refusal() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_test_socket_dir();
         let socket = root.path().join("control.sock");
         let (api, observed) = serve_api(vec![(
             429,
@@ -620,7 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn truncated_file_cannot_be_confirmed_even_if_a_receipt_arrives() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_test_socket_dir();
         let socket = root.path().join("control.sock");
         let listener = bind(&socket).await.unwrap();
         let transfer = tokio::spawn(async move {
