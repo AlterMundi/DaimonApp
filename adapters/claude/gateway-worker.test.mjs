@@ -80,7 +80,7 @@ test('worker sends one native input only after exact owner persistence decision'
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
           const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text }) + '\n');
+          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
           assert.deepEqual(JSON.parse((await lines.next()).value),
             { ...correlation, type: 'prepare_submission' });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });

@@ -90,12 +90,14 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text'])
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body'])
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
       || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
       || typeof first.text !== 'string' || !first.text.trim()
-      || Buffer.byteLength(first.text) > 16 * 1024) {
+      || Buffer.byteLength(first.text) > 16 * 1024
+      || !closed(first.body, Object.keys(profile.body))
+      || !Object.keys(profile.body).every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid foreground start');
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));

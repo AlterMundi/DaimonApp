@@ -1,5 +1,6 @@
 //! Retained cross-body correlation. Matrix owns transport and receiving execution;
 //! this store neither signs execution approvals nor schedules/activates a peer.
+pub(in crate::store) mod foreground;
 pub(in crate::store) mod inbox;
 pub(in crate::store) mod publication;
 pub(in crate::store) mod response;
@@ -87,7 +88,7 @@ fn owned_on(conn: &Connection, human: i64, entry: SessionKey, id: &str) -> Resul
         bail!("Canonical Matrix request UUID required");
     }
     let (session, _) = super::presentation::entry_on(conn, human, entry)?;
-    let (raw,phase,submission,claimed_source,cursor):(String,String,Option<String>,Option<String>,u64)=conn.query_row("SELECT doc,phase,submission,claimed_source,inspection_cursor FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).context("Selected Matrix request unavailable")?;
+    let (raw,phase,submission,claimed_source,cursor):(String,String,Option<String>,Option<String>,u64)=conn.query_row("SELECT doc,phase,submission,claimed_source,inspection_cursor FROM interaction_matrix_requests WHERE id=?1 AND human_id=?2 AND entry_session=?3 AND source_channel <> '/we'",params![id,human,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).context("Selected Matrix request unavailable")?;
     let request: Value = serde_json::from_str(&raw)?;
     let current = super::presentation::entry_binding(conn, human, entry, session)?
         == request["entry_generation"]

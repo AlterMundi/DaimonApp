@@ -34,7 +34,9 @@ configuration directory. Source content cannot select any of those settings.
 
 The UTF-8 newline-delimited protocol uses schema
 `daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
-`sessionId`. Gateway sends `start` with the retained `text`. After the identity
+`sessionId`. Gateway sends `start` with the retained `text` and independently
+observed Matrix `body`. The worker requires that body to match its private
+profile. After the identity
 and catalog checks, the worker emits `prepare_submission`. Gateway persists
 that exposure before sending `submission_decision` with `committed: true`.
 An absent, rejected or mismatched decision prevents prompt submission. The
@@ -91,8 +93,26 @@ fixture peer transport. It exercises refusal for a mismatched selection and
 one undetermined return. The Node boundary also checks that the prompt and tool
 input cannot substitute the command or receiving selection.
 
-A Gateway caller still has to bind the worker to the selected foreground
-dispatch, journal and return route. Live Matrix credentials, provider
-inference, native session recovery, signed reply delivery and human readback
-require separate receiving evidence. This adapter currently claims only
-discrete turns and retains an uncertain outcome when its result is missing.
+### Selecting a foreground original
+
+In the existing Gateway interaction configuration, set
+`interaction.claude_foreground.worker_command` to the absolute Node command,
+worker path and `--profile` path. Set
+`interaction.claude_foreground.transport` to the existing Matrix host command
+shape with the owner-local `/we` binding, the same body identity and a timeout
+from 1 to 60 seconds. This independently configured host can coexist with the
+ordinary Matrix transport.
+
+Use the authorized owner socket command `matrix claude run JSON`. Its selection
+contains `event_id`, `thread_id`, `author` (embodiment ID) and optional `cursor`.
+Gateway reads the exact Matrix original and only runs one foreground attempt
+per entry at a time. `matrix claude status EVENT_ID` reads the canonical
+journal. Repeating the same original reads its retained state. Gateway commits
+the provider exposure before acknowledging the worker, and commits the
+result and one return UUID before calling Matrix. Interrupted provider or
+return stages stay uncertain after restart. A result that cannot be sent
+within the return bound is retained locally. There is no background intake.
+
+Synthetic owner-route tests cover durable sequencing and repeat requests after
+restart. Live Matrix credentials, provider inference, native session recovery,
+signed reply delivery and human readback require receiving evidence.
