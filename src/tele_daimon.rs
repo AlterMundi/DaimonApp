@@ -334,6 +334,29 @@ impl RemoteGateway<'_> {
         .await
     }
 
+    async fn read_readiness(&self) -> Result<IngressReply> {
+        use std::io::{Error, ErrorKind};
+
+        // A saturated Gateway can close a same-owner connection before reading it.
+        // Repeat only this observation. Admission may already have taken effect.
+        for _ in 0..6 {
+            match self.ready(false).await {
+                Err(error)
+                    if error.downcast_ref::<Error>().is_some_and(|io| {
+                        matches!(
+                            io.kind(),
+                            ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+                        )
+                    }) =>
+                {
+                    sleep(Duration::from_secs(1)).await;
+                }
+                result => return result,
+            }
+        }
+        self.ready(false).await
+    }
+
     async fn projection_ready(&self) -> Result<Option<i64>> {
         match self
             .request(IngressRequest::ProjectionReady {
@@ -354,7 +377,7 @@ impl GatewayIngress for RemoteGateway<'_> {
     }
 
     async fn before_poll(&self, _offset: Option<i64>) -> Result<Option<i64>> {
-        match self.ready(false).await? {
+        match self.read_readiness().await? {
             IngressReply::Ready {
                 identified: true,
                 next_offset,

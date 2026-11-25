@@ -3,6 +3,7 @@
 
 All accounts, Telegram, native peers and output are synthetic; zero model calls.
 """
+from contextlib import ExitStack
 import json
 import hashlib
 import errno
@@ -718,6 +719,23 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         journey.wait(lambda: thread in journey.holding)
         journey.finish(thread, journey.holding.pop(thread))
         journey.wait(lambda: settled(first))
+        with ExitStack() as control_reads:
+            for _ in range(4):
+                pending = control_reads.enter_context(socket.socket(socket.AF_UNIX))
+                pending.connect(str(journey.socket))
+            with socket.socket(socket.AF_UNIX) as probe:
+                probe.settimeout(2)
+                probe.connect(str(journey.socket))
+                try:
+                    probe.sendall(b'{"telegram_ingress":{"operation":"ready","bot_id":123}}\n')
+                    assert probe.recv(1) == b""
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            polls = journey.telegram_methods.count("getUpdates")
+            time.sleep(0.4)
+            assert adapter.poll() is None, "A full owner socket stopped the adapter"
+        journey.wait(lambda: journey.telegram_methods.count("getUpdates") > polls)
+        assert adapter.poll() is None
         fingerprint = hashlib.sha256(b"synthetic-question-token").hexdigest()
         status = sessions_telegram("status")["result"]
         assert status["id"] == 123 and status["username"] == "FixtureBot"
