@@ -1357,6 +1357,13 @@ html[data-style-policy="authored"] .standalone-conversation .pending-carousel .p
 
 /* Notices float above the composer; changing text never resizes its input. */
 #conversation-compose {position:relative;}
+#conversation-compose > .composer-draft-notice {
+  grid-column:1 / -1;
+  justify-content:flex-start;
+  min-width:0;
+}
+.composer-draft-notice > span {min-width:0;overflow-wrap:anywhere;}
+.composer-draft-notice > button {max-width:100%;}
 #conversation-send-feedback {grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 8px;line-height:1.4;font-size:14px;}
 #conversation-send-feedback[hidden],#conversation-send-feedback:not(:has([data-attention="true"]:not(:empty),#conversation-send-check:not([hidden]))) {display:none;}
 #conversation-send-feedback p {margin:4px 0;color:var(--ink);}

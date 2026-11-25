@@ -811,7 +811,7 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
-    const draftStatus=node('div',undefined,'conversation-tools'),draftNote=node('span'),draftPrimary=node('button'),draftOther=node('button','Use other draft');
+    const draftStatus=node('div',undefined,'conversation-tools composer-draft-notice'),draftNote=node('span'),draftPrimary=node('button'),draftOther=node('button','Use other draft');
     draftStatus.hidden=true;draftNote.setAttribute('role','status');draftPrimary.type=draftOther.type='button';
     draftStatus.append(draftNote,draftPrimary,draftOther);
     const draftState=readOnly?undefined:window.ConversationSurface?.mountDraft?.({field:draft,api,
