@@ -147,17 +147,24 @@ in the same transaction as the receipt and its immutable bytes. The number
 orders reservations inside the current journal. It is independent of
 capture timestamps, world event sequences, canonical admission and native
 delivery. An exact retry preserves it. Expiration does not reset the
-sequence. A new reservation after expiration receives a new number. The
-reducer must distinguish an originally frozen observation recovered after
-expiration from a genuinely later observation before using order to
-advance a baseline. Older receipts omit it and remain readable. The semantic reducer
-must treat receipt order as belonging to a journal incarnation, and a
-native-accepted receipt of unknown order as a barrier to an existing
-baseline. A restored or replaced journal requires a fresh full baseline.
+sequence. New situated reservations expire 24 hours after the trusted
+Holodeck server capture. A maximum 60-second producer clock lead is
+tolerated. The browser-supplied capture time is independent evidence.
+A durable receiver wall-time floor prevents a backward clock step from
+reissuing a swept situated original. The expiry boundary commits with the
+sweep. The compatibility trigger also retains the deadline if a previous
+writer removes an expired anchored offer. A large forward correction can
+expire situated offers and subsequently cause an older server time to be
+refused. Legacy offers continue to use their ordinary wall time. A restored
+journal remains a new baseline incarnation.
 
-Pending reservations are capped at 32 per Conversation and expire after
-24 hours. Opening the journal or submitting another validly encoded offer
-sweeps expired pending bytes. The sweep survives a subsequent refusal. The
+Only capture-anchored receipts contribute to a semantic checkpoint. Older
+and unscoped sources remain readable and retain the full transport behavior.
+Pending unscoped reservations retain their issue-based 24-hour deadline.
+Settled originals and exact retained bytes do not expire through this
+mechanism. Pending reservations are capped at 32 per Conversation.
+Opening the journal or submitting another validly encoded offer sweeps
+expired pending bytes. The sweep survives a subsequent refusal. The
 payload budget is distinct from human attachments. It allows at most 512
 inline sources per session and 1,024 in the receiving journal. An exact,
 pending file-backed receipt from the previous draft can move to the journal
@@ -192,8 +199,8 @@ An affected patch that no longer matches its selected baseline is refused
 before native submission. Its original remains available through the
 existing retained-input controls. A qualifying full plan can survive an
 intervening acceptance while its order is still current. The semantic
-candidate is separate from activation. Retention and expired-source
-ordering still require qualification before sustained receiving use.
+candidate is separate from activation. Verification of sealed-source archival and the selected live pair remains
+required before sustained receiving use.
 
 The dashboard candidate negotiates the receipt path only when both the
 canonical frame and the authorized Holodeck host advertise it. Each

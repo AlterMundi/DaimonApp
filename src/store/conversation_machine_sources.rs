@@ -14,18 +14,74 @@ use std::{fmt, io::Read};
 
 const MAX_PENDING: i64 = 32;
 const MAX_RESERVATION_ORDER: i64 = (1 << 53) - 1;
+const PENDING_SECONDS: i64 = 24 * 60 * 60;
+const CAPTURE_CLOCK_SKEW_SECONDS: i64 = 60;
 const SOURCE_BYTES: u64 = 48 * 1024;
 const SOURCE_BASE64_BYTES: usize = 64 * 1024;
 const MAX_SOURCES_PER_SESSION: i64 = 512;
 const MAX_SOURCES: i64 = 1024;
 const UNAVAILABLE: &str = "Machine source receipt unavailable";
 
-fn expire_pending(conn: &Connection, now: i64) -> Result<()> {
-    conn.execute(
-        "DELETE FROM conversation_machine_sources WHERE retained=0 AND expires<=?1",
-        [now],
+fn pending_cutoff_on(conn: &Connection, wall: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT max(wall_floor,?1) FROM conversation_machine_expiry_clock WHERE singleton=1",
+        [wall],
+        |row| row.get(0),
+    )?)
+}
+
+/// Commit the observed expiry boundary even if the subsequent offer is refused.
+fn expire_pending(conn: &mut Connection, wall: i64) -> Result<i64> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cutoff = tx.query_row(
+        "UPDATE conversation_machine_expiry_clock SET wall_floor=max(wall_floor,?1)
+         WHERE singleton=1 RETURNING wall_floor",
+        [wall],
+        |row| row.get(0),
     )?;
-    Ok(())
+    tx.execute(
+        "DELETE FROM conversation_machine_sources WHERE retained=0
+         AND expires<=CASE WHEN capture_expiry_anchored=1 THEN ?1 ELSE ?2 END",
+        params![cutoff, wall],
+    )?;
+    tx.commit()?;
+    Ok(cutoff)
+}
+
+fn new_expiry(source: &SourceProjection, wall: i64, cutoff: i64) -> Result<(i64, bool)> {
+    let observation: Value = serde_json::from_str(source.observation.get())?;
+    let anchored = projection::same_lane(&observation, &observation)
+        && observation.get("capturedAt").is_some();
+    if !anchored {
+        return Ok((
+            wall.checked_add(PENDING_SECONDS)
+                .context("Machine source expiry unavailable")?,
+            false,
+        ));
+    }
+    let latest_ms = wall
+        .checked_add(CAPTURE_CLOCK_SKEW_SECONDS)
+        .and_then(|secs| secs.checked_mul(1000))
+        .context("Machine source clock unavailable")?;
+    let capture = observation["capturedAt"]
+        .as_i64()
+        .filter(|ms| *ms > 0 && *ms <= latest_ms)
+        .context("Situated context has no current server capture time")?;
+    // Keep a stable deadline even when the same bytes are submitted again.
+    // Clamping a producer clock lead to each new reservation's wall time
+    // would let those bytes acquire a later deadline on a retry.
+    let expires = (capture / 1000)
+        .checked_add(PENDING_SECONDS)
+        .context("Machine source expiry unavailable")?;
+    anyhow::ensure!(
+        expires > wall,
+        "Situated capture expired before a new reservation"
+    );
+    anyhow::ensure!(
+        expires > cutoff,
+        "Situated capture expired at the receiver's retained clock boundary"
+    );
+    Ok((expires, true))
 }
 
 fn check_payload_capacity(conn: &Connection, session: i64) -> Result<()> {
@@ -68,7 +124,7 @@ pub(crate) struct MachineSourceStatus {
 
 impl Store {
     pub(super) fn init_conversation_machine_sources(&self) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS conversation_machine_sources (
                original TEXT PRIMARY KEY, receipt TEXT NOT NULL UNIQUE, human INTEGER NOT NULL,
@@ -84,6 +140,10 @@ impl Store {
                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                reservation_order INTEGER NOT NULL CHECK(reservation_order>=0));
              INSERT OR IGNORE INTO conversation_machine_source_clock VALUES(1,0);
+             CREATE TABLE IF NOT EXISTS conversation_machine_expiry_clock (
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               wall_floor INTEGER NOT NULL CHECK(wall_floor>=0));
+             INSERT OR IGNORE INTO conversation_machine_expiry_clock VALUES(1,0);
              CREATE TABLE IF NOT EXISTS conversation_machine_source_checkpoint (
                session INTEGER PRIMARY KEY, order_floor INTEGER NOT NULL, original TEXT,
                writer TEXT NOT NULL);",
@@ -105,6 +165,10 @@ impl Store {
             ("projected_base", "TEXT"),
             ("projected_state", "TEXT"),
             ("projected_writer", "TEXT"),
+            (
+                "capture_expiry_anchored",
+                "INTEGER NOT NULL DEFAULT 0 CHECK(capture_expiry_anchored IN (0,1))",
+            ),
         ] {
             super::add_column_if_missing(
                 &conn,
@@ -115,9 +179,16 @@ impl Store {
         }
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS conversation_machine_sources_reservation_order
-             ON conversation_machine_sources(reservation_order) WHERE reservation_order>0;",
+             ON conversation_machine_sources(reservation_order) WHERE reservation_order>0;
+             CREATE TRIGGER IF NOT EXISTS conversation_machine_source_expiry_on_delete
+               BEFORE DELETE ON conversation_machine_sources
+               WHEN OLD.retained=0 AND OLD.capture_expiry_anchored=1 AND OLD.expires<=unixepoch()
+             BEGIN
+               UPDATE conversation_machine_expiry_clock SET wall_floor=max(wall_floor,OLD.expires)
+               WHERE singleton=1;
+             END;",
         )?;
-        expire_pending(&conn, Utc::now().timestamp())?;
+        expire_pending(&mut conn, Utc::now().timestamp())?;
         Ok(())
     }
 
@@ -127,7 +198,7 @@ impl Store {
         entry: SessionKey,
         offer: MachineSourceOffer,
     ) -> Result<Value> {
-        let bytes = offer
+        let checked = offer
             .source_b64
             .as_deref()
             .map(|encoded| {
@@ -138,15 +209,15 @@ impl Store {
                 let raw = STANDARD
                     .decode(encoded)
                     .context("Invalid machine source encoding")?;
-                verify_source_bytes(&offer, &raw)?;
-                Ok::<_, anyhow::Error>(raw)
+                let source = verify_source_bytes(&offer, &raw)?;
+                Ok::<_, anyhow::Error>((raw, source))
             })
             .transpose()?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let now = Utc::now().timestamp();
-        // Expiration of unused reservations is independent of the next offer's result.
-        expire_pending(&conn, now)?;
+        let wall = Utc::now().timestamp();
+        let cutoff = expire_pending(&mut conn, wall)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cutoff = pending_cutoff_on(&tx, cutoff)?;
         let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
         if offer.binding != super::presentation::entry_binding(&tx, human, entry, session)? {
             anyhow::bail!(UNAVAILABLE);
@@ -190,7 +261,7 @@ impl Store {
                  AND session=?3 AND binding=?4 AND epoch=?5 AND observation=?6 AND file=?7 AND retained=0",
                 params![id,human,session,offer.binding,epoch,observation,file], |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional()?.context(UNAVAILABLE)?;
-            if !inline && let Some(bytes) = bytes.as_deref() {
+            if !inline && let Some((bytes, _)) = checked.as_ref() {
                 check_payload_capacity(&tx, session)?;
                 park_inline(&tx, &receipt, bytes)?;
                 tx.execute(
@@ -213,7 +284,8 @@ impl Store {
                 anyhow::bail!("Machine source reservation capacity reached");
             }
             check_payload_capacity(&tx, session)?;
-            let bytes = bytes.context("Exact machine source bytes required")?;
+            let (bytes, source) = checked.context("Exact machine source bytes required")?;
+            let (expires, anchored) = new_expiry(&source, wall, cutoff)?;
             let receipt = Uuid::new_v4().to_string();
             // Reserve order with the exact bytes. Audio can finish capture much
             // later than a newer text original. Retention order, provider order
@@ -228,9 +300,9 @@ impl Store {
                 .optional()?
                 .context("Machine source reservation order unavailable")?;
             tx.execute(
-                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline,reservation_order)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10)",
-                params![id,receipt,human,session,offer.binding,epoch,observation,file,now+86400,order],
+                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline,reservation_order,capture_expiry_anchored)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11)",
+                params![id,receipt,human,session,offer.binding,epoch,observation,file,expires,order,anchored],
             )?;
             park_inline(&tx, &receipt, &bytes)?;
         }
@@ -363,7 +435,7 @@ fn read_source_on(
 ) -> Result<Option<StoredSource>> {
     let row = conn
         .query_row(
-            "SELECT receipt,binding,epoch,observation,file,source_inline,reservation_order FROM conversation_machine_sources
+            "SELECT receipt,binding,epoch,observation,file,source_inline,reservation_order,capture_expiry_anchored FROM conversation_machine_sources
          WHERE original=?1 AND human=?2 AND session=?3 AND retained=1",
             params![input.id, input.human, input.session],
             |r| {
@@ -375,11 +447,12 @@ fn read_source_on(
                     r.get::<_, String>(4)?,
                     r.get::<_, bool>(5)?,
                     r.get::<_, i64>(6)?,
+                    r.get::<_, bool>(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((receipt, binding, epoch, observation, file, inline, order)) = row else {
+    let Some((receipt, binding, epoch, observation, file, inline, order, anchored)) = row else {
         return Ok(None);
     };
     anyhow::ensure!(
@@ -401,6 +474,7 @@ fn read_source_on(
         receipt,
         digest: offer.file.sha256,
         order,
+        anchored,
         source,
     }))
 }
@@ -409,6 +483,7 @@ struct StoredSource {
     receipt: Uuid,
     digest: String,
     order: i64,
+    anchored: bool,
     source: SourceProjection,
 }
 
@@ -449,7 +524,7 @@ fn direct_machine_source_on(
         return Ok((None, None));
     };
     let current: Value = serde_json::from_str(source.source.observation.get())?;
-    if source.order == 0 || !projection::same_lane(&current, &current) {
+    if source.order == 0 || !source.anchored || !projection::same_lane(&current, &current) {
         return Ok((Some(render(input, source, None)?), None));
     }
 
@@ -481,7 +556,10 @@ fn direct_machine_source_on(
         }
         let stored = read_source_on(conn, &previous).ok()??;
         let observation = serde_json::from_str(stored.source.observation.get()).ok()?;
-        if stored.order != floor || !projection::same_lane(&observation, &current) {
+        if stored.order != floor
+            || !stored.anchored
+            || !projection::same_lane(&observation, &current)
+        {
             return None;
         }
         let payload: String = conn
@@ -547,7 +625,10 @@ pub(super) fn bind_direct_projection_on(
             && let Some(source) = read_source_on(conn, input)?
         {
             let observation = serde_json::from_str(source.source.observation.get())?;
-            if source.order > 0 && projection::same_lane(&observation, &observation) {
+            if source.order > 0
+                && source.anchored
+                && projection::same_lane(&observation, &observation)
+            {
                 let (floor, _) = checkpoint_on(conn, input.session, writer)?;
                 let state = projection::project(&observation, None);
                 let delivery = json!({"kind":"full","reservation_order":source.order,
@@ -852,13 +933,14 @@ fn source_status_on(
         anyhow::bail!(UNAVAILABLE);
     }
     let epoch = super::stopping::admission_epoch_on(conn, entry)?;
+    let wall = Utc::now().timestamp();
     let result = conn.query_row(
         "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline,s.reservation_order FROM conversation_machine_sources s
          LEFT JOIN conversation_inputs i ON i.id=s.original
          WHERE s.original=?1 AND s.human=?2 AND s.session=?3 AND s.binding=?5
-           AND ((s.retained=0 AND i.id IS NULL AND s.epoch=?6 AND s.expires>?7)
+           AND ((s.retained=0 AND i.id IS NULL AND s.epoch=?6 AND s.expires>CASE WHEN s.capture_expiry_anchored=1 THEN ?7 ELSE ?8 END)
              OR (s.retained=1 AND i.human_id=s.human AND i.session_id=s.session AND i.native_thread=?4 AND i.retired=0))",
-        params![id,human,session,native,binding,epoch,Utc::now().timestamp()],
+        params![id,human,session,native,binding,epoch,pending_cutoff_on(conn,wall)?,wall],
         |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?,r.get::<_,i64>(5)?)),
     ).optional()?.context(UNAVAILABLE)?;
     let file: FileReference = serde_json::from_str(&result.2)?;
@@ -909,11 +991,14 @@ pub(super) fn match_machine_source(
             anyhow::bail!("Original conversation machine source is immutable");
         }
     } else if let Some(receipt) = selected {
+        let wall = Utc::now().timestamp();
         let (file, observation, inline): (String, String, bool) = tx
             .query_row(
                 "UPDATE conversation_machine_sources SET retained=1
              WHERE original=?1 AND human=?2 AND session=?3 AND binding=?4 AND epoch=?5
-              AND receipt=?6 AND retained=0 AND expires>?7 RETURNING file,observation,source_inline",
+              AND receipt=?6 AND retained=0
+              AND expires>CASE WHEN capture_expiry_anchored=1 THEN ?7 ELSE ?8 END
+              RETURNING file,observation,source_inline",
                 params![
                     input.id,
                     input.human,
@@ -921,9 +1006,10 @@ pub(super) fn match_machine_source(
                     binding,
                     input.epoch,
                     receipt,
-                    Utc::now().timestamp()
+                    pending_cutoff_on(tx, wall)?,
+                    wall
                 ],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
             .context(UNAVAILABLE)?;
@@ -1052,7 +1138,7 @@ mod tests {
             "observation":{"id":observation,"schema":"holodeck.situation/v1","observer":"human:fixture",
                 "run":"world-fixture","edition":"one","scope":"structured-interior-room",
                 "place":{"id":room,"title":"Sala"},"source":{"through":capture},
-                "capturedAt":capture,"inputAssociation":{"humanInputId":id},
+                "capturedAt":Utc::now().timestamp_millis()-10_000+capture,"inputAssociation":{"humanInputId":id},
                 "clientReportedView":{"value":{"connectionId":capture,
                     "local":{"position":{"x":x,"y":0,"z":0}}}},
                 "events":[]},
@@ -1389,6 +1475,160 @@ mod tests {
             situated_payload(&old_source)["delivery"]["historical"],
             true
         );
+    }
+
+    #[test]
+    fn expiry_migration_keeps_old_writer_schema_and_retained_sources_readable() {
+        let (root, store, entry, binding) = setup();
+        let id = Uuid::new_v4();
+        let saved = store
+            .conversation_machine_source_reserve(
+                100,
+                entry,
+                situated_offer(&binding, id, 0.0, "matter", 0),
+            )
+            .unwrap();
+        retain_situated(&store, entry, &binding, &saved);
+        {
+            let conn = store.conn.lock().unwrap();
+            // Exact startup statement in the preceding writer.
+            conn.execute(
+                "INSERT OR IGNORE INTO conversation_machine_source_clock VALUES(1,0)",
+                [],
+            )
+            .unwrap();
+            // An older writer cannot mark its reservation as capture-anchored.
+            conn.execute(
+                "UPDATE conversation_machine_sources SET capture_expiry_anchored=0",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE conversation_machine_expiry_clock SET wall_floor=?1",
+                [Utc::now().timestamp() + PENDING_SECONDS * 2],
+            )
+            .unwrap();
+        }
+        drop(store);
+        let reopened = Store::open(
+            &root.path().join("control.sqlite"),
+            &[100],
+            &super::super::tests::defaults(),
+        )
+        .unwrap();
+        let retained = reopened
+            .conversation_machine_source_read(
+                100,
+                entry,
+                MachineSourceStatus {
+                    id,
+                    binding: binding.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(retained["receipt"], saved["receipt"]);
+        let source = reopened
+            .conversation_direct_machine_source(100, &id.to_string())
+            .unwrap()
+            .unwrap();
+        let payload = situated_payload(&source);
+        assert!(payload.get("delivery").is_none());
+        assert!(payload.get("observation").is_some());
+        assert!(
+            reopened
+                .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn prior_writer_sweep_preserves_anchored_expiry_boundary() {
+        let (_root, store, entry, binding) = setup();
+        let id = Uuid::new_v4();
+        store
+            .conversation_machine_source_reserve(
+                100,
+                entry,
+                situated_offer(&binding, id, 0.0, "matter", 0),
+            )
+            .unwrap();
+        let expired = Utc::now().timestamp() - 10;
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE conversation_machine_expiry_clock SET wall_floor=0",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE conversation_machine_sources SET expires=?1 WHERE original=?2",
+            params![expired, id.to_string()],
+        )
+        .unwrap();
+        // This is the preceding release's complete expiry operation.
+        assert_eq!(
+            conn.execute(
+                "DELETE FROM conversation_machine_sources WHERE retained=0 AND expires<=?1",
+                [Utc::now().timestamp()]
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(pending_cutoff_on(&conn, 0).unwrap(), expired);
+    }
+
+    #[test]
+    fn expired_situated_capture_cannot_acquire_a_new_order_after_clock_rollback() {
+        let (root, store, entry, binding) = setup();
+        let id = Uuid::new_v4();
+        let original = situated_offer(&binding, id, 0.0, "matter", 0);
+        let retry = MachineSourceOffer {
+            id,
+            binding: binding.clone(),
+            observation_id: original.observation_id,
+            file: original.file.clone(),
+            source_b64: original.source_b64.clone(),
+        };
+        let saved = store
+            .conversation_machine_source_reserve(100, entry, original)
+            .unwrap();
+        let cutoff: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT expires FROM conversation_machine_sources WHERE original=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        {
+            let mut conn = store.conn.lock().unwrap();
+            assert_eq!(expire_pending(&mut conn, cutoff).unwrap(), cutoff);
+        }
+        drop(store);
+        // The simulated earlier wall clock on process restart must not rewind the cutoff.
+        let reopened = Store::open(
+            &root.path().join("control.sqlite"),
+            &[100],
+            &super::super::tests::defaults(),
+        )
+        .unwrap();
+        assert!(control_status(&reopened, entry, &binding, id).is_err());
+        let refused = reopened
+            .conversation_machine_source_reserve(100, entry, retry)
+            .unwrap_err();
+        assert!(refused.to_string().contains("capture expired"));
+        let floor: i64 = reopened
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT reservation_order FROM conversation_machine_source_clock",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(Some(floor), saved["reservation_order"].as_i64());
     }
 
     #[test]

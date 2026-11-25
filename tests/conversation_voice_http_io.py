@@ -72,7 +72,7 @@ print(json.dumps({'text':item['text'],'final':True}))
                 'inputAssociation':{'humanInputId':ident},'fixtureLabel':label}
             if machine_source:
                 observation.update(run='fixture-world',edition='torus-v1',scope='structured-interior-room',
-                    place={'id':room,'title':room},capturedAt=len(machine_receipts),
+                    place={'id':room,'title':room},capturedAt=int(time.time()*1000),
                     clientReportedView={'value':{'connectionId':ident,'local':{'position':{'x':x,'y':0,'z':0}}}})
             data=json.dumps({'schema':'holodeck.native-situation-source/v1','human_input_id':ident,
                 'speaker':speaker,'observation':observation}).encode()
