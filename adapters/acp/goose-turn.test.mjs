@@ -19,7 +19,7 @@ test('exact catalog and journal acknowledgement are required before provider inp
   const cwd = await temp(t);
   const binary = join(cwd, 'goose-fixture');
   const marker = join(cwd, 'provider');
-  await writeFile(binary, `#!/usr/bin/node
+  await writeFile(binary, `#!${process.execPath}
 const { createInterface } = require('node:readline');
 const { appendFileSync } = require('node:fs');
 const input = createInterface({ input: process.stdin });
@@ -53,6 +53,7 @@ input.on('line', line => {
   const run = (tools, beforeSubmit, outcome) => runGooseTurn({
     binary, cwd, env: { MARKER: marker, TOOLS: tools, OUTCOME: outcome ?? '' },
     mcpServers: [], toolNames: [toolName], text: 'Original 42', beforeSubmit,
+    signal: AbortSignal.timeout(5000),
   });
   const skills = await run(toolName, () => assert.fail('skill loader reached journal'), 'skills-on');
   assert.deepEqual(skills, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
