@@ -3,6 +3,8 @@ use super::*;
 use crate::tele_daimon::projection::{self, JsonMethod};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::io::Read;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,12 +56,30 @@ pub(super) async fn project(app: &App, request: Request) -> Result<Value> {
     );
     let key = SessionKey::new(request.chat, (request.topic > 0).then_some(request.topic));
     let human = shared.store.session_creator(key)?;
+    let state = shared
+        .config
+        .activity_projection_state
+        .as_ref()
+        .context("Activity receipt state is not selected")?;
+    let proof = match &request.operation {
+        Operation::Edit { message_id, .. } | Operation::Delete { message_id } => {
+            Some(Receipt::Card(*message_id))
+        }
+        Operation::TopicName { name } => Some(Receipt::Marker(name.clone())),
+        Operation::Send { .. } => None,
+    };
     let authorize = || {
         shared
             .store
-            .validate_owned_binding(key, human, &request.native_thread)
+            .validate_owned_binding(key, human, &request.native_thread)?;
+        if let Some(proof) = &proof {
+            proof.validate(state, request.chat, request.topic, &request.native_thread)?;
+        }
+        Ok(())
     };
-    authorize()?;
+    if authorize().is_err() {
+        return Ok(json!({"ok":false,"not_submitted":true}));
+    }
     let (method, mut document) = match request.operation {
         Operation::Send {
             text,
@@ -179,5 +199,65 @@ fn markup(pending_requests: bool) -> Value {
         json!({"inline_keyboard":[[{"text":"Open human requests","callback_data":"qpending"}]]})
     } else {
         json!({"inline_keyboard":[]})
+    }
+}
+
+enum Receipt {
+    Card(i64),
+    Marker(String),
+}
+
+impl Receipt {
+    fn validate(&self, root: &Path, chat: i64, topic: i64, native: &str) -> Result<()> {
+        let meta = fs::symlink_metadata(root)?;
+        let uid = unsafe { libc::geteuid() };
+        anyhow::ensure!(
+            root.is_absolute() && meta.is_dir() && meta.uid() == uid && meta.mode() & 0o077 == 0,
+            "Unsafe Activity receipt directory"
+        );
+        let file = match self {
+            Self::Card(_) => "messages.json",
+            Self::Marker(_) => "topic-markers.json",
+        };
+        let opened = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(root.join(file))?;
+        let meta = opened.metadata()?;
+        anyhow::ensure!(
+            meta.is_file()
+                && meta.uid() == uid
+                && meta.mode() & 0o077 == 0
+                && meta.len() <= 1_048_576,
+            "Unsafe Activity receipt file"
+        );
+        let mut raw = Vec::new();
+        opened.take(1_048_577).read_to_end(&mut raw)?;
+        anyhow::ensure!(raw.len() <= 1_048_576, "Activity receipt exceeds bound");
+        let record: Value = serde_json::from_slice(&raw).context("Malformed Activity receipt")?;
+        let key = format!("{chat}:{topic}");
+        let item = match self {
+            Self::Card(_) => &record[&key],
+            Self::Marker(_) => {
+                anyhow::ensure!(
+                    record["schema"] == "telecodex.topic-markers/v1",
+                    "Unknown Activity marker receipt schema"
+                );
+                &record["items"][&key]
+            }
+        };
+        let matches = match self {
+            Self::Card(id) => {
+                item["chat_id"] == chat && item["topic"] == topic && item["message_id"] == *id
+            }
+            Self::Marker(name) => {
+                item["phase"] == "attempting" && item["desired"].as_str() == Some(name)
+            }
+        };
+        anyhow::ensure!(
+            matches && item["native_thread"].as_str() == Some(native),
+            "Selected Activity receipt belongs to another message, topic or native session"
+        );
+        Ok(())
     }
 }

@@ -700,7 +700,7 @@ class Telegram:
             self.next_chat[chat] = scheduled + (3.5 if chat < 0 else 1)
         time.sleep(max(0, scheduled - time.monotonic()))
 
-    def call(self, method, payload, *, background=False, topic=None):
+    def call(self, method, payload, *, background=False, topic=None, native_thread=None):
         if method not in ('sendMessage', 'editMessageText', 'deleteMessage', 'editForumTopic'):
             raise ValueError('observer Telegram method forbidden')
         self.pace(payload['chat_id'])
@@ -724,7 +724,6 @@ class Telegram:
 class GatewayTelegram(Telegram):
     """Send Activity projections through the existing authenticated owner socket."""
     def __init__(self, config):
-        self.database = config['db_path']
         self.socket = config['session_control']['socket_path']
         selection = config['activity_telegram']
         if set(selection) != {'credential_fingerprint'}:
@@ -735,18 +734,12 @@ class GatewayTelegram(Telegram):
         self.next_chat = {}
         self.schedule_lock = threading.Lock()
 
-    def call(self, method, payload, *, background=False, topic=None):
-        from contextlib import closing
+    def call(self, method, payload, *, background=False, topic=None, native_thread=None):
         from dashboard.provider import OwnerControlNotSubmitted, ProviderUnavailable, control
 
         chat = payload['chat_id']
         selected_topic = payload.get('message_thread_id', 0) if topic is None else topic
-        with closing(readonly(self.database)) as db:
-            bound = db.execute("""SELECT s.codex_thread_id FROM sessions s
-              JOIN users u ON u.tg_user_id=s.creator_user_id
-              WHERE s.chat_id=? AND s.thread_id=? AND s.force_fresh_thread=0
-              AND s.codex_thread_id IS NOT NULL AND u.allowed=1""",(chat,selected_topic)).fetchone()
-        if not bound:
+        if not isinstance(native_thread, str) or not native_thread:
             return {'ok': False, 'not_submitted': True}
         if method == 'sendMessage':
             operation = {'kind':'send', 'text':payload['text'],
@@ -764,7 +757,7 @@ class GatewayTelegram(Telegram):
         self.pace(chat)
         try:
             return control(self.socket,envelope={'activity_telegram':{
-                'chat':chat, 'topic':selected_topic, 'native_thread':bound[0],
+                'chat':chat, 'topic':selected_topic, 'native_thread':native_thread,
                 'credential_fingerprint':self.fingerprint,'background':background,'operation':operation}})
         except OwnerControlNotSubmitted:
             return {'ok': False, 'not_submitted': True}
@@ -792,15 +785,24 @@ class Publisher:
         atomic_json(self.path, self.entries)
 
     def update(self, key, chat, topic, turn, text, now, *, requested=False,
-               reply_to=None, active_text=None, position=None, markup=None):
+               reply_to=None, active_text=None, position=None, markup=None, native_thread=None):
         with self.lock:
             self._update(key, chat, topic, turn, text, now, requested=requested,
-                         reply_to=reply_to, active_text=active_text, position=position, markup=markup)
+                         reply_to=reply_to, active_text=active_text, position=position, markup=markup,
+                         native_thread=native_thread)
             return self.entries.get(key, {}).get('message_id')
 
     def _update(self, key, chat, topic, turn, text, now, *, requested,
-                reply_to, active_text, position, markup):
+                reply_to, active_text, position, markup, native_thread):
         entry = self.entries.get(key)
+        if (entry and native_thread and entry.get('native_thread') is None
+                and turn is not None and entry.get('turn') == turn
+                and (entry.get('chat_id'),entry.get('topic')) == (chat,topic)):
+            # Same physical turn is a proof for an older unannotated receipt.
+            entry['native_thread'] = native_thread
+            self.save()
+        if entry and native_thread and entry.get('native_thread') not in (None,native_thread):
+            return  # A newly routed topic cannot operate on the old card.
         if entry and entry.get('turn') != turn and entry.get('message_id'):
             # Repost once for a new human request, rather than editing above it.
             self.retire(key, entry, background=not requested)
@@ -824,7 +826,7 @@ class Publisher:
                 self.retire(key, entry)
             return
         if entry is None:
-            entry = {'chat_id': chat, 'topic': topic, 'turn': turn, 'attempted': False}
+            entry = {'chat_id': chat, 'topic': topic, 'turn': turn, 'attempted': False, 'native_thread': native_thread}
             self.entries[key] = entry
         if position is not None:
             entry['position'] = dict(position)
@@ -852,7 +854,7 @@ class Publisher:
                 return
             entry['turn'] = turn
             payload['message_id'] = message_id
-            result = self.telegram.call('editMessageText', payload, background=not requested, topic=topic)
+            result = self.telegram.call('editMessageText', payload, background=not requested, topic=topic, native_thread=native_thread)
         elif not entry['attempted']:
             entry['attempted'] = True
             self.save()  # Persist before crossing the Telegram boundary.
@@ -861,7 +863,7 @@ class Publisher:
                 payload['reply_parameters'] = {'message_id': reply_to}
             if topic:
                 payload['message_thread_id'] = topic
-            result = self.telegram.call('sendMessage', payload, background=not requested)
+            result = self.telegram.call('sendMessage', payload, background=not requested, native_thread=native_thread)
             if result and result.get('ok'):
                 message = result.get('result', {})
                 if message.get('chat', {}).get('id') == chat and message.get('message_thread_id', 0) == topic:
@@ -910,7 +912,7 @@ class Publisher:
         outcome = 'no_receipt'
         if message_id:
             payload = {'chat_id': entry['chat_id'], 'message_id': message_id}
-            result = self.telegram.call('deleteMessage', payload, background=background, topic=entry.get('topic', 0))
+            result = self.telegram.call('deleteMessage', payload, background=background, topic=entry.get('topic', 0), native_thread=entry.get('native_thread'))
             if result and result.get('not_submitted') is True:
                 return
             if result and result.get('error_code') == 429:
@@ -922,7 +924,7 @@ class Publisher:
             if not (result and result.get('ok') and result.get('result') is True) and not absent:
                 # Keep failed cleanup tracked across restart; never leave "Working".
                 payload.update(text='◻️ Activity monitoring ended', parse_mode='HTML')
-                result = self.telegram.call('editMessageText', payload, background=background, topic=entry.get('topic', 0))
+                result = self.telegram.call('editMessageText', payload, background=background, topic=entry.get('topic', 0), native_thread=entry.get('native_thread'))
                 if not result or not result.get('ok'):
                     return
                 outcome = 'marked_inactive'
@@ -998,7 +1000,8 @@ class StatusRequests:
                 position['input_id'] = latest['message_id'] if latest else row['message']
                 message_id = publisher.update(key, row['chat'], row['topic'],
                     context['turn'], text, time.time(), requested=True,
-                    reply_to=row['message'], position=position if context.get('position') else None)
+                    reply_to=row['message'], position=position if context.get('position') else None,
+                    native_thread=(bindings or {}).get(key))
                 if message_id is not None:
                     self.state['attempted'][identity]['message_id'] = message_id
                     atomic_json(self.path, self.state)
@@ -1010,7 +1013,7 @@ class StatusRequests:
                 payload['message_thread_id'] = row['topic']
             if pending:
                 payload['reply_markup'] = pending_markup(pending)
-            result = self.telegram.call('sendMessage', payload)
+            result = self.telegram.call('sendMessage', payload, native_thread=(bindings or {}).get(key))
             if result and result.get('ok'):
                 message = result.get('result', {})
                 if message.get('chat', {}).get('id') == row['chat'] and message.get('message_thread_id', 0) == row['topic']:
@@ -1254,12 +1257,13 @@ class TopicMarkers:
             if not current or json.loads(current['value']).get('name') != name:
                 continue
             entry.update({'revision': revision, 'human': item['human'], 'base': base,
-                          'desired': desired, 'phase': 'attempting', 'attempted_at': now})
+                          'desired': desired, 'phase': 'attempting', 'attempted_at': now, 'native_thread':item['native']})
             self.state[key] = entry
             self.save()  # Lost ACK/restart cannot replay this attempt.
             chat, topic = (int(value) for value in key.split(':'))
             response = self.telegram.call('editForumTopic',
-                {'chat_id': chat, 'message_thread_id': topic, 'name': desired}, background=True)
+                {'chat_id': chat, 'message_thread_id': topic, 'name': desired},
+                background=True, native_thread=item['native'])
             if response is None:
                 entry['phase'] = 'uncertain'
             elif response.get('ok') is True and response.get('result') is True:
@@ -1353,7 +1357,8 @@ def run(args):
                     except (OSError, ValueError):
                         if publisher and key in publisher.snapshot():
                             publisher.update(key, topic['chat_id'], topic['thread_id'], reader.turn_id,
-                                '⚠️ Native activity unavailable · rollout unconfirmed', time.time())
+                                '⚠️ Native activity unavailable · rollout unconfirmed', time.time(),
+                                native_thread=tid)
                         continue
                     status = native.status(tid)
                     children = [native.status(child) for child in sorted(reader.agents)[:32]
@@ -1424,7 +1429,7 @@ def run(args):
                     if publisher:
                         publications.append((key, topic['chat_id'], topic['thread_id'],
                                              command['operation'] if command else reader.request_id or reader.turn_id, text, now,
-                                             active_text, position, pending_markup(pending)))
+                                             active_text, position, pending_markup(pending), tid))
                 # Publish the native snapshot before automatic Telegram delivery can wait.
                 cache.update(reports, bindings, weekly, contexts)
                 topic_snapshot['connected'] = True
@@ -1436,7 +1441,8 @@ def run(args):
                         markers.update(bridge, topic_snapshot)
                     for publication in publications:
                         publisher.update(*publication[:6], active_text=publication[6],
-                                         position=publication[7], markup=publication[8])
+                                         position=publication[7], markup=publication[8],
+                                         native_thread=publication[9])
                     for key, entry in publisher.snapshot().items():
                         if key not in known:
                             publisher.retire(key, entry)
@@ -1465,7 +1471,8 @@ def run(args):
                 if publisher:
                     for key, entry in publisher.snapshot().items():
                         publisher.update(key, entry['chat_id'], entry['topic'], entry['turn'],
-                                         '⚠️ Native connection unavailable · activity unconfirmed', time.time())
+                                         '⚠️ Native connection unavailable · activity unconfirmed', time.time(),
+                                         native_thread=entry.get('native_thread'))
                 atomic_json(state / 'health.json', {'updated_at': time.time(), 'connected': False})
                 topic_snapshot['connected'] = False
                 atomic_json(state / 'topics.json', topic_snapshot)

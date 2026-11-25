@@ -45,13 +45,20 @@ private configuration. Retain the existing `db_path` and
 `python3 -B -m scripts.activity_indicator` from its qualified package so it can
 use the existing owner-socket client. This profile uses no Bot API token or
 endpoint. Gateway checks the selected chat, topic and current owned native
-binding again just before authorizing the operation. TeleDaimon checks the bot
+binding again just before authorizing the operation. Configure Gateway's
+`activity_projection_state` to point to the existing private Activity state
+directory. Edits, deletions and marker updates require a matching receipt in
+that directory. The observation carries its original native binding through
+the transport. TeleDaimon checks the bot
 fingerprint, performs the allowlisted operation and retains the existing traffic
 meter priority. Activity keeps its existing card, status and marker receipts in
 the same state directory.
 
 Use `--retain-projections` for a service replacement that must preserve cards
-and markers. The retained state still prevents sending an original again after
+and markers. An already running legacy Activity process does not honor this
+option. Before its first replacement, verify that its normal exit has no
+cards or markers left to retire, or use an explicitly qualified handoff that
+retains the old worker's durable state without executing its cleanup. The retained state still prevents sending an original again after
 an uncertain Bot API outcome. An explicitly unsubmitted card remains eligible
 for the existing bounded retry. Explicit `--restore-topic-markers` keeps its
 ordinary meaning. Install the compatible Gateway route before selecting the
