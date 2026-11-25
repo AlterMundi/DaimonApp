@@ -11,6 +11,8 @@ struct Submit {
     id: String,
     text: String,
     #[serde(default)]
+    machine_source: Option<Uuid>,
+    #[serde(default)]
     visual: Option<crate::visual::VisualSelection>,
     #[serde(default)]
     files: Vec<crate::files::FileReference>,
@@ -146,6 +148,35 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
         .context("Missing integrating entry")?;
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
+    }
+    if let Some(body) = args.strip_prefix("context reserve ") {
+        let offer: crate::store::MachineSourceOffer = serde_json::from_str(body)?;
+        return app
+            .shared
+            .store
+            .conversation_machine_source_reserve(human, cfg.entry(), offer);
+    }
+    if let Some(body) = args.strip_prefix("context status ") {
+        let status: crate::store::MachineSourceStatus = serde_json::from_str(body)?;
+        return app
+            .shared
+            .store
+            .conversation_machine_source_status(human, cfg.entry(), status);
+    }
+    if let Some(id) = args.strip_prefix("context retained ") {
+        let input = app
+            .shared
+            .store
+            .conversation_input_read(human, cfg.entry(), id)?;
+        let receipt = app
+            .shared
+            .store
+            .conversation_machine_source_retained(&input)?;
+        return Ok(
+            json!({"schema":"telecodex.conversation-retained-machine-source/v1",
+            "id":input.id,"receipt":receipt,"retained_original":true,
+            "entry_binding":[human,input.entry,input.session,input.native]}),
+        );
     }
     if let Some(body) = args.strip_prefix("voice native initialize ") {
         #[derive(Deserialize)]
@@ -682,9 +713,16 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         ) {
             return response(app, &input, false);
         }
+        let machine_source = app
+            .shared
+            .store
+            .conversation_machine_source_retained(&input)?;
         let voice = input.voice.context("Original voice capture unavailable")?;
         let mut payload = json!({"binding":selected.binding,"id":selected.id,
             "audio_sha256":voice.audio_sha256,"mime":voice.mime,"capture_stop":voice.capture_stop,"files":input.files,"visual":input.visual,"reply":input.reply,"playback":input.playback,"capture_questions":input.capture_questions});
+        if let Some(receipt) = machine_source {
+            payload["machine_source"] = json!(receipt);
+        }
         if let Some(profile) = voice.transcription_profile {
             payload["transcription_profile"] = json!(profile);
         }
@@ -906,6 +944,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         request.visual,
         request.playback,
         request.files,
+        request.machine_source,
     )?;
     if fresh && input.phase == "retained" {
         if let Err(error) = super::voice::INTERRUPT_TARGETS
@@ -1386,6 +1425,8 @@ struct VoiceSubmit {
     #[serde(default)]
     defer_foreground: bool,
     id: String,
+    #[serde(default)]
+    machine_source: Option<Uuid>,
     audio_sha256: String,
     mime: String,
     #[serde(default)]
@@ -1433,6 +1474,11 @@ async fn voice_submit(
             || !request.files.is_empty())
     {
         bail!("Avatar interruption must be a new standalone conversation recording");
+    }
+    if request.machine_source.is_some()
+        && (request.foreground_dialogue.is_some() || request.avatar_interrupt)
+    {
+        bail!("Machine source requires ordinary voice capture");
     }
     if request.defer_foreground && request.foreground_dialogue.is_none() {
         bail!("Deferred completion requires a foreground capture");
@@ -1554,6 +1600,7 @@ async fn voice_submit(
             request.playback,
             request.capture_questions,
             request.files,
+            request.machine_source,
         )?
     };
     if recover {

@@ -623,6 +623,7 @@ impl Store {
             playback,
             capture_questions,
             Vec::new(),
+            None,
         )
     }
 
@@ -640,12 +641,13 @@ impl Store {
         playback: Option<ConversationPlayback>,
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
         voice.validate()?;
         if voice.transcription.is_some() {
             bail!("Transcription is receiving-owned");
         }
-        self.capture_original(
+        self.capture_original_mode(
             human,
             entry,
             binding,
@@ -658,6 +660,9 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
+            None,
+            machine_source,
         )
     }
 
@@ -702,12 +707,28 @@ impl Store {
         visual: Option<crate::visual::VisualSelection>,
         playback: Option<ConversationPlayback>,
         files: Vec<crate::files::FileReference>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
-        self.capture_original(
-            human, entry, binding, id, text, None, true, reply, visual, playback, None, files,
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            reply,
+            visual,
+            playback,
+            None,
+            files,
+            None,
+            None,
+            machine_source,
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &self,
@@ -737,6 +758,7 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
             None,
             None,
         )
@@ -775,6 +797,7 @@ impl Store {
             Vec::new(),
             None,
             Some((source, max_pending)),
+            None,
         )
     }
 
@@ -811,6 +834,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -853,6 +877,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -1102,7 +1127,17 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
+        if machine_source.is_some()
+            && (tribu.is_some()
+                || foreground_dialogue.is_some()
+                || voice
+                    .as_ref()
+                    .is_some_and(|v| v.avatar_interrupt == Some(true)))
+        {
+            bail!("Machine source requires an ordinary conversation input");
+        }
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1179,6 +1214,13 @@ impl Store {
             {
                 bail!("Original conversation input identity is immutable");
             }
+            super::conversation_machine_sources::match_machine_source(
+                &tx,
+                &input,
+                binding,
+                machine_source,
+                true,
+            )?;
             return Ok((input, false));
         }
         if let Some((_, max_pending)) = &tribu {
@@ -1273,6 +1315,13 @@ impl Store {
             [&input.id],
         )?;
         tx.execute("INSERT INTO conversation_inputs(id,human_id,session_id,native_thread,phase,doc,instance_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![input.id,human,session,input.native,input.phase,serde_json::to_string(&input)?,self.instance_id,now_string()])?;
+        super::conversation_machine_sources::match_machine_source(
+            &tx,
+            &input,
+            binding,
+            machine_source,
+            false,
+        )?;
         tx.commit()?;
         Ok((input, true))
     }
