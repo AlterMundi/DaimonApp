@@ -1,5 +1,13 @@
 # Selected Matrix execution adapter
 
+An Interaction adapter can submit a retained human original with the owner-local
+`matrix_operator.py --we-origin EMBODIMENT_ID` mode. The receiving embodiment is
+fixed by owner configuration. The caller supplies the retained request ID, Matrix
+thread ID, text and authenticated sender observation. The host verifies that
+sender before using the existing `we.converse` capability. It only reports
+delivery when the exact recipient has a matching native receipt. Callers must
+retain an uncertain submission and inspect the original rather than send it again.
+
 ## Portable Conversation publication
 
 The optional `interaction.matrix_publication` configuration adds a typed,

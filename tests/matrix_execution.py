@@ -42,6 +42,7 @@ from matrix_operator import receive as operator_receive
 from matrix_operator import respond as operator_respond
 from matrix_operator import send as operator_send
 from matrix_operator import we_conversation as operator_we_conversation
+from matrix_operator import we_origin as operator_we_origin
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -1936,6 +1937,30 @@ class AuthenticatedWeHostTests(unittest.TestCase):
             row["subject"] == "communication" and row["payload"]["body"]["text"] == uncertain["text"]
             for row in sdk.ledger_a.conversation_evidence()
         ))
+        return_attempts.clear()
+        authored = dict(
+            source=source, body=selected["body"], request_id=str(uuid.uuid4()),
+            thread_id=str(uuid.uuid4()), text="An original retained by Interaction",
+        )
+        for wrong, recipient in (
+            (authored, body),
+            (dict(authored, body=dict(authored["body"], manifest_hash="c" * 64)), author),
+        ):
+            with self.assertRaises(MatrixExecutionError):
+                operator_we_origin(wrong, client, timeout=5, recipient=recipient)
+        self.assertEqual(return_attempts, [])
+        result = operator_we_origin(authored, client, timeout=5, recipient=author)
+        self.assertEqual(result["schema"], "daimon-gateway.matrix-we-origin/v1")
+        self.assertEqual(result["state"], "delivered")
+        self.assertEqual(result["thread_id"], authored["thread_id"])
+        self.assertEqual(return_attempts, [authored["request_id"]])
+        received = next(
+            row for row in sdk.ledger_a.conversation_evidence()
+            if row["event_id"] == result["message_id"]
+        )
+        self.assertEqual(received["origin"]["embodiment_id"], body)
+        self.assertEqual(received["payload"]["body"]["text"], authored["text"])
+        self.assertEqual(received["payload"]["intent"]["thread_id"], authored["thread_id"])
 
 
 class AuthenticatedGroupHostTests(unittest.TestCase):
