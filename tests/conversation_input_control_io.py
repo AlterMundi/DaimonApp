@@ -655,12 +655,28 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         journey.binary = str(gateway_path) if named_roles else binary
         wrong_bot = journey.root / "wrong-bot.toml"
         wrong_bot.write_text(external_config.replace(
-            "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n"))
+            "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n").replace(
+            "startup_admin_ids=[100,101]", "startup_admin_ids=[100,101,999]"))
+        before_rejection = journey.row(
+            "SELECT tg_user_id, role, allowed FROM users ORDER BY tg_user_id"
+        )
+        pending_before_rejection = journey.row(
+            "SELECT id, phase, doc FROM conversation_inputs ORDER BY id"
+        )
+        audit_before_rejection = journey.row("SELECT COUNT(*) FROM audit_log")
         assert_command_refused([journey.binary, str(wrong_bot)], "does not match the journal identity")
+        assert journey.row("SELECT tg_user_id, role, allowed FROM users ORDER BY tg_user_id") == before_rejection
+        assert journey.row("SELECT id, phase, doc FROM conversation_inputs ORDER BY id") == pending_before_rejection
+        assert journey.row("SELECT COUNT(*) FROM audit_log") == audit_before_rejection
+        if named_roles:
+            # A legacy .env must not populate the named Gateway's environment.
+            (journey.root / ".env").write_text("TELECODEX_RESTART_DELAY_MS=60000\n")
         journey.config.write_text(external_config)
         journey.telegram_methods.clear()
         journey.start()
         journey.wait_control_socket(journey.socket)
+        if named_roles:
+            (journey.root / ".env").unlink()
         gateway_pid = journey.process.pid
         assert ingress({"operation": "ready", "bot_id": 124})["ok"] is False
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == seeded + 1
@@ -733,6 +749,27 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
         assert not any(request.get("method") in ("thread/goal/set", "thread/goal/clear", "turn/interrupt")
                        for request in journey.rpc)
+        poll_held, release_poll = threading.Event(), threading.Event()
+
+        def hold_empty_poll():
+            poll_held.set()
+            assert release_poll.wait(8), "Fixture long poll was not released"
+
+        journey.before_empty_poll = hold_empty_poll
+        try:
+            assert poll_held.wait(5), "Adapter did not enter the fixture long poll"
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            request = {"operation": "ready", "bot_id": 123}
+            assert ingress(request)["result"]["identified"] is False
+        finally:
+            journey.before_empty_poll = None
+            release_poll.set()
+        journey.wait(lambda: ingress(request)["result"]["identified"] is True)
+        assert ingress(request)["result"]["next_offset"] == second + 1
+        assert adapter.poll() is None and journey.process.pid != gateway_pid
+        assert journey.native_turns == before + 1
         stop_adapter(adapter)
         adapter = None
         print("PASS tokenless Gateway migration with retained bot, cursor, history, grant and goal accounting; "

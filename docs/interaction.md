@@ -31,7 +31,9 @@ database and owner control socket. Gateway uses the bot ID retained in the
 journal. For a fresh journal, set `telegram.external_bot_id` to the
 owner-selected bot. A conflicting ID is refused. The named Gateway entry
 requires external or disabled Telegram transport and refuses bot credential
-settings before validation can resolve them.
+settings before validation can resolve them. The named entry also leaves the
+legacy working-directory `.env` unread. Its external bot check and writer claim
+share one SQLite transaction before journal recovery or administrator seeding.
 
 Start exactly one `teledaimon ADAPTER_CONFIG` with the bot credential and the
 same owner socket. TeleDaimon performs `getMe` and reports the verified identity
@@ -78,10 +80,14 @@ Previously uncertain sends stay uncertain and are not replayed.
 
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission
-receipt. It advances only to the offset in that receipt. Gateway uses the
-existing admission journal and dispatches each new original once. Reconnecting
-the adapter resumes from the retained cursor, including when Gateway has run
-independently in between.
+receipt. It advances only with the durable cursor supplied by Gateway. Before
+each Bot API poll, the adapter checks the current Gateway's readiness. If
+Gateway restarted during a long poll, the adapter can re-identify the verified
+bot and reattach its projection listener before continuing from the durable
+cursor. A missing owner or lost admission acknowledgement ends that adapter
+run. Start it again through the existing service supervisor to read the
+retained cursor. The existing admission journal dispatches each new original
+once.
 
 For retained topic and artifact publications, Gateway selects the audience
 and freezes the parts in the existing journal. TeleDaimon formats and sends

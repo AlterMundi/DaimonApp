@@ -366,10 +366,15 @@ impl App {
     pub async fn bootstrap(config: Config) -> Result<Self> {
         let handy_model_dir = detect_handy_parakeet_model_dir();
         let session_defaults = SessionDefaults::from(&config.codex);
-        let store = Store::open(
+        let external_bot_id = config
+            .telegram
+            .external_bot_id
+            .filter(|_| config.telegram.enabled && config.telegram.external_polling);
+        let store = Store::open_with_external_bot(
             &config.db_path,
             &config.startup_admin_ids,
             &session_defaults,
+            external_bot_id,
         )?;
         // A configured cold entry needs only owned metadata, never a priming turn.
         if let Some(profile) = &config.interaction {

@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
         _ => None,
     };
     if let Some(path) = adapter_config {
-        init_logging();
+        init_logging(true);
         let path = std::path::Path::new(path);
         return tele_daimon::run_external(config::TelegramPollConfig::load(path)?).await;
     }
@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
-    init_logging();
+    init_logging(!gateway);
     if let Some(delay_ms) = restart_delay_ms_from_env() {
         sleep(Duration::from_millis(delay_ms)).await;
     }
@@ -116,8 +116,10 @@ async fn main() -> Result<()> {
     app.run().await
 }
 
-fn init_logging() {
-    let _ = dotenvy::dotenv();
+fn init_logging(load_dotenv: bool) {
+    if load_dotenv {
+        let _ = dotenvy::dotenv();
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()

@@ -141,6 +141,7 @@ impl TelegramGateway {
                 Ok(IngressReply::Ready {
                     next_offset: self.next_offset().await?,
                     menu: self.app.telegram_menu(),
+                    identified: self.adapter_identified,
                 })
             }
             IngressRequest::ProjectionReady { .. } => {

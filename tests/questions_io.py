@@ -108,6 +108,9 @@ class Journey:
                         else:
                             result = [owner.updates.popleft()] if owner.updates else []
                     if not result:
+                        before_empty_poll = getattr(owner, 'before_empty_poll', None)
+                        if before_empty_poll is not None:
+                            before_empty_poll()
                         time.sleep(.03)
                 elif method == 'getFile' and payload.get('file_id') in getattr(owner, 'media_files', {}):
                     file_id = payload['file_id']

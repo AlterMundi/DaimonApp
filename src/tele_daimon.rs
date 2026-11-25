@@ -19,6 +19,10 @@ use crate::telegram::{
 pub(crate) trait GatewayIngress {
     async fn next_offset(&self) -> Result<Option<i64>>;
 
+    async fn before_poll(&self, offset: Option<i64>) -> Result<Option<i64>> {
+        Ok(offset)
+    }
+
     /// Return the next durable Telegram cursor after accepting this original.
     /// A duplicate may return the same cursor without creating native work.
     async fn accept(&mut self, update: Update) -> Result<Option<i64>>;
@@ -219,6 +223,13 @@ pub(crate) async fn poll<NoticeFuture: Future<Output = ()> + Send>(
     tokio::pin!(shutdown);
 
     loop {
+        offset = tokio::select! {
+            _ = &mut shutdown => {
+                notify(Lifecycle::Stopped).await;
+                return Ok(());
+            }
+            offset = gateway.before_poll(offset) => offset?,
+        };
         tokio::select! {
             _ = &mut shutdown => {
                 notify(Lifecycle::Stopped).await;
@@ -275,6 +286,7 @@ pub(crate) enum IngressReply {
     Ready {
         next_offset: Option<i64>,
         menu: Vec<BotCommand>,
+        identified: bool,
     },
     Accepted {
         next_offset: Option<i64>,
@@ -284,7 +296,7 @@ pub(crate) enum IngressReply {
 #[cfg(unix)]
 struct RemoteGateway<'a> {
     socket: &'a Path,
-    bot_id: i64,
+    identity: User,
     initial_offset: Option<i64>,
 }
 
@@ -302,6 +314,26 @@ impl RemoteGateway<'_> {
         );
         Ok(serde_json::from_value(reply["result"].clone())?)
     }
+
+    async fn ready(&self, identify: bool) -> Result<IngressReply> {
+        self.request(IngressRequest::Ready {
+            bot_id: self.identity.id,
+            identity: identify.then(|| self.identity.clone()),
+        })
+        .await
+    }
+
+    async fn projection_ready(&self) -> Result<Option<i64>> {
+        match self
+            .request(IngressRequest::ProjectionReady {
+                bot_id: self.identity.id,
+            })
+            .await?
+        {
+            IngressReply::Accepted { next_offset } => Ok(next_offset),
+            _ => bail!("Gateway did not acknowledge Telegram projection readiness"),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -310,10 +342,32 @@ impl GatewayIngress for RemoteGateway<'_> {
         Ok(self.initial_offset)
     }
 
+    async fn before_poll(&self, _offset: Option<i64>) -> Result<Option<i64>> {
+        match self.ready(false).await? {
+            IngressReply::Ready {
+                identified: true,
+                next_offset,
+                ..
+            } => Ok(next_offset),
+            IngressReply::Ready {
+                identified: false, ..
+            } => {
+                let IngressReply::Ready {
+                    identified: true, ..
+                } = self.ready(true).await?
+                else {
+                    bail!("Gateway did not confirm Telegram re-identification");
+                };
+                self.projection_ready().await
+            }
+            _ => bail!("Gateway returned an unexpected Telegram readiness response"),
+        }
+    }
+
     async fn accept(&mut self, update: Update) -> Result<Option<i64>> {
         let reply = self
             .request(IngressRequest::Admit {
-                bot_id: self.bot_id,
+                bot_id: self.identity.id,
                 update: Box::new(update),
             })
             .await?;
@@ -335,30 +389,22 @@ pub(crate) async fn run_external(config: crate::config::TelegramPollConfig) -> R
     let identity = client.get_me().await?;
     let mut gateway = RemoteGateway {
         socket,
-        bot_id: identity.id,
+        identity,
         initial_offset: None,
     };
-    let IngressReply::Ready { next_offset, menu } = gateway
-        .request(IngressRequest::Ready {
-            bot_id: identity.id,
-            identity: Some(identity.clone()),
-        })
-        .await?
+    let IngressReply::Ready {
+        menu,
+        identified: true,
+        ..
+    } = gateway.ready(true).await?
     else {
         bail!("Gateway returned an unexpected Telegram readiness response");
     };
-    gateway.initial_offset = next_offset;
     let listener = projection::bind(socket).await?;
-    let IngressReply::Accepted { .. } = gateway
-        .request(IngressRequest::ProjectionReady {
-            bot_id: identity.id,
-        })
-        .await?
-    else {
-        bail!("Gateway did not acknowledge Telegram projection readiness");
-    };
+    gateway.initial_offset = gateway.projection_ready().await?;
+    let bot_id = gateway.identity.id;
     tokio::select! {
-        result = projection::serve(listener, client.clone(), identity.id) => result,
+        result = projection::serve(listener, client.clone(), bot_id) => result,
         result = poll(
             &client,
             &menu,
