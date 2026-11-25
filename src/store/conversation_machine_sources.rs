@@ -1,17 +1,50 @@
 //! Owner-local machine source offers and their atomic link to an original.
 use super::*;
 use crate::files::FileReference;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{
-    Deserialize,
+    Deserialize, Serialize,
     de::{self, MapAccess, SeqAccess, Visitor},
 };
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use std::{fmt, io::Read};
 
 const MAX_PENDING: i64 = 32;
 const SOURCE_BYTES: u64 = 48 * 1024;
+const SOURCE_BASE64_BYTES: usize = 64 * 1024;
+const MAX_SOURCES_PER_SESSION: i64 = 512;
+const MAX_SOURCES: i64 = 1024;
 const UNAVAILABLE: &str = "Machine source receipt unavailable";
+
+fn expire_pending(conn: &Connection, now: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM conversation_machine_sources WHERE retained=0 AND expires<=?1",
+        [now],
+    )?;
+    Ok(())
+}
+
+fn check_payload_capacity(conn: &Connection, session: i64) -> Result<()> {
+    let (all, owned): (i64,i64) = conn.query_row(
+        "SELECT count(*),count(CASE WHEN s.session=?1 THEN 1 END)
+         FROM conversation_machine_source_bytes b JOIN conversation_machine_sources s USING(receipt)",
+        [session], |row| Ok((row.get(0)?,row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        all < MAX_SOURCES && owned < MAX_SOURCES_PER_SESSION,
+        "Machine source storage is full; retained sources need archival before more can be added"
+    );
+    Ok(())
+}
+
+fn park_inline(conn: &Connection, receipt: &str, bytes: &[u8]) -> Result<()> {
+    conn.execute(
+        "INSERT INTO conversation_machine_source_bytes(receipt,bytes) VALUES(?1,?2)",
+        params![receipt, bytes],
+    )?;
+    Ok(())
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +53,7 @@ pub(crate) struct MachineSourceOffer {
     pub id: Uuid,
     pub observation_id: Uuid,
     pub file: FileReference,
+    pub source_b64: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -31,18 +65,26 @@ pub(crate) struct MachineSourceStatus {
 
 impl Store {
     pub(super) fn init_conversation_machine_sources(&self) -> Result<()> {
-        self.conn
-            .lock()
-            .expect("store mutex poisoned")
-            .execute_batch(
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS conversation_machine_sources (
                original TEXT PRIMARY KEY, receipt TEXT NOT NULL UNIQUE, human INTEGER NOT NULL,
                session INTEGER NOT NULL, binding TEXT NOT NULL, epoch TEXT NOT NULL,
                observation TEXT NOT NULL, file TEXT NOT NULL, expires INTEGER NOT NULL,
                retained INTEGER NOT NULL DEFAULT 0 CHECK(retained IN (0,1)));
              CREATE INDEX IF NOT EXISTS conversation_machine_sources_pending
-             ON conversation_machine_sources(session,expires) WHERE retained=0;",
-            )?;
+             ON conversation_machine_sources(session,expires) WHERE retained=0;
+             CREATE TABLE IF NOT EXISTS conversation_machine_source_bytes (
+               receipt TEXT PRIMARY KEY REFERENCES conversation_machine_sources(receipt) ON DELETE CASCADE,
+               bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=49152));",
+        )?;
+        super::add_column_if_missing(
+            &conn,
+            "conversation_machine_sources",
+            "source_inline",
+            "INTEGER NOT NULL DEFAULT 0 CHECK(source_inline IN (0,1))",
+        )?;
+        expire_pending(&conn, Utc::now().timestamp())?;
         Ok(())
     }
 
@@ -52,7 +94,25 @@ impl Store {
         entry: SessionKey,
         offer: MachineSourceOffer,
     ) -> Result<Value> {
+        let bytes = offer
+            .source_b64
+            .as_deref()
+            .map(|encoded| {
+                anyhow::ensure!(
+                    encoded.len() <= SOURCE_BASE64_BYTES,
+                    "Machine source exceeds its byte bound"
+                );
+                let raw = STANDARD
+                    .decode(encoded)
+                    .context("Invalid machine source encoding")?;
+                verify_source_bytes(&offer, &raw)?;
+                Ok::<_, anyhow::Error>(raw)
+            })
+            .transpose()?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let now = Utc::now().timestamp();
+        // Expiration of unused reservations is independent of the next offer's result.
+        expire_pending(&conn, now)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
         if offer.binding != super::presentation::entry_binding(&tx, human, entry, session)? {
@@ -62,7 +122,6 @@ impl Store {
         let id = offer.id.to_string();
         let observation = offer.observation_id.to_string();
         let file = serde_json::to_string(&offer.file)?;
-        let now = Utc::now().timestamp();
         let original: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM conversation_inputs WHERE id=?1)",
             [&id],
@@ -80,13 +139,12 @@ impl Store {
             if !exact {
                 anyhow::bail!(UNAVAILABLE);
             }
-            return source_status_on(&tx, human, entry, &offer.binding, &id);
+            return source_status_on(&tx, human, entry, &offer.binding, &id, false);
         }
         tx.execute(
-            "DELETE FROM conversation_machine_sources WHERE retained=0 AND (
-               (session=?1 AND (expires<=?2 OR binding<>?3 OR epoch<>?4
-                OR EXISTS(SELECT 1 FROM conversation_inputs WHERE id=original))) OR (original=?5 AND expires<=?2))",
-            params![session, now, offer.binding, epoch, id],
+            "DELETE FROM conversation_machine_sources WHERE retained=0 AND session=?1
+              AND (binding<>?2 OR epoch<>?3 OR EXISTS(SELECT 1 FROM conversation_inputs WHERE id=original))",
+            params![session, offer.binding, epoch],
         )?;
         let existing: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM conversation_machine_sources WHERE original=?1)",
@@ -94,13 +152,18 @@ impl Store {
             |r| r.get(0),
         )?;
         if existing {
-            let exact: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM conversation_machine_sources WHERE original=?1 AND human=?2
-                 AND session=?3 AND binding=?4 AND epoch=?5 AND observation=?6 AND file=?7 AND retained=0)",
-                params![id,human,session,offer.binding,epoch,observation,file], |r| r.get(0),
-            )?;
-            if !exact {
-                anyhow::bail!(UNAVAILABLE);
+            let (receipt, inline): (String, bool) = tx.query_row(
+                "SELECT receipt,source_inline FROM conversation_machine_sources WHERE original=?1 AND human=?2
+                 AND session=?3 AND binding=?4 AND epoch=?5 AND observation=?6 AND file=?7 AND retained=0",
+                params![id,human,session,offer.binding,epoch,observation,file], |r| Ok((r.get(0)?,r.get(1)?)),
+            ).optional()?.context(UNAVAILABLE)?;
+            if !inline && let Some(bytes) = bytes.as_deref() {
+                check_payload_capacity(&tx, session)?;
+                park_inline(&tx, &receipt, bytes)?;
+                tx.execute(
+                    "UPDATE conversation_machine_sources SET source_inline=1 WHERE receipt=?1",
+                    [receipt],
+                )?;
             }
         } else {
             if super::stopping::fenced_on(&tx, entry)?
@@ -116,14 +179,17 @@ impl Store {
             if pending >= MAX_PENDING {
                 anyhow::bail!("Machine source reservation capacity reached");
             }
-            verify_source(&tx, &offer)?;
+            check_payload_capacity(&tx, session)?;
+            let bytes = bytes.context("Exact machine source bytes required")?;
+            let receipt = Uuid::new_v4().to_string();
             tx.execute(
-                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![id,Uuid::new_v4().to_string(),human,session,offer.binding,epoch,observation,file,now+86400],
+                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
+                params![id,receipt,human,session,offer.binding,epoch,observation,file,now+86400],
             )?;
+            park_inline(&tx, &receipt, &bytes)?;
         }
-        let status = source_status_on(&tx, human, entry, &offer.binding, &id)?;
+        let status = source_status_on(&tx, human, entry, &offer.binding, &id, false)?;
         tx.commit()?;
         Ok(status)
     }
@@ -135,7 +201,30 @@ impl Store {
         status: MachineSourceStatus,
     ) -> Result<Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        source_status_on(&conn, human, entry, &status.binding, &status.id.to_string())
+        source_status_on(
+            &conn,
+            human,
+            entry,
+            &status.binding,
+            &status.id.to_string(),
+            false,
+        )
+    }
+    pub(crate) fn conversation_machine_source_read(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        status: MachineSourceStatus,
+    ) -> Result<Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        source_status_on(
+            &conn,
+            human,
+            entry,
+            &status.binding,
+            &status.id.to_string(),
+            true,
+        )
     }
     pub(crate) fn conversation_machine_source_retained(
         &self,
@@ -216,13 +305,20 @@ pub(crate) struct NativeMachineSource {
     pub block: String,
 }
 
+#[derive(Deserialize, Serialize)]
+struct SourceProjection {
+    observation: Box<RawValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_world_interface: Option<Box<RawValue>>,
+}
+
 pub(super) fn native_machine_source_on(
     conn: &Connection,
     input: &super::conversation_inputs::ConversationInput,
 ) -> Result<Option<NativeMachineSource>> {
     let row = conn
         .query_row(
-            "SELECT receipt,binding,epoch,observation,file FROM conversation_machine_sources
+            "SELECT receipt,binding,epoch,observation,file,source_inline FROM conversation_machine_sources
          WHERE original=?1 AND human=?2 AND session=?3 AND retained=1",
             params![input.id, input.human, input.session],
             |r| {
@@ -232,11 +328,12 @@ pub(super) fn native_machine_source_on(
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
+                    r.get::<_, bool>(5)?,
                 ))
             },
         )
         .optional()?;
-    let Some((receipt, binding, epoch, observation, file)) = row else {
+    let Some((receipt, binding, epoch, observation, file, inline)) = row else {
         return Ok(None);
     };
     anyhow::ensure!(
@@ -251,14 +348,30 @@ pub(super) fn native_machine_source_on(
         id: Uuid::parse_str(&input.id)?,
         observation_id: Uuid::parse_str(&observation)?,
         file: serde_json::from_str(&file)?,
+        source_b64: None,
     };
-    let source = verify_source(conn, &offer)?;
-    let mut content = json!({"issuer":"owner-local Holodeck source","receipt":receipt,"original_id":input.id,
-        "source_sha256":offer.file.sha256,"observation":source["observation"]});
-    if let Some(interface) = source.get("native_world_interface") {
-        content["native_world_interface"] = interface.clone();
+    let source = verify_stored_source(conn, &offer, receipt, inline)?;
+    #[derive(Serialize)]
+    struct MachineEvidence<'a> {
+        issuer: &'static str,
+        receipt: Uuid,
+        original_id: &'a str,
+        source_sha256: &'a str,
+        observation: &'a RawValue,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_world_interface: Option<&'a RawValue>,
     }
+    let content = MachineEvidence {
+        issuer: "owner-local Holodeck source",
+        receipt,
+        original_id: &input.id,
+        source_sha256: &offer.file.sha256,
+        observation: &source.observation,
+        native_world_interface: source.native_world_interface.as_deref(),
+    };
     let single_line = serde_json::to_string(&content)?
+        // In valid RawValue literal CR/LF only occur as formatting whitespace.
+        .replace(['\r', '\n'], "")
         .replace('\u{0085}', "\\u0085")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
@@ -270,19 +383,29 @@ pub(super) fn native_machine_source_on(
     }))
 }
 
-fn verify_source(conn: &Connection, offer: &MachineSourceOffer) -> Result<Value> {
-    if offer.file.name != "holodeck-situation.json"
-        || offer.file.mime != "application/json"
-        || offer.file.size == 0
-        || offer.file.size > SOURCE_BYTES
-    {
-        anyhow::bail!("Invalid Holodeck source envelope");
+fn verify_stored_source(
+    conn: &Connection,
+    offer: &MachineSourceOffer,
+    receipt: Uuid,
+    inline: bool,
+) -> Result<SourceProjection> {
+    if inline {
+        let bytes: Vec<u8> = conn
+            .query_row(
+                "SELECT bytes FROM conversation_machine_source_bytes WHERE receipt=?1",
+                [receipt.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("Exact machine source bytes are unavailable")?;
+        return verify_source_bytes(offer, &bytes);
     }
+    // Receipts created by the preceding candidate retain their exact vault
+    // source. New reservations never take this path.
     let entries = crate::files::attachments(
         Path::new(conn.path().context("File storage unavailable")?),
         std::slice::from_ref(&offer.file),
     )?;
-    // Read the same bounded, digest-pinned bytes checked by the file authority.
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -294,15 +417,26 @@ fn verify_source(conn: &Connection, offer: &MachineSourceOffer) -> Result<Value>
     if !file.metadata()?.is_file() {
         anyhow::bail!("Machine source bytes changed");
     }
-    let mut reader = file.take(SOURCE_BYTES + 1);
     let mut raw = Vec::new();
-    reader.read_to_end(&mut raw)?;
+    file.take(SOURCE_BYTES + 1).read_to_end(&mut raw)?;
+    verify_source_bytes(offer, &raw)
+}
+
+fn verify_source_bytes(offer: &MachineSourceOffer, raw: &[u8]) -> Result<SourceProjection> {
+    offer.file.validate()?;
+    if offer.file.name != "holodeck-situation.json"
+        || offer.file.mime != "application/json"
+        || offer.file.size == 0
+        || offer.file.size > SOURCE_BYTES
+    {
+        anyhow::bail!("Invalid Holodeck source envelope");
+    }
     if raw.len() as u64 != offer.file.size
-        || format!("{:x}", Sha256::digest(&raw)) != offer.file.sha256
+        || format!("{:x}", Sha256::digest(raw)) != offer.file.sha256
     {
         anyhow::bail!("Machine source bytes changed");
     }
-    let StrictJson(source) = serde_json::from_slice(&raw)?;
+    let StrictJson(source) = serde_json::from_slice(raw)?;
     let id = offer.id.to_string();
     let observation = &source["observation"];
     if source["schema"] != "holodeck.native-situation-source/v1"
@@ -324,7 +458,29 @@ fn verify_source(conn: &Connection, offer: &MachineSourceOffer) -> Result<Value>
     {
         anyhow::bail!("Machine source does not match this original");
     }
-    Ok(source)
+    if let Some(interface) = source.get("native_world_interface") {
+        let argv = interface["argv_prefix"]
+            .as_array()
+            .context("Invalid Holodeck world descriptor")?;
+        let absolute_path = |value: &Value| {
+            value.as_str().is_some_and(|path| {
+                Path::new(path).is_absolute()
+                    && path.len() <= 4096
+                    && !path.chars().any(char::is_control)
+            })
+        };
+        anyhow::ensure!(
+            interface["kind"] == "direct-native-world-port"
+                && argv.len() == 5
+                && absolute_path(&argv[0])
+                && argv[1] == "--socket"
+                && absolute_path(&argv[2])
+                && argv[3] == "--interaction"
+                && argv[4] == id,
+            "The Holodeck world descriptor does not name this original"
+        );
+    }
+    Ok(serde_json::from_slice(raw)?)
 }
 
 fn source_status_on(
@@ -333,6 +489,7 @@ fn source_status_on(
     entry: SessionKey,
     binding: &str,
     id: &str,
+    read_observation: bool,
 ) -> Result<Value> {
     let (session, native) = super::presentation::entry_on(conn, human, entry)?;
     if binding != super::presentation::entry_binding(conn, human, entry, session)? {
@@ -340,20 +497,35 @@ fn source_status_on(
     }
     let epoch = super::stopping::admission_epoch_on(conn, entry)?;
     let result = conn.query_row(
-        "SELECT s.receipt,s.observation,s.file,s.retained FROM conversation_machine_sources s
+        "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline FROM conversation_machine_sources s
          LEFT JOIN conversation_inputs i ON i.id=s.original
          WHERE s.original=?1 AND s.human=?2 AND s.session=?3 AND s.binding=?5
            AND ((s.retained=0 AND i.id IS NULL AND s.epoch=?6 AND s.expires>?7)
              OR (s.retained=1 AND i.human_id=s.human AND i.session_id=s.session AND i.native_thread=?4 AND i.retired=0))",
         params![id,human,session,native,binding,epoch,Utc::now().timestamp()],
-        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?)),
+        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?)),
     ).optional()?.context(UNAVAILABLE)?;
     let file: FileReference = serde_json::from_str(&result.2)?;
-    Ok(
-        json!({"schema":"telecodex.conversation-machine-source/v1","id":id,"receipt":result.0,
-        "observation_id":result.1,"source_sha256":file.sha256,"retained_original":result.3,
-        "speaker_verification":"asserted-by-owner-local-source","entry_binding":[human,entry,session,native]}),
-    )
+    let offer = MachineSourceOffer {
+        binding: binding.to_owned(),
+        id: Uuid::parse_str(id)?,
+        observation_id: Uuid::parse_str(&result.1)?,
+        file,
+        source_b64: None,
+    };
+    anyhow::ensure!(
+        !read_observation || result.3,
+        "Machine source is not sealed to an original"
+    );
+    let projection = verify_stored_source(conn, &offer, Uuid::parse_str(&result.0)?, result.4)?;
+    let mut value = json!({"schema":"telecodex.conversation-machine-source/v1","id":id,"receipt":result.0,
+        "observation_id":result.1,"source_sha256":offer.file.sha256,"retained_original":result.3,
+        "storage": if result.4 {"owner-journal"} else {"legacy-vault"},
+        "speaker_verification":"asserted-by-owner-local-source","entry_binding":[human,entry,session,native]});
+    if read_observation {
+        value["observation_json"] = json!(projection.observation.get());
+    }
+    Ok(value)
 }
 
 /// No receipt is inferred from a filename supplied by a device.
@@ -376,11 +548,11 @@ pub(super) fn match_machine_source(
             anyhow::bail!("Original conversation machine source is immutable");
         }
     } else if let Some(receipt) = selected {
-        let file: String = tx
+        let (file, observation, inline): (String, String, bool) = tx
             .query_row(
                 "UPDATE conversation_machine_sources SET retained=1
              WHERE original=?1 AND human=?2 AND session=?3 AND binding=?4 AND epoch=?5
-              AND receipt=?6 AND retained=0 AND expires>?7 RETURNING file",
+              AND receipt=?6 AND retained=0 AND expires>?7 RETURNING file,observation,source_inline",
                 params![
                     input.id,
                     input.human,
@@ -390,14 +562,21 @@ pub(super) fn match_machine_source(
                     receipt,
                     Utc::now().timestamp()
                 ],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
             )
             .optional()?
             .context(UNAVAILABLE)?;
-        let file = serde_json::from_str(&file)?;
-        crate::files::attachments(
-            Path::new(tx.path().context("File storage unavailable")?),
-            &[file],
+        verify_stored_source(
+            tx,
+            &MachineSourceOffer {
+                binding: binding.to_owned(),
+                id: Uuid::parse_str(&input.id)?,
+                observation_id: Uuid::parse_str(&observation)?,
+                file: serde_json::from_str(&file)?,
+                source_b64: None,
+            },
+            Uuid::parse_str(&receipt)?,
+            inline,
         )?;
     } else {
         tx.execute("DELETE FROM conversation_machine_sources WHERE original=?1 AND human=?2 AND session=?3 AND retained=0",
@@ -462,7 +641,17 @@ mod tests {
         }
     }
 
-    fn offer(root: &Path, binding: &str, id: Uuid) -> MachineSourceOffer {
+    fn machine_ref(bytes: &[u8]) -> FileReference {
+        FileReference {
+            file_id: Uuid::new_v4().to_string(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            name: "holodeck-situation.json".into(),
+            mime: "application/json".into(),
+            size: bytes.len() as u64,
+        }
+    }
+
+    fn offer(binding: &str, id: Uuid) -> MachineSourceOffer {
         let observation = Uuid::new_v4();
         let raw = serde_json::to_vec(&json!({
             "schema":"holodeck.native-situation-source/v1","human_input_id":id,"speaker":"human:fixture",
@@ -473,7 +662,8 @@ mod tests {
             id,
             binding: binding.into(),
             observation_id: observation,
-            file: retained_file(root, &raw, "holodeck-situation.json"),
+            file: machine_ref(&raw),
+            source_b64: Some(STANDARD.encode(raw)),
         }
     }
 
@@ -500,11 +690,17 @@ mod tests {
             "observation":{"id":observation,"schema":"holodeck.situation/v1","observer":"human:fixture",
                 "inputAssociation":{"humanInputId":id},"reportedLabel":marker},
         });
-        let file = retained_file(
-            root.path(),
-            &serde_json::to_vec(&source).unwrap(),
-            "holodeck-situation.json",
+        let json = serde_json::to_string_pretty(&source).unwrap().replace(
+            "\n    \"reportedLabel\"",
+            "\n    \"captureNumber\": 18446744073709551617,\n    \"reportedLabel\"",
         );
+        let bytes = json.into_bytes();
+        assert!(
+            bytes
+                .windows(20)
+                .any(|part| part == b"18446744073709551617")
+        );
+        let file = machine_ref(&bytes);
         let saved = store
             .conversation_machine_source_reserve(
                 100,
@@ -514,10 +710,20 @@ mod tests {
                     id,
                     observation_id: observation,
                     file: file.clone(),
+                    source_b64: Some(STANDARD.encode(bytes)),
                 },
             )
             .unwrap();
         let receipt = Uuid::parse_str(saved["receipt"].as_str().unwrap()).unwrap();
+        let source_read = || MachineSourceStatus {
+            binding: binding.clone(),
+            id,
+        };
+        assert!(
+            store
+                .conversation_machine_source_read(100, entry, source_read())
+                .is_err()
+        );
         let (human, _) = store
             .conversation_input_capture_files(
                 100,
@@ -560,7 +766,24 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(payload["observation"], source["observation"]);
+        let mut observation = payload["observation"].clone();
+        observation.as_object_mut().unwrap().remove("captureNumber");
+        assert_eq!(observation, source["observation"]);
+        assert!(machine.block.contains("18446744073709551617"));
+        let owner = store
+            .conversation_machine_source_read(100, entry, source_read())
+            .unwrap();
+        assert!(
+            owner["observation_json"]
+                .as_str()
+                .unwrap()
+                .contains("18446744073709551617")
+        );
+        assert!(
+            store
+                .conversation_machine_source_read(101, entry, source_read())
+                .is_err()
+        );
         assert_eq!(payload["original_id"], id.to_string());
         assert!(human.files.is_empty());
         assert_eq!(human.text, "Exact text");
@@ -569,8 +792,16 @@ mod tests {
                 .conversation_native_machine_source(101, &human.id)
                 .is_err()
         );
-        let path = root.path().join("control.sqlite.files").join(&file.sha256);
-        std::fs::write(path, b"changed").unwrap();
+        assert!(!root.path().join("control.sqlite.files").exists());
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE conversation_machine_source_bytes SET bytes=?1 WHERE receipt=?2",
+                params![b"changed".as_slice(), receipt.to_string()],
+            )
+            .unwrap();
         assert!(
             store
                 .conversation_native_machine_source(100, &human.id)
@@ -591,17 +822,151 @@ mod tests {
     }
 
     #[test]
+    fn machine_source_storage_rejects_bad_offers_and_reclaims_expired_pending_bytes() {
+        let (_root, store, entry, binding) = setup();
+        for encoding in [
+            None,
+            Some("Cg=\n".into()),
+            Some("A".repeat(SOURCE_BASE64_BYTES + 1)),
+        ] {
+            let mut source = offer(&binding, Uuid::new_v4());
+            source.source_b64 = encoding;
+            assert!(
+                store
+                    .conversation_machine_source_reserve(100, entry, source)
+                    .is_err()
+            );
+        }
+        let original = Uuid::new_v4();
+        let prepared = store
+            .conversation_machine_source_reserve(100, entry, offer(&binding, original))
+            .unwrap();
+        let receipt = prepared["receipt"].as_str().unwrap();
+        assert_eq!(prepared["storage"], "owner-journal");
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE conversation_machine_sources SET expires=0 WHERE original=?1",
+                [original.to_string()],
+            )
+            .unwrap();
+        store
+            .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+            .unwrap();
+        let rows: (i64,i64)=store.conn.lock().unwrap().query_row(
+            "SELECT count(*),count(CASE WHEN receipt=?1 THEN 1 END) FROM conversation_machine_source_bytes",[receipt],
+            |row|Ok((row.get(0)?,row.get(1)?)),
+        ).unwrap();
+        assert_eq!(rows, (1, 0));
+    }
+
+    #[test]
+    fn machine_source_pending_capacity_and_legacy_repair_keep_exact_identity() {
+        let (_root, store, entry, binding) = setup();
+        let id = Uuid::new_v4();
+        let first = offer(&binding, id);
+        let retry = MachineSourceOffer {
+            binding: binding.clone(),
+            id,
+            observation_id: first.observation_id,
+            file: first.file.clone(),
+            source_b64: first.source_b64.clone(),
+        };
+        let saved = store
+            .conversation_machine_source_reserve(100, entry, first)
+            .unwrap();
+        let receipt = saved["receipt"].as_str().unwrap();
+        // Simulate a pending receipt from the file-backed draft whose vault
+        // bytes have been lost. It can only repair with the same pinned bytes.
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE conversation_machine_sources SET source_inline=0 WHERE receipt=?1",
+                [receipt],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM conversation_machine_source_bytes WHERE receipt=?1",
+                [receipt],
+            )
+            .unwrap();
+        }
+        assert!(control_status(&store, entry, &binding, id).is_err());
+        assert_eq!(
+            store
+                .conversation_machine_source_reserve(100, entry, retry)
+                .unwrap(),
+            saved
+        );
+        for _ in 1..MAX_PENDING {
+            store
+                .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+                .unwrap();
+        }
+        assert!(
+            store
+                .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+                .unwrap_err()
+                .to_string()
+                .contains("reservation capacity")
+        );
+        assert_eq!(control_status(&store, entry, &binding, id).unwrap(), saved);
+    }
+
+    #[test]
     fn machine_source_seals_once_with_text_without_consuming_a_human_slot() {
         let (root, store, entry, binding) = setup();
         let id = Uuid::new_v4();
         let prepared = store
-            .conversation_machine_source_reserve(100, entry, offer(root.path(), &binding, id))
+            .conversation_machine_source_reserve(100, entry, offer(&binding, id))
             .unwrap();
         assert_eq!(prepared["retained_original"], false);
         let selected = Uuid::parse_str(prepared["receipt"].as_str().unwrap()).unwrap();
         let eight = (0..8)
             .map(|i| retained_file(root.path(), i.to_string().as_bytes(), "note.json"))
             .collect::<Vec<_>>();
+        let incompatible = [
+            (
+                Some(super::super::ConversationReply {
+                    source: "request:1".into(),
+                    revision: "a".repeat(64),
+                    context_only: false,
+                }),
+                vec![],
+            ),
+            (
+                None,
+                vec![retained_file(
+                    root.path(),
+                    b"fixture legacy",
+                    "holodeck-situation.json",
+                )],
+            ),
+        ];
+        for (reply, files) in incompatible {
+            assert!(
+                store
+                    .conversation_input_capture_files(
+                        100,
+                        entry,
+                        &binding,
+                        &id.to_string(),
+                        "Exact input",
+                        reply,
+                        None,
+                        None,
+                        files,
+                        Some(selected)
+                    )
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            control_status(&store, entry, &binding, id).unwrap()["retained_original"],
+            false
+        );
         let capture = |receipt| {
             store.conversation_input_capture_files(
                 100,
@@ -664,7 +1029,7 @@ mod tests {
         let (root, store, entry, binding) = setup();
         let id = Uuid::new_v4();
         let prepared = store
-            .conversation_machine_source_reserve(100, entry, offer(root.path(), &binding, id))
+            .conversation_machine_source_reserve(100, entry, offer(&binding, id))
             .unwrap();
         let receipt = Uuid::parse_str(prepared["receipt"].as_str().unwrap()).unwrap();
         let voice = super::super::conversation_inputs::ConversationVoice {
@@ -736,14 +1101,15 @@ mod tests {
 
     #[test]
     fn machine_source_omission_voids_reservation_and_legacy_can_never_be_resealed() {
-        let (root, store, entry, binding) = setup();
+        let (_root, store, entry, binding) = setup();
         let id = Uuid::new_v4();
-        let source = offer(root.path(), &binding, id);
+        let source = offer(&binding, id);
         let retry = MachineSourceOffer {
             id,
             binding: binding.clone(),
             observation_id: source.observation_id,
             file: source.file.clone(),
+            source_b64: source.source_b64.clone(),
         };
         store
             .conversation_machine_source_reserve(100, entry, source)
@@ -751,6 +1117,17 @@ mod tests {
         store
             .conversation_input_capture(100, entry, &binding, &id.to_string(), "Legacy")
             .unwrap();
+        let payloads: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM conversation_machine_source_bytes",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(payloads, 0);
         assert!(control_status(&store, entry, &binding, id).is_err());
         assert!(
             store
@@ -761,14 +1138,10 @@ mod tests {
 
     #[test]
     fn machine_source_cannot_seal_after_expiry_or_loss_of_retained_bytes() {
-        let (root, store, entry, binding) = setup();
+        let (_root, store, entry, binding) = setup();
         for expired in [true, false] {
             let id = Uuid::new_v4();
-            let source = offer(root.path(), &binding, id);
-            let path = root
-                .path()
-                .join("control.sqlite.files")
-                .join(&source.file.sha256);
+            let source = offer(&binding, id);
             let prepared = store
                 .conversation_machine_source_reserve(100, entry, source)
                 .unwrap();
@@ -784,7 +1157,15 @@ mod tests {
                     )
                     .unwrap();
             } else {
-                std::fs::remove_file(path).unwrap();
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "DELETE FROM conversation_machine_source_bytes WHERE receipt=?1",
+                        [receipt.to_string()],
+                    )
+                    .unwrap();
             }
             assert!(
                 store
@@ -807,22 +1188,17 @@ mod tests {
                     .conversation_input_read(100, entry, &id.to_string())
                     .is_err()
             );
-            if !expired {
-                assert_eq!(
-                    control_status(&store, entry, &binding, id).unwrap()["retained_original"],
-                    false
-                );
-            }
+            assert!(control_status(&store, entry, &binding, id).is_err());
         }
     }
 
     #[test]
     fn machine_source_survives_first_native_binding_before_or_after_capture() {
-        let (root, store, entry, binding) = setup_with_native(false);
+        let (_root, store, entry, binding) = setup_with_native(false);
         let mut originals = Vec::new();
         for i in 0..2 {
             let id = Uuid::new_v4();
-            let offer = offer(root.path(), &binding, id);
+            let offer = offer(&binding, id);
             let proof = store
                 .conversation_machine_source_reserve(100, entry, offer)
                 .unwrap();

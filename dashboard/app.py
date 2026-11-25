@@ -1004,6 +1004,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         metadata = {key:request.headers.get(header, '') for key, header in
                     (('binding', 'x-input-binding'), ('id', 'x-input-id'),
                      ('audio_sha256', 'x-audio-sha256'), ('mime', 'content-type'))}
+        source_receipt=request.headers.get('x-machine-source')
+        if source_receipt is not None:
+            try:metadata['machine_source']=Provider.input_id(source_receipt)
+            except ValueError:raise HTTPException(400,'The world context could not be verified') from None
         selected_profile=request.url.path.split('/voice/',1)[-1].split('/')[0]
         profile=selected_profile if selected_profile in ('openai','previous','openai-live','previous-live') else None
         if profile:

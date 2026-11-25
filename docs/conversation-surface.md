@@ -116,14 +116,17 @@ audio, transcription, microphone input, or turn activity.
 ## Owner-local machine source receipts
 
 A receiving Holodeck bridge can prepare a bounded source through the existing
-owner-local control socket. It calls `input context reserve` with an original
-UUID, current Conversation binding, observation UUID and the exact retained
-Holodeck source file reference. The file is checked against its digest and
-the original/observation recorded in its envelope. Preparation returns a
-server-generated receipt UUID. Prepare and status are metadata operations.
+owner-local control socket. `input context capabilities` identifies the
+current binding and the `owner-journal/v1` protocol. `input context reserve`
+accepts the original UUID, that binding, observation UUID, exact source digest
+and up to 48 KiB of source JSON encoded as base64. It returns a receipt UUID.
+`input context status` verifies the retained bytes and returns metadata.
+`input context read` selects the exact bound and sealed original and can return
+the observation JSON to an authorized local caller. Neither operation starts work.
 
 The native text and ordinary voice writers can select that UUID through
-`machine_source`. SQLite matches the original, current owner, session, native
+`machine_source` (`x-machine-source` at the ordinary voice HTTP boundary).
+SQLite matches the original, current owner, session, native
 thread, binding and admission epoch. It seals the receipt in the same
 transaction that inserts the original and its ingress order. The entry binding
 remains stable through first native-thread establishment. Retained status
@@ -140,16 +143,22 @@ evidence of canonical retention. Delivery and permission for any subsequent
 Holodeck action still require independent proof.
 
 Pending reservations are capped at 32 per Conversation and expire after
-24 hours. A new offer clears stale pending reservations for that entry. Expiry invalidates the old receipt. It leaves retained originals
-and their machine source records intact. The native writer checks the
-source again when sealing and rolls back capture if the bytes are unavailable.
+24 hours. Opening the journal or submitting another validly encoded offer
+sweeps expired pending bytes. The sweep survives a subsequent refusal. The
+payload budget is distinct from human attachments. It allows at most 512
+inline sources per session and 1,024 in the receiving journal. An exact,
+pending file-backed receipt from the previous draft can move to the journal
+using the same pinned bytes, original and receipt. The native writer checks
+the source again when sealing and rolls back capture if the bytes are unavailable.
+Retained sources remain immutable. Before sustained activation, qualify their
+owning archival route so the journal's sealed-source limit is recoverable.
 
-The dashboard and Holodeck bridge still use their current full source
-attachment. Enable a receipt selector there only when canonical delivery
-projects the referenced machine evidence and both writers, recovery and
-rollback are qualified. An older receiver retains the existing full-source
-path. It cannot participate in machine-only source delivery. Holodeck #19
-tracks baseline selection, semantic deltas and the receiving qualification.
+The dashboard has an authenticated HTTP path for selecting a receipt. The
+selected Holodeck browser integration still uses a full source attachment.
+The owner bridge candidate can reserve and verify a receipt against a current
+registered pair and world grant. The browser producer and baseline eligibility
+still need integration and receiving qualification. An older receiver retains
+the existing full-source path. Holodeck #19 tracks semantic deltas and rollout.
 
 Fable High reviewed the transaction boundary and identified the requirements
 for idempotence, admission epochs, and an additive table. Opus 5.5 High
@@ -169,7 +178,9 @@ bytes as strict JSON and rechecks the receipt, binding, and digest at native
 admission. If the source has changed or become unreadable, the affected input
 fails admission. A failed routed source leaves other pending inputs available.
 
-The staged source bytes currently use the existing protected file vault.
-Before enabling unused offers in normal captures, qualify a separate
-machine-source budget and reclamation path. Keep source provenance, the
-native delivery receipt and baseline eligibility independently readable.
+The controlled real HTTP test seals and recovers exact text and voice receipts
+without creating a human attachments directory. It delays voice past newer
+text and inspects the actual native protocol packets for both the general
+Conversation and the routed worker using a simulated native engine. JSON
+number tokens survive native projection without conversion. Source provenance,
+native delivery and baseline eligibility remain independent.

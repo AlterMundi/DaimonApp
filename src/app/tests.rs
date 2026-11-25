@@ -3542,6 +3542,7 @@ async fn cold_interaction_entry_never_adopts_another_owners_session() {
 #[cfg(unix)]
 #[tokio::test]
 async fn machine_source_voice_recovery_owner_command_uses_retained_receipt() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
@@ -3580,25 +3581,21 @@ async fn machine_source_voice_recovery_owner_command_uses_retained_receipt() {
         "inputAssociation":{"humanInputId":original}}
     })).unwrap();
     let hash = format!("{:x}", Sha256::digest(&bytes));
-    let files = root.path().join("entry.sqlite.files");
     let voices = root.path().join("entry.sqlite.voice");
-    for dir in [&files, &voices] {
-        std::fs::create_dir(dir).unwrap();
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    std::fs::create_dir(&voices).unwrap();
+    std::fs::set_permissions(&voices, std::fs::Permissions::from_mode(0o700)).unwrap();
     let audio = b"exact test audio";
-    for (path, data) in [
-        (files.join(&hash), bytes.as_slice()),
-        (voices.join(original.to_string()), audio.as_slice()),
-    ] {
-        std::fs::write(&path, data).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
+    let audio_path = voices.join(original.to_string());
+    std::fs::write(&audio_path, audio).unwrap();
+    std::fs::set_permissions(&audio_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let reserve = json!({"id":original,"binding":binding,"observation_id":observation,
+        "source_b64":STANDARD.encode(&bytes),
         "file":{"file_id":Uuid::new_v4(),"sha256":hash,"name":"holodeck-situation.json","mime":"application/json","size":bytes.len()}});
     let offered = conversation_inputs::command(&app, 100, &format!("context reserve {reserve}"))
         .await
         .unwrap();
+    assert_eq!(offered["storage"], "owner-journal");
+    assert!(!root.path().join("entry.sqlite.files").exists());
     let receipt = Uuid::parse_str(offered["receipt"].as_str().unwrap()).unwrap();
     let store = &app.shared.store;
     store

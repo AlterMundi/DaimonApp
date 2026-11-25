@@ -149,6 +149,14 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if args == "context capabilities" {
+        let mut value = app
+            .shared
+            .store
+            .conversation_request_binding(human, cfg.entry())?;
+        value["machine_source"] = json!("owner-journal/v1");
+        return Ok(value);
+    }
     if let Some(body) = args.strip_prefix("context reserve ") {
         let offer: crate::store::MachineSourceOffer = serde_json::from_str(body)?;
         return app
@@ -162,6 +170,13 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .shared
             .store
             .conversation_machine_source_status(human, cfg.entry(), status);
+    }
+    if let Some(body) = args.strip_prefix("context read ") {
+        let status: crate::store::MachineSourceStatus = serde_json::from_str(body)?;
+        return app
+            .shared
+            .store
+            .conversation_machine_source_read(human, cfg.entry(), status);
     }
     if let Some(id) = args.strip_prefix("context retained ") {
         let input = app

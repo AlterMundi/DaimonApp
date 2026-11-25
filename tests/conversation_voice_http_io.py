@@ -30,7 +30,7 @@ def audio(frequency=440,silence=False,frames=3200):
         wav.writeframes(b''.join(struct.pack('<h',0 if silence else int(5000*math.sin(2*math.pi*frequency*i/16000))) for i in range(frames)))
     return target.getvalue()
 
-def qualify(binary, stop_reason="duration_limit", profile=False, default=False):
+def qualify(binary, stop_reason="duration_limit", profile=False, default=False, machine_source=False):
     j=Requests(str(Path(binary).resolve()));client=None
     try:
         j.start()
@@ -60,11 +60,26 @@ print(json.dumps({'text':item['text'],'final':True}))
         j.start();j.wait_control_socket(j.socket);j.routing=True
         binding=j.read('presentation','list','0','0')['result']['binding'];j.messages.clear()
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
-        client=TestClient(create_app(config,Provider(config),lambda raw,bot:int(raw)),base_url=config['origin'])
+        provider=Provider(config)
+        client=TestClient(create_app(config,provider,lambda raw,bot:int(raw)),base_url=config['origin'])
         headers={'origin':config['origin']}
         token=client.post('/api/session',json={'init_data':'100'},headers=headers).json()['session_token'];headers['authorization']='Bearer '+token
         page=client.get('/api/interaction',headers=headers).json();assert page['can_speak'];headers['x-dashboard-csrf']=page['csrf']
-        transcripts={}
+        transcripts={};machine_receipts={}
+        def offer_context(ident,label):
+            observation_id=str(uuid.uuid4());speaker='human:telegram:100'
+            observation={'schema':'holodeck.situation/v1','id':observation_id,'observer':speaker,
+                'inputAssociation':{'humanInputId':ident},'fixtureLabel':label}
+            data=json.dumps({'schema':'holodeck.native-situation-source/v1','human_input_id':ident,
+                'speaker':speaker,'observation':observation}).encode()
+            ref={'file_id':str(uuid.uuid4()),'name':'holodeck-situation.json','mime':'application/json',
+                'size':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+            value=provider.reserve_conversation_machine_source(binding=binding,ident=ident,
+                observation_id=observation_id,data=data,file=ref)
+            assert value['storage']=='owner-journal' and value['retained_original'] is False
+            assert value['source_sha256']==ref['sha256']
+            machine_receipts[ident]=value['receipt']
+            return value['receipt']
         def calls():
             p=j.root/'asr-calls';return p.read_text().splitlines() if p.exists() else []
         def register(data,text,hold=False):
@@ -72,6 +87,7 @@ print(json.dumps({'text':item['text'],'final':True}))
         def upload(data,ident=None,selected=None,digest=None,stop=None):
             ident=ident or str(uuid.uuid4());digest=digest or hashlib.sha256(data).hexdigest()
             h={**(headers if selected is None else selected),'content-type':'audio/wav','x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':digest}
+            if ident in machine_receipts:h['x-machine-source']=machine_receipts[ident]
             if stop is not None:h['x-recording-stop']=stop
             route='/api/interaction/voice/openai' if profile and not default else '/api/interaction/voice'
             return ident,client.post(route+('/limited' if stop is not None else ''),content=data,headers=h)
@@ -86,7 +102,11 @@ print(json.dumps({'text':item['text'],'final':True}))
         with patch('dashboard.provider.sync_directory',side_effect=OSError('Synthetic directory-sync failure')):
             assert upload(data,failed_sync)[1].status_code==503
         assert not calls() and j.row('SELECT count(*) FROM conversation_inputs WHERE id=?',(failed_sync,))==[(0,)]
-        original,response=upload(data,stop=stop_reason);assert response.status_code==200,response.text
+        original=str(uuid.uuid4())
+        if machine_source:
+            assert provider.conversation_machine_source_capabilities()['machine_source']=='owner-journal/v1'
+            offer_context(original,'Voice observation from Holodeck')
+        original,response=upload(data,original,stop=stop_reason);assert response.status_code==200,response.text
         assert response.json()['phase']=='preparing' and response.json()['text']==''
         j.wait(lambda:digest in calls());assert not j.packets,'Partial ASR admitted work'
         repeated=upload(data,original,stop=stop_reason)[1];assert repeated.status_code==200 and not repeated.json()['new_input']
@@ -99,7 +119,9 @@ print(json.dumps({'text':item['text'],'final':True}))
         if profile and not default:assert status(original)['voice']['transcription_profile']=='openai'
         if default:assert 'transcription_profile' not in status(original)['voice'],'A classic capture cannot change route when the default changes'
         assert calls().count(digest)==1
-        later=str(uuid.uuid4());later_response=client.post('/api/interaction/inputs',json={'binding':binding,'id':later,'text':'Later correction: requirement17.'},headers=headers)
+        later=str(uuid.uuid4());later_input={'binding':binding,'id':later,'text':'Later correction: requirement17.'}
+        if machine_source:later_input['machine_source']=offer_context(later,'Text observation from Holodeck')
+        later_response=client.post('/api/interaction/inputs',json=later_input,headers=headers)
         assert later_response.status_code==200,later_response.text
         j.wait(lambda:status(later)['phase']=='accepted');assert len(j.packets)==1
         j.call('route-newer-text','dispatch',{'input_ref':later,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
@@ -117,6 +139,16 @@ print(json.dumps({'text':item['text'],'final':True}))
         j.wait(lambda:len(j.instructions(7))==2 and j.instructions(7)[1][1]=='accepted')
         worker_packet=j.worker_packets['native-topic-7'][-1]['input'][0]['text']
         assert '"capture_id":"'+original+'"' in worker_packet and 'Earlier spoken requirement13.' in worker_packet
+        if machine_source:
+            assert 'Text observation from Holodeck' in j.packets[0][1]['input'][0]['text']
+            assert 'Voice observation from Holodeck' in j.packets[1][1]['input'][0]['text']
+            assert 'Voice observation from Holodeck' in worker_packet
+            assert 'Text observation from Holodeck' not in worker_packet
+            for ident in (original,later):
+                sealed=provider.read_conversation_machine_source(binding=binding,ident=ident)
+                assert sealed['receipt']==machine_receipts[ident] and sealed['retained_original'] is True
+                assert not status(ident).get('files')
+            assert not Path(str(j.root/'state.sqlite')+'.files').exists()
         orders=j.row("SELECT event_id,id FROM original_ingress_order WHERE channel='conversation' ORDER BY id")
         assert orders[0][0]==original and orders[1][0]==later and orders[0][1]<orders[1][1]
         assert json.loads(worker_packet.split('Transport provenance: ',1)[1].split('\nCurrent instruction:',1)[0])['transcription']['capture_stop']==stop_reason
@@ -183,6 +215,7 @@ print(json.dumps({'text':item['text'],'final':True}))
         assert upload(data3,interrupted)[1].json()['new_input'] is False and calls().count(digest3)==1
         assert not j.messages,'Canonical microphone fabricated Telegram publication'
         print('PASS committed browser voice: actual HTTP/owner/SQLite/decoder/native, one retained clip identity, final ASR only, source order before later text, attributed worker routing, silence, duplicate/changed upload, grant ABA and restart without replay; zero models.')
+        if machine_source:print('PASS owner journal machine sources: exact text, delayed voice and routed native evidence, sealed readback and zero human attachment slots.')
     finally:
         if client:client.close()
         j.close()
@@ -693,7 +726,8 @@ print(json.dumps({'text':item['text'],'final':True}))
 
 
 if __name__=='__main__':
-    if '--legacy-default-retention' in sys.argv[2:] or '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
+    if '--machine-source' in sys.argv[2:]:qualify(sys.argv[1],machine_source=True)
+    elif '--legacy-default-retention' in sys.argv[2:] or '--openai-default' in sys.argv[2:]:qualify(sys.argv[1],profile=True,default=True)
     elif '--openai-profile' in sys.argv[2:]:qualify(sys.argv[1],profile=True)
     elif '--archive-hold' in sys.argv[2:]:archive_hold(sys.argv[1])
     elif '--archive-legacy' in sys.argv[2:]:archive_hold(sys.argv[1],legacy=True)
@@ -703,5 +737,6 @@ if __name__=='__main__':
         qualify(sys.argv[1],profile=True,default=True)
         foreground_capture(sys.argv[1])
         avatar_interrupt(sys.argv[1])
-        for reason in ('duration_limit','audio_flush_unconfirmed'):qualify(sys.argv[1],reason)
+        for reason in ('duration_limit','audio_flush_unconfirmed'):
+            qualify(sys.argv[1],reason,machine_source=reason=='duration_limit')
         archive_hold(sys.argv[1])

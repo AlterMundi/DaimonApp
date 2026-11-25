@@ -949,10 +949,31 @@ class Provider:
         self.retire_voice_capture(value)
         return value
 
+    def conversation_machine_source_capabilities(self):
+        return self.presentation('input context capabilities')
+
+    def reserve_conversation_machine_source(self, *, binding, ident, observation_id, data, file):
+        """Owner-local bridge preparation. The browser cannot call this writer."""
+        from base64 import b64encode
+        if not isinstance(data, bytes) or not 0 < len(data) <= 48 * 1024:
+            raise ValueError('Select one bounded machine source')
+        self.input_id(ident);self.input_id(observation_id)
+        value={'binding':binding,'id':ident,'observation_id':observation_id,'file':file,
+               'source_b64':b64encode(data).decode('ascii')}
+        return self.presentation('input context reserve ' + json.dumps(value, separators=(',',':')))
+
+    def read_conversation_machine_source(self, *, binding, ident):
+        self.input_id(ident)
+        return self.presentation('input context read ' + json.dumps({'binding':binding,'id':ident}))
+
+    def retained_conversation_machine_source(self, ident):
+        return self.presentation('input context retained ' + self.input_id(ident))
+
     def conversation_input_submit(self, body):
-        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files'}:
+        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files','machine_source'}:
             raise ValueError('Select the conversation and provide one original message')
         self.input_id(body['id'])
+        if 'machine_source' in body:self.input_id(body['machine_source'])
         self.check_reply(body.get('reply'))
         self.check_playback(body.get('playback'))
         from .visual import check_reference
@@ -1167,7 +1188,7 @@ class Provider:
 
     def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
         import re
-        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile','avatar_interrupt'}:
+        if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile','avatar_interrupt','machine_source'}:
             raise ValueError('Select one original voice recording')
         if metadata.get('transcription_profile') not in (None,'openai','previous','openai-live','previous-live'):
             raise ValueError('Unknown transcription profile; no fallback')
@@ -1177,6 +1198,10 @@ class Provider:
                 or any(metadata.get(k) is not None for k in ('reply','visual','capture_stop')) or metadata.get('files')):
             raise ValueError('Avatar interruption requires a complete standalone recording')
         self.input_id(metadata['id'])
+        if 'machine_source' in metadata:
+            self.input_id(metadata['machine_source'])
+            if foreground_dialogue is not None or avatar_interrupt:
+                raise ValueError('Machine source requires ordinary voice capture')
         if foreground_dialogue is not None:
             self.input_id(foreground_dialogue)
             metadata={**metadata,'foreground_dialogue':foreground_dialogue}

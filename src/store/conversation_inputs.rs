@@ -1132,11 +1132,21 @@ impl Store {
         if machine_source.is_some()
             && (tribu.is_some()
                 || foreground_dialogue.is_some()
+                || reply
+                    .as_ref()
+                    .is_some_and(|r| r.source.starts_with("request:") && !r.context_only)
                 || voice
                     .as_ref()
                     .is_some_and(|v| v.avatar_interrupt == Some(true)))
         {
             bail!("Machine source requires an ordinary conversation input");
+        }
+        if machine_source.is_some()
+            && files
+                .iter()
+                .any(|file| file.name == "holodeck-situation.json")
+        {
+            bail!("Select exactly one Holodeck source for this original");
         }
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
