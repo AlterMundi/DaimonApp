@@ -168,7 +168,7 @@ window.VisualInput = (() => {
       const references=Array.isArray(reference)?reference:[reference];
       for(const image of [...images])if(references.some(ref=>ref.source_id===image.source_id&&ref.selected_at===image.selected_at&&ref.image_sha256===image.image_sha256&&JSON.stringify(ref.point)===JSON.stringify(image.point)))remove(image);
     }
-    reset();return {capture,captureForVoice:capture,consumed,reset};
+    reset();return {capture,captureForVoice:capture,consumed,reset,hasImages:()=>images.length>0};
   }
   return {mount};
 })();
