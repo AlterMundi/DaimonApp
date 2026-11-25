@@ -60,5 +60,100 @@ window.ConversationSurface=(()=>{
     window.addEventListener('pageshow',event=>{if(event.persisted&&closed){closed=false;window.addEventListener('message',receive);ready();}});
     return {identity,bind,prepare,status,attempt,discard,disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
   }
-  return {create};
+
+  // The same authenticated Conversation origin owns both copies. The parent
+  // never receives draft text or a reason to create original work.
+  function mountDraft({field,api,busy,show,check}){
+    const slot='daimon-conversation-draft/v1',ttl=7*86400000;
+    const scope=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+    const textOK=text=>typeof text==='string' && !text.includes('\0') && new TextEncoder().encode(text).length<=32768;
+    const bufferOK=text=>typeof text==='string' && text.length<=65536;
+    const valid=value=>value&&Number.isSafeInteger(value.revision)&&value.revision>=0&&textOK(value.text);
+    let current,timer;
+    function buffers(){
+      try{const values=JSON.parse(window.sessionStorage.getItem(slot));return Array.isArray(values)?values.filter(v=>v&&Date.now()-v.at<ttl):[];}
+      catch{return [];}
+    }
+    function persist(s){
+      try{window.sessionStorage.setItem(slot,JSON.stringify([{key:s.key,at:Date.now(),text:s.text,base:s.base,dirty:s.dirty,pending:s.pending},
+        ...buffers().filter(v=>v.key!==s.key).slice(0,3)]));}catch{}
+    }
+    function render(s){
+      if(current!==s || busy())return;
+      if(field.value!==s.text)field.value=s.text;
+      const pending=s.pending?.text===s.text;
+      show(pending?'unconfirmed':s.conflict?'conflict':'',pending?()=>checkPending(s):()=>choose(s,true),()=>choose(s,false));
+    }
+    function bind(owner,binding){
+      const key=scope(owner)&&scope(binding)?owner+'|'+binding:undefined;
+      if(key===current?.key)return;
+      clearTimeout(timer);
+      if(current){field.value='';show('');}
+      current=undefined;
+      if(!key)return;
+      const saved=buffers().find(v=>v.key===key);
+      const s={key,binding,text:'',base:0,dirty:false};
+      if(saved&&Number.isSafeInteger(saved.base)&&saved.base>=0&&bufferOK(saved.text)){
+        Object.assign(s,{text:saved.text,base:saved.base,dirty:saved.dirty===true,
+          pending:uuid(saved.pending?.id)&&textOK(saved.pending?.text)?saved.pending:undefined});
+      }
+      current=s;render(s);
+      if(s.pending)void checkPending(s);
+    }
+    function pulse(s){
+      clearTimeout(timer);
+      if(!s.remote||!s.dirty||s.conflict||s.posting||s.pending?.text===s.text||!textOK(s.text))return;
+      timer=setTimeout(async()=>{
+        if(current!==s || s.posting)return;
+        const sent=s.text,revision=s.base;
+        s.posting=true;
+        try{
+          const result=await api('interaction/draft',{binding:s.binding,revision,text:sent});
+          if(current!==s||!valid(result))return;
+          if(result.text===sent){s.base=result.revision;s.dirty=s.text!==sent;}
+          observe(result);
+        }catch{/* The local buffer stays; the next observation reconciles the same revision. */}
+        finally{s.posting=false;if(current===s&&s.text!==sent)pulse(s);}
+      },650);
+    }
+    function observe(value){
+      const s=current;if(!s)return;
+      if(valid(value)&&(!s.remote||value.revision>=s.remote.revision)){
+        s.remote=value;
+        if(!s.dirty){s.text=value.text;s.base=value.revision;s.conflict=false;}
+        else if(!s.posting||s.base===value.revision){s.conflict=value.revision!==s.base&&value.text!==s.text;
+          if(value.text===s.text){s.base=value.revision;s.dirty=false;}}
+        persist(s);
+      }
+      render(s);pulse(s);
+    }
+    function choose(s,keep){
+      if(s!==current||!s.remote||busy())return;
+      if(!keep)s.text=s.remote.text;
+      s.base=s.remote.revision;s.dirty=keep&&s.text!==s.remote.text;s.conflict=false;persist(s);render(s);pulse(s);
+    }
+    function change(text){
+      const s=current;if(!s||!bufferOK(text))return;
+      s.text=text;s.dirty=true;persist(s);pulse(s);
+    }
+    function attempt(id,text){const s=current;if(s&&textOK(text)){s.pending={id,text};persist(s);}}
+    function confirm(value){
+      const s=current;if(!s||!s.pending||value?.id!==s.pending.id||value.binding!==s.binding||!value.phase||value.phase==='reselection')return;
+      if(s.text===s.pending.text){s.text='';s.dirty=true;}
+      s.pending=undefined;persist(s);render(s);pulse(s);
+    }
+    async function checkPending(s){
+      if(s!==current||!s.pending||s.checking)return;
+      s.checking=true;
+      try{const value=await check(s.pending.id);if(current===s)confirm(value);}
+      catch{/* An absent or unknown receipt must not repeat the input. */}
+      finally{s.checking=false;render(s);}
+    }
+    function unsent(id){
+      const s=current;if(s?.pending?.id!==id)return;
+      s.pending=undefined;persist(s);render(s);pulse(s);
+    }
+    return {bind,observe,change,attempt,confirm,unsent,isUnconfirmed:text=>current?.pending?.text===text};
+  }
+  return {create,mountDraft};
 })();

@@ -73,6 +73,16 @@ class Journey:
                 method = self.path.rsplit('/', 1)[-1]
                 if hasattr(owner,'telegram_methods'):owner.telegram_methods.append(method)
                 raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                failure = getattr(owner, 'telegram_failures', {}).get(method)
+                if failure is not None:
+                    body = (b'proxy error' if method in getattr(owner, 'invalid_telegram_failure_body', ())
+                            else json.dumps({'ok': False, 'error_code': failure,
+                                             'description': 'Synthetic Bot API failure'}).encode())
+                    self.send_response(failure)
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.headers.get_content_type()=='multipart/form-data':
                     assert hasattr(owner,'multipart_reply'),'Unexpected multipart upload'
                     response=owner.multipart_reply(method,self.headers,raw)
@@ -86,8 +96,16 @@ class Journey:
                 if method == 'getMe':
                     result = {'id': 123, 'is_bot': True, 'first_name': 'Fixture',
                               'username': 'FixtureBot', 'has_topics_enabled': True}
+                elif method == 'getChatMenuButton':
+                    result = getattr(owner, 'menu_button', {'type': 'default'})
+                elif method == 'setChatMenuButton':
+                    assert payload['chat_id'] == 100
+                    owner.menu_button = payload['menu_button']
+                    result = True
                 elif method == 'getUpdates':
                     with owner.lock:
+                        if hasattr(owner, 'poll_offsets'):
+                            owner.poll_offsets.append(payload.get('offset') or 0)
                         if getattr(owner, 'acknowledged_updates', False):
                             # A response can be lost during listener replacement.
                             # Telegram confirms updates only through the next offset.
@@ -96,6 +114,9 @@ class Journey:
                             result = list(owner.updates)[:1]
                         else:
                             result = [owner.updates.popleft()] if owner.updates else []
+                    before_poll_reply = getattr(owner, 'before_poll_reply', None)
+                    if before_poll_reply is not None:
+                        before_poll_reply(result)
                     if not result:
                         time.sleep(.03)
                 elif method == 'getFile' and payload.get('file_id') in getattr(owner, 'media_files', {}):

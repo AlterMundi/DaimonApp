@@ -607,31 +607,18 @@ async fn resume_target(app: &App, human: i64, t: &StopTarget, id: &str) -> Resul
 
 #[cfg(unix)]
 pub(super) async fn start_control_socket(app: App) -> Result<()> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::UnixListener;
     let Some(config) = app.shared.config.session_control.clone() else {
         return Ok(());
     };
-    let path = config.socket_path.clone();
-    let parent = path.parent().context("Control socket parent missing")?;
-    let meta = std::fs::symlink_metadata(parent)?;
+    let listener = crate::control_client::bind_owner(&config.socket_path).await?;
     let uid = unsafe { libc::geteuid() };
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
-        bail!("Control socket needs an owner-only directory");
-    }
-    if let Ok(old) = std::fs::symlink_metadata(&path) {
-        if !old.file_type().is_socket() || old.uid() != uid {
-            bail!("Refusing to replace an unsafe control path");
-        }
-        if tokio::net::UnixStream::connect(&path).await.is_ok() {
-            bail!("A control listener already owns this path");
-        }
-        std::fs::remove_file(&path)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let capacity = Arc::new(tokio::sync::Semaphore::new(4));
+    let telegram = app.shared.config.telegram.external_polling.then(|| {
+        Arc::new(Mutex::new(super::telegram_ingress::TelegramGateway::new(
+            app.clone(),
+        )))
+    });
     tokio::spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
@@ -647,10 +634,16 @@ pub(super) async fn start_control_socket(app: App) -> Result<()> {
             };
             let app = app.clone();
             let human = config.human_id;
+            let telegram = telegram.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 let (read, mut write) = stream.into_split();
-                let mut reader = BufReader::new(read.take(262145));
+                let limit = if telegram.is_some() {
+                    crate::tele_daimon::INGRESS_FRAME_LIMIT
+                } else {
+                    262144
+                };
+                let mut reader = BufReader::new(read.take(limit + 1));
                 let mut raw = Vec::new();
                 let reply = match tokio::time::timeout(
                     Duration::from_secs(5),
@@ -658,9 +651,52 @@ pub(super) async fn start_control_socket(app: App) -> Result<()> {
                 )
                 .await
                 {
-                    Ok(Ok(n)) if n > 0 && n <= 262144 => {
+                    Ok(Ok(n)) if n > 0 && n as u64 <= limit => {
                         match serde_json::from_slice::<Value>(&raw) {
-                            Ok(v) => match command(
+                            Ok(v) if v.get("telegram_ingress").is_some() => {
+                                let result = async {
+                                    let gateway = telegram
+                                        .as_ref()
+                                        .context("External Telegram polling is disabled")?;
+                                    anyhow::ensure!(
+                                        v.as_object().is_some_and(|object| object.len() == 1),
+                                        "Invalid ingress envelope"
+                                    );
+                                    let request =
+                                        serde_json::from_value(v["telegram_ingress"].clone())
+                                            .context("Invalid Telegram ingress request")?;
+                                    gateway.lock().await.external(request).await
+                                }
+                                .await;
+                                match result {
+                                    Ok(value) => json!({"ok":true,"result":value}),
+                                    Err(error) => json!({"ok":false,"error":error.to_string()}),
+                                }
+                            }
+                            Ok(v) if n <= 262144 && v.get("sessions_telegram").is_some() => {
+                                let result = async {
+                                    let gateway = telegram
+                                        .as_ref()
+                                        .context("External Telegram polling is disabled")?;
+                                    anyhow::ensure!(
+                                        v.as_object().is_some_and(|object| object.len() == 1),
+                                        "Invalid Sessions Telegram envelope"
+                                    );
+                                    let request =
+                                        serde_json::from_value(v["sessions_telegram"].clone())
+                                            .context("Invalid Sessions Telegram request")?;
+                                    super::telegram_ingress::sessions_telegram(
+                                        &app, human, gateway, request,
+                                    )
+                                    .await
+                                }
+                                .await;
+                                match result {
+                                    Ok(value) => json!({"ok":true,"result":value}),
+                                    Err(error) => json!({"ok":false,"error":error.to_string()}),
+                                }
+                            }
+                            Ok(v) if n <= 262144 => match command(
                                 &app,
                                 human,
                                 v["command"].as_str().unwrap_or(""),
@@ -671,7 +707,7 @@ pub(super) async fn start_control_socket(app: App) -> Result<()> {
                                 Ok(value) => json!({"ok":true,"result":value}),
                                 Err(error) => json!({"ok":false,"error":error.to_string()}),
                             },
-                            Err(_) => json!({"ok":false,"error":"Invalid control request"}),
+                            _ => json!({"ok":false,"error":"Invalid control request"}),
                         }
                     }
                     _ => json!({"ok":false,"error":"Control request unavailable or oversized"}),

@@ -53,35 +53,52 @@ pub async fn controller(path: &std::path::Path, payload: &str) -> Result<()> {
 
 #[cfg(unix)]
 async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    use tokio::{
-        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-        net::UnixStream,
-    };
-    let meta = std::fs::symlink_metadata(path)?;
-    if !meta.file_type().is_socket()
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-    {
-        bail!("Unsafe receiving control socket");
-    }
-    // One selected foreground run includes three bounded Matrix host calls
-    // and one bounded Claude worker. Status reads retain the ordinary limit.
+    let nonce = uuid::Uuid::now_v7().to_string();
+    // A selected Claude run includes bounded Matrix host and worker calls.
     let timeout = if command.starts_with("matrix claude run ") {
         320
     } else {
         30
     };
+    let reply = request_with_timeout(
+        path,
+        serde_json::json!({"command": command, "nonce": nonce}),
+        timeout,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&reply)?);
+    if reply["ok"] != true {
+        bail!("Receiving control did not confirm success");
+    }
+    if reply["result"]["success"] == false {
+        bail!("Selected controller operation was refused");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) async fn request(
+    path: &std::path::Path,
+    request: serde_json::Value,
+) -> Result<serde_json::Value> {
+    request_with_timeout(path, request, 30).await
+}
+
+#[cfg(unix)]
+async fn request_with_timeout(
+    path: &std::path::Path,
+    request: serde_json::Value,
+    timeout: u64,
+) -> Result<serde_json::Value> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
-        let mut stream = UnixStream::connect(path).await?;
-        if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
-            bail!("Receiving control peer owner mismatch");
+        let mut stream = connect_owner(path).await?;
+        let mut bytes = serde_json::to_vec(&request)?;
+        if bytes.len() as u64 >= crate::tele_daimon::INGRESS_FRAME_LIMIT {
+            bail!("Control request exceeds receiving bound");
         }
-        let nonce = uuid::Uuid::now_v7().to_string();
-        let mut request =
-            serde_json::to_vec(&serde_json::json!({"command":command,"nonce":nonce}))?;
-        request.push(b'\n');
-        stream.write_all(&request).await?;
+        bytes.push(b'\n');
+        stream.write_all(&bytes).await?;
         let mut bytes = Vec::new();
         BufReader::new(stream.take(262145))
             .read_until(b'\n', &mut bytes)
@@ -89,19 +106,50 @@ async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
         if bytes.len() > 262144 {
             bail!("Control reply exceeds bound");
         }
-        let reply: serde_json::Value = serde_json::from_slice(&bytes)?;
-        println!("{}", serde_json::to_string_pretty(&reply)?);
-        if reply["ok"] != true {
-            bail!("Receiving control did not confirm success");
-        }
-        if reply["result"]["success"] == false {
-            bail!("Selected controller operation was refused");
-        }
-        Ok(())
+        Ok(serde_json::from_slice(&bytes)?)
     })
     .await
     .context("Control acceptance unavailable; inspect the retained operation before retrying")?
 }
+#[cfg(unix)]
+pub(crate) async fn connect_owner(path: &std::path::Path) -> Result<tokio::net::UnixStream> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let uid = unsafe { libc::geteuid() };
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.file_type().is_socket() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        bail!("Unsafe receiving owner socket");
+    }
+    let stream = tokio::net::UnixStream::connect(path).await?;
+    if stream.peer_cred()?.uid() != uid {
+        bail!("Receiving socket peer owner mismatch");
+    }
+    Ok(stream)
+}
+
+#[cfg(unix)]
+pub(crate) async fn bind_owner(path: &std::path::Path) -> Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+    use tokio::net::{UnixListener, UnixStream};
+    let uid = unsafe { libc::geteuid() };
+    let parent = path.parent().context("Owner socket parent missing")?;
+    let meta = std::fs::symlink_metadata(parent)?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        bail!("Owner socket needs an owner-only directory");
+    }
+    if let Ok(old) = std::fs::symlink_metadata(path) {
+        if !old.file_type().is_socket() || old.uid() != uid {
+            bail!("Refusing to replace an unsafe owner socket path");
+        }
+        if UnixStream::connect(path).await.is_ok() {
+            bail!("A listener already owns this path");
+        }
+        std::fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 #[cfg(not(unix))]
 pub async fn run(_config: &crate::config::Config, _command: &str) -> Result<()> {
     bail!("Owner-local session control requires Unix")

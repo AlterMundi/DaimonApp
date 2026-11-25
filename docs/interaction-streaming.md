@@ -954,6 +954,15 @@ never plays a burst of missed alerts. Cues do not submit audio or change limits.
 Reaching it stops capture for explicit Send/Discard review; it never commits an
 original automatically. Prepared text survives that review.
 
+If the live recognizer disconnects before Send, the microphone explicitly shows
+that live text is unavailable while the original keeps recording. Previously
+shown words stay provisional and resuming after draft editing keeps the same
+notice. The browser retains the exact audio and never replays it into a new
+recognition connection on disconnect.
+The existing preparation journal's `failure_boundary` distinguishes browser
+read/write, receiving authorization and recognizer read/write/finish failures.
+The record holds capture ID, accepted byte count and outcome metadata only.
+
 A limit-stopped original carries device-reported `capture_stop: duration_limit`
 through local recovery, exact upload identity, completed-transcript recovery,
 canonical transcript provenance and worker relay. The native prompt explicitly

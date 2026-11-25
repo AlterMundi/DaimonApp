@@ -50,6 +50,7 @@ mod scoped_maintenance;
 mod session_requests;
 mod stopping;
 mod support;
+mod telegram_ingress;
 mod topic_publications;
 mod tribu;
 mod turns;
@@ -67,10 +68,7 @@ use crate::{
         find_thread_by_prefix, latest_thread_for_cwd, list_environments_for_sources,
         list_threads_for_cwd, read_thread_history,
     },
-    commands::{
-        BridgeCommand, CommandHelp, FastMode, ParsedInput, command_help, default_bot_commands,
-        parse_command,
-    },
+    commands::{BridgeCommand, CommandHelp, FastMode, ParsedInput, command_help, parse_command},
     config::Config,
     limits::{
         LimitsSnapshot, default_codex_home, find_latest_limits_snapshot, format_limits_inline,
@@ -109,9 +107,8 @@ struct AppShared {
     store: Store,
     telegram: TelegramClient,
     codex: CodexRunner,
-    bot_username: Option<String>,
     bot_id: i64,
-    bot_has_topics: bool,
+    bot_metadata: StdMutex<Option<crate::telegram::User>>,
     service_user_id: i64,
     handy_model_dir: Option<PathBuf>,
     voice_preparations: Arc<tokio::sync::Semaphore>,
@@ -342,6 +339,25 @@ struct TurnWorkspace {
     out_anchor: Option<Arc<fs::File>>,
 }
 
+impl AppShared {
+    fn bot_username(&self) -> Option<String> {
+        self.bot_metadata
+            .lock()
+            .expect("bot metadata lock poisoned")
+            .as_ref()
+            .and_then(|bot| bot.username.clone())
+    }
+
+    fn bot_has_topics(&self) -> bool {
+        self.bot_metadata
+            .lock()
+            .expect("bot metadata lock poisoned")
+            .as_ref()
+            .and_then(|bot| bot.has_topics_enabled)
+            .unwrap_or(false)
+    }
+}
+
 impl App {
     const BACKGROUND_MAINTENANCE_INTERVAL_SECONDS: u64 = 60;
     const HISTORY_PAGE_CACHE_MAX_ENTRIES: usize = 64;
@@ -350,10 +366,15 @@ impl App {
     pub async fn bootstrap(config: Config) -> Result<Self> {
         let handy_model_dir = detect_handy_parakeet_model_dir();
         let session_defaults = SessionDefaults::from(&config.codex);
-        let store = Store::open(
+        let external_bot_id = config
+            .telegram
+            .external_bot_id
+            .filter(|_| config.telegram.enabled && config.telegram.external_polling);
+        let store = Store::open_with_external_bot(
             &config.db_path,
             &config.startup_admin_ids,
             &session_defaults,
+            external_bot_id,
         )?;
         // A configured cold entry needs only owned metadata, never a priming turn.
         if let Some(profile) = &config.interaction {
@@ -381,21 +402,7 @@ impl App {
             })
             .to_string(),
         )?;
-        let (telegram, me) = if config.telegram.enabled {
-            let token = config.telegram.resolve_token()?;
-            let client = TelegramClient::new(token, config.telegram.api_base.clone())
-                .with_reaction_capture(config.telegram.capture_message_reactions)
-                .with_local_file_root(config.telegram.local_file_root.clone())?;
-            let me = client.get_me().await.context("telegram getMe failed")?;
-            store.save_bot_state("telegram_identity", &serde_json::to_string(&me)?)?;
-            (client, Some(me))
-        } else {
-            let retained: Option<crate::telegram::User> = store
-                .bot_state_value("telegram_identity")?
-                .map(|value| serde_json::from_str(&value))
-                .transpose()?;
-            (TelegramClient::disabled(), retained)
-        };
+        let (telegram, me) = telegram_ingress::connect(&config, &store).await?;
         store.topic_projection_entry_selection(config.interaction.as_ref())?;
         let codex = CodexRunner::new(config.codex.binary.clone())
             .with_shared_app_server(config.codex.shared_app_server)
@@ -444,6 +451,17 @@ impl App {
                 .as_ref()
                 .map_or(2, |c| c.max_active_workers),
         );
+        // A configured external ID selects the journal; names and topic
+        // presentation come from the last verified metadata.
+        let bot_id = if config.telegram.enabled && config.telegram.external_polling {
+            config
+                .telegram
+                .external_bot_id
+                .or_else(|| me.as_ref().map(|bot| bot.id))
+        } else {
+            me.as_ref().map(|bot| bot.id)
+        }
+        .unwrap_or(0);
         Ok(Self {
             shared: Arc::new(AppShared {
                 heartbeat_loop: StdMutex::new(None),
@@ -454,13 +472,8 @@ impl App {
                 store,
                 telegram,
                 codex,
-                bot_username: me.as_ref().and_then(|m| m.username.clone()),
-                // Zero denotes absent transport identity, never an actual bot.
-                bot_id: me.as_ref().map_or(0, |m| m.id),
-                bot_has_topics: me
-                    .as_ref()
-                    .and_then(|m| m.has_topics_enabled)
-                    .unwrap_or(false),
+                bot_id,
+                bot_metadata: StdMutex::new(me),
                 service_user_id,
                 handy_model_dir,
                 voice_preparations: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -487,32 +500,32 @@ impl App {
     }
 
     pub async fn run(self) -> Result<()> {
-        if self.shared.config.telegram.enabled {
-            topic_publications::recover(self.shared.clone())?;
+        self.start_gateway().await?;
+        let telegram = (self.shared.telegram.is_available()
+            && !self.shared.config.telegram.external_polling)
+            .then(|| self.clone());
+        if let Some(adapter) = telegram {
+            if let Err(error) = adapter.run_telegram_ingress().await {
+                if self.shared.config.interaction.is_none() {
+                    return Err(error);
+                }
+                tracing::error!(
+                    "Telegram ingress stopped; DaimonGateway remains available: {error:#}"
+                );
+                shutdown_signal(self.shared.shutdown.clone()).await;
+            }
+        } else {
+            tracing::info!("DaimonGateway running without embedded Telegram ingress");
+            shutdown_signal(self.shared.shutdown.clone()).await;
         }
+        Ok(())
+    }
+
+    async fn start_gateway(&self) -> Result<()> {
         artifact_outputs::recover(self.shared.clone())?;
         tribu::start(self.clone()).await?;
         nexus::start(self.clone()).await?;
-        let mut menu = default_bot_commands();
-        if self.shared.config.nexus.is_some() {
-            menu.push(crate::telegram::BotCommand {
-                command: "nexus".into(),
-                description: "/nexus [connect|disconnect|status|reconcile|recover|open] [table]"
-                    .into(),
-            });
-        }
-        if self.shared.config.telegram.enabled {
-            self.shared
-                .telegram
-                .set_my_commands(&menu)
-                .await
-                .context("failed to register bot commands")?;
-        }
-
-        self.notify_primary_user(&format!("🟢 Telecodex {} started", app_version_label()))
-            .await;
-
-        let maintenance_pending = scoped_maintenance::reconcile_startup(&self)?;
+        let maintenance_pending = scoped_maintenance::reconcile_startup(self)?;
         stopping::start_control_socket(self.clone()).await?;
         let maintenance_app = self.clone();
         tokio::spawn(async move {
@@ -554,104 +567,7 @@ impl App {
             });
         }
 
-        if !self.shared.config.telegram.enabled {
-            tracing::info!("Shared backend started with Telegram adapter disabled");
-            shutdown_signal(self.shared.shutdown.clone()).await;
-            return Ok(());
-        }
-
-        // Polling must not wait for native steering, uploads or outbound rate limits.
-        // Preserve arrival order within a topic while other topics keep dispatching.
-        let mut dispatchers = HashMap::<
-            SessionKey,
-            mpsc::UnboundedSender<(crate::telegram::Update, tokio::task::JoinHandle<Result<()>>)>,
-        >::new();
-        let mut offset = self.shared.store.last_update_id()?.map(|value| value + 1);
-        tracing::info!("telecodex started {}", app_version_label());
-        let shutdown = shutdown_signal(self.shared.shutdown.clone());
-        tokio::pin!(shutdown);
-
-        loop {
-            tokio::select! {
-                _ = &mut shutdown => {
-                    tracing::info!("shutdown signal received");
-                    self.notify_primary_user(&format!("🔴 Telecodex {} stopped", app_version_label()))
-                        .await;
-                    return Ok(());
-                }
-                result = self
-                    .shared
-                    .telegram
-                    .get_updates(offset, self.shared.config.poll_timeout_seconds) => {
-                    match result {
-                        Ok(updates) => {
-                            for update in updates {
-                                let admitted = self.shared.store.admit_update(&update)?;
-                                offset = self.shared.store.last_update_id()?.map(|id| id + 1);
-                                if !admitted {
-                                    continue;
-                                }
-                                // Capture independently of topic work and further polling. A slow
-                                // Nexus provider must not serialize unrelated updates or controls.
-                                let capture_input = nexus::prepare_ingress(&self.shared, &update)?;
-                                let capture_shared = self.shared.clone();
-                                let capture_id = update.update_id;
-                                let capture = tokio::spawn(async move {
-                                    nexus::capture_ingress(&capture_shared, capture_id, capture_input).await
-                                });
-                                let message = update.message.as_ref().or_else(|| {
-                                    update.callback_query.as_ref().and_then(|callback| callback.message.as_ref())
-                                });
-                                let key = message.map(|message| SessionKey {
-                                    chat_id: message.chat.id,
-                                    thread_id: message.message_thread_id.unwrap_or(0),
-                                }).unwrap_or(SessionKey { chat_id: 0, thread_id: 0 });
-                                let sender = dispatchers.entry(key).or_insert_with(|| {
-                                    let (sender, mut receiver) = mpsc::unbounded_channel::<(crate::telegram::Update, tokio::task::JoinHandle<Result<()>>)>();
-                                    let app = self.clone();
-                                    tokio::spawn(async move {
-                                        while let Some((update, capture)) = receiver.recv().await {
-                                            let update_id = update.update_id;
-                                            let result = async {
-                                                // Admission capture runs even while a previous
-                                                // message holds this topic dispatcher.
-                                                capture.await.context("Nexus ingress capture task interrupted")??;
-                                                app.shared.store.begin_update(update_id)?;
-                                                HUMAN_UPDATE_ID.scope(update_id, app.process_update(update)).await
-                                            }.await;
-                                            if let Err(error) = app.shared.store.finish_update_dispatch(update_id, result.is_ok()) {
-                                                tracing::error!("failed to record update dispatch: {error:#}");
-                                            }
-                                            if let Err(error) = result {
-                                                tracing::error!("update processing failed: {error:#}");
-                                            }
-                                        }
-                                    });
-                                    sender
-                                });
-                                sender.send((update, capture)).map_err(|_| anyhow!("topic update dispatcher dropped"))?;
-                            }
-                        }
-                        Err(error) => {
-                            if telegram_status(&error) == Some(reqwest::StatusCode::CONFLICT) {
-                                self.notify_primary_user(&format!("🔴 Telecodex {} stopped: getUpdates conflict", app_version_label()))
-                                    .await;
-                                return Err(anyhow!(
-                                    "telegram getUpdates conflict: another bot instance is already running"
-                                ));
-                            }
-                            if let Some(retry_after) = telegram_retry_after(&error) {
-                                tracing::warn!("telegram asked to back off for {retry_after}s");
-                                sleep(Duration::from_secs(retry_after)).await;
-                            } else {
-                                tracing::error!("getUpdates failed: {error:#}");
-                                sleep(Duration::from_secs(3)).await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        Ok(())
     }
 
     async fn run_instance_heartbeat_loop(&self) {
@@ -846,7 +762,7 @@ impl App {
         if tribu::handle_topic_control(self, &message, from.id, text).await? {
             return Ok(());
         }
-        if is_foreign_bot_command(text, self.shared.bot_username.as_deref()) {
+        if is_foreign_bot_command(text, self.shared.bot_username().as_deref()) {
             return Ok(());
         }
         if routing::explicit(text) && routing::handle(self, &message, from.id, text).await? {
@@ -1138,7 +1054,7 @@ impl App {
         text: &str,
     ) -> Result<bool> {
         let session_key = SessionKey::new(message.chat.id, message.message_thread_id);
-        let Some((command, args)) = normalize_command(text, self.shared.bot_username.as_deref())
+        let Some((command, args)) = normalize_command(text, self.shared.bot_username().as_deref())
         else {
             return Ok(false);
         };
@@ -2260,7 +2176,7 @@ impl App {
             .unwrap_or(message.chat.id);
         if self.shared.config.telegram.primary_forum_chat_id.is_none()
             && !message.chat.is_forum.unwrap_or(false)
-            && !(message.chat.kind == "private" && self.shared.bot_has_topics)
+            && !(message.chat.kind == "private" && self.shared.bot_has_topics())
         {
             anyhow::bail!("Enable Telegram topics before using /fork");
         }
@@ -2515,7 +2431,7 @@ impl App {
             .unwrap_or(message.chat.id);
         if self.shared.config.telegram.primary_forum_chat_id.is_none()
             && !message.chat.is_forum.unwrap_or(false)
-            && !(message.chat.kind == "private" && self.shared.bot_has_topics)
+            && !(message.chat.kind == "private" && self.shared.bot_has_topics())
         {
             self.send_status(
                 message.chat.id,
@@ -3263,7 +3179,7 @@ fn is_text_only_steer_candidate(message: &Message, text: &str) -> bool {
             .is_none_or(|reply| reply.sticker.is_none())
 }
 
-async fn shutdown_signal(shutdown: CancellationToken) {
+pub(crate) async fn shutdown_signal(shutdown: CancellationToken) {
     #[cfg(unix)]
     {
         let mut terminate =

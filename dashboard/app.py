@@ -158,7 +158,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         db.executescript('''CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,
             human INTEGER NOT NULL,expires INTEGER NOT NULL,csrf TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS actions(human INTEGER,nonce TEXT,state TEXT,result TEXT,
-            PRIMARY KEY(human,nonce));''')
+            PRIMARY KEY(human,nonce));
+            CREATE TABLE IF NOT EXISTS conversation_drafts(human INTEGER NOT NULL, binding TEXT NOT NULL,
+            revision INTEGER NOT NULL, text TEXT NOT NULL, updated INTEGER NOT NULL,
+            PRIMARY KEY(human,binding));''')
     db_path.chmod(0o600)
 
     @asynccontextmanager
@@ -201,7 +204,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 bound = 2*1024*1024 if request.url.path.endswith('/visual') else 20*1024*1024
             else:
                 bound = (1048576 if request.url.path=='/api/interaction/avatars' else
-                    262144 if (request.url.path == '/api/interaction/inputs' or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
+                    262144 if (request.url.path in ('/api/interaction/inputs','/api/interaction/draft') or re.fullmatch(r'/api/interaction/(?:internal/)?requests/[a-f0-9]{32}',request.url.path)) else 16384)
             # Native capture-only uploads own their fresh-auth/CSRF checks,
             # two upload slots and bounded streaming body. Do not
             # buffer them before that admission in the general JSON middleware.
@@ -714,8 +717,57 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'openai_can_stream_transcribe':can_openai_stream_transcribe and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly',
                 'can_stream_transcribe':(can_openai_stream_transcribe if services_default=='openai' else can_stream_transcribe) and bool(getattr(provider,'receiver',{}).get('voice')) and dict(session).get('scope') != 'monitor_readonly'}
 
+    def conversation_draft(db, human, selected_binding):
+        row=db.execute('SELECT revision,text FROM conversation_drafts WHERE human=? AND binding=? AND updated>=?',
+                       (human,selected_binding,int(time.time())-7*86400)).fetchone()
+        return dict(row) if row else {'revision':0,'text':''}
+
+    def write_conversation_draft(human, body):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            now=int(time.time())
+            db.execute('DELETE FROM conversation_drafts WHERE updated<?',(now-7*86400,))
+            saved=conversation_draft(db,human,body['binding'])
+            if saved['revision']==body['revision'] and saved['text']!=body['text']:
+                if not saved['revision'] and db.execute('SELECT count(*) FROM conversation_drafts').fetchone()[0]>=128:
+                    raise HTTPException(503,'Draft sync storage is full')
+                saved={'revision':max(now*1000,saved['revision']+1),'text':body['text']}
+                db.execute('INSERT OR REPLACE INTO conversation_drafts VALUES(?,?,?,?,?)',
+                           (human,body['binding'],saved['revision'],saved['text'],now))
+        return saved
+
+    @app.post('/api/interaction/draft')
+    async def save_conversation_draft(request: Request):
+        session=await authorize_async(request)
+        if (dict(session).get('scope')=='monitor_readonly'
+                or not secrets.compare_digest(request.headers.get('x-dashboard-csrf',''),session['csrf'])):
+            raise HTTPException(403,'Draft access unavailable')
+        try:
+            body=await request.json()
+            if (not isinstance(body,dict) or set(body)!={'binding','revision','text'}
+                    or not re.fullmatch(r'[0-9a-f]{64}',body.get('binding') or '')
+                    or type(body['revision']) is not int or not 0<=body['revision']<2**53-1
+                    or not isinstance(body['text'],str) or '\0' in body['text']
+                    or len(body['text'].encode())>32768):
+                raise ValueError()
+            from starlette.concurrency import run_in_threadpool
+            selected=await run_in_threadpool(provider.presentation,'input list 9223372036854775807 after')
+        except (ValueError,TypeError):
+            raise HTTPException(400,'Invalid draft') from None
+        except (ProviderUnavailable,OSError):
+            raise HTTPException(503,'Draft sync unavailable') from None
+        if body['binding']!=selected['binding']:
+            raise HTTPException(409,'Conversation changed')
+        current=await authorize_async(request)
+        if dict(current).get('scope')=='monitor_readonly' or current['human']!=session['human'] or current['csrf']!=session['csrf']:
+            raise HTTPException(403,'Draft access changed')
+        try:
+            return await run_in_threadpool(write_conversation_draft,session['human'],body)
+        except sqlite3.Error:
+            raise HTTPException(503,'Draft sync unavailable') from None
+
     @app.get('/api/interaction/inputs')
-    async def conversation_inputs(request: Request, before: int = 0, direction: str = 'before'):
+    async def conversation_inputs(request: Request, before: int = 0, direction: str = 'before', draft: str = ''):
         session = await authorize_async(request)
         try:
             from starlette.concurrency import run_in_threadpool
@@ -724,13 +776,18 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(400, 'Invalid input history cursor') from None
         except (ProviderUnavailable, OSError):
             raise HTTPException(503, 'Message history unavailable; refresh to reconnect') from None
-        await authorize_async(request)
+        current=await authorize_async(request)
         viewer = {}
         if isinstance(session, dict) and session.get('scope') in ('monitor_readonly','interaction_only'):
             label = session.get('label')
             if not isinstance(label, str) or not 1 <= len(label) <= 64 or any(ord(c) < 32 for c in label):
                 label = 'Selected receiver'
             viewer = {'viewer': {'label': label, 'expires': session['expires']}}
+        if (draft=='text' and dict(current).get('scope')!='monitor_readonly' and current['human']==session['human']
+                and current['csrf']==session['csrf']):
+            with database() as db:
+                viewer['conversation_draft']={**conversation_draft(db,session['human'],result['binding']),
+                    'owner':digest(f"conversation-draft-owner:{session['human']}")}
         return {**result, 'csrf':session['csrf'], **viewer}
 
     @app.get('/api/interaction/telegram-inputs')

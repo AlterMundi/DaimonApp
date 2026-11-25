@@ -47,26 +47,52 @@ def sessions_selection(config):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
-    parser.add_argument('operation', choices=['inspect-menu', 'publish-menu', 'restore-menu'])
+    parser.add_argument('operation', choices=['inspect-menu', 'publish-menu', 'restore-menu', 'prepare-telegram-split'])
+    parser.add_argument('--gateway-config')
+    parser.add_argument('--adapter-config')
+    parser.add_argument('--output')
+    parser.add_argument('--legacy-native-helpers', action='store_true')
     args = parser.parse_args()
     config = tomllib.loads(Path(args.config).read_text())
+    if args.operation == 'prepare-telegram-split':
+        if not all((args.gateway_config, args.adapter_config, args.output)):
+            parser.error('Telegram split requires --gateway-config, --adapter-config and --output')
+        from .telegram_split import prepare
+        prepare(config, args.gateway_config, args.adapter_config, args.output,
+                legacy_native_helpers=args.legacy_native_helpers)
+        print(json.dumps({'state': 'prepared'}))
+        return
+    if any((args.gateway_config, args.adapter_config, args.output, args.legacy_native_helpers)):
+        parser.error('Split profile options apply only to prepare-telegram-split')
     if 'application_id' in config:
         raise SystemExit('Web-only application has no Telegram menu')
     receiver_bytes = Path(config['receiver_config']).read_bytes()
     receiver = tomllib.loads(receiver_bytes.decode())
-    telegram = Telegram(receiver['telegram'])  # Existing safe token-file reader, operator only.
+    sender = None
+    provider = None
+    if config.get('telegram_split_binding') is not None:
+        from .alerts import Sender
+        from .provider import Provider
+        provider = Provider(config)
+        sender = Sender(provider, config)
+    else:
+        telegram = Telegram(receiver['telegram'])  # Embedded compatibility path.
     human = receiver['session_control']['human_id']
     state = private_directory(config['state_dir'])
     binding = {'bot_id':config['bot_id'],'human':human,
-               'receiver_hash':hashlib.sha256(receiver_bytes).hexdigest()}
+               'receiver_hash': (provider.telegram_split['legacy_receiver_sha256'] if provider
+                                 else hashlib.sha256(receiver_bytes).hexdigest())}
 
     def api(method, payload):
-        request = urllib.request.Request(f'{telegram.base}/bot{telegram.token}/{method}',
-                    data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                result = json.load(response)
-            if result.get('ok') is not True:
+            if sender is not None:
+                result = sender.call(method, payload)
+            else:
+                request = urllib.request.Request(f'{telegram.base}/bot{telegram.token}/{method}',
+                            data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    result = json.load(response)
+            if not isinstance(result, dict) or result.get('ok') is not True:
                 raise ValueError()
             return result['result']
         except Exception:

@@ -40,6 +40,34 @@ class Surface(Companion):
             with self.assertRaises(ValueError):parent_origins({'conversation_surface':{'parent_origins':[origin]}})
         self.assertEqual(parent_origins({}),())
 
+    def test_conversation_draft_is_private_and_revision_checked(self):
+        binding='b'*64
+        self.provider.conversation_inputs=lambda *_:{'items':[],'binding':binding}
+        self.provider.presentation=lambda _:{'items':[],'binding':binding}
+        route='/api/interaction/draft'; reader='/api/interaction/inputs?draft=text'
+        put=lambda text,revision=0:self.client.post(route,headers=self.headers,json={'binding':binding,'revision':revision,'text':text})
+        initial=self.client.get(reader,headers=self.headers).json()['conversation_draft']
+        self.assertEqual(initial['revision'],0)
+        self.assertEqual(self.client.get(reader).status_code,401)
+        self.assertEqual(self.client.post(route,headers={**self.headers,'x-dashboard-csrf':'invalid'},json={}).status_code,403)
+        self.assertEqual(self.client.post(route,headers={**self.headers,'origin':'https://foreign.test'},json={}).status_code,403)
+        self.assertEqual(put('é'*16385).status_code,400)
+        self.assertEqual(self.client.post(route,headers=self.headers,json={'binding':'c'*64,'revision':0,'text':'Wrong binding'}).status_code,409)
+        first=put('Draft from first window').json()
+        self.assertGreater(first['revision'],0)
+        self.assertEqual(put('Stale edit').json(),first)
+        self.assertEqual(self.client.get(reader,headers=self.headers).json()['conversation_draft'],{**first,'owner':initial['owner']})
+        monitor=self.root/'draft-monitor.json'
+        self.grants.enroll('Monitor fixture',monitor,3600,scope='monitor_readonly')
+        import json
+        credential=json.loads(monitor.read_text())
+        headers={'origin':self.config['origin'],'authorization':credential['authorization'],'x-dashboard-csrf':credential['csrf']}
+        self.assertNotIn('conversation_draft',self.client.get(reader,headers=headers).json())
+        self.assertEqual(self.client.post(route,headers=headers,json={'binding':binding,'revision':0,'text':'No write'}).status_code,403)
+        cleared=put('',first['revision']).json()
+        self.assertGreater(cleared['revision'],first['revision'])
+        self.assertEqual(put(first['text'],first['revision']).json(),cleared)
+
 
 if __name__=='__main__':
     import unittest

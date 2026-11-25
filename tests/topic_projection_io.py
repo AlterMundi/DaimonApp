@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Actual bridge/SQLite/native-peer/Telegram-HTTP projection; all identities synthetic."""
+from contextlib import contextmanager
+import http.client
+import http.server
 import json
+import re
+import signal
+import subprocess
 from pathlib import Path
 import sys
 import threading
@@ -13,10 +19,63 @@ class Projected(CanonicalRouting):
         self.direct_packets = []
         self.echo_held, self.release_echo = threading.Event(), threading.Event()
         self.hold_echo = False
+        self.hold_match = "First projected input"
         self.drop_answer = False
         self.reject_echo = False
         self.rejections = 0
+        self.external = False
+        self.adapter = None
+        self.adapter_config = None
         super().__init__(binary)
+
+    def start(self):
+        if self.external:
+            config = self.config.read_text()
+            if "external_polling=true" not in config:
+                config = config.replace("[telegram]\n",
+                    "[telegram]\nexternal_polling=true\nexternal_bot_id=123\n")
+            if self.adapter_config is None:
+                self.adapter_config = self.root / "adapter.toml"
+                self.adapter_config.write_text(config)
+                self.adapter_config.chmod(0o600)
+            config = re.sub(r"^(?:bot_token(?:_env|_file)?|api_base)=.*\n", "", config, flags=re.M)
+            self.config.write_text(config.replace(
+                "[telegram]\n", '[telegram]\napi_base="http://127.0.0.1:1"\n'))
+        super().start()
+        if self.external:
+            self.wait_control_socket(self.socket)
+            self.start_adapter()
+
+    def start_adapter(self):
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "C.UTF-8"}
+        profile = str(self.adapter_config or self.config)
+        gateway = Path(self.binary)
+        command = [str(gateway.with_name("teledaimon")), profile] if gateway.name == "daimon-gateway" else [
+            self.binary, "--tele-daimon-poll", profile,
+        ]
+        self.adapter = subprocess.Popen(
+            command, cwd=self.root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+
+    def stop_adapter(self):
+        if self.adapter is None:
+            return
+        adapter, self.adapter = self.adapter, None
+        if adapter.poll() is None:
+            adapter.send_signal(signal.SIGINT)
+        try:
+            _, error = adapter.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            adapter.kill()
+            adapter.communicate(timeout=8)
+            raise
+        assert adapter.returncode == 0, error
+
+    def stop(self):
+        try:
+            self.stop_adapter()
+        finally:
+            super().stop()
 
     def handle_extra_rpc(self, message, send):
         method, params = message.get('method'), message.get('params', {})
@@ -42,7 +101,7 @@ class Projected(CanonicalRouting):
 
     def before_send_message_reply(self, payload):
         text = payload['text']
-        if self.hold_echo and 'First projected input' in text:
+        if self.hold_echo and self.hold_match in text:
             self.echo_held.set()
             assert self.release_echo.wait(timeout=30), 'Synthetic mirror hold expired'
         if self.drop_answer and 'Lost mirror acknowledgment.' == text:
@@ -82,8 +141,11 @@ class Projected(CanonicalRouting):
                    for message, _ in self.messages)
 
 
-def qualify(binary):
-    j = Projected(str(Path(binary).resolve()))
+def qualify(binary, *, external=False, migrate=False, embedded_binary=None):
+    external_binary = str(Path(binary).resolve())
+    embedded_binary = str(Path(embedded_binary).resolve()) if embedded_binary else external_binary
+    j = Projected(embedded_binary if migrate else external_binary)
+    j.external = external and not migrate
     try:
         j.start()
         for topic in (7, 8, 1):
@@ -92,6 +154,7 @@ def qualify(binary):
         j.stop()
         j.config.write_text(j.config.read_text().replace('[interaction]\n',
             '[interaction]\ntelegram_projection=true\n')+j.target_config)
+        embedded_config = j.config.read_text()
         j.start(); j.wait_control_socket(j.socket); j.routing = True
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         j.messages.clear()
@@ -141,8 +204,25 @@ def qualify(binary):
         j.answer(7, 'Lost mirror acknowledgment.')
         j.wait(lambda: j.primary('Lost mirror acknowledgment.'))
         j.wait(lambda: j.row("SELECT COUNT(*) FROM topic_publications WHERE phase='uncertain'") == [(1,)])
-        j.idle(); j.stop(); j.start(); j.wait_control_socket(j.socket)
+        def publication_receipt(text):
+            return j.row(
+                "SELECT p.id,p.phase,x.part,x.phase,x.message_id FROM topic_publications p "
+                "JOIN topic_publication_parts x ON x.publication=p.id WHERE p.body=?",
+                (text,),
+            )
+        before_restart = publication_receipt("Lost mirror acknowledgment.")
+        assert len(before_restart) == 1 and before_restart[0][1:] == ("uncertain", 0, "uncertain", None)
+        j.idle()
+        j.stop()
+        if migrate:
+            j.external = True
+            j.binary = external_binary
+        j.start()
+        j.wait_control_socket(j.socket)
+        assert publication_receipt("Lost mirror acknowledgment.") == before_restart
         assert j.sent('Lost mirror acknowledgment.', 7) == 1
+        if migrate:
+            print('PASS lost Bot API acknowledgement remains uncertain across embedded-to-external migration')
         inspection = j.read('topics', 'publications')['result']
         assert any(row['phase'] == 'uncertain' for row in inspection['items'])
 
@@ -155,11 +235,211 @@ def qualify(binary):
         assert j.rejections == 1
         assert j.sent('Lost mirror acknowledgment.', 7) == 1
         assert len(j.worker_packets['native-topic-7']) == 3
+        if external:
+            j.stop_adapter()
+            pending = 'Retained projection with "quoted text".'
+            j.submit(binding, '#Alpha Continue with TeleDaimon stopped')
+            j.wait(lambda: len(j.instructions(7)) == 4 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, pending + '\n\nSecond paragraph.')
+            j.wait(lambda: j.primary('Retained projection with'))
+            j.wait(lambda: j.row(
+                "SELECT p.phase,COALESCE(x.phase,'ready') FROM topic_publications p "
+                "LEFT JOIN topic_publication_parts x ON x.publication=p.id "
+                "WHERE p.body LIKE 'Retained projection with%'"
+            ) == [('ready', 'ready')])
+            assert not any(pending in m["text"] for m, _ in j.messages)
+            j.start_adapter()
+            j.wait(lambda: sum(pending in m["text"] and 'Second paragraph.' in m["text"]
+                              for m, _ in j.messages) == 1)
+            assert j.sent('Lost mirror acknowledgment.', 7) == 1
+            print('PASS stopped projection adapter leaves a ready part; reconnect publishes it once')
+            j.hold_echo = True
+            j.hold_match = 'Transport interrupted after submission.'
+            j.echo_held.clear()
+            j.release_echo.clear()
+            j.submit(binding, '#Alpha Keep the independently retained result')
+            j.wait(lambda: len(j.instructions(7)) == 5 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, j.hold_match)
+            assert j.echo_held.wait(timeout=10)
+            j.stop_adapter()
+            j.release_echo.set()
+            j.wait(lambda: j.row(
+                "SELECT phase FROM topic_publications WHERE body=?", (j.hold_match,)
+            ) == [('uncertain',)])
+            j.wait(lambda: j.primary(j.hold_match))
+            polls = j.telegram_methods.count("getUpdates")
+            j.start_adapter()
+            j.wait(lambda: j.telegram_methods.count("getUpdates") > polls)
+            assert j.sent(j.hold_match, 7) == 1
+            print('PASS adapter stop after Bot API submission preserves uncertainty and the canonical result')
+        if migrate:
+            answer = 'New work after uncertain publication.'
+            sent_receipt = publication_receipt(answer)
+            interrupted_receipt = publication_receipt(j.hold_match)
+            assert len(sent_receipt) == 1 and sent_receipt[0][1:4] == ("sent", 0, "sent")
+            assert isinstance(sent_receipt[0][4], int)
+            assert len(interrupted_receipt) == 1 and interrupted_receipt[0][1:] == (
+                "uncertain", 0, "uncertain", None,
+            )
+            j.idle()
+            j.stop()
+            j.external = False
+            j.binary = embedded_binary
+            j.config.write_text(embedded_config)
+            j.start()
+            j.wait_control_socket(j.socket)
+            assert publication_receipt(answer) == sent_receipt
+            assert publication_receipt(j.hold_match) == interrupted_receipt
+            assert publication_receipt("Lost mirror acknowledgment.") == before_restart
+            assert j.primary(j.hold_match)
+            assert j.sent("Lost mirror acknowledgment.", 7) == j.sent(j.hold_match, 7) == 1
+            j.submit(binding, '#Alpha Confirm publication after rollback')
+            j.wait(lambda: len(j.instructions(7)) == 6 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, 'First publication after rollback.')
+            j.wait(lambda: j.sent('First publication after rollback.', 7) == 1)
+            assert j.sent("Lost mirror acknowledgment.", 7) == j.sent(j.hold_match, 7) == 1
+            print('PASS rollback preserves acknowledged and uncertain Telegram receipts without resending them')
         print('PASS canonical event/destination identity, attributed echoes, independent return/parallel topic, direct switch, bot feedback, duplicate/restart/lost ACK and known rejection')
     finally:
         j.release_echo.set()
         j.close()
 
+@contextmanager
+def distinct_adapter_endpoint(journey):
+    j = journey
+    observed = []
+
+    class AdapterAPI(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            data = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            method = self.path.rsplit("/", 1)[-1]
+            content_type = self.headers.get("Content-Type", "application/json")
+            received = data if self.headers.get_content_maintype() == "multipart" else json.loads(data or b"{}")
+            observed.append((method, received))
+            local_paths = getattr(j, "adapter_local_files", {})
+            if method == "getFile" and received["file_id"] in local_paths:
+                source = local_paths[received["file_id"]]
+                self.reply(200, json.dumps({"ok": True, "result": {
+                    "file_path": str(source), "file_size": source.stat().st_size,
+                }}).encode())
+                return
+            self.forward(data, {"Content-Type": content_type})
+
+        def do_GET(self):
+            observed.append(("download", self.path.rsplit("/", 1)[-1]))
+            self.forward(None, {})
+
+        def forward(self, data, headers):
+            conn = http.client.HTTPConnection("127.0.0.1", j.telegram.server_port, timeout=10)
+            try:
+                conn.request(self.command, self.path, data, headers)
+                reply = conn.getresponse()
+                self.reply(reply.status, reply.read())
+            finally:
+                conn.close()
+
+        def reply(self, status, body):
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *_):
+            pass
+
+    relay = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AdapterAPI)
+    thread = threading.Thread(target=relay.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = j.config.read_text()
+        j.adapter_config = j.root / "adapter.toml"
+        j.adapter_config.write_text(base.replace("[telegram]\n", "[telegram]\nexternal_polling=true\n")
+                                    .replace(f":{j.telegram.server_port}", f":{relay.server_port}"))
+        j.adapter_config.chmod(0o600)
+        yield observed
+    finally:
+        relay.shutdown()
+        relay.server_close()
+        thread.join(timeout=5)
+
+
+def direct_json_ownership(binary):
+    j = Projected(str(Path(binary).resolve()))
+    j.external = True
+    with distinct_adapter_endpoint(j) as observed:
+        try:
+            j.start()
+            j.admit('Establish an existing native conversation', topic=7)
+            j.wait(lambda: j.has('Initial goal turn delivered.', 7))
+            j.idle()
+            before = len(observed)
+            original = j.admit('/status@FixtureBot', topic=7)
+            j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
+                   == [('handled',)])
+            assert any(method == "sendMessage" and payload["message_thread_id"] == 7
+                       for method, payload in observed[before:]), observed[before:]
+            assert len(j.row("SELECT id FROM turns")) == 1
+            print("PASS direct Telegram status reached only the adapter Bot API endpoint")
+        finally:
+            j.close()
+
+
+def direct_download_ownership(binary):
+    class Downloads(Projected):
+        def __init__(self, binary):
+            self.native_files = set()
+            super().__init__(binary)
+
+        def handle_extra_rpc(self, message, send):
+            if message.get("method") == "turn/start":
+                self.native_files.update(
+                    path.read_bytes() for path in self.root.glob(".telecodex/inbox/*/*_text.txt")
+                )
+            return super().handle_extra_rpc(message, send)
+
+    j = Downloads(str(Path(binary).resolve()))
+    j.external = True
+    data = b'Synthetic attachment crosses a bounded chunk.\n' * 4000
+    file_id = 'relay-attachment.txt'
+    j.media_files = {file_id: data}
+    local_id = 'relay-local-attachment'
+    local_root = j.root / "adapter-only"
+    local_root.mkdir(mode=0o700)
+    source = local_root / "bot-private-route.txt"
+    source.write_bytes(data[::-1])
+    j.adapter_local_files = {local_id: source}
+
+    with distinct_adapter_endpoint(j) as observed:
+        try:
+            j.adapter_config.write_text(j.adapter_config.read_text().replace(
+                "[telegram]\n", f'[telegram]\nlocal_file_root="{local_root}"\n'))
+            j.start()
+            j.wait_control_socket(j.socket)
+            for entry_id in (file_id, local_id):
+                with j.lock:
+                    original = j.admit(topic=7)
+                    message = j.updates[-1]["message"]
+                    message["caption"] = "Use the attached fixture text."
+                    message["document"] = {"file_id": entry_id, "mime_type": "text/plain"}
+                j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (original,))
+                       == [('settled',)])
+                j.idle()
+            assert j.native_files == {data, data[::-1]}
+            assert [payload["file_id"] for method, payload in observed if method == "getFile"] == [file_id, local_id]
+            assert [name for method, name in observed if method == "download"] == [file_id]
+            print("PASS adapter resolves getFile, downloads HTTP bytes and copies trusted local bytes before Gateway admission")
+        finally:
+            j.close()
+
+
 
 if __name__ == '__main__':
-    qualify(sys.argv[1])
+    external = "--external" in sys.argv[2:]
+    migrate = "--migration" in sys.argv[2:]
+    qualify(sys.argv[1], external=external or migrate, migrate=migrate)
+    if external:
+        direct_json_ownership(sys.argv[1])
+        direct_download_ownership(sys.argv[1])

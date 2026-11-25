@@ -418,7 +418,7 @@ pub(super) async fn handle_text(
     text: &str,
 ) -> Result<TextAnswer> {
     let key = SessionKey::new(message.chat.id, message.message_thread_id);
-    if normalize_command(text, shared.bot_username.as_deref())
+    if normalize_command(text, shared.bot_username().as_deref())
         .is_some_and(|(command, _)| command == "/stop")
     {
         disarm_text(shared, key, user).await;
