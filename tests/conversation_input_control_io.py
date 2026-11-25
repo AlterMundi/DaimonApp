@@ -527,6 +527,9 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
     original_config = journey.config.read_text()
     external_config = original_config.replace(
         "[telegram]\n", "[telegram]\nexternal_polling=true\n")
+    activity_state = journey.root / "activity"
+    activity_state.mkdir(mode=0o700)
+    external_config = f'activity_projection_state="{activity_state}"\n' + external_config
     poll_config = journey.root / "poll.toml"
     # The adapter needs only Bot API and the existing socket. Gateway retains
     # its old journal and gets neither the bot token nor a working API endpoint.
@@ -740,10 +743,49 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         assert malformed["error"] == "Sessions Telegram operation unconfirmed"
         journey.telegram_failures.pop("sendMessage")
         print("PASS paired Sessions alert and menu operations use TeleDaimon custody")
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from scripts.activity_indicator import GatewayTelegram, atomic_json, pending_markup
+        local_config = {"session_control":{"socket_path":str(journey.socket)},
+                        "activity_telegram":{"credential_fingerprint":fingerprint}}
+        activity_client = GatewayTelegram(local_config)
+        assert not hasattr(activity_client, "token")
+        activity_client.pace = lambda _chat: None
+        native = retained[0][0]
+        journey.telegram_priority = []
+        payload = {"chat_id":100,"message_thread_id":1,"text":"Activity card","reply_markup":pending_markup(True)}
+        assert activity_client.call("sendMessage", payload, background=True, native_thread="stale") == {
+            "ok":False,"not_submitted":True}
+        assert ("sendMessage","background") not in journey.telegram_priority
+        good = activity_client.call("sendMessage", payload, background=True, native_thread=native)
+        msg = good["result"]["message_id"]
+        assert good["result"]["chat"]["id"] == 100 and good["result"]["message_thread_id"] == 1
+        atomic_json(activity_state/"messages.json", {
+            "100:1":{"message_id":msg,"chat_id":100,"topic":1,"native_thread":native},
+            "100:9":{"message_id":msg+1,"chat_id":100,"topic":9,"native_thread":native},
+        })
+        assert activity_client.call("editMessageText", {"chat_id":100,"message_id":msg,"text":"Updated"},
+                                    topic=1,native_thread=native)["ok"]
+        assert activity_client.call("deleteMessage", {"chat_id":100,"message_id":msg+1},
+                                    topic=1,native_thread=native) == {"ok":False,"not_submitted":True}
+        assert not any(m=="deleteMessage" for m,_ in journey.telegram_priority)
+        assert activity_client.call("deleteMessage", {"chat_id":100,"message_id":msg},
+                                    topic=1,native_thread=native)["ok"]
+        atomic_json(activity_state/"topic-markers.json", {"schema":"telecodex.topic-markers/v1","items":{
+            "100:1":{"native_thread":native,"phase":"attempting","desired":"Activity"}
+        }})
+        assert activity_client.call("editForumTopic", {"chat_id":100,"message_thread_id":1,"name":"Activity"},
+                                    background=True,native_thread=native)["ok"]
+        assert [(m,p) for m,p in journey.telegram_priority if p] == [
+          ("sendMessage","background"), ("editMessageText","foreground"),
+          ("deleteMessage","foreground"), ("editForumTopic","background")]
+        print("PASS tokenless Activity relay binds the topic, bot, method and priority")
         journey.idle()
         stop_adapter(adapter)
         adapter = None
         assert not sessions_telegram("status")["ok"]
+        assert activity_client.call("sendMessage", {"chat_id":100,"message_thread_id":1,"text":"No adapter"},
+                                    native_thread=native) == {
+            "ok":False,"not_submitted":True}
         unsent = sessions_telegram("alert", credential_fingerprint=fingerprint, text="No adapter")
         assert unsent["result"] == {"ok": False, "not_submitted": True}
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == first + 1

@@ -48,6 +48,8 @@ pub(super) enum Payload<'a> {
         document: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential_fingerprint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<bool>,
     },
     Download {
         #[serde(borrow)]
@@ -128,6 +130,7 @@ pub(crate) enum JsonMethod {
     SendMessage,
     SendChatAction,
     EditMessageText,
+    DeleteMessage,
     AnswerCallbackQuery,
     CreateForumTopic,
     CloseForumTopic,
@@ -140,10 +143,11 @@ pub(crate) enum JsonMethod {
 }
 
 impl JsonMethod {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::SendMessage,
         Self::SendChatAction,
         Self::EditMessageText,
+        Self::DeleteMessage,
         Self::AnswerCallbackQuery,
         Self::CreateForumTopic,
         Self::CloseForumTopic,
@@ -166,6 +170,7 @@ impl JsonMethod {
             Self::SendMessage => "sendMessage",
             Self::SendChatAction => "sendChatAction",
             Self::EditMessageText => "editMessageText",
+            Self::DeleteMessage => "deleteMessage",
             Self::AnswerCallbackQuery => "answerCallbackQuery",
             Self::CreateForumTopic => "createForumTopic",
             Self::CloseForumTopic => "closeForumTopic",
@@ -237,6 +242,7 @@ pub(crate) async fn prepare_json(
     method: JsonMethod,
     document: Option<serde_json::Value>,
     credential_fingerprint: Option<String>,
+    background: Option<bool>,
 ) -> Result<UnixStream> {
     let mut stream = open_offer(
         owner,
@@ -248,6 +254,7 @@ pub(crate) async fn prepare_json(
                 method,
                 document,
                 credential_fingerprint,
+                background,
             },
         },
         &[],
@@ -266,9 +273,18 @@ pub(crate) async fn json(
     method: JsonMethod,
     document: Option<serde_json::Value>,
     credential_fingerprint: Option<String>,
+    background: Option<bool>,
     authorize: impl FnOnce() -> Result<()>,
 ) -> Result<serde_json::Value> {
-    let prepared = prepare_json(owner, bot, method, document, credential_fingerprint).await;
+    let prepared = prepare_json(
+        owner,
+        bot,
+        method,
+        document,
+        credential_fingerprint,
+        background,
+    )
+    .await;
     let mut stream = prepared.map_err(|error| error.context(JsonNotSubmitted))?;
     authorize().map_err(|error| error.context(JsonNotSubmitted))?;
     timeout(OPEN, async {
@@ -460,6 +476,7 @@ async fn receive(
         method,
         document,
         credential_fingerprint,
+        background,
     } = offer.payload
     {
         ensure!(
@@ -474,6 +491,7 @@ async fn receive(
             method,
             document,
             credential_fingerprint.is_some(),
+            background,
         )
         .await;
     }
@@ -573,6 +591,7 @@ async fn receive_json(
     method: JsonMethod,
     document: Option<serde_json::Value>,
     strict_denial: bool,
+    background: Option<bool>,
 ) -> Result<()> {
     ensure!(
         document.as_ref().is_none_or(serde_json::Value::is_object),
@@ -588,7 +607,7 @@ async fn receive_json(
     })
     .await??;
     let result = client
-        .direct_json(method.api(), document.as_ref(), strict_denial)
+        .direct_json(method.api(), document.as_ref(), strict_denial, background)
         .await;
     if let Err(error) = &result
         && let Some(provider) = error.downcast_ref::<TelegramError>()

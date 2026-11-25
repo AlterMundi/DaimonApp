@@ -203,6 +203,21 @@ class ActivityIO(unittest.TestCase):
         self.assertEqual(self.calls[-1][0],'deleteMessage')
         database.close()
 
+    def test_retained_card_keeps_its_observed_native_binding(self):
+        path = self.root / 'retained-card.json'
+        activity.atomic_json(path, {'100:7': {'chat_id':100, 'topic':7, 'message_id':101,
+                                             'turn':'original-turn', 'attempted':True}})
+        publisher = activity.Publisher(self.telegram,path)
+        publisher.update('100:7',100,7,'original-turn','Same native report',time.time(),
+                         native_thread='original-native')
+        self.assertEqual(json.loads(path.read_text())['100:7']['native_thread'], 'original-native')
+        self.assertEqual([method for method,_ in self.calls], ['editMessageText'])
+        restarted = activity.Publisher(self.telegram,path)
+        restarted.update('100:7',100,7,'replacement-turn','Foreign report',time.time(),
+                         native_thread='replacement-native')
+        self.assertEqual([method for method,_ in self.calls], ['editMessageText'])
+        self.assertEqual(restarted.snapshot()['100:7']['message_id'], 101)
+
     def test_ambiguous_send_is_not_repeated_after_restart(self):
         self.answers = [None]
         self.publisher.update('100:7', 100, 7, 'turn-a', 'Working', 100)
