@@ -85,6 +85,43 @@
     timeline.before(shell);content.append(timeline,view);
     let binding,epoch=0,inventory=new Map(),rows=new Map(),pin,expanded,technical=false,allowed=false,loading=false,complete=false,restoreChecked=false;
     let statusFailureAt, statusFailureTimer;
+    const reviewed=new Map(), visibleResults=new Map();
+    const reviewKey='interaction.reviewed-session-results.v1';
+    const sessionId=id=>typeof id==='string'&&/^[a-f0-9]{24}$/.test(id);
+    const resultId=id=>typeof id==='string'&&/^[a-f0-9]{64}$/.test(id);
+    function loadReviewed(){
+      reviewed.clear();
+      if(!binding)return;
+      try{
+        const raw=window.localStorage?.getItem(reviewKey);
+        if(!raw||raw.length>16384)return;
+        const value=JSON.parse(raw);
+        if(value.binding!==binding||!Array.isArray(value.results)||value.results.length>128)return;
+        for(const pair of value.results)
+          if(Array.isArray(pair)&&sessionId(pair[0])&&resultId(pair[1]))reviewed.set(pair[0],pair[1]);
+      }catch{}
+    }
+    function reviewVisibleResult(){
+      if(view.hidden||technical||!allowed||document.hidden||!expanded)return;
+      const current=inventory.get(expanded.id), revision=current?.result_revision;
+      if(!sessionId(current?.id)||!resultId(revision)||reviewed.get(current.id)===revision)return;
+      if(![...visibleResults].some(([box,result])=>box.parentNode===entries&&result===revision))return;
+      reviewed.delete(current.id);
+      reviewed.set(current.id,revision);
+      if(reviewed.size>128)reviewed.delete(reviewed.keys().next().value);
+      try{window.localStorage?.setItem(reviewKey,JSON.stringify({binding,results:[...reviewed]}));}catch{}
+      const row=rows.get(current.id);
+      if(row)row.state.textContent=annotate(row.data);
+    }
+    const resultObserver=window.IntersectionObserver?new window.IntersectionObserver(changes=>{
+      for(const entry of changes){
+        if(entry.target.parentNode===entries&&entry.isIntersecting&&entry.intersectionRatio>0)
+          visibleResults.set(entry.target,entry.target.dataset.resultRevision);
+        else visibleResults.delete(entry.target);
+      }
+      reviewVisibleResult();
+    },{root:entries,threshold:[0,0.01]}):undefined;
+    document.addEventListener?.('visibilitychange',reviewVisibleResult);
     const statusFailureText='Session status is unavailable. Your input destination is unchanged.';
     function clearStatusFailure(){clearTimeout(statusFailureTimer);statusFailureTimer=undefined;statusFailureAt=undefined;}
     function observeStatusFailure(){
@@ -138,7 +175,7 @@
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;entries.replaceChildren();historyScrollTop=0;touchStart=undefined;historyStatus.textContent='';retryHistory.hidden=true;}
+    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;resultObserver?.disconnect();visibleResults.clear();entries.replaceChildren();historyScrollTop=0;touchStart=undefined;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row,{restore=false}={}){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();if(!restore)focusComposer();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -150,7 +187,7 @@
       const states=[];
       if(row.human_action_pending)states.push('◆ Needs you');
       if(row.results_review===true || row.results_review==='pending')states.push('▣ Results to review');
-      else if(row.result_available===true)states.push('▣ Result available');
+      else if(row.result_available===true&&(!row.result_revision||reviewed.get(row.id)!==row.result_revision))states.push('▣ Result available');
       if(row.goal_state==='blocked')states.push('⏸ Goal blocked');
       else if(row.goal_state==='active')states.push('◎ Goal active');
       if(row.tools_running)states.push('⚒ Tools running');
@@ -201,7 +238,7 @@
       renderSelection();syncAudio();
     }
     function resetBinding(next){
-      clearStatusFailure();epoch++;loading=false;binding=next;pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
+      clearStatusFailure();epoch++;loading=false;binding=next;loadReviewed();pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
       allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
     async function refresh(nextBinding){
@@ -228,7 +265,7 @@
           if((pin&&!pin.destination)||(expanded&&!expanded.is_entry&&!expanded.destination))status.textContent='Your saved session is unavailable. Select a destination before sending.';
           renderSelection();onTarget();
         }
-        render();onReady(true);
+        reviewVisibleResult();render();onReady(true);
         if(expanded&&!expanded.is_entry&&(activeHistory||!retryHistory.hidden&&Date.now()-lastHistoryAttempt>=5000))
           void history(activeHistory?'after':undefined);
       }catch(error){
@@ -284,6 +321,10 @@
         });box.append(more);
       }
       if(prepend)entries.insertBefore(box,entries.children[0]||null);else entries.append(box);
+      if(ordinary&&resultId(item.result_revision)){
+        box.dataset.resultRevision=item.result_revision;
+        resultObserver?.observe(box);
+      }
     }
     function trimHistory(backward,keep){
       const size=box=>Math.max(box.textContent.length,Number(box.dataset.characters)||0);
@@ -294,6 +335,7 @@
         characters-=size(box);
         if(backward){activeHistory.after=Number(box.dataset.position);activeHistory.moreAfter=true;}
         else {activeHistory.before=Number(box.dataset.end);activeHistory.hasEarlier=true;}
+        resultObserver?.unobserve(box);visibleResults.delete(box);
         box.remove();
       }
     }

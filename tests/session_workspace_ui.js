@@ -15,10 +15,17 @@ class Element{
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=false}={}){
   const document={createElement:tag=>new Element(tag)},window={localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}},root=new Element('main'),timeline=new Element('div');root.append(timeline);
+  let observer;
+  window.IntersectionObserver=class{
+    constructor(callback){this.callback=callback;this.nodes=new Set();observer=this;}
+    observe(box){this.nodes.add(box);}
+    unobserve(box){this.nodes.delete(box);}
+    disconnect(){this.nodes.clear();}
+  };
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,now=Date.now();
+  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,resultRevision,now=Date.now();
   const timers=new Map();let timerId=0;const noticePanel=noticeHost?new Element('aside'):undefined;if(noticePanel)root.append(noticePanel);
   const reads=[],targets=[],replies=[],focuses=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
@@ -30,7 +37,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     if(held){const hold=held;held=undefined;return hold;}
     if(historyFailures.length)throw Object.assign(Error('Synthetic replaced history'),{status:historyFailures.shift()});
     if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
-    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
+    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
   const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
@@ -42,6 +49,10 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {storage,root,timeline,control,noticePanel,reads,targets,replies,focuses,audioCalls,rows,all,byText,byLabel,reference,
     failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.fn();}},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
+    resultHistory:value=>{resultRevision=value;},
+    showResult(visible=true){observer.callback([...observer.nodes].map(target=>({
+      target,isIntersecting:visible,intersectionRatio:visible?1:0
+    })));},
     holdHistory(){let release;held=new Promise(resolve=>{release=resolve;});return release;}};
 }
 (async()=>{
@@ -72,6 +83,30 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal(general.rows()[0].children[0].textContent,'CompAII','General conversation is always first, including when idle and old');
   general.byText('CompAII').click();assert.equal(general.control.capture().reference,undefined,'Display naming preserves the integrating destination');
   assert.equal(entry.title,'Daimon Interaction','The retained native title is not rewritten');
+  const reviews=boot(),work=reviews.getSessions()[0],result='a'.repeat(64),next='b'.repeat(64);
+  Object.assign(work,{id:'7'.repeat(24),result_available:true,result_revision:result});
+  reviews.resultHistory(result);
+  await reviews.control.refresh('binding');
+  const state=fixture=>fixture.rows().find(row=>row.children[0].textContent==='Busy work').children[1].textContent;
+  assert.match(state(reviews),/Result available/);
+  reviews.failHistory(true);
+  reviews.byText('Busy work').click();await tick();
+  reviews.showResult();assert.match(state(reviews),/Result available/,'A failed history read cannot mark the result');
+  reviews.failHistory(false);
+  await reviews.byLabel('Retry reading this conversation').click();await tick();
+  reviews.showResult(false);assert.match(state(reviews),/Result available/,'Off-screen results stay unread');
+  reviews.showResult();assert.equal(state(reviews),'○ Idle');
+  work.execution='working';work.latest_reply={...work.latest_reply,source:'session:7/43'};
+  await reviews.control.refresh('binding');
+  assert.equal(state(reviews),'⚙ Working','Later commentary does not reopen the reviewed result');
+  const reopened=boot({storage:reviews.storage});
+  reopened.setSessions(reviews.getSessions());await reopened.control.refresh('binding');
+  assert.equal(state(reopened),'⚙ Working','Review survives a reload in the same binding');
+  work.result_revision=next;await reviews.control.refresh('binding');
+  reviews.showResult();assert.match(state(reviews),/Result available/,'Old visible history cannot clear a new result');
+  work.result_revision=result;await reviews.control.refresh('different binding');
+  assert.match(state(reviews),/Result available/,'A different binding never inherits a local review');
+
   const storage=new Map(),profile=boot({storage});
   const inventory=profile.getSessions().map((row,i)=>({...row,id:String(i+1).repeat(24)}));
   inventory[1].last_activity_at=Date.now()/1000-172800;

@@ -72,9 +72,11 @@ refresh time alone never qualifies an idle session as recent. Existing
 fresh observer facts show work, tools, active/blocked goals and human action.
 Stale/unknown facts are explicit and color is accompanied by text/icons.
 `result_available` means a retained final assistant message exists in that current
-native session. It is not evidence that the human has reviewed it. Review status
-remains unknown unless its owning journal supplies a review state; no artificial
-read/hearing receipt is created by opening the rail.
+native session. The rail clears its Result available label when the exact current
+result comes into view in the ordinary session conversation. A new final result
+brings the label back. The other session statuses continue to follow the observer.
+The browser keeps only a bounded set of binding-scoped result identifiers. This
+display preference does not send a read receipt or acknowledge any pending work.
 
 Both workspace metadata and selected history require the existing explicit
 `workspace_access` grant for restricted shared-Home/Companion devices. Monitors

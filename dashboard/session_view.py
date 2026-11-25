@@ -80,6 +80,11 @@ def _conversation_answer(text):
     return body.rstrip()
 
 
+def result_revision(item_id):
+    if isinstance(item_id,str) and item_id:
+        return hashlib.sha256(item_id.encode()).hexdigest()
+
+
 def _event(record,technical,routed_original):
     if not isinstance(record,dict):return None
     p=record.get('payload',{})
@@ -95,7 +100,12 @@ def _event(record,technical,routed_original):
         if not technical:
             text=_conversation_input(text,routed_original) if role=='user' else _conversation_answer(text)
         if not technical and not text.strip():return None
-        return {'kind':'message','role':role,'text':text}
+        result={'kind':'message','role':role,'text':text}
+        if not technical and role=='assistant' and p.get('phase') in (None,'final_answer','final'):
+            revision=result_revision(p.get('id'))
+            if revision:
+                result['result_revision']=revision
+        return result
     if not technical:return None
     if kind in ('function_call','custom_tool_call'):
         value=p.get('arguments') if kind=='function_call' else p.get('input')
