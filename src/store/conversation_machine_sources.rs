@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{fmt, io::Read};
 
 const MAX_PENDING: i64 = 32;
+const MAX_RESERVATION_ORDER: i64 = (1 << 53) - 1;
 const SOURCE_BYTES: u64 = 48 * 1024;
 const SOURCE_BASE64_BYTES: usize = 64 * 1024;
 const MAX_SOURCES_PER_SESSION: i64 = 512;
@@ -76,13 +77,27 @@ impl Store {
              ON conversation_machine_sources(session,expires) WHERE retained=0;
              CREATE TABLE IF NOT EXISTS conversation_machine_source_bytes (
                receipt TEXT PRIMARY KEY REFERENCES conversation_machine_sources(receipt) ON DELETE CASCADE,
-               bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=49152));",
+               bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=49152));
+             CREATE TABLE IF NOT EXISTS conversation_machine_source_clock (
+               singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+               reservation_order INTEGER NOT NULL CHECK(reservation_order>=0));
+             INSERT OR IGNORE INTO conversation_machine_source_clock VALUES(1,0);",
         )?;
         super::add_column_if_missing(
             &conn,
             "conversation_machine_sources",
             "source_inline",
             "INTEGER NOT NULL DEFAULT 0 CHECK(source_inline IN (0,1))",
+        )?;
+        super::add_column_if_missing(
+            &conn,
+            "conversation_machine_sources",
+            "reservation_order",
+            "INTEGER NOT NULL DEFAULT 0 CHECK(reservation_order>=0)",
+        )?;
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS conversation_machine_sources_reservation_order
+             ON conversation_machine_sources(reservation_order) WHERE reservation_order>0;",
         )?;
         expire_pending(&conn, Utc::now().timestamp())?;
         Ok(())
@@ -182,10 +197,22 @@ impl Store {
             check_payload_capacity(&tx, session)?;
             let bytes = bytes.context("Exact machine source bytes required")?;
             let receipt = Uuid::new_v4().to_string();
+            // Reserve order with the exact bytes. Audio can finish capture much
+            // later than a newer text original. Retention order, provider order
+            // and a client wall clock cannot establish observation precedence.
+            let order: i64 = tx
+                .query_row(
+                    "UPDATE conversation_machine_source_clock SET reservation_order=reservation_order+1
+                     WHERE singleton=1 AND reservation_order<?1 RETURNING reservation_order",
+                    [MAX_RESERVATION_ORDER],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .context("Machine source reservation order unavailable")?;
             tx.execute(
-                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
-                params![id,receipt,human,session,offer.binding,epoch,observation,file,now+86400],
+                "INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline,reservation_order)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10)",
+                params![id,receipt,human,session,offer.binding,epoch,observation,file,now+86400,order],
             )?;
             park_inline(&tx, &receipt, &bytes)?;
         }
@@ -497,13 +524,13 @@ fn source_status_on(
     }
     let epoch = super::stopping::admission_epoch_on(conn, entry)?;
     let result = conn.query_row(
-        "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline FROM conversation_machine_sources s
+        "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline,s.reservation_order FROM conversation_machine_sources s
          LEFT JOIN conversation_inputs i ON i.id=s.original
          WHERE s.original=?1 AND s.human=?2 AND s.session=?3 AND s.binding=?5
            AND ((s.retained=0 AND i.id IS NULL AND s.epoch=?6 AND s.expires>?7)
              OR (s.retained=1 AND i.human_id=s.human AND i.session_id=s.session AND i.native_thread=?4 AND i.retired=0))",
         params![id,human,session,native,binding,epoch,Utc::now().timestamp()],
-        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?)),
+        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?,r.get::<_,i64>(5)?)),
     ).optional()?.context(UNAVAILABLE)?;
     let file: FileReference = serde_json::from_str(&result.2)?;
     let offer = MachineSourceOffer {
@@ -522,6 +549,11 @@ fn source_status_on(
         "observation_id":result.1,"source_sha256":offer.file.sha256,"retained_original":result.3,
         "storage": if result.4 {"owner-journal"} else {"legacy-vault"},
         "speaker_verification":"asserted-by-owner-local-source","entry_binding":[human,entry,session,native]});
+    // A receipt written by an older owner has no trustworthy ordering data.
+    // Preserve the receipt without inventing a position from its timestamps.
+    if result.5 > 0 {
+        value["reservation_order"] = json!(result.5);
+    }
     if read_observation {
         value["observation_json"] = json!(projection.observation.get());
     }
@@ -676,6 +708,156 @@ mod tests {
                 id,
             },
         )
+    }
+
+    #[test]
+    fn machine_source_reservation_order_survives_late_retention_expiry_and_restart() {
+        let (root, store, entry, binding) = setup();
+        let reserve = |original| {
+            store
+                .conversation_machine_source_reserve(100, entry, offer(&binding, original))
+                .unwrap()
+        };
+        let (older, newer, expiring) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let older_offer = reserve(older);
+        let newer_offer = reserve(newer);
+        let expired_order = reserve(expiring)["reservation_order"].as_i64().unwrap();
+        assert!(
+            older_offer["reservation_order"].as_i64().unwrap()
+                < newer_offer["reservation_order"].as_i64().unwrap()
+        );
+
+        // A slow earlier capture can reach the writer after a newer original.
+        for (original, offered) in [(newer, newer_offer), (older, older_offer)] {
+            let receipt = Uuid::parse_str(offered["receipt"].as_str().unwrap()).unwrap();
+            store
+                .conversation_input_capture_files(
+                    100,
+                    entry,
+                    &binding,
+                    &original.to_string(),
+                    "Original",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    Some(receipt),
+                )
+                .unwrap();
+            let sealed = control_status(&store, entry, &binding, original).unwrap();
+            assert_eq!(sealed["receipt"], offered["receipt"]);
+            assert_eq!(sealed["reservation_order"], offered["reservation_order"]);
+            assert_eq!(sealed["retained_original"], true);
+        }
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE conversation_machine_sources SET expires=0 WHERE original=?1",
+                [expiring.to_string()],
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = Store::open(
+            &root.path().join("control.sqlite"),
+            &[100],
+            &super::super::tests::defaults(),
+        )
+        .unwrap();
+        assert!(control_status(&reopened, entry, &binding, expiring).is_err());
+        let replacement = reopened
+            .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+            .unwrap();
+        assert!(replacement["reservation_order"].as_i64().unwrap() > expired_order);
+
+        // Reconstruct the previous schema with its source bytes intact.
+        // The next open must keep old receipts without inventing their order.
+        reopened
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "DROP INDEX conversation_machine_sources_reservation_order;
+             ALTER TABLE conversation_machine_sources DROP COLUMN reservation_order;
+             DROP TABLE conversation_machine_source_clock;",
+            )
+            .unwrap();
+        drop(reopened);
+        let upgraded = Store::open(
+            &root.path().join("control.sqlite"),
+            &[100],
+            &super::super::tests::defaults(),
+        )
+        .unwrap();
+        let legacy = control_status(&upgraded, entry, &binding, older).unwrap();
+        assert!(legacy.get("reservation_order").is_none());
+        assert_eq!(legacy["retained_original"], true);
+        let after_upgrade = upgraded
+            .conversation_machine_source_reserve(100, entry, offer(&binding, Uuid::new_v4()))
+            .unwrap();
+        assert_eq!(after_upgrade["reservation_order"], 1);
+    }
+
+    #[test]
+    fn machine_source_order_uses_one_transaction_and_stays_fixed_on_retry() {
+        let (_root, store, entry, binding) = setup();
+        let original = Uuid::new_v4();
+        let first = offer(&binding, original);
+        let retry = MachineSourceOffer {
+            id: first.id,
+            binding: first.binding.clone(),
+            observation_id: first.observation_id,
+            file: first.file.clone(),
+            source_b64: first.source_b64.clone(),
+        };
+        let prepared = store
+            .conversation_machine_source_reserve(100, entry, first)
+            .unwrap();
+        assert_eq!(
+            store
+                .conversation_machine_source_reserve(100, entry, retry)
+                .unwrap(),
+            prepared
+        );
+
+        let failed = Uuid::new_v4();
+        store.conn.lock().unwrap().execute_batch(
+            "CREATE TEMP TRIGGER reject_machine_source BEFORE INSERT ON conversation_machine_source_bytes
+             BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;"
+        ).unwrap();
+        assert!(
+            store
+                .conversation_machine_source_reserve(100, entry, offer(&binding, failed))
+                .is_err()
+        );
+        assert!(control_status(&store, entry, &binding, failed).is_err());
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_machine_source")
+            .unwrap();
+        let next = store
+            .conversation_machine_source_reserve(100, entry, offer(&binding, failed))
+            .unwrap();
+        assert_eq!(
+            next["reservation_order"].as_i64().unwrap(),
+            prepared["reservation_order"].as_i64().unwrap() + 1
+        );
+
+        store.conn.lock().unwrap().execute(
+            "UPDATE conversation_machine_source_clock SET reservation_order=?1 WHERE singleton=1",
+            [MAX_RESERVATION_ORDER],
+        ).unwrap();
+        let exhausted = Uuid::new_v4();
+        assert!(
+            store
+                .conversation_machine_source_reserve(100, entry, offer(&binding, exhausted))
+                .is_err()
+        );
+        assert!(control_status(&store, entry, &binding, exhausted).is_err());
     }
 
     #[test]

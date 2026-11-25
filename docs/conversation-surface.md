@@ -142,6 +142,19 @@ receiving integration must verify the actual registered speaker before offering 
 evidence of canonical retention. Delivery and permission for any subsequent
 Holodeck action still require independent proof.
 
+New reservations carry an owner-journal `reservation_order`, allocated
+in the same transaction as the receipt and its immutable bytes. The number
+orders reservations inside the current journal. It is independent of
+capture timestamps, world event sequences, canonical admission and native
+delivery. An exact retry preserves it. Expiration does not reset the
+sequence. A new reservation after expiration receives a new number. The
+reducer must distinguish an originally frozen observation recovered after
+expiration from a genuinely later observation before using order to
+advance a baseline. Older receipts omit it and remain readable. The semantic reducer
+must treat receipt order as belonging to a journal incarnation, and a
+native-accepted receipt of unknown order as a barrier to an existing
+baseline. A restored or replaced journal requires a fresh full baseline.
+
 Pending reservations are capped at 32 per Conversation and expire after
 24 hours. Opening the journal or submitting another validly encoded offer
 sweeps expired pending bytes. The sweep survives a subsequent refusal. The
@@ -152,6 +165,20 @@ using the same pinned bytes, original and receipt. The native writer checks
 the source again when sealing and rolls back capture if the bytes are unavailable.
 Retained sources remain immutable. Before sustained activation, qualify their
 owning archival route so the journal's sealed-source limit is recoverable.
+
+For semantic delivery, the acceptance point is the exact canonical
+`ConversationInputEvent::Accepted` following native start or steer acceptance.
+The generic native receipt table here records Telegram ingress and is
+insufficient for canonical Conversation. An original sealed in SQLite,
+a queued turn, or an agent reply does not acknowledge its semantic
+projection. The candidate reducer will fold coarse pose and recent work
+only against a state actually installed on the current native thread and
+authorized lane. It must retain both the installed state and a separate
+order floor; losing the state requires a full projection without allowing
+an earlier reservation to replace a newer observation. Route changes,
+first-thread binding and interrupted submissions need exact per-original
+evidence. Forwarded inputs keep their full source until their destination
+can establish its own baseline.
 
 The dashboard candidate negotiates the receipt path only when both the
 canonical frame and the authorized Holodeck host advertise it. Each
