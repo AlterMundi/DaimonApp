@@ -112,3 +112,17 @@ An authenticated host can opt in to the cosmetic avatar playback signal with
 level from the existing playback observer. It sends silence on pause, hide or
 disconnect. The parent expires old levels locally. This signal carries no
 audio, transcription, microphone input, or turn activity.
+
+A compatible child advertises `features.avatarMicrophone: true` on `ready`.
+A host may request `avatarMicrophone: true` independently on `connect`. The
+optional `avatar-microphone` message uses the same actor, frame, visit and
+binding envelope. Its only additional field is a scalar `level` rounded to
+quarters. Ordinary Conversation capture with live PCM provides the level
+from its existing local meter. No new capture, permission, media callback
+or background timer is opened. Nonzero samples are capped at ten per
+second, and a zero clears the previous sample on capture stop, hide,
+disconnect or opt-out. The receiver must expire silent or stale samples
+locally and must not infer that the mic is active from the capability.
+No waveform, text, draft, device ID or capture status crosses the frame.
+Continuous engines and recorder fallback with no existing level source
+continue without this optional presentation.
