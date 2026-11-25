@@ -348,8 +348,16 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     if human != cfg.human_id {
         bail!("Matrix origin owner differs from the authenticated controller");
     }
-    if let Some(selected) = args.strip_prefix("claude ") {
-        return foreground::owner(app, cfg, selected).await;
+    use crate::interaction::ForegroundEngine;
+    if let Some((engine, selected)) = args.split_once(' ') {
+        let engine = match engine {
+            "claude" => Some(ForegroundEngine::Claude),
+            "goose" => Some(ForegroundEngine::Goose),
+            _ => None,
+        };
+        if let Some(engine) = engine {
+            return foreground::owner(app, cfg, engine, selected).await;
+        }
     }
     if let Some(selected) = args.strip_prefix("publication ") {
         let publication = cfg

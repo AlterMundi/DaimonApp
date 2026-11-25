@@ -3209,7 +3209,7 @@ pub(super) fn cold_interaction_config(database: PathBuf, cwd: PathBuf, human: i6
 
 #[cfg(unix)]
 #[tokio::test]
-async fn foreground_claude_journals_before_both_effects_and_restarts_without_replay() {
+async fn foreground_harnesses_share_one_journal_and_restart_without_replay() {
     use serde_json::json;
 
     let root = tempfile::tempdir().unwrap();
@@ -3241,6 +3241,7 @@ else:
     assert phase == "returning"
     retained = json.loads(raw)
     assert retained.pop("native_session_id")
+    retained.pop("engine", None)
     assert retained == dict(send_id=input["send_id"], text="Synthetic result")
     assert input["text"] == "Synthetic result"
     with open(marker, "a") as f:
@@ -3258,7 +3259,10 @@ if first["text"] == "reject-before-commit":
     print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
                       reason="claude_catalog_mismatch"))), flush=True)
     sys.exit(0)
-native = "different-session" if first["text"] == "wrong-native-id" else first["sessionId"]
+goose = first["schema"] == "daimon-gateway.goose-turn/v1"
+native = "goose-native-id" if goose else first["sessionId"]
+if first["text"] == "wrong-native-id":
+    native = "different-session"
 print(json.dumps(dict(ids, type="prepare_submission", nativeSessionId=native)), flush=True)
 ack = json.loads(sys.stdin.readline())
 assert ack == dict(ids, type="submission_decision", committed=True)
@@ -3267,7 +3271,10 @@ with sqlite3.connect(db) as conn:
                                           [first["inputId"]]).fetchone()
 assert phase == "provider_exposed"
 frozen = json.loads(raw)
-assert frozen["session_id"] == json.loads(submission)["native_session_id"] == first["sessionId"]
+assert frozen["session_id"] == first["sessionId"]
+assert json.loads(submission)["native_session_id"] == native
+if goose:
+    assert json.loads(submission)["engine"] == "goose"
 assert frozen["original"]["text"] == first["text"]
 assert frozen["body"]["manifest_hash"] == first["body"]["manifestHash"]
 with open(marker, "a") as f:
@@ -3275,8 +3282,7 @@ with open(marker, "a") as f:
 if first["text"] == "lose-provider-result":
     os._exit(9)
 assert first["text"] == "Synthetic prompt"
-print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessionId=first["sessionId"],
-                                                       text="Synthetic result"))), flush=True)
+print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessionId=native, text="Synthetic result"))), flush=True)
 "#).unwrap();
 
     let mut config = cold_interaction_config(database.clone(), root.path().into(), 100);
@@ -3289,7 +3295,10 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         }))
         .unwrap(),
     );
+    let interaction = config.interaction.as_mut().unwrap();
+    interaction.goose_foreground = interaction.claude_foreground.clone();
     let app = App::bootstrap(config.clone()).await.unwrap();
+    let goose_id = uuid::Uuid::now_v7().to_string();
     let id = uuid::Uuid::now_v7().to_string();
     let uncertain = uuid::Uuid::now_v7().to_string();
     let refused = uuid::Uuid::now_v7().to_string();
@@ -3308,6 +3317,19 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .unwrap();
     assert_eq!(delivered["phase"], "delivered");
     assert_eq!(delivered["native_session_id"], delivered["session_id"]);
+    assert_eq!(delivered["engine"], "claude");
+    let goose_run = |id| run(id, "fixture-sender").replacen("claude", "goose", 1);
+    let duplicate = stopping::command(&app, 100, &goose_run(&id), None)
+        .await
+        .unwrap();
+    assert_eq!(duplicate, delivered);
+    let goose = stopping::command(&app, 100, &goose_run(&goose_id), None)
+        .await
+        .unwrap();
+    assert_eq!(goose["phase"], "delivered");
+    assert_eq!(goose["engine"], "goose");
+    assert_eq!(goose["native_session_id"], "goose-native-id");
+    assert_ne!(goose["native_session_id"], goose["session_id"]);
     let nonce = delivered["result"]["send_id"].as_str().unwrap();
     let lost = stopping::command(&app, 100, &run(&uncertain, "lose-provider-result"), None)
         .await
@@ -3343,7 +3365,14 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     use crate::store::WePhase;
     let store = &app.shared.store;
     let attempt = store
-        .we_start(100, entry, source, json!({}), original)
+        .we_start(
+            100,
+            entry,
+            crate::interaction::ForegroundEngine::Claude,
+            source,
+            json!({}),
+            original,
+        )
         .unwrap()
         .unwrap();
     assert!(
@@ -3386,6 +3415,10 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     drop(app);
 
     let app = App::bootstrap(config).await.unwrap();
+    let retained_goose = stopping::command(&app, 100, &run(&goose_id, "fixture-sender"), None)
+        .await
+        .unwrap();
+    assert_eq!(retained_goose, goose);
     let interrupted_id = interrupted.clone();
     for (id, author, phase) in [
         (id, "fixture-sender", "delivered"),
@@ -3414,7 +3447,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     }
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
-        "provider\nreturn\nprovider\n"
+        "provider\nreturn\nprovider\nreturn\nprovider\n"
     );
     let database = rusqlite::Connection::open(database).unwrap();
     for table in ["turns", "incoming_updates"] {

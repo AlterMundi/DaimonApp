@@ -42,7 +42,8 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub matrix_targets: Vec<MatrixTarget>,
     pub matrix_transport: Option<MatrixTransportConfig>,
-    pub claude_foreground: Option<ClaudeForegroundConfig>,
+    pub claude_foreground: Option<ForegroundConfig>,
+    pub goose_foreground: Option<ForegroundConfig>,
     /// Owner-only durable visibility publication; never a model signing API.
     pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
@@ -94,9 +95,24 @@ pub struct MatrixTransportConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClaudeForegroundConfig {
+pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForegroundEngine {
+    Claude,
+    Goose,
+}
+
+impl ForegroundEngine {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Goose => "goose",
+        }
+    }
 }
 
 fn valid_owner_command(command: &[String]) -> bool {
@@ -301,7 +317,10 @@ impl InteractionConfig {
         if let Some(publication) = &self.matrix_publication {
             publication.validate()?;
         }
-        if let Some(foreground) = &self.claude_foreground {
+        for foreground in [&self.claude_foreground, &self.goose_foreground]
+            .into_iter()
+            .flatten()
+        {
             let host = &foreground.transport;
             host.source.validate()?;
             if !matches!(host.source, MatrixDestination::Body { .. })
@@ -312,7 +331,7 @@ impl InteractionConfig {
                 || host.native_host_restrictions.is_some()
                 || !cfg!(unix)
             {
-                bail!("Invalid explicit Claude foreground configuration");
+                bail!("Invalid explicit native foreground configuration");
             }
         }
         if let Some(transport) = &self.matrix_transport {
@@ -729,6 +748,7 @@ mod tests {
             matrix_targets: vec![],
             matrix_transport: None,
             claude_foreground: None,
+            goose_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![

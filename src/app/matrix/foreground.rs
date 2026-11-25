@@ -1,18 +1,21 @@
 //! An explicitly selected sibling original through the existing Gateway owner socket.
 use super::*;
-use crate::interaction::{ClaudeForegroundConfig, InteractionConfig};
+use crate::interaction::{ForegroundConfig, ForegroundEngine, InteractionConfig};
 use crate::store::{MatrixAuthor, WeOriginal, WePhase, WeSelection};
 
-const WORKER_SCHEMA: &str = "daimon-gateway.claude-turn/v1";
-
-pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Result<Value> {
+pub(super) async fn owner(
+    app: &App,
+    cfg: &InteractionConfig,
+    engine: ForegroundEngine,
+    args: &str,
+) -> Result<Value> {
     let store = &app.shared.store;
     let (human, entry) = (cfg.human_id, cfg.entry());
     if let Some(id) = args.strip_prefix("status ") {
         return Ok(store.we_status(human, entry, id)?.unwrap_or(Value::Null));
     }
     let Some(raw) = args.strip_prefix("run ") else {
-        bail!("Expected matrix claude run with a selected original, or status with its UUID");
+        bail!("Expected a foreground run with a selected original, or status with its UUID");
     };
     anyhow::ensure!(raw.len() <= 4096, "Bounded Matrix selection required");
     let selected: WeSelection = serde_json::from_str(raw)?;
@@ -20,16 +23,17 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
     if let Some(existing) = store.we_status(human, entry, &selected.event_id)? {
         return Ok(existing);
     }
-    let config = cfg
-        .claude_foreground
-        .as_ref()
-        .context("Claude foreground route is unavailable")?;
+    let config = match engine {
+        ForegroundEngine::Claude => cfg.claude_foreground.as_ref(),
+        ForegroundEngine::Goose => cfg.goose_foreground.as_ref(),
+    }
+    .context("Selected native foreground route is unavailable")?;
     let MatrixDestination::Body {
         being_ref,
         embodiment_id,
     } = &config.transport.source
     else {
-        bail!("Claude foreground source body required");
+        bail!("Native foreground source body required");
     };
     let source = MatrixAuthor {
         being_ref: being_ref.clone(),
@@ -58,7 +62,7 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
     );
     let text = original.text.clone();
     let id = selected.event_id;
-    let Some(attempt) = store.we_start(human, entry, source, observed, original)? else {
+    let Some(attempt) = store.we_start(human, entry, engine, source, observed, original)? else {
         return store
             .we_status(human, entry, &id)?
             .context("Retained original unavailable");
@@ -67,7 +71,7 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
     let execution = tokio::select! {
         biased;
         _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
-        result = execute_worker(config, &id, &attempt.session_id, &text, body, |native_session| {
+        result = execute_worker(config, engine, &id, &attempt.session_id, &text, body, |native_session| {
             exposed = store.we_transition(human, entry, &attempt,
                 WePhase::Starting, WePhase::ProviderExposed, json!({"native_session_id":native_session}))?;
             Ok(exposed)
@@ -77,7 +81,14 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
         (false, outcome) => {
             let known = outcome
                 .ok()
-                .filter(|value| value["phase"] == "not_submitted");
+                .filter(|value| value["phase"] == "not_submitted")
+                .and_then(|value| {
+                    let reason = value["reason"].as_str()?;
+                    (reason.len() <= 128
+                        && !reason.is_empty()
+                        && reason.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+                    .then(|| json!({"reason":reason}))
+                });
             store.we_transition(
                 human,
                 entry,
@@ -90,7 +101,7 @@ pub(super) async fn owner(app: &App, cfg: &InteractionConfig, args: &str) -> Res
         (true, Ok(outcome)) if outcome["phase"] == "completed" => {
             let reply = outcome["text"]
                 .as_str()
-                .context("Bounded Claude result required")?;
+                .context("Bounded native result required")?;
             let send_id = uuid::Uuid::now_v7().to_string();
             host["text"] = json!(reply);
             host["send_id"] = json!(send_id);
@@ -198,7 +209,8 @@ fn settle_return(outcome: Option<Value>, send_id: &str, thread: &str) -> (WePhas
 
 #[cfg(unix)]
 async fn execute_worker(
-    config: &ClaudeForegroundConfig,
+    config: &ForegroundConfig,
+    engine: ForegroundEngine,
     id: &str,
     session: &str,
     text: &str,
@@ -217,6 +229,7 @@ async fn execute_worker(
     }
     async fn receive(
         output: &mut (impl AsyncBufReadExt + Unpin),
+        schema: &str,
         id: &str,
         session: &str,
     ) -> Result<Value> {
@@ -224,17 +237,21 @@ async fn execute_worker(
         let length = output.read_until(b'\n', &mut frame).await?;
         anyhow::ensure!(
             length > 0 && frame.last() == Some(&b'\n'),
-            "Unconfirmed Claude worker frame"
+            "Unconfirmed native worker frame"
         );
         let decoded: Value = serde_json::from_slice(&frame)?;
         anyhow::ensure!(
-            decoded["schema"] == WORKER_SCHEMA
+            decoded["schema"] == schema
                 && decoded["inputId"] == id
                 && decoded["sessionId"] == session,
-            "Claude worker frame differs from the selected attempt"
+            "native worker frame differs from the selected attempt"
         );
         Ok(decoded)
     }
+    let schema = match engine {
+        ForegroundEngine::Claude => "daimon-gateway.claude-turn/v1",
+        ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
+    };
     let mut command = Command::new(&config.worker_command[0]);
     command
         .args(&config.worker_command[1..])
@@ -244,76 +261,91 @@ async fn execute_worker(
         .stderr(Stdio::null())
         .kill_on_drop(true);
     command.as_std_mut().process_group(0);
-    let mut child = command.spawn().context("Claude worker unavailable")?;
-    let group = OwnedMatrixCommand(child.id().context("Missing Claude worker process")?);
+    let mut child = command.spawn().context("native worker unavailable")?;
+    let group = OwnedMatrixCommand(child.id().context("Missing native worker process")?);
     let result = tokio::time::timeout(Duration::from_secs(130), async {
-        let mut input = child.stdin.take().context("Missing Claude worker input")?;
+        let mut input = child.stdin.take().context("Missing native worker input")?;
         let mut output = BufReader::new(
             child
                 .stdout
                 .take()
-                .context("Missing Claude worker output")?,
+                .context("Missing native worker output")?,
         )
         .take(528_385);
         send(
             &mut input,
-            json!({"schema":WORKER_SCHEMA,"type":"start","inputId":id,
+            json!({"schema":schema,"type":"start","inputId":id,
             "sessionId":session,"text":text,"body":body}),
         )
         .await?;
-        let mut frame = receive(&mut output, id, session).await?;
+        let mut frame = receive(&mut output, schema, id, session).await?;
+        let mut native_session = None;
         if frame["type"] == "prepare_submission" {
-            // Claude accepts the Gateway-selected UUID. Older workers omit
-            // the redundant native session field.
-            let native_session = frame.get("nativeSessionId");
-            anyhow::ensure!(
-                native_session.is_none_or(|value| value.as_str() == Some(session)),
-                "Claude preparation returned another native session"
-            );
-            let committed = commit(session)?;
+            let observed = frame.get("nativeSessionId");
+            let selected = match engine {
+                ForegroundEngine::Claude
+                    if observed.is_none_or(|id| id.as_str() == Some(session)) =>
+                {
+                    session
+                }
+                ForegroundEngine::Claude => {
+                    bail!("Claude preparation returned another native session")
+                }
+                ForegroundEngine::Goose => observed
+                    .and_then(Value::as_str)
+                    .context("Goose preparation omitted its native session")?,
+            };
+            let committed = commit(selected)?;
+            if committed {
+                native_session = Some(selected.to_owned());
+            }
             send(
                 &mut input,
-                json!({"schema":WORKER_SCHEMA,"type":"submission_decision",
+                json!({"schema":schema,"type":"submission_decision",
                 "inputId":id,"sessionId":session,"committed":committed}),
             )
             .await?;
-            frame = receive(&mut output, id, session).await?;
+            frame = receive(&mut output, schema, id, session).await?;
         }
         let outcome = frame["outcome"].take();
         anyhow::ensure!(
             frame["type"] == "outcome"
                 && match outcome["phase"].as_str() {
                     Some("completed") =>
-                        outcome["sessionId"] == session
+                        outcome["sessionId"].as_str() == native_session.as_deref()
+                            && native_session.is_some()
                             && outcome["text"]
                                 .as_str()
                                 .is_some_and(|text| !text.trim().is_empty() && text.len() <= 65536),
-                    Some("uncertain") => outcome["sessionId"] == session,
+                    Some("uncertain") =>
+                        outcome["sessionId"].as_str() == native_session.as_deref()
+                            && native_session.is_some(),
                     Some("not_submitted") => true,
                     _ => false,
                 },
-            "Unconfirmed Claude worker outcome"
+            "Unconfirmed native worker outcome"
         );
         anyhow::ensure!(
             child.wait().await?.success(),
-            "Claude worker exited without a verified outcome"
+            "native worker exited without a verified outcome"
         );
         Ok(outcome)
     })
     .await;
     drop(group);
     let _ = child.wait().await;
-    result.context("Claude worker deadline")?
+    result.context("native worker deadline")?
 }
 
 #[cfg(not(unix))]
 async fn execute_worker(
-    _config: &ClaudeForegroundConfig,
+    _config: &ForegroundConfig,
+    _engine: ForegroundEngine,
     _id: &str,
     _session: &str,
     _text: &str,
     _body: Value,
     _commit: impl FnOnce(&str) -> Result<bool>,
 ) -> Result<Value> {
-    bail!("Claude worker requires Unix process groups")
+    bail!("native worker requires Unix process groups")
 }

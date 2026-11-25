@@ -1,0 +1,65 @@
+diff --git a/crates/goose/src/acp/server.rs b/crates/goose/src/acp/server.rs
+index 43fae02..62469cd 100644
+--- a/crates/goose/src/acp/server.rs
++++ b/crates/goose/src/acp/server.rs
+@@ -407,6 +407,10 @@ fn meta_tags(meta: Option<&Meta>) -> Result<Vec<(String, String)>, agent_client_
+ fn agent_capabilities_meta() -> Option<Meta> {
+     let mut goose = serde_json::Map::new();
+     goose.insert("recipeParameterScopes".to_string(), serde_json::json!({}));
++    goose.insert(
++        "nativeSkills".to_string(),
++        serde_json::json!({"enabled": crate::skills::native_skills_enabled()}),
++    );
+     if cfg!(feature = "local-inference") {
+         goose.insert("localInference".to_string(), serde_json::json!({}));
+     }
+diff --git a/crates/goose/src/agents/state_machine_builder.rs b/crates/goose/src/agents/state_machine_builder.rs
+index 7325bfa..724b8fc 100644
+--- a/crates/goose/src/agents/state_machine_builder.rs
++++ b/crates/goose/src/agents/state_machine_builder.rs
+@@ -125,6 +125,7 @@ pub(crate) fn build_state_machine(
+     } = config;
+     let manages_own_context = provider.manages_own_context();
+
++    let skills_enabled = crate::skills::native_skills_enabled();
+     let skills: Arc<dyn Operation<Session, GooseEffect> + '_> = Arc::new(
+         SkillOperation::new(Arc::new(GooseSkillSource)).with_no_skills_help(NO_SKILLS_HELP),
+     );
+@@ -158,6 +159,9 @@ pub(crate) fn build_state_machine(
+         Arc::new(SteerOperation::new(steer_queue)),
+         Arc::new(BangCommandOperation::new("shell", "command")),
+     ];
++    if !skills_enabled {
++        operations.retain(|operation| !Arc::ptr_eq(operation, &skills));
++    }
+     if !manages_own_context {
+         if let Some(decisions) = context_relevance {
+             operations.push(Arc::new(ContextRelevanceOperation::new(
+@@ -209,7 +213,9 @@ pub(crate) fn build_state_machine(
+             .filter(|operation| !Arc::ptr_eq(operation, &skills))
+             .cloned()
+             .collect();
+-        command_operations.push(Arc::clone(&skills));
++        if skills_enabled {
++            command_operations.push(Arc::clone(&skills));
++        }
+         steps.push(Step::Operation(Arc::new(SlashCommandOperation::new(
+             command_operations,
+         ))));
+diff --git a/crates/goose/src/skills/mod.rs b/crates/goose/src/skills/mod.rs
+index 5fb7478..c0493c9 100644
+--- a/crates/goose/src/skills/mod.rs
++++ b/crates/goose/src/skills/mod.rs
+@@ -26,6 +26,12 @@ use std::collections::{HashMap, HashSet};
+ use std::path::{Path, PathBuf};
+ use tracing::warn;
+
++pub(crate) fn native_skills_enabled() -> bool {
++    !Config::global()
++        .get_param::<bool>("GOOSE_DISABLE_SKILLS")
++        .unwrap_or(false)
++}
++
+ #[derive(Debug, Deserialize)]
+ pub struct SkillFrontmatter {
+     #[serde(default)]
