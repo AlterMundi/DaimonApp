@@ -4,15 +4,54 @@ from contextlib import contextmanager
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import re
 from secrets import token_hex
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
+
+
+_LOCAL_TIME = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\.?"
+)
+
+
+def matches_selected_input(messages, original):
+    texts = user_input(messages)
+    if texts == [original]:
+        return True
+    if len(texts) != 1:
+        return False
+    prefix = (f"<USER_REQUEST>\n{original}\n</USER_REQUEST>\n"
+              "<ADDITIONAL_METADATA>\nThe current local time is: ")
+    suffix = "\n</ADDITIONAL_METADATA>"
+    return (texts[0].startswith(prefix) and texts[0].endswith(suffix)
+            and bool(_LOCAL_TIME.fullmatch(texts[0][len(prefix):-len(suffix)])))
+
+
+def user_input(messages):
+    result = []
+    for message in messages:
+        if message["role"] != "user":
+            continue
+        content = message["content"]
+        if isinstance(content, str):
+            result.append(content)
+        elif isinstance(content, list) and content and all(
+            isinstance(part, dict) and set(part) == {"type", "text"}
+            and part["type"] == "text" and isinstance(part["text"], str)
+            for part in content
+        ):
+            result.append("".join(part["text"] for part in content))
+        else:
+            raise ValueError("Unexpected user message content")
+    return result
 
 
 class ProviderGate:
-    def __init__(self, model, port, tools):
+    def __init__(self, model, port, tools, original):
         self.model = model
         self.port = port
         self.tools = set(tools)
+        self.original = original
         self.challenge = "Reply with the catalog check marker: " + token_hex(16)
         self.marker = self.challenge.split()[-1]
         self.path = "/" + token_hex(32) + "/v1"
@@ -23,12 +62,18 @@ class ProviderGate:
         self.first_request = None
         self.ready_for_followup = False
         self.lock = Lock()
+        self.request_waiting = Event()
+        self.approval = Event()
 
     def release(self):
         with self.lock:
-            if not self.checked or self.released:
+            if not self.checked or not self.request_waiting.is_set() or self.released:
                 raise ValueError("Unverified provider catalog")
             self.released = True
+            self.approval.set()
+
+    def abort(self):
+        self.approval.set()
 
     def allow_followup(self):
         with self.lock:
@@ -52,20 +97,30 @@ class ProviderGate:
             names.add(function["name"])
         if names != self.tools or request["model"] != self.model:
             raise ValueError("Provider catalog or model mismatch")
+        messages = request["messages"]
         with self.lock:
-            if not self.released:
-                if self.checked or not any(
-                    message["role"] == "user" and self.challenge in json.dumps(message["content"])
-                    for message in request["messages"]
-                ):
+            if not self.checked:
+                if not matches_selected_input(messages, self.challenge):
                     raise ValueError("Unexpected preflight input")
                 self.checked = True
                 return self._preflight(request.get("stream"))
+            if not matches_selected_input(messages, self.original) or self.marker in json.dumps(messages):
+                raise ValueError("Provider input differs from the selected original")
+            waiting = not self.released
+            if waiting:
+                if self.request_waiting.is_set():
+                    raise ValueError("Additional provider request refused")
+                self.request_waiting.set()
+        if waiting and not self.approval.wait(20):
+            raise ValueError("Gateway did not authorize provider exposure")
+        with self.lock:
+            if not self.released:
+                raise ValueError("Gateway refused provider exposure")
             if self.forwarded:
                 if (
                     self.forwarded != 1 or not self.ready_for_followup
                     or self.first_request == request
-                    or not any(message["role"] == "tool" for message in request["messages"])
+                    or not any(message["role"] == "tool" for message in messages)
                 ):
                     raise ValueError("Additional provider request refused")
             else:
@@ -136,5 +191,6 @@ class ProviderGate:
             try:
                 yield f"http://127.0.0.1:{server.server_port}{self.path}"
             finally:
+                gate.abort()
                 server.shutdown()
                 thread.join()

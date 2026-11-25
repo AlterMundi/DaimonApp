@@ -33,7 +33,8 @@ file. It takes these fields:
   `manifestHash`. The Gateway start frame and the broker must confirm it.
 - `providerPort` and `model` select `127.0.0.1:<port>/v1/chat/completions`.
 - `stateRoot` is a dedicated owner-only native history directory. The worker
-  stops accepting new turns at 128 MiB or 2048 existing entries. The operator
+  uses 128 MiB and 2048 entries as admission thresholds. One bounded turn
+  may finish above its threshold, and subsequent requests are refused. The operator
   can retain the directory and deliberately select a new one without
   changing Gateway's journal or resubmitting existing originals.
 - Optional `selectedMemory` follows the same owner-only one-record binding
@@ -44,8 +45,9 @@ Antigravity's direct MCP registration exposes extra resource tools. The
 worker uses the maintained observation broker through two scoped host
 callbacks and enables no built-ins or subagents. It checks the exact effective
 provider catalog through a one-use loopback endpoint. The SDK's readiness
-challenge is answered inside the worker without contacting the selected model
-endpoint. The worker then checks the native ID and Matrix binding again and
+challenge is answered in a disposable native session without contacting the
+selected model endpoint. The final session uses the journal-selected UUID.
+The gate requires the exact original in every provider request. The worker checks the native ID and Matrix binding again and
 waits for the journal decision before submitting any original. Each
 subsequent provider request must carry the same tool catalog. One follow-up
 is permitted after one approved observation. Failure after commit is

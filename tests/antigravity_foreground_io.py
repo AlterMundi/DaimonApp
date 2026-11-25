@@ -34,6 +34,9 @@ class Provider(BaseHTTPRequestHandler):
             text = json.dumps(call["messages"])
             assert self.server.original in text
             assert "A decoy record." not in text
+            if self.server.engine == "antigravity":
+                assert "Reply with the catalog check marker:" not in text
+                assert sum(message["role"] == "user" for message in call["messages"]) == 1
             tool = self.server.tool_prefix + "dmk_read_selected"
             names = [item["function"]["name"] for item in call["tools"]]
             assert sorted(names) == sorted([self.server.tool_prefix + "daimon_status", tool]), names
@@ -195,6 +198,9 @@ timeout_seconds=5
     assert delivered["phase"] == "delivered", delivered
     assert delivered["native_session_id"] == delivered["session_id"]
     assert effects.read_text().splitlines() == ["memory", "return"]
+    assert not list(state.glob("catalog-check-*"))
+    assert all(b"Reply with the catalog check marker:" not in item.read_bytes()
+               for item in state.rglob("*") if item.is_file())
     lost, uncertain = attempt("lost")
     assert uncertain["phase"] == "provider_uncertain", uncertain
     assert provider.calls == [first["event_id"], first["event_id"], lost["event_id"]], provider.calls

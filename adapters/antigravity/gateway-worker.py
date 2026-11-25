@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from google.antigravity import Agent, LocalOpenAIAgentConfig
 from google.antigravity.types import AgentBehavior, BudgetConfig, CapabilitiesConfig, SessionContinuationMode, StopReason
@@ -51,10 +53,10 @@ def check_state_capacity(root):
     size = 0
     for directory, folders, files in os.walk(root, followlinks=False):
         entries += len(folders) + len(files)
-        require(entries <= 2048)
+        require(entries < 2048)
         for filename in files:
             size += (Path(directory) / filename).lstat().st_size
-            require(size <= 128 * 1024 * 1024)
+            require(size < 128 * 1024 * 1024)
 
 
 async def frame(reader):
@@ -98,7 +100,7 @@ async def run(profile, reader):
     tools = {"daimon_status"}
     if "selectedMemory" in binding:
         tools.add("dmk_read_selected")
-    gate = ProviderGate(profile["model"], profile["providerPort"], tools)
+    gate = ProviderGate(profile["model"], profile["providerPort"], tools, first["text"])
     committed = False
 
     try:
@@ -146,18 +148,22 @@ async def run(profile, reader):
                     budget_config=BudgetConfig(max_model_calls=4, max_tool_calls=2),
                     tools=[daimon_status, dmk_read_selected] if len(tools) == 2 else [daimon_status],
                 )
+                with TemporaryDirectory(prefix="catalog-check-", dir=state) as disposable:
+                    probe_id = str(uuid4())
+                    probe = config.model_copy(update={
+                        "conversation_id": probe_id, "save_dir": disposable,
+                        "app_data_dir": disposable, "workspaces": [disposable],
+                    })
+                    async with Agent(config=probe) as check_agent:
+                        check = await check_agent.chat(gate.challenge)
+                        require((await check.text()).strip() == gate.marker)
+                        require(gate.checked and check_agent.conversation_id == probe_id)
+
                 async with Agent(config=config) as agent:
-                    check = await agent.chat(gate.challenge)
-                    require((await check.text()).strip() == gate.marker)
-                    require(gate.checked and agent.conversation_id == first["sessionId"])
-                    require(json.loads(await observe("daimon_status")) == profile["body"])
-                    emit(ids, type="prepare_submission", nativeSessionId=agent.conversation_id)
-                    decision = await frame(reader)
-                    require(decision == {**ids, "type": "submission_decision", "committed": True})
-                    committed = True
-                    gate.release()
+                    require(not agent.conversation.history)
+                    reply = await agent.chat(first["text"])
+
                     async def collect_reply():
-                        reply = await agent.chat(first["text"])
                         text = await reply.text()
                         require(reply.stop_reason == StopReason.UNSPECIFIED)
                         require(0 < gate.succeeded == gate.forwarded <= 2)
@@ -165,18 +171,34 @@ async def run(profile, reader):
                         return text
 
                     turn = asyncio.create_task(collect_reply())
-                    ended = asyncio.create_task(reader.read(1))
+                    ended = None
                     try:
+                        async with asyncio.timeout(10):
+                            while not gate.request_waiting.is_set() or agent.conversation_id is None:
+                                require(not turn.done())
+                                await asyncio.sleep(.02)
+                        require(agent.conversation_id == first["sessionId"])
+                        require(json.loads(await observe("daimon_status")) == profile["body"])
+                        emit(ids, type="prepare_submission", nativeSessionId=agent.conversation_id)
+                        decision = await frame(reader)
+                        require(decision == {**ids, "type": "submission_decision", "committed": True})
+                        committed = True
+                        gate.release()
+                        ended = asyncio.create_task(reader.read(1))
                         done, _ = await asyncio.wait({turn, ended}, return_when=asyncio.FIRST_COMPLETED)
                         require(ended not in done)
                         text = await turn
                     finally:
+                        gate.abort()
                         if not turn.done():
                             with suppress(Exception):
                                 await asyncio.wait_for(agent.conversation.cancel(), 2)
                             turn.cancel()
-                        ended.cancel()
-                        await asyncio.gather(turn, ended, return_exceptions=True)
+                        if ended:
+                            ended.cancel()
+                            await asyncio.gather(turn, ended, return_exceptions=True)
+                        else:
+                            await asyncio.gather(turn, return_exceptions=True)
         emit(ids, type="outcome", outcome={"phase": "completed", "sessionId": first["sessionId"], "text": text})
     except Exception:
         if committed:
