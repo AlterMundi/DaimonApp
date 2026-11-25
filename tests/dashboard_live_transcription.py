@@ -81,6 +81,25 @@ class LiveTranscription(unittest.TestCase):
     def meta(self,**extra):return {'id':self.ident,'binding':self.binding,'csrf':self.csrf,**extra}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/live',headers={'origin':origin})
+    def test_reset_after_partial_logs_failed_boundary_without_audio_or_text(self):
+        with self.assertLogs('dashboard.live_transcription', level='WARNING') as logged:
+            with self.open() as ws:
+                ws.send_json(self.meta())
+                self.assertEqual(ws.receive_json()['type'],'ready')
+                ws.send_bytes(b'\0\1'*1600)
+                self.assertEqual(ws.receive_json()['type'],'partial')
+                with patch.object(Stream,'append',side_effect=ConnectionResetError('private fixture exception')):
+                    ws.send_bytes(b'\0\2'*1600)
+                    self.assertEqual(ws.receive_json()['type'],'unavailable')
+        self.assertTrue(Stream.opened[-1].closed_event.wait(2))
+        self.assertEqual(len(Stream.opened),1)
+        self.assertFalse(Stream.opened[-1].finished)
+        self.assertFalse(list((self.root/'prepared').glob('*.json')))
+        event=json.loads(logged.output[-1].split('voice_preparation_closed ',1)[1])
+        self.assertEqual(event['failure_boundary'],'recognizer_write')
+        self.assertEqual(event['audio_bytes'],3200)
+        self.assertNotIn('private fixture exception',str(logged.output))
+        self.assertNotIn('Draft words',str(logged.output))
     def test_openai_caption_route_is_explicit_no_original_or_work_authority(self):
         self.config['streaming_transcription_openai']={
             'enabled':True,'provider':'openai','mode':'captions',
@@ -348,7 +367,8 @@ class LiveTranscription(unittest.TestCase):
             self.assertTrue(Stream.opened[0].closed_event.wait(2))
         diagnostic=json.loads(logs.records[0].getMessage().split(' ',1)[1])
         self.assertEqual(diagnostic,{'capture_id':self.ident,'stage':'finish_authorization',
-            'audio_bytes':2,'finish_received':True,'prepared_saved':False,'error_type':'ValueError'})
+            'audio_bytes':2,'finish_received':True,'prepared_saved':False,'error_type':'ValueError',
+            'failure_boundary':'receiving_authorization'})
         self.assertFalse(Stream.opened[0].finished)
         self.assertFalse(list((self.root/'prepared').glob('*.json')))
     def test_revoked_human_cannot_finish_preparation(self):

@@ -293,12 +293,6 @@ pub(super) fn should_drop_telegram_rate_limited_send(error: &anyhow::Error) -> b
     telegram_retry_after(error).is_some()
 }
 
-pub(super) fn telegram_status(error: &anyhow::Error) -> Option<reqwest::StatusCode> {
-    error
-        .downcast_ref::<TelegramError>()
-        .map(|telegram| telegram.status)
-}
-
 pub(super) fn is_message_not_modified(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<TelegramError>()

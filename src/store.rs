@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use chrono::{Duration, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 mod artifacts;
@@ -160,19 +160,29 @@ impl From<&CodexConfig> for SessionDefaults {
 }
 
 impl Store {
+    #[cfg(test)]
     pub fn open(db_path: &Path, admin_ids: &[i64], defaults: &SessionDefaults) -> Result<Self> {
-        let conn = Connection::open(db_path)
+        Self::open_with_external_bot(db_path, admin_ids, defaults, None)
+    }
+
+    pub(crate) fn open_with_external_bot(
+        db_path: &Path,
+        admin_ids: &[i64],
+        defaults: &SessionDefaults,
+        external_bot_id: Option<i64>,
+    ) -> Result<Self> {
+        let mut conn = Connection::open(db_path)
             .with_context(|| format!("failed to open sqlite database {}", db_path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let instance_id = Uuid::now_v7().to_string();
+        let stale_cutoff = stale_instance_cutoff();
+        Self::claim_instance_lock(&mut conn, &instance_id, &stale_cutoff, external_bot_id)?;
         let store = Self {
             conn: Mutex::new(conn),
             instance_id,
         };
         store.init_schema()?;
-        let stale_cutoff = stale_instance_cutoff();
-        store.claim_instance_lock(&stale_cutoff)?;
         store.init_tribu()?;
         store.init_interactions()?;
         store.init_interaction()?;
@@ -250,10 +260,48 @@ impl Store {
         Ok(store)
     }
 
-    fn claim_instance_lock(&self, stale_cutoff: &str) -> Result<()> {
+    fn claim_instance_lock(
+        conn: &mut Connection,
+        instance_id: &str,
+        stale_cutoff: &str,
+        external_bot_id: Option<i64>,
+    ) -> Result<()> {
         let now = now_string();
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let changed = conn.execute(
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Bind the configured bot and claim the same writer before recovery or
+        // administrator seeding. A rejected selection must leave no journal changes.
+        if let Some(selected) = external_bot_id {
+            let has_bot_state: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='bot_state')",
+                [],
+                |row| row.get(0),
+            )?;
+            if has_bot_state {
+                let identity: Option<String> = tx
+                    .query_row(
+                        "SELECT value FROM bot_state WHERE key='telegram_identity'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(identity) = identity {
+                    let retained: crate::telegram::User = serde_json::from_str(&identity)?;
+                    anyhow::ensure!(
+                        retained.id == selected,
+                        "External Telegram bot does not match the journal identity"
+                    );
+                }
+            }
+        }
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_instance_lock(
+                key TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL,
+                acquired_at TEXT NOT NULL
+            );",
+        )?;
+        let changed = tx.execute(
             "INSERT INTO app_instance_lock(key, instance_id, heartbeat_at, acquired_at)
              VALUES ('main', ?1, ?2, ?2)
              ON CONFLICT(key) DO UPDATE
@@ -262,13 +310,14 @@ impl Store {
                  acquired_at = excluded.acquired_at
              WHERE app_instance_lock.instance_id = excluded.instance_id
                 OR app_instance_lock.heartbeat_at < ?3",
-            params![self.instance_id, now, stale_cutoff],
+            params![instance_id, now, stale_cutoff],
         )?;
         if changed != 0 {
+            tx.commit()?;
             return Ok(());
         }
 
-        let holder = conn
+        let holder = tx
             .query_row(
                 "SELECT instance_id, heartbeat_at FROM app_instance_lock WHERE key = 'main'",
                 [],
@@ -1459,12 +1508,6 @@ impl Store {
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS app_instance_lock(
-                key TEXT PRIMARY KEY,
-                instance_id TEXT NOT NULL,
-                heartbeat_at TEXT NOT NULL,
-                acquired_at TEXT NOT NULL
-            );
             ",
         )?;
         add_column_if_missing(&conn, "turns", "native_thread_id", "TEXT")?;

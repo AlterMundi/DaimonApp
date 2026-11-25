@@ -56,6 +56,27 @@ No background recorder, provider call or new login is created. Iframe reload is
 not safe while capture/upload/unknown submission is unresolved; normal existing
 recovery rules remain authoritative. Real device/hearing acceptance is separate.
 
+### Conversation text drafts
+
+The canonical composer saves ordinary typed text immediately in the current
+browser tab for reload recovery. Within the same authenticated receiver binding,
+its last saved revision also follows the human across Conversation clients,
+including Holodeck. The normal input reader carries the draft when requested,
+and its separate same-origin, CSRF-protected draft write compares revisions.
+Simultaneous edits are kept visible in the local composer and require an explicit
+choice before replacing the other copy. A confirmed original clears only its own
+matching draft. After a reload with an unconfirmed write, check the original ID
+before attempting to send the same text again. Draft changes never submit an
+original or send data to the host. Attachments, draft routing, microphone and
+provisional transcripts retain their own lifecycle. Server drafts expire after
+seven days and are limited to 32 KiB per authorized actor and binding, with at
+most 128 retained revisions across those keys (one current revision per key).
+Tab recovery retains up to four recent bindings, with the same seven-day limit.
+The send response settles the draft using its exact original ID within the
+current submission. A later status read can settle it using the matching native
+entry, and a history row can do so under its verified page binding when it
+belongs to the current entry.
+
 ## Additive source-only discard notice
 
 `type:"discard", id, reason:"capture-cancelled"|"preparation-failed"` uses the
