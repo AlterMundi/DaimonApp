@@ -282,6 +282,115 @@ class Receiving(unittest.TestCase):
         self.assertEqual(client.get('/api/alerts', headers=headers).status_code, 401)
         self.assertEqual(client.post('/api/alerts/acknowledge', json=body, headers=headers).status_code, 401)
 
+    def test_telegram_split_preserves_sessions_without_adapter_or_bot_token(self):
+        from dashboard.companion import Grants, authority
+        from dashboard.private_state import write_json
+        from dashboard.provider import Provider
+        from dashboard.telegram_split import prepare
+        from dashboard.traffic import Traffic
+        from scripts.bot_traffic import Journal, private_token
+
+        root = self.root / 'split'
+        root.mkdir(mode=0o700)
+
+        def profile(name, content):
+            path = root / name
+            path.write_text(content)
+            path.chmod(0o600)
+            return path
+
+        token = profile('bot-key', '123:' + 'synthetic_only_' * 4)
+        socket_path = root / 'absent-owner.sock'
+        db_path = root / 'gateway.sqlite'
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.executescript('CREATE TABLE users(tg_user_id int, allowed int); INSERT INTO users VALUES(100,1);')
+        owner = f'[session_control]\nsocket_path="{socket_path}"\nhuman_id=100\n'
+        state = f'db_path="{db_path}"\n'
+        before_config = f'[telegram]\napi_base="http://127.0.0.1:8081"\nbot_token_file="{token}"\n'
+        old_profile = profile('embedded.toml', state + owner + before_config)
+        gateway_profile = profile('gateway.toml', state + owner + '[telegram]\nexternal_polling=true\n')
+        adapter_profile = profile('adapter.toml', owner + before_config + 'external_polling=true\n')
+        meter = profile('meter.toml', f'port=8081\ntoken_file="{token}"\nstate_dir="{root}/meter"\n')
+        journal = Journal(root / 'meter')
+        self.addCleanup(journal.close)
+        journal.bind_bot(private_token(token).hex())
+        grants = root / 'grants'
+        config = {**self.config, 'bot_username': 'FixtureBot', 'receiver_config': str(old_profile),
+                  'state_dir': str(root / 'sessions'), 'traffic': {'enabled': True, 'meter_config': str(meter)},
+                  'companion': {'enabled': True, 'grants_dir': str(grants)}}
+        legacy = Provider(config)
+        device_token = secrets.token_urlsafe(32)
+        write_json(grants / (hashlib.sha256(device_token.encode()).hexdigest() + '.json'),
+                   {'schema':'telecodex.companion-grant/v1', 'scope':'interaction_only',
+                    'authority':authority(config, legacy), 'human':100, 'expires':int(time.time())+3600,
+                    'csrf':secrets.token_urlsafe(32)})
+        receiver = Receiver(config, legacy)
+        with receiver.database() as db:
+            db.execute("INSERT INTO attempts VALUES('held','request-held','sending',NULL,1)")
+        traffic = Traffic(config, legacy, health=lambda:{'ok':True,'dropped_records':0})
+        old_app = create_app(config, legacy, lambda raw, bot: int(raw), alerts=receiver, traffic=traffic)
+        old_browser = TestClient(old_app, base_url='https://example.test')
+        self.addCleanup(old_browser.close)
+        origin = {'origin':'https://example.test'}
+        token_result = old_browser.post('/api/session', json={'init_data':'100'}, headers=origin)
+        old_session = token_result.json()['session_token']
+        migration = root / 'split.json'
+        prepare(config, gateway_profile, adapter_profile, migration)
+        new_config = {**config, 'receiver_config':str(gateway_profile), 'telegram_split_binding':str(migration)}
+        token.unlink()  # The migrated web process can no longer open the Telegram credential.
+        candidate = Provider(new_config)
+        self.assertEqual(authority(config, legacy), authority(new_config, candidate))
+        self.assertEqual(Grants(new_config, candidate).authenticate(device_token)['human'], 100)
+        new_alerts = Receiver(new_config, candidate)
+        with new_alerts.database() as db:
+            self.assertEqual(tuple(db.execute("SELECT request_id,state FROM attempts WHERE delivery_id='held'").fetchone()),
+                             ('request-held','sending'))
+        self.assertIsNone(new_alerts.sender.call('getMe', {}))
+        self.assertEqual(new_alerts.sender.send(self.projection), {'outcome':'failed'})
+        new_alerts.sender.next_send = 0
+        from unittest.mock import patch
+        online = True
+        sends = []
+
+        def owner_request(path, *, envelope):
+            self.assertEqual(path, str(socket_path))
+            if not online:
+                raise FileNotFoundError('Adapter is stopped')
+            request = envelope['sessions_telegram']
+            fingerprint = candidate.telegram_split['credential_fingerprint']
+            if request['operation'] == 'status':
+                return {'id':123, 'username':'FixtureBot', 'credential_fingerprint':fingerprint}
+            self.assertEqual(request['operation'], 'alert')
+            self.assertEqual(request['credential_fingerprint'], fingerprint)
+            sends.append(request)
+            return {'ok':True, 'result':{'message_id':17, 'chat':{'id':100}}}
+
+        with patch('dashboard.alerts.control', side_effect=owner_request):
+            new_alerts.sender.verify()
+            online = False
+            new_alerts.tick()
+            self.assertEqual(self.incident()['deliveries'][0]['state'], 'pending')
+            self.assertEqual(sends, [])
+            online = True
+            new_alerts.tick()
+            new_alerts.tick()
+            self.assertEqual(self.incident()['deliveries'][0]['state'], 'delivered')
+            self.assertEqual(len(sends), 1)
+        with patch('dashboard.alerts.control', side_effect=ConnectionResetError('Lost response')):
+            new_alerts.sender.next_send = 0
+            self.assertEqual(new_alerts.sender.send(self.projection), {'outcome':'uncertain'})
+        new_traffic = Traffic(new_config, candidate, health=lambda:{'ok':True,'dropped_records':0})
+        self.assertEqual(traffic.state['binding'], new_traffic.state['binding'])
+        new_app = create_app(new_config, candidate, alerts=new_alerts, traffic=new_traffic)
+        new_browser = TestClient(new_app, base_url='https://example.test')
+        self.addCleanup(new_browser.close)
+        headers = {**origin, 'authorization':'Bearer ' + old_session}
+        self.assertEqual(new_browser.get('/api/alerts', headers=headers).status_code, 200)
+        self.assertEqual(new_browser.get('/api/alerts', headers=origin).status_code, 401)
+        record = json.loads(migration.read_text())
+        write_json(migration, {**record, 'human':999})
+        self.assertEqual(new_browser.get('/api/alerts', headers=headers).status_code, 503)
+
     def test_journal_binding_and_live_credential_changes_fail_closed(self):
         original = self.config['alerts']['receiving_scope']
         self.config['alerts']['receiving_scope'] = 'other'

@@ -4,10 +4,13 @@
 All accounts, Telegram, native peers and output are synthetic; zero model calls.
 """
 import json
+import hashlib
 import errno
 import os
 import time
 import re
+import signal
+import socket
 from pathlib import Path
 import subprocess
 import sqlite3
@@ -464,8 +467,404 @@ def canonical_turn_skips_unused_limits_history(binary):
         journey.close()
 
 
+def gateway_survives_telegram_failure(binary):
+    for method, status in (('getMe', 503), ('setMyCommands', 503), ('getUpdates', 409)):
+        journey = Inputs(binary)
+        try:
+            journey.telegram_failures = {method: status}
+            journey.start()
+            journey.wait(lambda: method in journey.telegram_methods)
+            journey.wait_control_socket(journey.socket)
+            binding = journey.read('presentation', 'list', '0', '0')['result']['binding']
+            original, outcome = journey.submit(binding, 'Continue without Telegram.')
+            assert outcome['ok'] and outcome['result']['new_input']
+            journey.wait(lambda: journey.row('SELECT phase FROM conversation_inputs WHERE id=?',
+                                             (original['id'],)) == [('accepted',)])
+            journey.finish(journey.web_thread, journey.web_turn)
+            journey.wait(lambda: journey.row(
+                "SELECT count(*) FROM interaction_native_messages WHERE text='Initial goal turn delivered.'"
+            ) == [(1,)])
+            assert len(journey.packets) == 1
+            assert journey.row('SELECT count(*) FROM incoming_updates') == [(0,)]
+            assert not journey.messages
+            assert journey.process.poll() is None
+            if method == 'getMe':
+                assert journey.telegram_methods == ['getMe']
+        finally:
+            journey.close()
+    print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
+
+def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=None):
+    class MigratingInputs(Inputs):
+        unknown_steer = None
+        deferred_steer = None
+
+        def handle_extra_rpc(self, message, send):
+            params = message.get("params", {})
+            selected = params.get("clientUserMessageId")
+            if (message.get("method") == "turn/steer" and selected is not None
+                    and selected in (self.unknown_steer, self.deferred_steer)):
+                self.packets.append(("turn/steer", params))
+                if selected == self.unknown_steer:
+                    send({"id": message["id"], "result": {"turnId": "another-turn"}})
+                else:
+                    send({"id": message["id"], "error": {
+                        "code": -32602, "message": "Synthetic definitive refusal",
+                    }})
+                return True
+            if message.get("method") == "thread/goal/snapshot":
+                thread = message["params"]["threadId"]
+                send({"id": message["id"], "result": {
+                    "goal": self.goals.get(thread), "revision": "migration-fixture:1",
+                }})
+                return True
+            return super().handle_extra_rpc(message, send)
+
+    embedded_binary = embedded_binary or binary
+    journey = MigratingInputs(embedded_binary)
+    journey.acknowledged_updates = True
+    journey.poll_offsets = []
+    original_config = journey.config.read_text()
+    external_config = original_config.replace(
+        "[telegram]\n", "[telegram]\nexternal_polling=true\n")
+    poll_config = journey.root / "poll.toml"
+    # The adapter needs only Bot API and the existing socket. Gateway retains
+    # its old journal and gets neither the bot token nor a working API endpoint.
+    telegram_settings = external_config.split("[session_control]", 1)[1]
+    poll_config.write_text("[session_control]" + telegram_settings.split("[codex]", 1)[0])
+    poll_config.chmod(0o600)
+    external_config = re.sub(r"^(?:bot_token(?:_env|_file)?|api_base)=.*\n", "", external_config, flags=re.M)
+    external_config = external_config.replace(
+        "[telegram]\n", '[telegram]\napi_base="http://127.0.0.1:1"\n')
+    adapter = None
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(journey.root), "LANG": "C.UTF-8"}
+    adapter_command = [binary, "--tele-daimon-poll", str(poll_config)]
+    if named_roles:
+        gateway_path = journey.root / "daimon-gateway"
+        gateway_path.symlink_to(Path(binary).resolve())
+        adapter_path = journey.root / "teledaimon"
+        adapter_path.symlink_to(gateway_path.name)
+        adapter_command = [str(adapter_path), str(poll_config)]
+
+    def start_adapter():
+        return subprocess.Popen(
+            adapter_command, cwd=journey.root, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    def assert_command_refused(args, error):
+        result = subprocess.run(args, cwd=journey.root, env=env, capture_output=True, text=True, timeout=12)
+        assert result.returncode != 0 and error in result.stderr, result.stderr
+
+    def stop_adapter(process):
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        _, error = process.communicate(timeout=8)
+        assert process.returncode == 0, error
+
+    def owner_operation(surface, request):
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(5)
+            conn.connect(str(journey.socket))
+            conn.sendall(json.dumps({surface: request}).encode() + b"\n")
+            with conn.makefile("rb") as stream:
+                return json.loads(stream.readline())
+
+    def ingress(request):
+        return owner_operation("telegram_ingress", request)
+
+    def sessions_telegram(operation, **fields):
+        return owner_operation("sessions_telegram", {"operation": operation, **fields})
+
+    def settled(update):
+        return journey.row(
+            "SELECT status FROM incoming_updates WHERE update_id=?", (update,)
+        ) == [("settled",)]
+
+    try:
+        if named_roles:
+            assert_command_refused(
+                [str(gateway_path), str(journey.config)],
+                "requires external or disabled Telegram transport",
+            )
+            assert_command_refused(
+                [str(gateway_path), "--tele-daimon-poll", str(poll_config)], "teledaimon CONFIG",
+            )
+            assert_command_refused(
+                [str(adapter_path), "--control", str(journey.config), "presentation", "list", "0", "0"],
+                "Usage: teledaimon CONFIG",
+            )
+            token_profile = journey.root / "token-in-gateway.toml"
+            token_profile.write_text(external_config.replace(
+                "[telegram]\n", '[telegram]\nbot_token_file="/unreadable/test-token"\n',
+            ))
+            assert_command_refused(
+                [str(gateway_path), str(token_profile)], "Configure Telegram bot credentials only in TeleDaimon",
+            )
+            assert journey.telegram_methods == []
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        seeded = journey.admit("Original from the embedded listener", topic=1)
+        journey.wait(lambda: settled(seeded))
+        journey.idle()
+        retained = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1")
+        thread = retained[0][0]
+        journey.goals[thread] = {
+            "threadId": thread, "objective": "Retained paused migration fixture",
+            "status": "paused", "tokenBudget": 120, "tokensUsed": 47,
+            "timeUsedSeconds": 6, "createdAt": 1, "updatedAt": 2,
+        }
+        original_goal = journey.read("goal", "inspect", "100", "1")["result"]["snapshot"]
+        assert original_goal["goal"]["status"] == "paused"
+        assert original_goal["goal"]["tokensUsed"] == 47
+        grant = {
+            "request_id": str(uuid.uuid4()), "expected_revision": None,
+            "source": "https://example.test/transport-migration",
+            "scope": "owned_sessions", "agents": True, "recovery": False,
+        }
+        journey.read("goal", "delegation", "set", json.dumps(grant))
+        original_grant = journey.read("goal", "delegation")["result"]
+        assert original_grant["delegation"]["agents"] is True
+
+        binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
+        previous_result, _ = journey.submit(binding, "Retain this settled reply and its original.")
+        journey.wait(lambda: journey.web_turn is not None)
+        result_turn = journey.web_turn
+        journey.finish(journey.web_thread, result_turn)
+        journey.wait(lambda: journey.row(
+            "SELECT count(*) FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        ) == [(1,)])
+        journey.idle()
+        previous_status = journey.read("input", "status", previous_result["id"])["result"]
+        assert previous_status["phase"] == "accepted"
+        previous_history = journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        )
+
+        held, _ = journey.submit(binding, "Hold this turn through cutover.")
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (held["id"],))
+                     == [("accepted",)])
+        unknown_id, deferred_id = str(uuid.uuid4()), str(uuid.uuid4())
+        journey.unknown_steer = "conversation:" + unknown_id
+        journey.deferred_steer = "conversation:" + deferred_id
+        unknown, _ = journey.submit(binding, "Provider acknowledged another turn.", unknown_id)
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (unknown_id,))
+                     == [("uncertain",)])
+        deferred, _ = journey.submit(binding, "Keep this known-unsent input pending.", deferred_id)
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (deferred_id,))
+                     == [("queued",)])
+        journal_before = journey.row(
+            "SELECT id, doc FROM conversation_inputs WHERE id IN (?,?) ORDER BY id",
+            (unknown_id, deferred_id),
+        )
+        before_cutover = len(journey.packets)
+        journey.stop()
+        journey.binary = str(gateway_path) if named_roles else binary
+        wrong_bot = journey.root / "wrong-bot.toml"
+        wrong_bot.write_text(external_config.replace(
+            "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n").replace(
+            "startup_admin_ids=[100,101]", "startup_admin_ids=[100,101,999]"))
+        before_rejection = journey.row(
+            "SELECT tg_user_id, role, allowed FROM users ORDER BY tg_user_id"
+        )
+        pending_before_rejection = journey.row(
+            "SELECT id, phase, doc FROM conversation_inputs ORDER BY id"
+        )
+        audit_before_rejection = journey.row("SELECT COUNT(*) FROM audit_log")
+        assert_command_refused([journey.binary, str(wrong_bot)], "does not match the journal identity")
+        assert journey.row("SELECT tg_user_id, role, allowed FROM users ORDER BY tg_user_id") == before_rejection
+        assert journey.row("SELECT id, phase, doc FROM conversation_inputs ORDER BY id") == pending_before_rejection
+        assert journey.row("SELECT COUNT(*) FROM audit_log") == audit_before_rejection
+        if named_roles:
+            # A legacy .env must not populate the named Gateway's environment.
+            (journey.root / ".env").write_text("TELECODEX_RESTART_DELAY_MS=60000\n")
+        journey.config.write_text(external_config)
+        journey.telegram_methods.clear()
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        if named_roles:
+            (journey.root / ".env").unlink()
+        gateway_pid = journey.process.pid
+        assert ingress({"operation": "ready", "bot_id": 124})["ok"] is False
+        assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == seeded + 1
+        assert not journey.telegram_methods
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        assert journey.read("goal", "delegation")["result"] == original_grant
+        assert journey.read("input", "status", previous_result["id"])["result"] == previous_status
+        assert journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        ) == previous_history
+        assert journey.row(
+            "SELECT id, doc FROM conversation_inputs WHERE id IN (?,?) ORDER BY id",
+            (unknown_id, deferred_id),
+        ) == journal_before
+        for retained_original, expected in ((unknown, "uncertain"), (deferred, "retained_unsent")):
+            current = journey.read("input", "status", retained_original["id"])["result"]
+            duplicate_result = journey.read("input", "submit", json.dumps(retained_original))["result"]
+            assert current["phase"] == expected and duplicate_result["phase"] == expected
+            assert not duplicate_result["new_input"]
+        assert len(journey.packets) == before_cutover
+        journey.web_turn = None
+        fake_identity = {"id": 123, "is_bot": False, "first_name": "Not a bot"}
+        assert not ingress({"operation": "ready", "bot_id": 123, "identity": fake_identity})["ok"]
+        assert not ingress({"operation": "admit", "bot_id": 123, "update": {"update_id": 199}})["ok"]
+        first = journey.admit("Telegram through the separate adapter", topic=1)
+        with journey.lock:
+            duplicate = journey.updates[-1]
+        adapter = start_adapter()
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(first))
+        fingerprint = hashlib.sha256(b"synthetic-question-token").hexdigest()
+        status = sessions_telegram("status")["result"]
+        assert status["id"] == 123 and status["username"] == "FixtureBot"
+        assert status["credential_fingerprint"] == fingerprint
+        journey.telegram_failures = {}
+        sends = journey.telegram_methods.count("sendMessage")
+        assert not sessions_telegram("alert", credential_fingerprint="0" * 64, text="Wrong credential")["ok"]
+        assert not sessions_telegram("alert", credential_fingerprint=fingerprint, chat_id=999, text="Wrong audience")["ok"]
+        assert journey.telegram_methods.count("sendMessage") == sends
+        delivered = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Private Sessions alert")
+        assert delivered["result"]["result"]["chat"]["id"] == 100
+        assert delivered["result"]["result"]["text"] == "Private Sessions alert"
+        assert sessions_telegram("menu_read", credential_fingerprint=fingerprint)["result"]["result"] == {"type": "default"}
+        menu = {"type": "web_app", "text": "Sessions", "web_app": {"url": "https://example.test/sessions"}}
+        assert sessions_telegram("menu_write", credential_fingerprint=fingerprint, menu=menu)["result"]["result"] is True
+        assert sessions_telegram("menu_read", credential_fingerprint=fingerprint)["result"]["result"] == menu
+        journey.telegram_failures["sendMessage"] = 400
+        refused = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Known Bot API rejection")
+        assert refused["result"] == {"ok": False, "error_code": 400}
+        journey.invalid_telegram_failure_body = {"sendMessage"}
+        malformed = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Invalid proxy response")
+        assert not malformed["ok"]
+        assert malformed["error"] == "Sessions Telegram operation unconfirmed"
+        journey.telegram_failures.pop("sendMessage")
+        print("PASS paired Sessions alert and menu operations use TeleDaimon custody")
+        journey.idle()
+        stop_adapter(adapter)
+        adapter = None
+        assert not sessions_telegram("status")["ok"]
+        unsent = sessions_telegram("alert", credential_fingerprint=fingerprint, text="No adapter")
+        assert unsent["result"] == {"ok": False, "not_submitted": True}
+        assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == first + 1
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        native_count = journey.native_turns
+        assert ingress({"operation": "admit", "bot_id": 123, "update": duplicate})["result"]["next_offset"] == first + 1
+        assert not ingress({"operation": "admit", "bot_id": 123,
+                            "update": {**duplicate, "message": {**duplicate["message"], "text": "Different bytes"}}})["ok"]
+        assert journey.native_turns == native_count
+        polls = journey.telegram_methods.count("getUpdates")
+        binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
+        original, reply = journey.submit(binding, "Keep working while TeleDaimon is stopped.")
+        assert reply["ok"]
+        journey.wait(lambda: journey.web_turn is not None)
+        journey.finish(journey.web_thread, journey.web_turn)
+        journey.wait(lambda: journey.row(
+            "SELECT count(*) FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        ) == [(1,)])
+        journey.idle()
+        assert journey.telegram_methods.count("getUpdates") == polls
+        assert journey.process.pid == gateway_pid and journey.process.poll() is None
+        assert len(journey.packets) == before_cutover + 1
+        assert journey.packets[-1][1]["clientUserMessageId"] == "conversation:" + original["id"]
+
+        before = journey.native_turns
+        second = journey.admit("Retain this input while polling is stopped", topic=1)
+        adapter = start_adapter()
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(second))
+        assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
+            (seeded,), (first,), (second,)
+        ]
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        assert journey.native_turns == before + 1
+        assert journey.process.pid == gateway_pid
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        assert not any(request.get("method") in ("thread/goal/set", "thread/goal/clear", "turn/interrupt")
+                       for request in journey.rpc)
+        poll_held, release_poll = threading.Event(), threading.Event()
+
+        def hold_update_poll(updates):
+            if updates:
+                poll_held.set()
+                assert release_poll.wait(8), "Fixture long poll was not released"
+
+        journey.before_poll_reply = hold_update_poll
+        during_restart = journey.admit("Original returned during the Gateway restart", topic=1)
+        try:
+            assert poll_held.wait(5), "Adapter did not enter the fixture long poll"
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            request = {"operation": "ready", "bot_id": 123}
+            assert ingress(request)["result"]["identified"] is False
+        finally:
+            journey.before_poll_reply = None
+            release_poll.set()
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(during_restart))
+        ready = ingress(request)["result"]
+        assert ready["identified"] and ready["next_offset"] == during_restart + 1
+        assert adapter.poll() is None and journey.process.pid != gateway_pid
+        assert journey.native_turns == before + 2
+        print("PASS an original held by the Bot API during Gateway restart is admitted once")
+        stop_adapter(adapter)
+        adapter = None
+        print("PASS tokenless Gateway migration with retained bot, cursor, history, grant and goal accounting; "
+              "queued and uncertain inputs retained without replay, and one dispatch per new original")
+
+        cutover_result = journey.read("input", "status", original["id"])["result"]
+        postcutover_history = journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        )
+        assert cutover_result["phase"] == "accepted" and len(postcutover_history) == 1
+        before_rollback = journey.native_turns
+        packets_before_rollback = len(journey.packets)
+        journey.stop()
+        with journey.lock:
+            journey.poll_offsets.clear()
+        journey.binary = embedded_binary
+        journey.config.write_text(original_config)
+        final = journey.admit("First Telegram original after restoring embedded polling", topic=1)
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        journey.wait(lambda: thread in journey.holding)
+        assert journey.poll_offsets[0] == during_restart + 1
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(final))
+        journey.idle()
+        assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
+            (seeded,), (first,), (second,), (during_restart,), (final,),
+        ]
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        assert journey.read("input", "status", original["id"])["result"] == cutover_result
+        assert journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        ) == postcutover_history
+        assert journey.read("goal", "delegation")["result"] == original_grant
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        for retained_original, expected in ((unknown, "uncertain"), (deferred, "retained_unsent")):
+            status = journey.read("input", "submit", json.dumps(retained_original))["result"]
+            assert status["phase"] == expected and not status["new_input"]
+        assert journey.native_turns == before_rollback + 1
+        assert len(journey.packets) == packets_before_rollback
+        print("PASS embedded rollback resumes at the advanced cursor and retains post-cutover work without replay")
+    finally:
+        if adapter is not None and adapter.poll() is None:
+            adapter.kill()
+            adapter.communicate(timeout=8)
+        journey.close()
+
+
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
+    gateway_survives_telegram_failure(binary)
+    independent_telegram_polling(binary, named_roles=True)
     foreground_retention(binary)
     foreground_delegation(binary)
     reconsider_queued_steer(binary)

@@ -31,11 +31,18 @@ class Traffic:
         private_file(self.config_path)
         self.config_bytes = self.config_path.read_bytes()
         self.meter = tomllib.loads(self.config_bytes.decode())
-        self.fingerprint = bot_fingerprint(provider.receiver['telegram']['bot_token_file']).hex()
-        self.endpoint = provider.receiver['telegram']['api_base'].rstrip('/')
+        self.split = getattr(provider, 'telegram_split', None)
+        if self.split is None:
+            self.fingerprint = bot_fingerprint(provider.receiver['telegram']['bot_token_file']).hex()
+            self.endpoint = provider.receiver['telegram']['api_base'].rstrip('/')
+        else:
+            if hashlib.sha256(self.config_bytes).hexdigest() != self.split['traffic_config_sha256']:
+                raise ValueError('Traffic meter selection changed')
+            self.fingerprint = self.split['credential_fingerprint']
+            self.endpoint = self.split['telegram_endpoint']
         if self.endpoint != 'http://127.0.0.1:' + str(self.meter['port']):
             raise ValueError('Traffic endpoint must match receiving bot endpoint')
-        if bot_fingerprint(self.meter['token_file']).hex() != self.fingerprint:
+        if self.split is None and bot_fingerprint(self.meter['token_file']).hex() != self.fingerprint:
             raise ValueError('Traffic bot must match receiving bot')
         self.path = Path(self.meter['state_dir']) / 'traffic.sqlite3'
         self.interval = self.settings.get('interval_seconds', 10)
@@ -78,7 +85,7 @@ class Traffic:
     def assert_binding(self):
         self.provider.assert_binding()
         if (self.config_path.read_bytes() != self.config_bytes or
-                bot_fingerprint(self.meter['token_file']).hex() != self.fingerprint):
+                (self.split is None and bot_fingerprint(self.meter['token_file']).hex() != self.fingerprint)):
             raise ValueError('Traffic receiving binding changed')
         if not self.provider.authorized(self.provider.human):
             raise ProviderUnavailable('Traffic receiving grant unavailable')

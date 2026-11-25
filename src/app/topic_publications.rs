@@ -1,5 +1,6 @@
 //! Nonblocking secondary delivery using canonical native/input identities.
 use super::*;
+use crate::tele_daimon::{Delivery, ProjectedFile, Projection, projection_parts};
 
 struct Lease {
     shared: Arc<AppShared>,
@@ -72,18 +73,28 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
         let chunks = if publication.kind == "artifact" {
             vec![publication.body.clone()]
         } else {
-            split_text(&publication.body, shared.config.max_text_chunk)
+            projection_parts(&publication.body, shared.config.max_text_chunk)
         };
         let parts = shared
             .store
             .topic_publication_parts(publication.id, &chunks)?;
+        let transport = Projection {
+            client: &shared.telegram,
+            chat: publication.target.chat_id,
+            topic: Some(publication.target.thread_id).filter(|id| *id > 0),
+            remote: shared
+                .config
+                .session_control
+                .as_ref()
+                .filter(|_| shared.config.telegram.external_polling)
+                .map(|control| (control.socket_path.as_path(), shared.bot_id)),
+        };
         for (part, body) in parts {
             let result = if publication.kind == "artifact" {
-                send_file(shared, key, human, &publication, part).await
+                send_file(shared, key, human, &publication, part, &transport).await
             } else {
-                shared
-                    .telegram
-                    .send_message_checked(key.chat_id, || {
+                transport
+                    .text(&body, || {
                         // A goal control can select the integrating return on an
                         // already-running direct turn. Its opted-in source-topic
                         // projection still uses this same canonical publication.
@@ -91,7 +102,7 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
                             .store
                             .workflow_native_visible(publication.local_turn)?
                         {
-                            return Ok(None);
+                            return Ok(false);
                         }
                         if (!enabled(shared, key, human)
                             && (!publication.direct
@@ -102,51 +113,33 @@ async fn drain(shared: &Arc<AppShared>, key: SessionKey, human: i64, files: bool
                                 .store
                                 .topic_publication_reserve(publication.id, part)?
                         {
-                            return Ok(None);
+                            return Ok(false);
                         }
-                        Ok(Some((
-                            SendMessage::html(
-                                key.chat_id,
-                                Some(key.thread_id).filter(|id| *id > 0),
-                                render_markdown_to_html(&body),
-                            ),
-                            (),
-                        )))
+                        Ok(true)
                     })
                     .await
             };
-            match result {
-                Ok(Some((message, ())))
-                    if message.chat.id == publication.target.chat_id
-                        && message.message_thread_id.unwrap_or(0)
-                            == publication.target.thread_id =>
-                {
+            match result? {
+                Delivery::Acknowledged(message_id) => {
                     shared.store.topic_publication_receipt(
                         publication.id,
                         part,
-                        Some(message.message_id),
+                        Some(message_id),
                         false,
                     )?;
                 }
-                Ok(None) => break,
-                failed => {
-                    if failed
-                        .as_ref()
-                        .err()
-                        .and_then(|e| e.downcast_ref::<crate::telegram::TelegramError>())
-                        .is_some_and(|e| e.retry_after.is_some())
-                    {
-                        shared.store.topic_publication_retry(publication.id, part)?;
-                        continue 'queue; // Existing Telegram cooldown handles this explicit rejection.
-                    }
-                    let rejected = failed
-                        .as_ref()
-                        .err()
-                        .and_then(|e| e.downcast_ref::<crate::telegram::TelegramError>())
-                        .is_some_and(|e| e.status.is_client_error());
-                    shared
-                        .store
-                        .topic_publication_receipt(publication.id, part, None, rejected)?;
+                Delivery::Unsent => break,
+                Delivery::CoolingDown(_) => {
+                    shared.store.topic_publication_retry(publication.id, part)?;
+                    continue 'queue; // Telegram transport owns the cooldown.
+                }
+                unacknowledged @ (Delivery::Rejected | Delivery::Unconfirmed) => {
+                    shared.store.topic_publication_receipt(
+                        publication.id,
+                        part,
+                        None,
+                        matches!(unacknowledged, Delivery::Rejected),
+                    )?;
                     break;
                 }
             }
@@ -166,7 +159,8 @@ async fn send_file(
     human: i64,
     publication: &crate::store::topic_publications::TopicPublication,
     part: i64,
-) -> Result<Option<(crate::telegram::Message, ())>> {
+    transport: &Projection<'_>,
+) -> Result<Delivery> {
     let _permit = FILE_UPLOADS.acquire().await?;
     let Some(cfg) = shared
         .config
@@ -174,11 +168,11 @@ async fn send_file(
         .as_ref()
         .and_then(|c| c.artifact_store.clone())
     else {
-        return Ok(None);
+        return Ok(Delivery::Unsent);
     };
     let file = match shared.store.artifact_get(human, key, &publication.source) {
         Ok(file) => file,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(Delivery::Unsent),
     };
     let bytes = match tokio::task::spawn_blocking(move || {
         super::artifact_outputs::verified_bytes(&cfg, &file)
@@ -188,33 +182,19 @@ async fn send_file(
         Ok(bytes) => bytes,
         Err(_) => {
             tracing::warn!("Retained file unavailable before publication; no upload attempted");
-            return Ok(None);
+            return Ok(Delivery::Unsent);
         }
     };
-    let path = Path::new(&publication.body);
-    let extension = path
-        .extension()
-        .and_then(|v| v.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let field = match extension.as_str() {
-        "png" | "jpg" | "jpeg" | "webp" => "photo",
-        "mp3" | "wav" | "m4a" | "ogg" => "audio",
-        "mp4" | "mov" | "webm" => "video",
-        _ => "document",
-    };
-    let mime = super::turns::mime_type_for_path(path);
+    let mime = super::turns::mime_type_for_path(Path::new(&publication.body));
     let caption = shared.store.topic_file_caption(publication.id)?;
-    shared
-        .telegram
-        .send_file_bytes_checked(
-            key.chat_id,
-            Some(key.thread_id).filter(|t| *t > 0),
-            field,
-            bytes,
-            &publication.body,
-            mime.as_deref(),
-            Some(&caption),
+    transport
+        .file(
+            ProjectedFile {
+                bytes,
+                name: &publication.body,
+                mime: mime.as_deref(),
+                caption: &caption,
+            },
             || {
                 // Immutable file audiences and the explicit source projection
                 // are independent of a later text return-surface selection.
@@ -230,5 +210,4 @@ async fn send_file(
             },
         )
         .await
-        .map(|result| result.map(|message| (message, ())))
 }

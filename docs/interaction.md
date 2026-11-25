@@ -4,6 +4,150 @@ Product direction: [full roadmap and current continuous-voice plan](interaction-
 Current execution: [milestone9](https://github.com/AlterMundi/telecodex/milestone/9).
 Remaining v0.2 obligations: [milestone8](https://github.com/AlterMundi/telecodex/milestone/8).
 
+## DaimonGateway and TeleDaimon boundary
+
+DaimonGateway owns the authenticated owner socket, canonical originals,
+session routing, one writer per native turn, pending work, recovery and
+canonical results. Native harness adapters own execution and report the
+session identity, submission outcome and controls they actually support.
+Matrix authenticates bodies and records their authorized communication.
+Codex and Claude are execution choices made by Gateway for new work.
+
+TeleDaimon owns the Telegram Bot API, polling offsets, Telegram-specific
+media, topic bindings and outbound delivery receipts. It should exchange
+originals and authorized projections with DaimonGateway through the existing
+owner API. Web and Matrix are independent clients of the same Gateway.
+Keep one coordinator and journal. In particular, Telegram delivery failure
+does not change native admission or invalidate canonical output.
+
+Install the shared release executable as `daimon-gateway` and expose
+`teledaimon` as a symbolic link to that same executable in the release
+directory. The invocation name selects the component. Use
+`daimon-gateway GATEWAY_CONFIG` and
+`daimon-gateway --control GATEWAY_CONFIG …` for its owner controls.
+
+Select `telegram.external_polling=true` on Gateway and keep its existing
+database and owner control socket. Gateway uses the bot ID retained in the
+journal. For a fresh journal, set `telegram.external_bot_id` to the
+owner-selected bot. A conflicting ID is refused. The named Gateway entry
+requires external or disabled Telegram transport and refuses bot credential
+settings before validation can resolve them. The named entry also leaves the
+legacy working-directory `.env` unread. Its external bot check and writer claim
+share one SQLite transaction before journal recovery or administrator seeding.
+
+Start exactly one `teledaimon ADAPTER_CONFIG` with the bot credential and the
+same owner socket. TeleDaimon performs `getMe` and reports the verified identity
+before polling. Gateway accepts the report only for its selected bot over the
+existing owner-only Unix socket. The named adapter runs only the Telegram
+poller. The historical executable name retains the embedded listener and
+`--tele-daimon-poll` command for existing deployments during the transition.
+
+The process opens neither the journal nor the native harness. TeleDaimon
+executes retained text and file projections, ordinary JSON Bot API
+operations, and direct multipart uploads in this mode. Commands, status
+messages, drafts, callback answers, and topic operations use the same
+owner-local transport. Gateway
+rechecks publication authorization after TeleDaimon confirms readiness. It
+receives typed provider errors without falling back to a second send. For an
+ordinary upload the Gateway opens the selected local file, and the adapter
+prepares the destination. The Gateway rechecks
+authorization, then streams exactly the declared size. TeleDaimon sends the
+multipart body and returns a typed Bot API result over that same connection.
+The relay transfers file bytes without disclosing the Gateway's source path.
+For an incoming attachment, TeleDaimon resolves the retained Telegram file
+identifier and sends the extension, optional size, and bounded byte chunks.
+The Bot API path and local Bot API storage stay with TeleDaimon. Gateway
+retains the existing transfer limit and writes into its private temporary file.
+A verified complete transfer is required before publishing the local filename.
+
+For a scoped polling migration, stop the selected embedded consumer through
+the existing receiving service procedure. Remove the Gateway's Telegram token
+setting and environment binding. Start Gateway on the same database and
+control socket, then start the external poller with its separate configuration.
+Read back the retained cursor, native conversation binding, original history,
+delegation revisions, pending originals, uncertain receipts and paused goal
+accounting. An unconfirmed native acknowledgement stays uncertain. A retained
+unsent original stays available for explicit recovery. An unconfirmed Bot API
+send retains its publication and part IDs without an invented message ID.
+Verify a new durable admission after TeleDaimon connects and one independent
+Gateway original while TeleDaimon is stopped. To roll back,
+stop the external poller first, restore the retained embedded executable and
+configuration, then start the selected service with the current database.
+Confirm that the first poll starts at the advanced offset and that the
+results and Telegram receipts retained during external operation are still
+readable. Submit one new selected original to verify embedded operation.
+Previously uncertain sends stay uncertain and are not replayed.
+
+TeleDaimon's polling loop depends on two Gateway operations. It reads the
+retained next offset and submits a Telegram original for a durable admission
+receipt. It advances only with the durable cursor supplied by Gateway. Before
+each Bot API poll and before admitting a returned original, the adapter checks
+the current Gateway's readiness. If Gateway restarted during a long poll, the
+adapter can re-identify the verified bot and reattach its projection listener
+before continuing from the durable cursor. A missing owner or lost admission acknowledgement ends that adapter
+run. Start it again through the existing service supervisor to read the
+retained cursor. The existing admission journal dispatches each new original
+once.
+
+For retained topic and artifact publications, Gateway selects the audience
+and freezes the parts in the existing journal. TeleDaimon formats and sends
+those parts. After the Telegram cooldown, it calls back into Gateway to
+recheck authorization and reserve the exact part immediately before the
+request. It returns an acknowledgement only for the selected chat and topic.
+Gateway commits that acknowledgement and its reply mapping together. An
+explicit rate-limit refusal can release the reserved part for retry. An
+unconfirmed send remains uncertain through restart. In external mode, the
+owner-only socket next to the Gateway control socket streams one bounded offer.
+TeleDaimon prepares it and waits for the cooldown before requesting permission
+to send. Gateway reserves the exact part once and grants egress. Loss before
+the reservation leaves the part ready. Loss after the reservation records an
+uncertain delivery. TeleDaimon readiness wakes the existing journal so ready
+parts can continue without replaying uncertain sends. The compatibility calls
+and the external projection share the Gateway pacing and rate-limit backoff
+during this migration.
+
+With `telegram.enabled=false`, Gateway opens the same owner API without a
+Telegram token. In a combined instance with an independent Conversation,
+unavailable Bot API identity leaves Gateway available with Telegram transport
+disabled for that process. Startup does not use the retained identity to
+poll. Menu or terminal polling failures leave the owner API available.
+Configured Telegram destinations and pending receipts keep their existing
+semantics. Restore a failed Telegram adapter through the ordinary operator
+startup path once its connection is healthy.
+
+Sessions sends paired-human Alerts and reads or updates the Telegram menu through
+the same owner socket. The narrow request contains no destination, Bot API URL
+or token. Gateway selects the paired human from its existing grant and rechecks
+it immediately before authorizing TeleDaimon. The adapter checks its credential
+fingerprint before using the Bot API. Alerts keeps its existing receipt writer
+and checks live adapter readiness before claiming a pending delivery. A refusal
+before authorizing Telegram is recorded as failed. A lost acknowledgement or
+malformed upstream reply after authorization is uncertain. Traffic compares the retained
+credential fingerprint with its existing meter journal and uses the configured
+loopback health route.
+
+Before changing an existing Sessions profile, run
+`python -m dashboard.operator --config DASHBOARD_CONFIG prepare-telegram-split
+--gateway-config GATEWAY_CONFIG --adapter-config ADAPTER_CONFIG --output
+SPLIT_BINDING`. Add `--legacy-native-helpers` only when the installed Sessions
+release excludes the native-only helpers from its web authority binding. The
+command checks the old credential against the adapter and meter, verifies the
+existing Alerts binding, and writes an owner-private compatibility record.
+It does not dispatch Telegram. Select the new Gateway config as
+`receiver_config` and the record as `telegram_split_binding` in Sessions. Keep
+the existing state directory and companion grants. Web authorization checks the
+retained binding locally while TeleDaimon is unavailable. Menu inspection,
+publish and restore use the same typed owner control after activation. If an
+older manual menu rollback is already bound to a different receiver config,
+keep that record for its original profile.
+
+Track the remaining client extraction in [DaimonApp #452](https://github.com/AlterMundi/DaimonApp/issues/452)
+and the native dispatch boundary in [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
+Retire the Telecodex binary and product name after the independent clients
+have passed receiving acceptance and existing installations have a migration
+path. The MIT license retains the upstream copyright and Telecodex provenance.
+No separate repository or second durable store is required for the cutover.
+
 ## Current repair direction — human correction, 2026-10-19
 
 The delivered pilot did not establish a coherent daily experience. The owner observed hidden progress in ordinary Telegram topics, repeated copies of shared answers and verbose relay packets. Prior completion records retain their bounded evidence but do not establish completion of the repaired product.

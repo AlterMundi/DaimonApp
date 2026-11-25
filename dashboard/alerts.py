@@ -21,7 +21,7 @@ import urllib.request
 
 from .alerts_contract import validate
 from .private_state import private_directory
-from .provider import ProviderUnavailable
+from .provider import OwnerControlNotSubmitted, ProviderUnavailable, control
 
 
 class AlertsUnavailable(Exception):
@@ -120,6 +120,12 @@ class Client:
 class Sender:
     def __init__(self, provider, config):
         self.provider, self.config = provider, config
+        self.split = getattr(provider, 'telegram_split', None)
+        self.verified = False
+        self.next_send = 0
+        if self.split is not None:
+            self.socket_path = provider.receiver['session_control']['socket_path']
+            return
         telegram = provider.receiver['telegram']
         self.token_file = telegram['bot_token_file']
         self.token = private_token(self.token_file)
@@ -130,16 +136,16 @@ class Sender:
                 or (parts.scheme == 'http' and parts.hostname not in ('127.0.0.1', '::1'))):
             raise AlertsUnavailable('unsafe_telegram_endpoint')
         self.opener = opener()
-        self.verified = False
-        self.next_send = 0
 
     def assert_binding(self):
         self.provider.assert_binding()
-        if private_token(self.token_file) != self.token:
+        if self.split is None and private_token(self.token_file) != self.token:
             raise AlertsUnavailable('bot_binding_changed')
 
     def call(self, method, payload):
         self.assert_binding()
+        if self.split is not None:
+            return self.call_gateway(method, payload)
         request = urllib.request.Request(f'{self.base}/bot{self.token}/{method}',
             data=json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
         if method == 'sendMessage' and not self.provider.authorized(self.provider.human):
@@ -157,8 +163,35 @@ class Sender:
         except (OSError, ValueError, RecursionError):
             return None
 
+    def call_gateway(self, method, payload):
+        request = {'credential_fingerprint': self.split['credential_fingerprint']}
+        if method == 'getMe' and not payload:
+            request = {'operation': 'status'}
+        elif payload.get('chat_id') != self.provider.human:
+            raise AlertsUnavailable('receiving_grant_unavailable')
+        elif method == 'sendMessage' and set(payload) == {'chat_id', 'text'}:
+            request.update(operation='alert', text=payload['text'])
+        elif method == 'getChatMenuButton' and set(payload) == {'chat_id'}:
+            request.update(operation='menu_read')
+        elif method == 'setChatMenuButton' and set(payload) == {'chat_id', 'menu_button'}:
+            request.update(operation='menu_write', menu=payload['menu_button'])
+        else:
+            raise AlertsUnavailable('unsupported_telegram_operation')
+        try:
+            result = control(self.socket_path, envelope={'sessions_telegram': request})
+        except OwnerControlNotSubmitted:
+            return None if method == 'getMe' else {'ok': False, 'not_submitted': True}
+        except (OSError, ValueError, ProviderUnavailable):
+            return None
+        if method == 'getMe':
+            if (not isinstance(result, dict)
+                    or result.get('credential_fingerprint') != self.split['credential_fingerprint']):
+                return None
+            return {'ok': True, 'result': result}
+        return result
+
     def verify(self):
-        if not self.verified:
+        if self.split is not None or not self.verified:
             response = self.call('getMe', {})
             bot = response.get('result', {}) if isinstance(response, dict) else {}
             if (not isinstance(response, dict) or not isinstance(bot, dict) or response.get('ok') is not True
@@ -188,9 +221,18 @@ class Sender:
                     and result['chat']['id'] == self.provider.human):
                 return {'outcome': 'delivered', 'message_ref': f"telegram-{result['message_id']}",
                         'destination_ref': f'telegram-{self.provider.human}'}
-            if response.get('ok') is False and type(response.get('error_code')) is int and 400 <= response['error_code'] < 500:
+            if response.get('ok') is False and (
+                    response.get('not_submitted') is True or
+                    type(response.get('error_code')) is int and 400 <= response['error_code'] < 500):
                 return {'outcome': 'failed'}
         return {'outcome': 'uncertain'}
+
+
+def delivery_binding(client, settings, config, provider, token):
+    return hashlib.sha256(json.dumps([client.base, client.fingerprint,
+        identifier(settings['receiving_scope']), identifier(settings['adapter_id']),
+        config['bot_id'], provider.human, provider.binding_bytes.hex(), token],
+        sort_keys=True).encode()).hexdigest()
 
 
 class Receiver:
@@ -206,9 +248,12 @@ class Receiver:
             raise ValueError('Invalid Alerts receiving settings')
         self.client = client or Client(settings)
         self.sender = sender or Sender(provider, config)
-        self.binding = hashlib.sha256(json.dumps([self.client.base, self.client.fingerprint,
-            self.scope, self.adapter, config['bot_id'], provider.human,
-            provider.binding_bytes.hex(), getattr(self.sender, 'token', '')], sort_keys=True).encode()).hexdigest()
+        self.binding = delivery_binding(self.client, settings, config, provider, getattr(self.sender, 'token', ''))
+        split = getattr(provider, 'telegram_split', None)
+        if split is not None:
+            if self.binding != split['alerts_projection']:
+                raise ValueError('Alerts receiving settings changed')
+            self.binding = split['legacy_alerts_binding']
         root = private_directory(private_directory(config['state_dir']) / 'alerts')
         from .menu_attention import MenuAttention
         from .operator import menu_selection
@@ -332,7 +377,8 @@ class Receiver:
                 self.reconcile()
                 if not self.dispatch_ready():
                     return
-                self.sender.verify()
+                if getattr(self.sender, 'split', None) is None:
+                    self.sender.verify()
                 deliveries, _ = self.client.collection('/v1/deliveries', 'DeliveryPage',
                     adapter_id=self.adapter, state='pending')
                 for delivery in deliveries[:10]:
@@ -375,6 +421,8 @@ class Receiver:
         self.authorized()
         if not self.dispatch_ready():
             return
+        if getattr(self.sender, 'split', None) is not None:
+            self.sender.verify()
         value = delivery['projection']
         if (value['receiving_scope'] != self.scope or value['producer_id'] != delivery['producer_id']
                 or value['incident_id'] != delivery['incident_id']):

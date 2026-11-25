@@ -532,14 +532,16 @@ impl Store {
         message: Option<i64>,
         rejected: bool,
     ) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let changed=conn.execute("UPDATE topic_publication_parts SET phase=?3,message_id=?4 WHERE publication=?1 AND part=?2 AND phase='sending' AND EXISTS(SELECT 1 FROM topic_publications p WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?5)",params![id,part,if message.is_some(){"sent"}else if rejected{"rejected"}else{"uncertain"},message,&self.instance_id])?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed=tx.execute("UPDATE topic_publication_parts SET phase=?3,message_id=?4 WHERE publication=?1 AND part=?2 AND phase='sending' AND EXISTS(SELECT 1 FROM topic_publications p WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?5)",params![id,part,if message.is_some(){"sent"}else if rejected{"rejected"}else{"uncertain"},message,&self.instance_id])?;
         if changed != 1 {
             return Err(anyhow!("Topic publication receipt ownership changed"));
         }
         if let Some(message) = message {
-            conn.execute("INSERT OR IGNORE INTO handoff_messages(chat_id,thread_id,message_id,turn_id,text) SELECT s.chat_id,s.thread_id,?3,p.local_turn,x.body FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN topic_publication_parts x ON x.publication=p.id WHERE p.id=?1 AND x.part=?2",params![id,part,message])?;
+            tx.execute("INSERT OR IGNORE INTO handoff_messages(chat_id,thread_id,message_id,turn_id,text) SELECT s.chat_id,s.thread_id,?3,p.local_turn,x.body FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN topic_publication_parts x ON x.publication=p.id WHERE p.id=?1 AND x.part=?2",params![id,part,message])?;
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1017,6 +1019,47 @@ mod tests {
                 .is_empty()
         );
         assert!(!s.topic_publication_reserve(a.id, 1).unwrap());
+    }
+
+    #[test]
+    fn topic_receipt_without_reply_mapping_commit_stays_uncertain() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = store(file.path());
+        let (local, key) = execution(&s);
+        s.record_native_message(
+            local,
+            "native",
+            "turn",
+            "result",
+            Some("final_answer"),
+            "Retained answer",
+        )
+        .unwrap();
+        let publication = s.topic_publication_claim(key, 100).unwrap().unwrap();
+        s.topic_publication_parts(publication.id, &[publication.body])
+            .unwrap();
+        assert!(s.topic_publication_reserve(publication.id, 0).unwrap());
+        s.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fixture_mapping_failure BEFORE INSERT ON handoff_messages
+             BEGIN SELECT RAISE(ABORT, 'synthetic reply mapping write failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            s.topic_publication_receipt(publication.id, 0, Some(901), false)
+                .is_err()
+        );
+        drop(s);
+
+        let s = store(file.path());
+        let inventory = s.topic_publication_inventory(100).unwrap();
+        let item = &inventory["items"][0];
+        assert_eq!(item["id"], publication.id);
+        assert_eq!(item["phase"], "uncertain");
+        assert_eq!(item["acknowledged_parts"], 0);
+        assert!(s.topic_publication_claim(key, 100).unwrap().is_none());
     }
     #[test]
     fn topic_publication_known_unsent_and_acknowledged_prefix_resume_without_reformat() {
