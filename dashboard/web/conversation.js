@@ -324,7 +324,7 @@ window.Conversation = (() => {
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draftState?.change(message);draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
     }});
-    if(standalone && !readOnly){
+    if(standalone && !readOnly && !hostSurface){
       const inflight=new Map();
       const scopedApi=async(path,body)=>{
         const match=path.match(/^interaction\/(requests|tasks)(\?.*)?$/);
@@ -875,7 +875,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
+    const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();},
       focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
@@ -932,7 +932,7 @@ window.Conversation = (() => {
       card.select.disabled=!!card.routePending || card.routeBusy || card.value.retired;
       card.routeButton.textContent=card.routePending?"Retry this selection":"Send to session";
       card.routeButton.disabled=card.routeBusy || card.value.retired || (!card.routePending && !card.select.value);
-      card.continueButton.hidden=readOnly || card.value.read_only || !card.value.continuation;
+      card.continueButton.hidden=!!hostSurface || readOnly || card.value.read_only || !card.value.continuation;
     }
     function savedRecovery(card) {
       if(card.value.retired)return null;
@@ -2044,13 +2044,14 @@ window.Conversation = (() => {
       else liveSpeech?.observe(value.response_draft,binding);
       if(!canListen && !nativeEnabled && (voiceEnabled || active || speechWait))pause("capability");
       $("#conversation-voice-replies").disabled=!canListen&&!nativeEnabled;
-      for (const source of value.items){
+      const sources=hostSurface?value.items.filter(source=>source.kind.startsWith('integrator_')):value.items;
+      for (const source of sources){
         upsert(source);timing?.source(source);
         const card=cards.get(source.id);
         if(card)card.listen.disabled=canSpeakLive && liveSpeech?.needsReconcile(source)===true;
       }
-      if(direction==="after")for(const source of value.items)if(!["matrix_inbox","matrix_response","matrix_visibility"].includes(source.kind))companion?.reply(source);
-      for(const source of [...value.items].sort((a,b)=>(Date.parse(a.observed_at)||0)-(Date.parse(b.observed_at)||0))){
+      if(direction==="after")for(const source of sources)if(!["matrix_inbox","matrix_response","matrix_visibility"].includes(source.kind))companion?.reply(source);
+      for(const source of [...sources].sort((a,b)=>(Date.parse(a.observed_at)||0)-(Date.parse(b.observed_at)||0))){
         if(active?.source.kind==="integrator_live" && active.source.native_turn===source.native_turn && active.source.native_item===source.native_item)rememberPosition();
         const reconciled=canSpeakLive && (direction==="after" || liveSpeech?.needsReconcile(source))?await liveSpeech?.reconcile(source,part):undefined;
         if(reconciled?.changed)cancelPreparedMessage(source);
@@ -2161,7 +2162,7 @@ window.Conversation = (() => {
             }
           }
         }
-        $("#conversation-state").textContent = cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
+        $("#conversation-state").textContent = hostSurface&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
           : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
