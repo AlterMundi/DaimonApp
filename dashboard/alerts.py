@@ -189,7 +189,7 @@ class Sender:
         return result
 
     def verify(self):
-        if not self.verified:
+        if self.split is not None or not self.verified:
             response = self.call('getMe', {})
             bot = response.get('result', {}) if isinstance(response, dict) else {}
             if (not isinstance(response, dict) or not isinstance(bot, dict) or response.get('ok') is not True
@@ -219,7 +219,9 @@ class Sender:
                     and result['chat']['id'] == self.provider.human):
                 return {'outcome': 'delivered', 'message_ref': f"telegram-{result['message_id']}",
                         'destination_ref': f'telegram-{self.provider.human}'}
-            if response.get('ok') is False and type(response.get('error_code')) is int and 400 <= response['error_code'] < 500:
+            if response.get('ok') is False and (
+                    response.get('not_submitted') is True or
+                    type(response.get('error_code')) is int and 400 <= response['error_code'] < 500):
                 return {'outcome': 'failed'}
         return {'outcome': 'uncertain'}
 
@@ -373,7 +375,8 @@ class Receiver:
                 self.reconcile()
                 if not self.dispatch_ready():
                     return
-                self.sender.verify()
+                if getattr(self.sender, 'split', None) is None:
+                    self.sender.verify()
                 deliveries, _ = self.client.collection('/v1/deliveries', 'DeliveryPage',
                     adapter_id=self.adapter, state='pending')
                 for delivery in deliveries[:10]:
@@ -416,6 +419,8 @@ class Receiver:
         self.authorized()
         if not self.dispatch_ready():
             return
+        if getattr(self.sender, 'split', None) is not None:
+            self.sender.verify()
         value = delivery['projection']
         if (value['receiving_scope'] != self.scope or value['producer_id'] != delivery['producer_id']
                 or value['incident_id'] != delivery['incident_id']):

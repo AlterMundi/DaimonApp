@@ -346,6 +346,34 @@ class Receiving(unittest.TestCase):
             self.assertEqual(tuple(db.execute("SELECT request_id,state FROM attempts WHERE delivery_id='held'").fetchone()),
                              ('request-held','sending'))
         self.assertIsNone(new_alerts.sender.call('getMe', {}))
+        from unittest.mock import patch
+        online = True
+        sends = []
+
+        def owner_request(path, *, envelope):
+            self.assertEqual(path, str(socket_path))
+            if not online:
+                raise FileNotFoundError('Adapter is stopped')
+            request = envelope['sessions_telegram']
+            fingerprint = candidate.telegram_split['credential_fingerprint']
+            if request['operation'] == 'status':
+                return {'id':123, 'username':'FixtureBot', 'credential_fingerprint':fingerprint}
+            self.assertEqual(request['operation'], 'alert')
+            self.assertEqual(request['credential_fingerprint'], fingerprint)
+            sends.append(request)
+            return {'ok':True, 'result':{'message_id':17, 'chat':{'id':100}}}
+
+        with patch('dashboard.alerts.control', side_effect=owner_request):
+            new_alerts.sender.verify()
+            online = False
+            new_alerts.tick()
+            self.assertEqual(self.incident()['deliveries'][0]['state'], 'pending')
+            self.assertEqual(sends, [])
+            online = True
+            new_alerts.tick()
+            new_alerts.tick()
+            self.assertEqual(self.incident()['deliveries'][0]['state'], 'delivered')
+            self.assertEqual(len(sends), 1)
         new_traffic = Traffic(new_config, candidate, health=lambda:{'ok':True,'dropped_records':0})
         self.assertEqual(traffic.state['binding'], new_traffic.state['binding'])
         new_app = create_app(new_config, candidate, alerts=new_alerts, traffic=new_traffic)

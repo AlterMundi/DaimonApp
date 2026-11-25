@@ -120,7 +120,9 @@ the same owner socket. The narrow request contains no destination, Bot API URL
 or token. Gateway selects the paired human from its existing grant and rechecks
 it immediately before authorizing TeleDaimon. The adapter checks its credential
 fingerprint before using the Bot API. Alerts keeps its existing receipt writer
-and treats a lost acknowledgement as uncertain. Traffic compares the retained
+and checks live adapter readiness before claiming a pending delivery. A refusal
+before authorizing Telegram is recorded as failed. A lost acknowledgement or
+malformed upstream reply after authorization is uncertain. Traffic compares the retained
 credential fingerprint with its existing meter journal and uses the configured
 loopback health route.
 

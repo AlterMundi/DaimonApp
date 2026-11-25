@@ -423,8 +423,25 @@ pub(super) async fn sessions_telegram(
         .credential_fingerprint
         .clone()
         .context("TeleDaimon credential not observed")?;
+    let socket = &shared
+        .config
+        .session_control
+        .as_ref()
+        .context("Missing owner control socket")?
+        .socket_path;
     let (method, document, expected) = match request {
         SessionsTelegram::Status => {
+            // Obtain a readiness acknowledgement from the live bound adapter,
+            // then drop the connection without authorizing any Bot API call.
+            let prepared = projection::prepare_json(
+                socket,
+                shared.bot_id,
+                JsonMethod::GetChatMenuButton,
+                Some(json!({"chat_id":human})),
+                Some(fingerprint.clone()),
+            )
+            .await?;
+            drop(prepared);
             let identity = shared
                 .bot_metadata
                 .lock()
@@ -487,12 +504,6 @@ pub(super) async fn sessions_telegram(
         expected == fingerprint,
         "Sessions Telegram credential changed"
     );
-    let socket = &shared
-        .config
-        .session_control
-        .as_ref()
-        .context("Missing owner control socket")?
-        .socket_path;
     if matches!(method, JsonMethod::SendMessage) {
         shared.telegram.wait_projection(human).await?;
     }
@@ -508,6 +519,9 @@ pub(super) async fn sessions_telegram(
     match result {
         Ok(result) => Ok(json!({"ok":true,"result":result})),
         Err(error) => {
+            if error.is::<projection::JsonNotSubmitted>() {
+                return Ok(json!({"ok":false,"not_submitted":true}));
+            }
             if let Some(provider) = error.downcast_ref::<crate::telegram::TelegramError>() {
                 return Ok(json!({"ok":false,"error_code":provider.status.as_u16()}));
             }

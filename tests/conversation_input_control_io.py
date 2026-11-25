@@ -719,6 +719,7 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         status = sessions_telegram("status")["result"]
         assert status["id"] == 123 and status["username"] == "FixtureBot"
         assert status["credential_fingerprint"] == fingerprint
+        journey.telegram_failures = {}
         sends = journey.telegram_methods.count("sendMessage")
         assert not sessions_telegram("alert", credential_fingerprint="0" * 64, text="Wrong credential")["ok"]
         assert not sessions_telegram("alert", credential_fingerprint=fingerprint, chat_id=999, text="Wrong audience")["ok"]
@@ -730,10 +731,21 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         menu = {"type": "web_app", "text": "Sessions", "web_app": {"url": "https://example.test/sessions"}}
         assert sessions_telegram("menu_write", credential_fingerprint=fingerprint, menu=menu)["result"]["result"] is True
         assert sessions_telegram("menu_read", credential_fingerprint=fingerprint)["result"]["result"] == menu
+        journey.telegram_failures["sendMessage"] = 400
+        refused = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Known Bot API rejection")
+        assert refused["result"] == {"ok": False, "error_code": 400}
+        journey.invalid_telegram_failure_body = {"sendMessage"}
+        malformed = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Invalid proxy response")
+        assert not malformed["ok"]
+        assert malformed["error"] == "Sessions Telegram operation unconfirmed"
+        journey.telegram_failures.pop("sendMessage")
         print("PASS paired Sessions alert and menu operations use TeleDaimon custody")
         journey.idle()
         stop_adapter(adapter)
         adapter = None
+        assert not sessions_telegram("status")["ok"]
+        unsent = sessions_telegram("alert", credential_fingerprint=fingerprint, text="No adapter")
+        assert unsent["result"] == {"ok": False, "not_submitted": True}
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == first + 1
         assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
         native_count = journey.native_turns

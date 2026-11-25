@@ -75,8 +75,9 @@ class Journey:
                 raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 failure = getattr(owner, 'telegram_failures', {}).get(method)
                 if failure is not None:
-                    body = json.dumps({'ok': False, 'error_code': failure,
-                                       'description': 'Synthetic Bot API failure'}).encode()
+                    body = (b'proxy error' if method in getattr(owner, 'invalid_telegram_failure_body', ())
+                            else json.dumps({'ok': False, 'error_code': failure,
+                                             'description': 'Synthetic Bot API failure'}).encode())
                     self.send_response(failure)
                     self.send_header('Content-Length', str(len(body)))
                     self.end_headers()

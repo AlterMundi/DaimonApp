@@ -220,14 +220,24 @@ async fn open_offer(owner: &Path, offer: &Offer<'_>, bytes: &[u8]) -> Result<Uni
     .context("Telegram projection connection timed out")?
 }
 
-pub(crate) async fn json(
+#[derive(Debug)]
+pub(crate) struct JsonNotSubmitted;
+
+impl std::fmt::Display for JsonNotSubmitted {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("Telegram operation was not submitted")
+    }
+}
+
+impl std::error::Error for JsonNotSubmitted {}
+
+pub(crate) async fn prepare_json(
     owner: &Path,
     bot: i64,
     method: JsonMethod,
     document: Option<serde_json::Value>,
     credential_fingerprint: Option<String>,
-    authorize: impl FnOnce() -> Result<()>,
-) -> Result<serde_json::Value> {
+) -> Result<UnixStream> {
     let mut stream = open_offer(
         owner,
         &Offer {
@@ -247,7 +257,20 @@ pub(crate) async fn json(
         timeout(OPEN, stream.read_u8()).await?? == 1,
         "TeleDaimon did not prepare the operation"
     );
-    authorize()?;
+    Ok(stream)
+}
+
+pub(crate) async fn json(
+    owner: &Path,
+    bot: i64,
+    method: JsonMethod,
+    document: Option<serde_json::Value>,
+    credential_fingerprint: Option<String>,
+    authorize: impl FnOnce() -> Result<()>,
+) -> Result<serde_json::Value> {
+    let prepared = prepare_json(owner, bot, method, document, credential_fingerprint).await;
+    let mut stream = prepared.map_err(|error| error.context(JsonNotSubmitted))?;
+    authorize().map_err(|error| error.context(JsonNotSubmitted))?;
     timeout(OPEN, async {
         stream.write_u8(1).await?;
         read_result(&mut stream).await
@@ -441,10 +464,18 @@ async fn receive(
     {
         ensure!(
             credential_fingerprint
-                .is_none_or(|expected| expected == client.credential_fingerprint()),
+                .as_ref()
+                .is_none_or(|expected| *expected == client.credential_fingerprint()),
             "TeleDaimon credential binding mismatch"
         );
-        return receive_json(stream, client, method, document).await;
+        return receive_json(
+            stream,
+            client,
+            method,
+            document,
+            credential_fingerprint.is_some(),
+        )
+        .await;
     }
     if let Payload::Download { file_id, max_bytes } = offer.payload {
         return download::receive(stream, client, &file_id, max_bytes, downloads).await;
@@ -541,6 +572,7 @@ async fn receive_json(
     client: &crate::telegram::TelegramClient,
     method: JsonMethod,
     document: Option<serde_json::Value>,
+    strict_denial: bool,
 ) -> Result<()> {
     ensure!(
         document.as_ref().is_none_or(serde_json::Value::is_object),
@@ -555,7 +587,9 @@ async fn receive_json(
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    let result = client.direct_json(method.api(), document.as_ref()).await;
+    let result = client
+        .direct_json(method.api(), document.as_ref(), strict_denial)
+        .await;
     if let Err(error) = &result
         && let Some(provider) = error.downcast_ref::<TelegramError>()
         && let Some(seconds) = provider.retry_after

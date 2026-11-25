@@ -890,7 +890,7 @@ impl TelegramClient {
             return serde_json::from_value(result)
                 .map_err(|_| anyhow::anyhow!("telegram {method} JSON decode failed"));
         }
-        self.post_local(method, payload, timeout).await
+        self.post_local(method, payload, timeout, false).await
     }
 
     #[cfg(unix)]
@@ -898,9 +898,10 @@ impl TelegramClient {
         &self,
         method: &str,
         document: Option<&serde_json::Value>,
+        strict_denial: bool,
     ) -> Result<serde_json::Value> {
         let result = self
-            .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT)
+            .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT, strict_denial)
             .await?;
         Ok(self.redact_relay_value(result))
     }
@@ -943,6 +944,7 @@ impl TelegramClient {
         method: &str,
         payload: Option<&T>,
         timeout: Duration,
+        strict_denial: bool,
     ) -> Result<R>
     where
         T: Serialize + ?Sized,
@@ -968,6 +970,30 @@ impl TelegramClient {
             .await
             .map_err(reqwest::Error::without_url)
             .with_context(|| format!("telegram {method} response body failed"))?;
+
+        if strict_denial {
+            let parsed = serde_json::from_str::<ApiResponse<R>>(&body)
+                .map_err(|_| anyhow::anyhow!("Telegram operation response was unconfirmed"))?;
+            if !parsed.ok
+                && let Some(code) = parsed.error_code.filter(|code| (400..500).contains(code))
+            {
+                return Err(TelegramError {
+                    status: reqwest::StatusCode::from_u16(code)?,
+                    description: "Telegram rejected the operation".into(),
+                    retry_after: parsed
+                        .parameters
+                        .and_then(|parameters| parameters.retry_after),
+                }
+                .into());
+            }
+            anyhow::ensure!(
+                status.is_success() && parsed.ok,
+                "Telegram operation response was unconfirmed"
+            );
+            return parsed
+                .result
+                .context("Telegram response omitted its result");
+        }
 
         if !status.is_success() {
             let parsed = serde_json::from_str::<ApiResponse<R>>(&body).ok();
@@ -1408,6 +1434,7 @@ impl Error for TelegramError {}
 struct ApiResponse<T> {
     ok: bool,
     result: Option<T>,
+    error_code: Option<u16>,
     description: Option<String>,
     parameters: Option<ResponseParameters>,
 }
