@@ -32,7 +32,8 @@ class Provider(BaseHTTPRequestHandler):
             assert self.path == "/v1/chat/completions"
             call = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             text = json.dumps(call["messages"])
-            assert ORIGINAL in text
+            assert self.server.original in text
+            assert "A decoy record." not in text
             assert "dmk_read_selected" in {item["function"]["name"] for item in call["tools"]}
             phase, raw = j.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
@@ -120,6 +121,7 @@ print(json.dumps(reply))
 
 def qualify(j, python, provider):
     provider.journey = j
+    provider.original = ORIGINAL
     provider.calls = []
     provider.mode = None
     provider.failure = None

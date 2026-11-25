@@ -62,5 +62,19 @@ timeout 130 unshare -Urn sh -c 'ip link set lo up &&
 The test runs the real SDK and Gateway with synthetic Matrix authority and a
 synthetic provider. Leave the production route unset until the signed body,
 selected model, DMK authorization and sender readback have been qualified.
+For the signed interop fixture, set `PYTHONPATH` to the pinned Matrix
+checkout's `src` and repository root. Run as the normal test user so the
+fixture's Unix peer credentials and private file permissions match:
+
+```sh
+python3 -B tests/antigravity_signed_io.py \
+  /absolute/gateway-executable /absolute/sdk-venv/bin/python /absolute/dmk/scripts
+```
+
+This second test runs an authenticated Matrix socket and a real DMK reader
+against disposable signing material and a disposable DMK pool. The provider
+is still a loopback responder with no account or real inference. It verifies
+the sender's signed readback, the original thread and the receipt hash.
+
 The maintained evidence and limits are in
 [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
