@@ -18,6 +18,11 @@ admit the retained text to Claude. The response is projected on the original
 Conversation card after authenticated readback from the sending body. Native
 submission and return uncertainty remain in their existing journals.
 
+`tests/foreground_signed_io.py` with `FOREGROUND_TEST_INTERACTION=1` exercises
+the actual authenticated HTTP original, owner socket, private signed Matrix
+transfer, Claude CLI against the loopback provider, and reply readback after
+Gateway restart. It sends no Telegram requests and invokes no Codex RPC.
+
 ## Portable Conversation publication
 
 The optional `interaction.matrix_publication` configuration adds a typed,

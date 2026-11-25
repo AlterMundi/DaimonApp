@@ -747,10 +747,15 @@ window.Conversation = (() => {
       const text=card.value.text || card.originalText || card.value.preview;
       hostSurface?.status(card.value);
       card.text.textContent=card.value.voice?(text?"Automatic voice transcript:\n"+text:"Original voice recording saved."):text;
-      if(card.claudeText){
-        const reply=card.value.claude_reply;
-        card.claudeText.hidden=typeof reply?.text!=="string";
-        card.claudeBody.textContent=reply?.text||"";
+      const reply=card.value.claude_reply;
+      if(typeof reply?.text==="string"){
+        if(!card.claudeBody){
+          const container=node("div",undefined,"input-claude-reply");
+          card.claudeBody=node("div",undefined,"reply-text");
+          container.append(node("strong","Claude Code"),card.claudeBody);
+          card.box.insertBefore(container,card.actions);
+        }
+        card.claudeBody.textContent=reply.text;
       }
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
@@ -816,7 +821,7 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
-    const targetLabel=$("#conversation-target-label"), target=$("#conversation-target");
+    const targetLabel=$("#conversation-target-label"), target=$("#conversation-target"), claudeOption=$("#conversation-target-claude");
     let claudeAvailable=false;
     if(target&&new URLSearchParams(location.search).get("target")==="claude")target.value="claude";
     target?.addEventListener("change",()=>{
@@ -1134,10 +1139,8 @@ window.Conversation = (() => {
         traceRefresh.type="button";traceState.setAttribute("role","status");trace.append(traceSummary,traceState,traceContent,traceRefresh);
         if(timeline){box.classList.add?.("human-message");box.append(node("h3","You"));}
         const time=node("time",undefined,"message-time");
-        const claudeText=node("div",undefined,"input-claude-reply"),claudeBody=node("div",undefined,"reply-text");
-        claudeText.hidden=true;claudeText.append(node("strong","Claude Code"),claudeBody);
-        box.append(text,status,claudeText,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
-        card = {box,text,time,claudeText,claudeBody,imageButton,imageView,status,check,retry,value,observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
+        box.append(text,status,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
+        card = {box,text,time,actions,imageButton,imageView,status,check,retry,value,observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
         trace.addEventListener("toggle",()=>trace.open&&readTrace(card));
         traceRefresh.addEventListener("click",()=>readTrace(card));
         continueButton.addEventListener("click",()=>card.value.continuation&&selectFocus(card.value.continuation,`#${card.value.routing?.label||"session"}`));
@@ -2039,7 +2042,7 @@ window.Conversation = (() => {
       binding = value.binding;hostSurface?.bind(binding);timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
       claudeAvailable=!readOnly&&!hostSurface&&value.can_select_claude===true;
       if(target&&targetLabel){
-        target.options[1].disabled=!claudeAvailable;
+        if(claudeOption)claudeOption.disabled=!claudeAvailable;
         targetLabel.hidden=readOnly||(!claudeAvailable&&target.value!=="claude");
         compose.dataset.target=target.value;
       }
