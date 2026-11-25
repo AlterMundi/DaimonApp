@@ -33,6 +33,24 @@ pub struct Config {
     pub interaction: Option<crate::interaction::InteractionConfig>,
 }
 
+/// Configuration consumed by the polling process. The same file may also
+/// configure Gateway without introducing a native harness dependency here.
+#[derive(Deserialize)]
+pub(crate) struct TelegramPollConfig {
+    pub telegram: TelegramConfig,
+    pub session_control: SessionControlConfig,
+    #[serde(default = "default_poll_timeout_seconds")]
+    pub poll_timeout_seconds: u32,
+}
+
+impl TelegramPollConfig {
+    pub(crate) fn load(path: &Path) -> Result<Self> {
+        let raw =
+            fs::read_to_string(path).context("Could not read Telegram polling configuration")?;
+        toml::from_str(&raw).map_err(|_| anyhow::anyhow!("Invalid Telegram polling configuration"))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GoalRecoveryConfig {
@@ -130,6 +148,11 @@ pub struct TelegramConfig {
     /// Optional transport; the shared backend and owner controls remain available.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub external_polling: bool,
+    /// Owner-selected bot for a fresh standalone Gateway. An existing journal
+    /// can supply its previously identified bot when the option is omitted.
+    pub external_bot_id: Option<i64>,
     pub bot_token: Option<String>,
     pub bot_token_env: Option<String>,
     pub bot_token_file: Option<PathBuf>,
@@ -266,10 +289,31 @@ impl SearchMode {
 
 impl Config {
     pub fn load(path: PathBuf) -> Result<Self> {
+        Self::load_with_role(path, false)
+    }
+
+    pub fn load_gateway(path: PathBuf) -> Result<Self> {
+        Self::load_with_role(path, true)
+    }
+
+    fn load_with_role(path: PathBuf, dedicated_gateway: bool) -> Result<Self> {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Config = toml::from_str(&raw)
             .with_context(|| format!("failed to parse config {}", path.display()))?;
+        if dedicated_gateway {
+            let telegram = &config.telegram;
+            anyhow::ensure!(
+                !telegram.enabled || telegram.external_polling,
+                "Daimon Gateway requires external or disabled Telegram transport"
+            );
+            anyhow::ensure!(
+                telegram.bot_token.is_none()
+                    && telegram.bot_token_env.is_none()
+                    && telegram.bot_token_file.is_none(),
+                "Configure Telegram bot credentials only in TeleDaimon"
+            );
+        }
         config.validate()?;
         Ok(config)
     }
@@ -432,11 +476,18 @@ impl Config {
             );
         }
 
-        if self.telegram.enabled {
+        if self.telegram.enabled && !self.telegram.external_polling {
             let token = self.telegram.resolve_token()?;
             if token.trim().is_empty() {
                 bail!("telegram bot token is empty");
             }
+        }
+        if self.telegram.external_polling && self.telegram.enabled && self.session_control.is_none()
+        {
+            bail!("External Telegram polling requires the owner control socket");
+        }
+        if self.telegram.external_bot_id.is_some_and(|id| id <= 0) {
+            bail!("External Telegram bot ID must be positive");
         }
         if let Some(days) = self.telegram.stale_topic_days {
             if days < 1 {

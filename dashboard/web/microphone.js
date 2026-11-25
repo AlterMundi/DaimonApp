@@ -256,7 +256,7 @@ window.VoiceInput = (() => {
       if(phase!=='editing'||document.hidden||!recorder||continuing)return false;
       continuing=true;if(continueButton)continueButton.disabled=true;
       const owned=generation,current=recorder;editBase=previewText;editAnchor=rawTranscript.trim()?rawTranscript.trim().split(/\s+/).length:0;
-      try{await pausePromise;if(owned!==generation||recorder!==current||phase!=='editing'||document.hidden)return false;await current.resume();if(owned!==generation||recorder!==current||phase!=='editing')return false;phase='recording';caption('Listening…');controls();countdown();onTranscript({...transcriptCapture,active:true,text:previewText,editable:true,resumed:true});return true;}
+      try{await pausePromise;if(owned!==generation||recorder!==current||phase!=='editing'||document.hidden)return false;await current.resume();if(owned!==generation||recorder!==current||phase!=='editing')return false;phase='recording';caption(current.transcriptionUnavailable?'Recording… Live text unavailable.':'Listening…');controls();countdown();onTranscript({...transcriptCapture,active:true,text:previewText,editable:true,resumed:true});return true;}
       catch{hold();return false;}finally{continuing=false;if(continueButton)continueButton.disabled=document.hidden||continuing;}
     }
     continueButton?.addEventListener('click',()=>{void continueEditing();});

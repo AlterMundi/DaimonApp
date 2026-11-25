@@ -210,43 +210,26 @@ impl App {
         target_dir: &Path,
         max_bytes: Option<u64>,
     ) -> Result<LocalAttachment> {
-        let file = self
+        let (path, file_name) = self
             .shared
             .telegram
-            .get_file(file_id)
+            .save_attachment(file_id, max_bytes, |extension| {
+                let name = sanitize_file_name(
+                    file_name.unwrap_or(match kind {
+                        AttachmentKind::Image => "image",
+                        AttachmentKind::Text => "text",
+                        AttachmentKind::Audio => "audio",
+                        AttachmentKind::Voice => "voice",
+                        AttachmentKind::Video => "video",
+                        AttachmentKind::Document => "document",
+                    }),
+                    extension,
+                );
+                let path = target_dir.join(format!("{}_{}", Uuid::now_v7(), name));
+                (path, name)
+            })
             .await
-            .context("telegram getFile failed")?;
-        let file_path = file
-            .file_path
-            .ok_or_else(|| anyhow!("telegram file_path missing for {file_id}"))?;
-        let extension = Path::new(&file_path)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("bin");
-        let file_name = sanitize_file_name(
-            file_name.unwrap_or(match kind {
-                AttachmentKind::Image => "image",
-                AttachmentKind::Text => "text",
-                AttachmentKind::Audio => "audio",
-                AttachmentKind::Voice => "voice",
-                AttachmentKind::Video => "video",
-                AttachmentKind::Document => "document",
-            }),
-            extension,
-        );
-        let path = target_dir.join(format!("{}_{}", Uuid::now_v7(), file_name));
-        if let Some(limit) = max_bytes {
-            self.shared
-                .telegram
-                .download_file_limited(&file_path, &path, file.file_size, limit)
-                .await
-        } else {
-            self.shared
-                .telegram
-                .download_file(&file_path, &path, file.file_size)
-                .await
-        }
-        .context("failed to save Telegram attachment")?;
+            .context("failed to save Telegram attachment")?;
         Ok(LocalAttachment {
             path,
             file_name,
