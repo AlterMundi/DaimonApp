@@ -34,7 +34,9 @@ use tokio_tungstenite::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod auth;
 mod goals;
+pub use auth::CodexDeviceAuthSession;
 pub use goals::{
     GoalActivation, GoalControl, GoalControlScope, GoalMetadataControl, GoalMutationOrigin,
     GoalStopSnapshot, NativeGoal, NativeGoalSnapshot,
@@ -618,7 +620,7 @@ pub struct CodexDeviceAuthPrompt {
     pub user_code: String,
 }
 
-pub struct CodexDeviceAuthSession {
+struct CliDeviceAuthSession {
     child: Child,
     stdout_lines: tokio::io::Lines<BufReader<ChildStdout>>,
     stdout_buffer: String,
@@ -1122,10 +1124,25 @@ impl CodexRunner {
         let output = run_simple_command_capture(&self.binary, &["login", "status"]).await?;
         interpret_auth_status(output)
     }
+    /// Observe the account on the server used by conversations, for explicit
+    /// login controls. Ordinary ingress keeps its existing lightweight check.
+    pub async fn account_status(&self) -> Result<CodexAuthStatus> {
+        if self.shared_app_server {
+            auth::shared_status(&self.binary).await
+        } else {
+            self.auth_status().await
+        }
+    }
     pub async fn logout(&self) -> Result<String> {
+        if self.shared_app_server {
+            return auth::shared_logout(&self.binary).await;
+        }
         run_simple_command(&self.binary, &["logout"]).await
     }
     pub async fn start_device_auth(&self) -> Result<CodexDeviceAuthSession> {
+        if self.shared_app_server {
+            return auth::shared_device_login(&self.binary).await;
+        }
         let spec = CommandSpec {
             program: self.binary.clone(),
             args: vec!["login".to_string(), "--device-auth".to_string()],
@@ -1158,13 +1175,13 @@ impl CodexRunner {
                 tracing::debug!("codex auth stderr: {clean}");
             }
         });
-        Ok(CodexDeviceAuthSession {
+        Ok(CodexDeviceAuthSession::cli(CliDeviceAuthSession {
             child,
             stdout_lines: BufReader::new(stdout).lines(),
             stdout_buffer: String::new(),
             stderr_buffer,
             stderr_task: Some(stderr_task),
-        })
+        }))
     }
     pub async fn read_rate_limits(&self) -> Result<Option<LimitsSnapshot>> {
         let mut process = AppServerProcess::spawn(&self.binary, self.shared_app_server).await?;
@@ -1563,7 +1580,7 @@ impl CodexRunner {
     }
 }
 
-impl CodexDeviceAuthSession {
+impl CliDeviceAuthSession {
     pub async fn read_prompt(&mut self) -> Result<CodexDeviceAuthPrompt> {
         loop {
             let Some(line) = self
@@ -5638,7 +5655,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn proxy_fixture(root: &Path, port: u16) -> PathBuf {
+    pub(super) fn proxy_fixture(root: &Path, port: u16) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = root.join("codex-proxy");
         fs::write(

@@ -145,7 +145,8 @@ No webhook infrastructure. No browser dependency. No cloud relay between Telegra
 - SQLite-backed ACL with `allowed`, `admin`, and `user` role handling.
 - Unauthorized access attempts are ignored and written to `audit_log`.
 - Supports Codex runtime defaults for sandbox, approval policy, search mode, and writable directories.
-- Supports headless Codex device login from Telegram via `/login` and `/logout`.
+- Supports headless Codex device login from Telegram via `/login` and `/logout`,
+  including [account confirmation on a shared native server](docs/telegram-account-login.md).
 - If Codex is not logged in, Telecodex does not start turns or forward Codex-native slash commands; it asks the user to authenticate first.
 
 ### History and topic sync
