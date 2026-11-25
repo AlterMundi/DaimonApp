@@ -78,12 +78,20 @@ try:
           if(!receipt)throw Error('No fixture receipt');
           return window.fixtureWrongEntry?{...receipt,entry_binding:[100,{chat_id:100,thread_id:9},28,'wrong-native']}:receipt;
         }
-        return{binding:'b'.repeat(64),csrf:'fixture',items:[],newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,goal_controls:[]};
+        const items=route.startsWith('interaction?')?['integrator_answer','worker_result'].map((kind,index)=>({
+          id:'fixture-'+kind,kind,label:kind,sequence:index,revision:'a'.repeat(64),
+          preview:index?'Other session fixture':'General conversation fixture',observed_at:'2026-11-25T01:00:00Z',
+          current:true,native_binding_current:true
+        })):[];
+        return{binding:'b'.repeat(64),csrf:'fixture',items,newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,goal_controls:[]};
       };
       window.fixtureUI=Conversation.mount({api,headers:()=>({'X-Dashboard-CSRF':'fixture'}),setCsrf(){},modeChanged(){},standalone:true});fixtureUI.identity('human:fixture:one');fixtureUI.authenticated();return fixtureUI.refresh();
     }'''
     with draft_lock:draft.update(revision=draft['revision']+1,text='')
     frame.evaluate(mount)
+    assert frame.locator('#conversation-timeline').get_by_text('General conversation fixture').is_visible()
+    assert frame.locator('[data-source-id="fixture-worker_result"]').count()==0
+    assert frame.locator('.session-workspace-toolbar').count()==0
     field=frame.locator('#conversation-message')
     # Reload the world before the debounce timer can write to the server.
     page.route('**/fixture-draft',lambda route:route.abort() if route.request.method=='POST' else route.continue_())

@@ -110,6 +110,9 @@ async fn request_with_timeout(
         BufReader::new(stream.take(262145))
             .read_until(b'\n', &mut bytes)
             .await?;
+        if bytes.is_empty() {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
         if bytes.len() > 262144 {
             bail!("Control reply exceeds bound");
         }

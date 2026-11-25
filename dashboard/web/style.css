@@ -1541,4 +1541,6 @@ html body.conversation-surface #conversation {flex:1;min-height:0;display:flex;f
 html body.conversation-surface #conversation-timeline {position:relative;inset:auto;flex:1;min-height:60px;height:auto;max-height:none;overflow:auto;}
 html body.conversation-surface #conversation-compose {position:relative;inset:auto;flex:none;width:100%;max-width:none;margin:8px 0 0;box-sizing:border-box;}
 html body.conversation-surface #conversation-observation {flex:none;margin:0;font-size:12px;}
+html body.conversation-surface #conversation-observation:has(#conversation-state:empty) {display:none;}
+html body.conversation-surface #conversation-dock {row-gap:0;}
 html body.conversation-surface #feedback:empty {display:none;}

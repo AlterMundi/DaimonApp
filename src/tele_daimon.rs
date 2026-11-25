@@ -334,6 +334,36 @@ impl RemoteGateway<'_> {
         .await
     }
 
+    async fn read_readiness(&self) -> Result<IngressReply> {
+        use std::io::{Error, ErrorKind};
+
+        let interrupted = |error: &anyhow::Error| {
+            error.downcast_ref::<Error>().is_some_and(|io| {
+                matches!(
+                    io.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+                )
+            })
+        };
+        let initial = self.ready(false).await;
+        if !initial.as_ref().is_err_and(interrupted) {
+            return initial;
+        }
+        // A saturated Gateway can close a connection before reading it.
+        // Repeat only this observation. Admission may already have taken effect.
+        tokio::time::timeout(Duration::from_secs(7), async {
+            loop {
+                sleep(Duration::from_secs(1)).await;
+                let result = self.ready(false).await;
+                if !result.as_ref().is_err_and(interrupted) {
+                    return result;
+                }
+            }
+        })
+        .await
+        .context("Gateway readiness remained unavailable during socket backpressure")?
+    }
+
     async fn projection_ready(&self) -> Result<Option<i64>> {
         match self
             .request(IngressRequest::ProjectionReady {
@@ -354,7 +384,7 @@ impl GatewayIngress for RemoteGateway<'_> {
     }
 
     async fn before_poll(&self, _offset: Option<i64>) -> Result<Option<i64>> {
-        match self.ready(false).await? {
+        match self.read_readiness().await? {
             IngressReply::Ready {
                 identified: true,
                 next_offset,
