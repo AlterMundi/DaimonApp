@@ -55,12 +55,18 @@ pub async fn controller(path: &std::path::Path, payload: &str) -> Result<()> {
 async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
     let nonce = uuid::Uuid::now_v7().to_string();
     // A selected native run includes bounded Matrix host and worker calls.
-    let timeout =
-        if command.starts_with("matrix claude run ") || command.starts_with("matrix goose run ") {
-            320
-        } else {
-            30
-        };
+    let timeout = if [
+        "matrix claude run ",
+        "matrix goose run ",
+        "matrix antigravity run ",
+    ]
+    .iter()
+    .any(|prefix| command.starts_with(prefix))
+    {
+        320
+    } else {
+        30
+    };
     let reply = request_with_timeout(
         path,
         serde_json::json!({"command": command, "nonce": nonce}),

@@ -353,6 +353,7 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         let engine = match engine {
             "claude" => Some(ForegroundEngine::Claude),
             "goose" => Some(ForegroundEngine::Goose),
+            "antigravity" => Some(ForegroundEngine::Antigravity),
             _ => None,
         };
         if let Some(engine) = engine {

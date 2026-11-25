@@ -878,6 +878,7 @@ mod tests {
             matrix_transport: None,
             claude_foreground: None,
             goose_foreground: None,
+            antigravity_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {
@@ -1442,6 +1443,7 @@ mod tests {
             matrix_transport: None,
             claude_foreground: None,
             goose_foreground: None,
+            antigravity_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {
