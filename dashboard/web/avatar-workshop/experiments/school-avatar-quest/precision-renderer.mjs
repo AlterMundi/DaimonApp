@@ -39,11 +39,11 @@ export function glyphAtlas(){
  const glyphs=' .,:;\'`-_~|/\\(){}<>+*=!irox%#@MW',w=6,h=10,canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const c=canvas.getContext('2d',{willReadFrequently:true});c.font='600 10px monospace';c.textBaseline='top';
  return [...glyphs].map(char=>{c.clearRect(0,0,w,h);c.fillStyle='#fff';c.fillText(char,0,-1);const rgba=c.getImageData(0,0,w,h).data,a=Array.from({length:w*h},(_,i)=>rgba[i*4+3]/255);return {char,a,energy:a.reduce((s,v)=>s+v*v,0),coverage:a.reduce((s,v)=>s+v,0)/a.length};});
 }
-export function convertMaster(master,mode='structure',cols=96,atlas=glyphAtlas(),anchor=null){
+export function convertMaster(master,mode='structure',cols=96,atlas=glyphAtlas(),anchor=null,context=null){
  const rows=Math.round(cols*master.height/master.width*.6),w=cols*6,h=rows*10,canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const c=canvas.getContext('2d',{willReadFrequently:true});c.drawImage(master,0,0,w,h);const px=c.getImageData(0,0,w,h).data,cells=[],lines=[],reference=new Map(anchor?.cells.map(p=>[p.y*cols+p.x,p])||[]);
  for(let y=0;y<rows;y++){let line='';for(let x=0;x<cols;x++){
   const target=[],rgb=[0,0,0];let peak=0,mean=0;
-  for(let j=0;j<10;j++)for(let i=0;i<6;i++){const k=((y*10+j)*w+x*6+i)*4,a=px[k+3]/255,l=(px[k]*.2126+px[k+1]*.7152+px[k+2]*.0722)/255*a;target.push(l);peak=Math.max(peak,l);mean+=l;for(let q=0;q<3;q++)rgb[q]+=px[k+q]*a;}
+  for(let j=0;j<10;j++)for(let i=0;i<6;i++){const k=((y*10+j)*w+x*6+i)*4,a=px[k+3]/255,raw=(px[k]*.2126+px[k+1]*.7152+px[k+2]*.0722)/255,l=(context?Math.max(.12,context.dark?raw:1-raw):raw)*a;target.push(l);peak=Math.max(peak,l);mean+=l;for(let q=0;q<3;q++)rgb[q]+=px[k+q]*a;}
   mean/=60;let chosen=atlas[0];const prior=reference.get(y*cols+x);
   if(peak>.025){if(mode==='tone'){const density=Math.min(.62,mean*.72);chosen=atlas.reduce((best,g)=>Math.abs(g.coverage-density)<Math.abs(best.coverage-density)?g:best,atlas[0]);}
    else{let best=Infinity,priorError=Infinity;for(const g of atlas){if(!g.energy)continue;let dot=0;for(let i=0;i<60;i++)dot+=target[i]/peak*g.a[i];const gain=Math.min(2.5,dot/g.energy);let err=0;for(let i=0;i<60;i++)err+=(target[i]/peak-gain*g.a[i])**2;err+=.12*Math.abs(g.coverage-mean/peak)*60;if(g.char===prior?.char)priorError=err;if(err<best){best=err;chosen=g;}}
@@ -51,7 +51,7 @@ export function convertMaster(master,mode='structure',cols=96,atlas=glyphAtlas()
     if(prior&&Math.abs(mean-prior.mean)<.045&&priorError<=best+.8)chosen=atlas.find(g=>g.char===prior.char);
    }
   }
-  const alpha=target.reduce((sum,_,i)=>sum+px[((y*10+Math.floor(i/6))*w+x*6+i%6)*4+3]/255,0),color=mode==='tone'?'#c4d2d2':`rgb(${rgb.map(v=>Math.min(255,Math.round(v/Math.max(1,alpha)*1.6))).join(',')})`;
+  const alpha=target.reduce((sum,_,i)=>sum+px[((y*10+Math.floor(i/6))*w+x*6+i%6)*4+3]/255,0),color=mode==='tone'?'#c4d2d2':`rgb(${rgb.map(v=>Math.min(255,Math.round(v/Math.max(1,alpha)*(context?1:1.6)))).join(',')})`;
   if(chosen.char!==' ')cells.push({x,y,char:chosen.char,color,mean});line+=chosen.char;
  }lines.push(line.replace(/ +$/,''));}
  return {cols,rows,cells,text:lines.join('\n')};

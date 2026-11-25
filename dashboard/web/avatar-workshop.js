@@ -19,7 +19,7 @@ window.AvatarWorkshopUI=(()=>{
   const missionId=new URLSearchParams(window.location?.search||'').get('avatar_mission');
   const missionPath=missionId&&uuid(missionId)?'interaction/avatars/missions/'+missionId:null;
   function appearance(){const style=getComputedStyle(document.body),value={};for(const role of ['background','surface','text','accent','body-font','heading-font','radius','gap']){const v=style.getPropertyValue('--dm-'+role).trim();if(v&&v.length<256&&!/url\(/i.test(v))value['--dm-'+role]=v;}if(document.documentElement.dataset.stylePolicy==='authored'){for(const [role,name] of Object.entries({background:'--bg',surface:'--panel',text:'--ink',accent:'--accent'}))value['--dm-'+role]=style.getPropertyValue(name).trim();value.presentation='navigator-hud';}return value;}
-  window.addEventListener('home-style:resolved',()=>iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin));
+  window.addEventListener('home-style:resolved',()=>{iframe?.contentWindow.postMessage({kind:'daimon.workshop.appearance',appearance:appearance()},location.origin);try{paint?.(frame);compactPreview?.paint?.(compactPreview.frame||0);}catch{stop();message('Avatar drawing paused. Your saved selection is kept.');}});
   const message=text=>{const line=document.querySelector('#avatar-workshop-status');if(line)line.textContent=text;};
   function speechLevel(value){requestedSpeechLevel=Number.isFinite(value)?value:0;renderSpeech();}
   function renderSpeech(){

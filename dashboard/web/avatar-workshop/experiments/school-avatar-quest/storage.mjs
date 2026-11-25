@@ -15,6 +15,7 @@ window.addEventListener('message',event=>{
  for(const [name,value] of Object.entries(event.data.appearance||{}))if(/^--dm-(background|surface|text|accent|body-font|heading-font|radius|gap)$/.test(name)&&typeof value==='string'&&value.length<256&&!/url\(/i.test(value))document.documentElement.style.setProperty(name,value);
  if(event.data.appearance?.presentation==='navigator-hud')document.documentElement.dataset.presentation='navigator-hud';
  else delete document.documentElement.dataset.presentation;
+ window.dispatchEvent(new Event('avatar-appearance:changed'));
  if(event.data.kind==='daimon.workshop.appearance')return;
  const selected=pending;pending=null;clearTimeout(selected.timer);
  if(event.data.error)selected.reject(Error(event.data.error));else selected.resolve(event.data.value);
