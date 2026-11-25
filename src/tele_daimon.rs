@@ -365,6 +365,8 @@ impl GatewayIngress for RemoteGateway<'_> {
     }
 
     async fn accept(&mut self, update: Update) -> Result<Option<i64>> {
+        // The owner may have restarted while the Bot API was holding this poll.
+        self.before_poll(None).await?;
         let reply = self
             .request(IngressRequest::Admit {
                 bot_id: self.identity.id,

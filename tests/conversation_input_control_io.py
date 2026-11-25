@@ -751,11 +751,13 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
                        for request in journey.rpc)
         poll_held, release_poll = threading.Event(), threading.Event()
 
-        def hold_empty_poll():
-            poll_held.set()
-            assert release_poll.wait(8), "Fixture long poll was not released"
+        def hold_update_poll(updates):
+            if updates:
+                poll_held.set()
+                assert release_poll.wait(8), "Fixture long poll was not released"
 
-        journey.before_empty_poll = hold_empty_poll
+        journey.before_poll_reply = hold_update_poll
+        during_restart = journey.admit("Original returned during the Gateway restart", topic=1)
         try:
             assert poll_held.wait(5), "Adapter did not enter the fixture long poll"
             journey.stop()
@@ -764,12 +766,16 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
             request = {"operation": "ready", "bot_id": 123}
             assert ingress(request)["result"]["identified"] is False
         finally:
-            journey.before_empty_poll = None
+            journey.before_poll_reply = None
             release_poll.set()
-        journey.wait(lambda: ingress(request)["result"]["identified"] is True)
-        assert ingress(request)["result"]["next_offset"] == second + 1
+        journey.wait(lambda: thread in journey.holding)
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(during_restart))
+        ready = ingress(request)["result"]
+        assert ready["identified"] and ready["next_offset"] == during_restart + 1
         assert adapter.poll() is None and journey.process.pid != gateway_pid
-        assert journey.native_turns == before + 1
+        assert journey.native_turns == before + 2
+        print("PASS an original held by the Bot API during Gateway restart is admitted once")
         stop_adapter(adapter)
         adapter = None
         print("PASS tokenless Gateway migration with retained bot, cursor, history, grant and goal accounting; "
@@ -792,12 +798,12 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         journey.start()
         journey.wait_control_socket(journey.socket)
         journey.wait(lambda: thread in journey.holding)
-        assert journey.poll_offsets[0] == second + 1
+        assert journey.poll_offsets[0] == during_restart + 1
         journey.finish(thread, journey.holding.pop(thread))
         journey.wait(lambda: settled(final))
         journey.idle()
         assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
-            (seeded,), (first,), (second,), (final,),
+            (seeded,), (first,), (second,), (during_restart,), (final,),
         ]
         assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
         assert journey.read("input", "status", original["id"])["result"] == cutover_result

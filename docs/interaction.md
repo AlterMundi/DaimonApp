@@ -81,10 +81,10 @@ Previously uncertain sends stay uncertain and are not replayed.
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission
 receipt. It advances only with the durable cursor supplied by Gateway. Before
-each Bot API poll, the adapter checks the current Gateway's readiness. If
-Gateway restarted during a long poll, the adapter can re-identify the verified
-bot and reattach its projection listener before continuing from the durable
-cursor. A missing owner or lost admission acknowledgement ends that adapter
+each Bot API poll and before admitting a returned original, the adapter checks
+the current Gateway's readiness. If Gateway restarted during a long poll, the
+adapter can re-identify the verified bot and reattach its projection listener
+before continuing from the durable cursor. A missing owner or lost admission acknowledgement ends that adapter
 run. Start it again through the existing service supervisor to read the
 retained cursor. The existing admission journal dispatches each new original
 once.
