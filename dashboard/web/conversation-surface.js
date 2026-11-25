@@ -7,10 +7,11 @@ window.ConversationSurface=(()=>{
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
     let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
+    let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);connected=false;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready');}
+    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function receive(event){
@@ -18,7 +19,13 @@ window.ConversationSurface=(()=>{
       let size;try{size=JSON.stringify(d)?.length;}catch{return;}
       if(closed||event.source!==host||event.origin!==parent||!d||typeof d!=='object'
           ||!size||size>8192||Object.entries(envelope()).some(([k,v])=>!v||d[k]!==v))return;
-      if(d.type==='connect'){connected=true;avatarPlayback=d.features?.avatarPlayback===true;return;}
+      if(d.type==='connect'){
+        if(d.features?.avatarMicrophone!==true)microphone(0);
+        connected=true;
+        avatarPlayback=d.features?.avatarPlayback===true;
+        avatarMicrophone=d.features?.avatarMicrophone===true;
+        return;
+      }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
       if(d.type==='error'){const old=pending;pending=undefined;clearTimeout(old.timer);old.reject(Error('World context could not be prepared. Your draft is kept.'));return;}
       if(d.type!=='prepared')return;
@@ -55,7 +62,23 @@ window.ConversationSurface=(()=>{
       lastLevel=level;lastSpeech=now;
       send('avatar-playback',{level});
     }
-    document.addEventListener('visibilitychange',()=>{if(document.hidden)playback(0);});
+    // Fresh levels only, from the recorder callback. UI snapshots can retain
+    // a previous level and must never refresh its presentation lifetime.
+    function microphone(value){
+      if(!connected||!avatarMicrophone)return;
+      const level=document.hidden||!Number.isFinite(value)?0:Math.round(Math.min(1,Math.max(0,value))*4)/4;
+      const now=performance.now();
+      if(level ? now-lastMicAt<100 : !lastMicLevel)return;
+      lastMicLevel=level;
+      if(level)lastMicAt=now;
+      send('avatar-microphone',{level});
+    }
+    function microphoneSink(selected){
+      if(!selected||selected!==binding)return;
+      const capture=microphoneGeneration;
+      return value=>{if(capture===microphoneGeneration&&selected===binding)microphone(value);};
+    }
+    document.addEventListener('visibilitychange',()=>{if(document.hidden){playback(0);microphone(0);}});
     function current(value){const record=tracked.get(value?.id);return record&&record.binding===binding&&record.actor===actor&&(!value.binding||value.binding===record.binding)?record:undefined;}
     function attempt(value){const record=current(value);if(record)record.attempted=true;}
     function discard(value){
@@ -68,7 +91,7 @@ window.ConversationSurface=(()=>{
     function status(value,busy){if(current(value)&&!current(value).discarded)send('status',{id:value.id,phase:typeof value.phase==='string'?value.phase.slice(0,64):'unconfirmed',busy:busy===undefined?!['accepted','queued','completed','routed','foreground','matrix_requested'].includes(value.phase):!!busy});}
     window.addEventListener('pagehide',()=>{cancel();closed=true;window.removeEventListener('message',receive);});
     window.addEventListener('pageshow',event=>{if(event.persisted&&closed){closed=false;window.addEventListener('message',receive);ready();}});
-    return {identity,bind,prepare,status,attempt,discard,playback,disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
+    return {identity,bind,prepare,status,attempt,discard,playback,microphoneSink,silenceMicrophone:()=>microphone(0),disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
   }
 
   // The same authenticated Conversation origin owns both copies. The parent

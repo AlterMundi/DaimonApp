@@ -146,13 +146,12 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, beforeOriginal, onOriginalAttempt=()=>{}, onOriginalDiscard=()=>{}, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, beforeOriginal, onOriginalAttempt=()=>{}, onOriginalDiscard=()=>{}, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, getLevelSink=()=>undefined, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
     const remaining=document.querySelector('#conversation-voice-remaining');
     const RECORDING_MILLIS=120000,clock=()=>window.performance?.now?.()??Date.now();
-    const levelMeter=window.ConversationVoiceMode?.meter?.(value=>onLevel(value),clock);
     const recovery=recoveryStore();let restoreBinding,restoring=false,continuousOwned=false,recoveryFree=false,lastConfirmed;
     let captureOriginal;
     function originalAttempt(value){if(captureOriginal?.id===value.id)captureOriginal.attempted=true;try{onOriginalAttempt({id:value.id,binding:value.binding});}catch{}}
@@ -497,6 +496,12 @@ window.VoiceInput = (() => {
       captureOriginal={id:selection.captureId,binding,attempted:false};
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
+        let levelSink;
+        try{levelSink=getLevelSink(binding);}catch{/* Optional projection stays local. */}
+        const levelMeter=window.ConversationVoiceMode?.meter?.(value=>{
+          try{onLevel(value);}catch{/* Presentation cannot interrupt capture. */}
+          try{levelSink?.(value);}catch{/* Frame delivery cannot interrupt capture. */}
+        },clock);
         // Start the host snapshot synchronously, before visual/file preparation.
         let contextPreparation;
         if(beforeOriginal){contextPreparation=Promise.resolve(beforeOriginal({id:selection.captureId,binding,modality:'audio',files:[]}));contextPreparation.catch(()=>{});}
@@ -523,8 +528,8 @@ window.VoiceInput = (() => {
           try{current=await window.StreamingVoice.create(media,{headers,binding,canonicalRecorder:canonical,id:frozenSelection.captureId,transcriptionProvider:openaiPreview?'openai':'current',
             turnDetection:!openaiPreview&&conversational,onEndpoint:()=>{if(conversationCapture&&owned===generation&&phase==='recording'&&words)submit();},
             onDetectionUnavailable:()=>{if(conversational&&owned===generation){conversationCapture=false;hold();}},
-            onPCM:pcm=>{if(owned===generation&&phase==='recording')levelMeter?.(pcm);},
-            onUnavailable:()=>{previewUnavailable=true;try{onLevel(0);}catch{}if(owned===generation&&phase==='recording')caption('Recording… Live text unavailable.');},
+            onPCM:pcm=>{if(owned===generation&&phase==='recording'&&binding===getBinding()&&!document.hidden)levelMeter?.(pcm);},
+            onUnavailable:()=>{previewUnavailable=true;if(owned===generation&&phase==='recording'){try{onLevel(0);}catch{}caption('Recording… Live text unavailable.');}},
             onPartial:text=>{if(owned===generation&&['recording','editing'].includes(phase)){words=!!text.trim();onTiming(frozenSelection.captureId,'partial');if(phase==='recording')caption(text||'Listening…');if(!conversational&&binding===getBinding())transcript(text);}}});hasTranscriptPreview=!!current;}catch{previewUnavailable=true;}
         }
         if(owned!==generation||binding!==getBinding()||document.hidden){current?.discard?.();for(const track of media.getTracks())track.stop();return;}

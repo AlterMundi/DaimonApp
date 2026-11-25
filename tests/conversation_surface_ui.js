@@ -2,14 +2,15 @@
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),crypto=require('node:crypto').webcrypto;
 const id=()=>crypto.randomUUID(),binding='b'.repeat(64),actor='human:fixture:one';
 function boot(){
+ let now=500;
  const sent=[],events={},timers=[],domEvents={},parent={postMessage:(message,origin)=>sent.push({message,origin})};
  const window={parent,addEventListener:(name,fn)=>events[name]=fn,removeEventListener:()=>{}};
  const document={hidden:false,addEventListener:(name,fn)=>domEvents[name]=fn,documentElement:{dataset:{surfaceParent:'https://world.test',surfaceVisit:id()}}};
- const context={window,crypto,document,performance:{now:()=>500},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
+ const context={window,crypto,document,performance:{now:()=>now},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
  vm.runInNewContext(fs.readFileSync('dashboard/web/conversation-surface.js','utf8'),context);
  const ui=window.ConversationSurface.create();ui.identity(actor);ui.bind(binding);const envelope=sent.at(-1).message;
  const receive=(value,source=parent,origin='https://world.test')=>events.message({source,origin,data:{...envelope,...value}});
- return{ui,sent,timers,receive,parent,events,envelope,document,domEvents};
+ return{ui,sent,timers,receive,parent,events,envelope,document,domEvents,advance:ms=>now+=ms};
 }
 (async()=>{
  const b=boot();assert.equal(b.sent.length,1);assert.equal(b.sent[0].message.type,'ready');
@@ -38,6 +39,39 @@ function boot(){
   b.receive({...request,type:'prepared',file});assert.equal((await promise)[0].sha256,file.sha256);
   b.ui.status({id:original,phase:'accepted',text:'PRIVATE',files:[file],audio:'PRIVATE'},true);
   assert.deepEqual(Object.keys(b.sent.at(-1).message).sort(),['actor','binding','busy','channel','id','phase','schema','type','visit'].sort());
+ }
+ const mic=boot(),sentMic=()=>mic.sent.filter(({message})=>message.type==='avatar-microphone').map(({message})=>message.level);
+ assert.equal(mic.envelope.features.avatarMicrophone,true);
+ const captureLevel=mic.ui.microphoneSink(binding);
+ captureLevel(.95);
+ mic.receive({type:'connect',features:{avatarMicrophone:true}},mic.parent,'https://elsewhere.test');
+ captureLevel(.95);
+ assert.deepEqual(sentMic(),[]);
+ mic.receive({type:'connect',features:{avatarMicrophone:true}});
+ captureLevel(.81);
+ captureLevel(.98);
+ captureLevel(0);
+ captureLevel(.99);
+ assert.deepEqual(sentMic(),[.75,0]);
+ mic.advance(100);
+ captureLevel(.98);
+ mic.document.hidden=true;mic.domEvents.visibilitychange();
+ captureLevel(.99);
+ assert.deepEqual(sentMic(),[.75,0,1,0]);
+ mic.document.hidden=false;mic.advance(100);
+ captureLevel(.52);mic.receive({type:'connect',features:{}});
+ mic.advance(100);captureLevel(.98);
+ assert.deepEqual(sentMic(),[.75,0,1,0,.5,0]);
+ mic.receive({type:'connect',features:{avatarMicrophone:true}});
+ captureLevel(.6);
+ mic.ui.bind('c'.repeat(64));
+ assert.deepEqual(sentMic().slice(-2),[.5,0]);
+ mic.receive({type:'connect',binding:'c'.repeat(64),features:{avatarMicrophone:true}});
+ mic.advance(100);captureLevel(1);
+ assert.deepEqual(sentMic().slice(-2),[.5,0],'a callback from the old recording cannot report under a later binding');
+ for(const {message} of mic.sent.filter(({message})=>message.type==='avatar-microphone')){
+  assert.deepEqual(Object.keys(message).sort(),['actor','binding','channel','level','schema','type','visit']);
+  assert.equal(message.binding,binding,'the reset belongs to the departing identity');
  }
  const count=b.sent.length;b.ui.status({id:id(),phase:'accepted',text:'unrelated private history'});assert.equal(b.sent.length,count);
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text',files:Array(8).fill({size:1})}));
