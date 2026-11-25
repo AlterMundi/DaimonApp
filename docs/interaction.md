@@ -592,7 +592,7 @@ workers are never resumed, steered or interrupted by observation. Only the
 read-only synthesis uses a separate ephemeral context with tools disabled.
 
 The authenticated owner-local client offers the same selected operations:
-`telecodex --control CONFIG observer observe '#Topic' [--retry]`,
+`daimon-gateway --control CONFIG observer observe '#Topic' [--retry]`,
 `observer summary '#Topic'` and `observer sources '#Topic'`. Quote selectors in
 shell commands. Observe acknowledges scheduling, not successful synthesis; it
 does not fabricate a human message or a Telegram delivery. Operational notices
@@ -1188,9 +1188,11 @@ interpretive boundary. Explicit reply actions retain their existing semantics.
 
 The native dynamic-tool set is persisted at thread creation. An older integrating
 conversation or worker can invoke the same scoped controller through
-`telecodex --controller TURN_ACCESS_FILE OPERATION_JSON` when terminal execution
-and receiving session control are available. This is a live invocation, not a
-completion manifest, new human message or generic owner-command tunnel.
+the command supplied in its live runtime hint when terminal execution and
+receiving session control are available. A named Gateway supplies
+`daimon-gateway --controller TURN_ACCESS_FILE OPERATION_JSON` using its selected
+executable path. This invocation uses the existing scoped controller and its
+execution lease.
 
 The owner-only access file is bound to the actual local execution and human;
 current native/physical binding and role are checked by the existing handlers.
@@ -1795,8 +1797,8 @@ changed bindings, partial submissions and uncertain outcomes do not qualify.
 Existing workflow source, owner generation, expiry and Stop/maintenance checks
 still apply. Recovery preserves the instruction and original resource account.
 
-An authenticated owner can inspect `telecodex --control CONFIG workflow status ID`
-and call `telecodex --control CONFIG workflow recover ID REVISION` with that
+An authenticated owner can inspect `daimon-gateway --control CONFIG workflow status ID`
+and call `daimon-gateway --control CONFIG workflow recover ID REVISION` with that
 exact current revision. This operation recovers only a retained-unsent step;
 it cannot admit a new ready step, resume a goal or invent a human message.
 Inspect the instruction/native receipt after submission uncertainty. The general
@@ -1806,7 +1808,7 @@ than collapsing that refusal into generic routing unavailability.
 
 ## Reconcile an uncertain Telegram creation from retained service evidence
 
-`telecodex --control CONFIG creation status ID` inspects the same retained
+`daimon-gateway --control CONFIG creation status ID` inspects the same retained
 creation. An authenticated operator can select
 `creation reconcile ID SERVICE_UPDATE_ID` when the original topic RPC was
 uncertain but this receiver retained its own bot's `forum_topic_created` event.
@@ -1845,4 +1847,4 @@ workflow source revision. A successor still requires completed, current evidence
 Source bodies, claims, delivery membership and original admissions remain
 immutable; reading or linking does not replay, publish, advance or retire work.
 
-The owner-local equivalent is `telecodex --control CONFIG workflow result ID STEP REVISION OFFSET`; it uses the configured integrating entry and the same scoped reader, without a model lease or source mutation.
+The owner-local equivalent is `daimon-gateway --control CONFIG workflow result ID STEP REVISION OFFSET`; it uses the configured integrating entry and the same scoped reader, without a model lease or source mutation.

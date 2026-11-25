@@ -20,9 +20,11 @@ The callback receives Goose's native ID and must return true only after the
 existing Gateway transaction retains that ID with the original and marks
 provider exposure. A denied decision sends no prompt. A missing terminal reply,
 unexpected session, oversized reply or interruption after exposure retains an
-uncertain outcome. On interruption the client requests native cancellation and
-bounds process teardown. It never retries. The caller owns the worker process
-group and the journal's original and return uniqueness.
+uncertain outcome. When the ACP client reaches its deadline, it attempts
+`session/cancel` and bounds process teardown. On Gateway shutdown the owning
+worker group can end before that ACP request. Both paths retain the original
+and its provider uncertainty. The caller owns the worker group and the
+journal's original and return uniqueness.
 
 Goose keeps cancelled text in the native transcript. Loading an existing
 session is outside this entry point, which admits a new original into a fresh

@@ -30,6 +30,7 @@ pub struct Config {
     pub tribu: Option<TribuConfig>,
     pub nexus: Option<crate::nexus::NexusConfig>,
     pub session_control: Option<SessionControlConfig>,
+    pub activity_projection_state: Option<PathBuf>,
     pub interaction: Option<crate::interaction::InteractionConfig>,
 }
 

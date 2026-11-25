@@ -43,7 +43,9 @@ and deployment are separate; existing deliberate pauses remain untouched.
 
 The existing authenticated owner gateway accepts `goal delegation`,
 `goal delegation set JSON` and `goal inspect CHAT TOPIC`. The CLI forwards them
-through `telecodex --control CONFIG goal ...`; it does not start a second backend.
+through `daimon-gateway --control CONFIG goal ...`. Use the named executable and
+profile selected by the receiving service. The command connects to its existing
+owner socket.
 The authenticated gateway supplies the human scope; JSON cannot select another
 human. A grant records an actual delegation source and the installing owner
 principal, rather than fabricating human speech or a Telegram update.
@@ -292,7 +294,7 @@ qualification does not select a receiving binary or authorize a live pause.
 Matrix retains Core selection/adoption and the decision whether a particular
 running turn can be interrupted. This bridge never interrupts a turn.
 
-Use the existing authenticated gateway, `telecodex --control CONFIG goal
+Use the existing authenticated gateway, `daimon-gateway --control CONFIG goal
 maintenance ...`. No new socket, login, provider, background coordinator or model
 lease is introduced. Commands are `prepare JSON`, `status UUID`, `pause UUID`
 and `restore UUID`. The same restore command also reconciles an expired
