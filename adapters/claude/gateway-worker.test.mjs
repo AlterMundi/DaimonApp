@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -25,15 +25,19 @@ test('worker sends one native input only after exact owner persistence decision'
     const selection = join(root, 'profile.json');
     const exposure = join(root, 'submitted.txt');
     const apiKeyFile = join(root, 'provider.key');
+    const subscriptionEmail = 'owner@example.test';
+    const accountDriftCwd = join(root, 'other-account');
     const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
     try {
+      await mkdir(accountDriftCwd);
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
       await writeFile(cli, `#!${process.execPath}
 if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
 const key = process.env.ANTHROPIC_API_KEY;
 console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
   ? { loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: 'ANTHROPIC_API_KEY' }
-  : { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
+  : { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty',
+      email: ${JSON.stringify(subscriptionEmail)}, apiKeySource: key ?? null }));
 `, { mode: 0o700 });
       await writeFile(sdk, `
         import { writeFile } from 'node:fs/promises';
@@ -41,12 +45,24 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         export const tool = (name) => ({ name });
         export const createSdkMcpServer = (description) => description;
         export function query({ prompt, options }) {
-          assert.equal(options.env.ANTHROPIC_API_KEY, ${JSON.stringify(fixtureKey)});
+          if (options.env.CLAUDE_CONFIG_DIR) {
+            assert.equal(options.env.ANTHROPIC_API_KEY, ${JSON.stringify(fixtureKey)});
+          } else {
+            assert.equal(options.env.HOME, ${JSON.stringify(root)});
+            assert.equal(options.env.ANTHROPIC_API_KEY, undefined);
+            assert.equal(options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+          }
           assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
           assert.equal(options.maxTurns, 2);
           assert.equal(options.maxBudgetUsd, 0.10);
           return {
-            async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+            async initializationResult() {
+              return { claude_code_version: 'fixture-version', account: {
+                email: options.cwd === ${JSON.stringify(accountDriftCwd)}
+                  ? 'other@example.test' : ${JSON.stringify(subscriptionEmail)},
+                apiProvider: 'firstParty', subscriptionType: 'fixture-plan',
+              }};
+            },
             async mcpServerStatus() { return [{
               name: 'matrix', source: 'sdk', status: 'connected', tools: options.mcpServers.matrix.tools
             }]; },
@@ -79,11 +95,21 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       };
       await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
 
-      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'committed', 'result-lost'];
+      const { apiKeyFile: _keyFile, configurationDirectory: _directory, ...commonProfile } = profile;
+      const subscription = { ...commonProfile, subscriptionEmail };
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'committed', 'result-lost',
+        'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       // Native bootstrap with a synthetic key timed out offline.
       // Exercise the native auth selector here with the isolated fixture SDK.
       if (realBinary) decisions.push('native-auth-rejected');
       for (const decision of decisions) {
+        if (decision === 'subscription-committed') await writeFile(selection, JSON.stringify(subscription));
+        if (decision === 'subscription-wrong-account') {
+          await writeFile(selection, JSON.stringify({ ...subscription, subscriptionEmail: 'other@example.test' }));
+        }
+        if (decision === 'subscription-account-drift') {
+          await writeFile(selection, JSON.stringify({ ...subscription, cwd: accountDriftCwd }));
+        }
         if (decision === 'native-auth-rejected') {
           await writeFile(selection, JSON.stringify({ ...profile, binary: realBinary }));
         }
@@ -96,7 +122,16 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         try {
           const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
-          assert.deepEqual(JSON.parse((await lines.next()).value),
+          const first = JSON.parse((await lines.next()).value);
+          if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
+            assert.deepEqual(first, { ...correlation, type: 'outcome',
+              outcome: { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' },
+            });
+            assert.equal((await exited)[0], 0);
+            await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+            continue;
+          }
+          assert.deepEqual(first,
             { ...correlation, type: 'prepare_submission', nativeSessionId: correlation.sessionId });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'disconnected') worker.stdin.end();
@@ -107,8 +142,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const committed = ['committed', 'result-lost'].includes(decision);
-          const outcome = decision === 'committed'
+          const completed = ['committed', 'subscription-committed'].includes(decision);
+          const committed = completed || decision === 'result-lost';
+          const outcome = completed
             ? { phase: 'completed', sessionId: correlation.sessionId, text: 'Qualified fixture reply.' }
             : committed
               ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: correlation.sessionId }

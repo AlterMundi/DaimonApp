@@ -28,14 +28,24 @@ Launch `gateway-worker.mjs --profile <owner profile>` once for a selected
 foreground attempt. Gateway owns the process group, starts it with a cleared
 environment, and keeps both pipes open until the outcome. The worker's private,
 owner-owned profile selects the absolute SDK entry, Claude binary, working
-directory, home, Claude configuration directory, Matrix observation command,
-CLI version, model and body. Use an isolated Claude configuration directory.
-The profile's `apiKeyFile` is an absolute owner-local path to the authorized
-Anthropic Console key. Store the single key in an owner-readable regular file
-with no group or other permissions. Claude's local authentication status must
-identify the selected first-party API key before the SDK starts. The key is
-passed only in the environment of the native SDK launch and its authentication
-probe. Source content cannot select any of these settings.
+directory, home, Matrix observation command, CLI version, model and body.
+Select one authentication mode in the owner profile:
+
+- For a private Claude Code subscription, set `subscriptionEmail` to the exact
+  email shown by the already signed-in native CLI. The worker uses the selected
+  home's default Claude Code configuration. Its auth probe checks that the
+  first-party Claude account matches and has no reported API key source. The
+  native CLI manages its own login using the same home in the probe and turn.
+  The launched SDK session must also identify the same subscription account
+  before Gateway can record and release the original.
+- For explicitly selected Console use, set `apiKeyFile` and
+  `configurationDirectory` to absolute paths. Store the authorized key in an
+  owner-readable regular file with no group or other permissions. The first-party
+  auth probe must identify that key environment source before the SDK starts.
+  The key goes only to the native SDK launch and auth probe.
+
+Source content cannot select these settings. See
+[Claude plan usage with the Agent SDK](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
 worker permits up to two agent turns for the one read tool and reply. The SDK
