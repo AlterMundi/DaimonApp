@@ -14,11 +14,16 @@ const exec = promisify(execFile);
 
 async function ownerProfile(path) {
   const value = JSON.parse(await privateBytes(path, 16 * 1024));
-  if (!closed(value, ['sdk', 'binary', 'cwd', 'home', 'configurationDirectory',
-      'cliVersion', 'model', 'apiKeyFile', 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+  const subscription = Object.hasOwn(value ?? {}, 'subscriptionEmail');
+  const authFields = subscription ? ['subscriptionEmail'] : ['configurationDirectory', 'apiKeyFile'];
+  const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
+  if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
+      'cliVersion', 'model', 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
-      || ![value.sdk, value.binary, value.cwd, value.home, value.configurationDirectory, value.apiKeyFile]
+      || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
+      || (subscription && (typeof value.subscriptionEmail !== 'string'
+        || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || !Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0
       || ![value.cliVersion, value.model, ...Object.values(value.body)]
         .every(item => typeof item === 'string' && item.length > 0 && item.length <= 240)
@@ -32,19 +37,24 @@ async function ownerProfile(path) {
 }
 
 async function providerEnvironment(profile, signal) {
-  const key = (await privateBytes(profile.apiKeyFile, 4096)).toString('utf8').trim();
-  if (!/^[!-~]+$/.test(key)) throw new Error('Invalid provider credential');
   const env = {
-    PATH: '/usr/bin:/bin', HOME: profile.home, CLAUDE_CONFIG_DIR: profile.configurationDirectory,
-    ANTHROPIC_API_KEY: key, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    PATH: '/usr/bin:/bin', HOME: profile.home, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
+  if (profile.apiKeyFile) {
+    const key = (await privateBytes(profile.apiKeyFile, 4096)).toString('utf8').trim();
+    if (!/^[!-~]+$/.test(key)) throw new Error('Invalid provider credential');
+    env.ANTHROPIC_API_KEY = key;
+    env.CLAUDE_CONFIG_DIR = profile.configurationDirectory;
+  }
   const { stdout } = await exec(profile.binary, ['auth', 'status'], {
     cwd: profile.cwd, env, signal, timeout: 5000, maxBuffer: 8192,
   });
   const auth = JSON.parse(stdout);
-  if (auth.loggedIn !== true || auth.authMethod !== 'api_key'
-    || auth.apiKeySource !== 'ANTHROPIC_API_KEY' || auth.apiProvider !== 'firstParty') {
-    throw new Error('Selected API authentication unavailable');
+  const selected = profile.subscriptionEmail
+    ? auth.authMethod === 'claude.ai' && auth.email === profile.subscriptionEmail && auth.apiKeySource == null
+    : auth.authMethod === 'api_key' && auth.apiKeySource === 'ANTHROPIC_API_KEY';
+  if (auth.loggedIn !== true || auth.apiProvider !== 'firstParty' || !selected) {
+    throw new Error('Selected Claude authentication unavailable');
   }
   return env;
 }
@@ -75,7 +85,8 @@ async function main() {
       env = await providerEnvironment(profile, stop.signal);
     } catch {
       await writeFrame(process.stdout, { ...correlation, type: 'outcome',
-        outcome: { phase: 'not_submitted', reason: 'claude_api_auth_unverified' },
+        outcome: { phase: 'not_submitted', reason: profile.subscriptionEmail
+          ? 'claude_subscription_auth_unverified' : 'claude_api_auth_unverified' },
       }, stop.signal);
       return;
     }
@@ -90,7 +101,8 @@ async function main() {
       input: { id: first.inputId, sessionId: first.sessionId, text: first.text },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
-        model: profile.model, persistSession: true, maxTurns: 2,
+        model: profile.model, subscriptionEmail: profile.subscriptionEmail,
+        persistSession: true, maxTurns: 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {

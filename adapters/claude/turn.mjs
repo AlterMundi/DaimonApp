@@ -40,7 +40,7 @@ export async function runClaudeTurn({
       || !toolNames.every(name => /^[a-z][a-z0-9_]{0,63}$/.test(name))
       || !expectedBody?.beingRef || !expectedBody.embodimentId || !expectedBody.incarnationId
       || !expectedBody.manifestHash
-      || !profile?.binary || !profile.cwd || !profile.cliVersion || !profile.env?.CLAUDE_CONFIG_DIR) {
+      || !profile?.binary || !profile.cwd || !profile.cliVersion || !(profile.env?.HOME || profile.env?.CLAUDE_CONFIG_DIR)) {
     throw new TypeError('Invalid Claude turn selection');
   }
 
@@ -90,6 +90,13 @@ export async function runClaudeTurn({
     const initialized = await native.initializationResult();
     if (initialized.claude_code_version !== profile.cliVersion) {
       return { phase: 'not_submitted', reason: 'claude_version_mismatch' };
+    }
+    if (profile.subscriptionEmail) {
+      const { account } = initialized;
+      if (account?.email !== profile.subscriptionEmail || account.apiProvider !== 'firstParty'
+        || !account.subscriptionType || account.apiKeySource != null) {
+        return { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' };
+      }
     }
     if (!catalogMatches(await native.mcpServerStatus(), toolNames)) {
       return { phase: 'not_submitted', reason: 'claude_catalog_mismatch' };
