@@ -54,10 +54,13 @@ For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Remove the Gateway's Telegram token
 setting and environment binding. Start Gateway on the same database and
 control socket, then start the external poller with its separate configuration.
-Read back the retained cursor, native conversation binding, pending originals,
-uncertain receipts and preserved paused goal accounting. Verify a new durable
-admission after TeleDaimon connects and one independent Gateway original while
-TeleDaimon is stopped. To roll back,
+Read back the retained cursor, native conversation binding, original history,
+delegation revisions, pending originals, uncertain receipts and paused goal
+accounting. An unconfirmed native acknowledgement stays uncertain. A retained
+unsent original stays available for explicit recovery. An unconfirmed Bot API
+send retains its publication and part IDs without an invented message ID.
+Verify a new durable admission after TeleDaimon connects and one independent
+Gateway original while TeleDaimon is stopped. To roll back,
 stop the external poller first, restore the original token configuration, clear
 `external_polling` and restart the selected service with the same database. Preserve all earlier originals and
 uncertain receipts.

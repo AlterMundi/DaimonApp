@@ -495,7 +495,22 @@ def gateway_survives_telegram_failure(binary):
 
 def independent_telegram_polling(binary):
     class MigratingInputs(Inputs):
+        unknown_steer = None
+        deferred_steer = None
+
         def handle_extra_rpc(self, message, send):
+            params = message.get("params", {})
+            selected = params.get("clientUserMessageId")
+            if (message.get("method") == "turn/steer" and selected is not None
+                    and selected in (self.unknown_steer, self.deferred_steer)):
+                self.packets.append(("turn/steer", params))
+                if selected == self.unknown_steer:
+                    send({"id": message["id"], "result": {"turnId": "another-turn"}})
+                else:
+                    send({"id": message["id"], "error": {
+                        "code": -32602, "message": "Synthetic definitive refusal",
+                    }})
+                return True
             if message.get("method") == "thread/goal/snapshot":
                 thread = message["params"]["threadId"]
                 send({"id": message["id"], "result": {
@@ -562,6 +577,47 @@ def independent_telegram_polling(binary):
         original_goal = journey.read("goal", "inspect", "100", "1")["result"]["snapshot"]
         assert original_goal["goal"]["status"] == "paused"
         assert original_goal["goal"]["tokensUsed"] == 47
+        grant = {
+            "request_id": str(uuid.uuid4()), "expected_revision": None,
+            "source": "https://example.test/transport-migration",
+            "scope": "owned_sessions", "agents": True, "recovery": False,
+        }
+        journey.read("goal", "delegation", "set", json.dumps(grant))
+        original_grant = journey.read("goal", "delegation")["result"]
+        assert original_grant["delegation"]["agents"] is True
+
+        binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
+        previous_result, _ = journey.submit(binding, "Retain this settled reply and its original.")
+        journey.wait(lambda: journey.web_turn is not None)
+        result_turn = journey.web_turn
+        journey.finish(journey.web_thread, result_turn)
+        journey.wait(lambda: journey.row(
+            "SELECT count(*) FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        ) == [(1,)])
+        journey.idle()
+        previous_status = journey.read("input", "status", previous_result["id"])["result"]
+        assert previous_status["phase"] == "accepted"
+        previous_history = journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        )
+
+        held, _ = journey.submit(binding, "Hold this turn through cutover.")
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (held["id"],))
+                     == [("accepted",)])
+        unknown_id, deferred_id = str(uuid.uuid4()), str(uuid.uuid4())
+        journey.unknown_steer = "conversation:" + unknown_id
+        journey.deferred_steer = "conversation:" + deferred_id
+        unknown, _ = journey.submit(binding, "Provider acknowledged another turn.", unknown_id)
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (unknown_id,))
+                     == [("uncertain",)])
+        deferred, _ = journey.submit(binding, "Keep this known-unsent input pending.", deferred_id)
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (deferred_id,))
+                     == [("queued",)])
+        journal_before = journey.row(
+            "SELECT id, doc FROM conversation_inputs WHERE id IN (?,?) ORDER BY id",
+            (unknown_id, deferred_id),
+        )
+        before_cutover = len(journey.packets)
         journey.stop()
         wrong_bot = journey.root / "wrong-bot.toml"
         wrong_bot.write_text(external_config.replace(
@@ -579,6 +635,22 @@ def independent_telegram_polling(binary):
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == seeded + 1
         assert not journey.telegram_methods
         assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        assert journey.read("goal", "delegation")["result"] == original_grant
+        assert journey.read("input", "status", previous_result["id"])["result"] == previous_status
+        assert journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?", (result_turn,)
+        ) == previous_history
+        assert journey.row(
+            "SELECT id, doc FROM conversation_inputs WHERE id IN (?,?) ORDER BY id",
+            (unknown_id, deferred_id),
+        ) == journal_before
+        for retained_original, expected in ((unknown, "uncertain"), (deferred, "retained_unsent")):
+            current = journey.read("input", "status", retained_original["id"])["result"]
+            duplicate_result = journey.read("input", "submit", json.dumps(retained_original))["result"]
+            assert current["phase"] == expected and duplicate_result["phase"] == expected
+            assert not duplicate_result["new_input"]
+        assert len(journey.packets) == before_cutover
+        journey.web_turn = None
         fake_identity = {"id": 123, "is_bot": False, "first_name": "Not a bot"}
         assert not ingress({"operation": "ready", "bot_id": 123, "identity": fake_identity})["ok"]
         assert not ingress({"operation": "admit", "bot_id": 123, "update": {"update_id": 199}})["ok"]
@@ -612,8 +684,8 @@ def independent_telegram_polling(binary):
         journey.idle()
         assert journey.telegram_methods.count("getUpdates") == polls
         assert journey.process.pid == gateway_pid and journey.process.poll() is None
-        assert len(journey.packets) == 1
-        assert journey.packets[0][1]["clientUserMessageId"] == "conversation:" + original["id"]
+        assert len(journey.packets) == before_cutover + 1
+        assert journey.packets[-1][1]["clientUserMessageId"] == "conversation:" + original["id"]
 
         before = journey.native_turns
         second = journey.admit("Retain this input while polling is stopped", topic=1)
@@ -632,7 +704,8 @@ def independent_telegram_polling(binary):
                        for request in journey.rpc)
         stop_adapter(adapter)
         adapter = None
-        print("PASS tokenless Gateway migration, retained bot, cursor, thread and paused goal accounting; unverified ingress refused and one dispatch per original")
+        print("PASS tokenless Gateway migration with retained bot, cursor, history, grant and goal accounting; "
+              "queued and uncertain inputs retained without replay, and one dispatch per new original")
     finally:
         if adapter is not None and adapter.poll() is None:
             adapter.kill()

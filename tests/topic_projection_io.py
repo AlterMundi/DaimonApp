@@ -137,9 +137,9 @@ class Projected(CanonicalRouting):
                    for message, _ in self.messages)
 
 
-def qualify(binary, *, external=False):
+def qualify(binary, *, external=False, migrate=False):
     j = Projected(str(Path(binary).resolve()))
-    j.external = external
+    j.external = external and not migrate
     try:
         j.start()
         for topic in (7, 8, 1):
@@ -197,8 +197,24 @@ def qualify(binary, *, external=False):
         j.answer(7, 'Lost mirror acknowledgment.')
         j.wait(lambda: j.primary('Lost mirror acknowledgment.'))
         j.wait(lambda: j.row("SELECT COUNT(*) FROM topic_publications WHERE phase='uncertain'") == [(1,)])
-        j.idle(); j.stop(); j.start(); j.wait_control_socket(j.socket)
+        def lost_receipt():
+            return j.row(
+                "SELECT p.id,p.phase,x.part,x.phase,x.message_id FROM topic_publications p "
+                "JOIN topic_publication_parts x ON x.publication=p.id WHERE p.body=?",
+                ("Lost mirror acknowledgment.",),
+            )
+        before_restart = lost_receipt()
+        assert len(before_restart) == 1 and before_restart[0][1:] == ("uncertain", 0, "uncertain", None)
+        j.idle()
+        j.stop()
+        if migrate:
+            j.external = True
+        j.start()
+        j.wait_control_socket(j.socket)
+        assert lost_receipt() == before_restart
         assert j.sent('Lost mirror acknowledgment.', 7) == 1
+        if migrate:
+            print('PASS lost Bot API acknowledgement remains uncertain across embedded-to-external migration')
         inspection = j.read('topics', 'publications')['result']
         assert any(row['phase'] == 'uncertain' for row in inspection['items'])
 
@@ -387,7 +403,8 @@ def direct_download_ownership(binary):
 
 if __name__ == '__main__':
     external = "--external" in sys.argv[2:]
-    qualify(sys.argv[1], external=external)
+    migrate = "--migration" in sys.argv[2:]
+    qualify(sys.argv[1], external=external or migrate, migrate=migrate)
     if external:
         direct_json_ownership(sys.argv[1])
         direct_download_ownership(sys.argv[1])
