@@ -2,13 +2,14 @@
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),crypto=require('node:crypto').webcrypto;
 const id=()=>crypto.randomUUID(),binding='b'.repeat(64),actor='human:fixture:one';
 function boot(){
- const sent=[],events={},timers=[],parent={postMessage:(message,origin)=>sent.push({message,origin})};
+ const sent=[],events={},timers=[],domEvents={},parent={postMessage:(message,origin)=>sent.push({message,origin})};
  const window={parent,addEventListener:(name,fn)=>events[name]=fn,removeEventListener:()=>{}};
- const context={window,crypto,document:{documentElement:{dataset:{surfaceParent:'https://world.test',surfaceVisit:id()}}},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
+ const document={hidden:false,addEventListener:(name,fn)=>domEvents[name]=fn,documentElement:{dataset:{surfaceParent:'https://world.test',surfaceVisit:id()}}};
+ const context={window,crypto,document,performance:{now:()=>500},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
  vm.runInNewContext(fs.readFileSync('dashboard/web/conversation-surface.js','utf8'),context);
  const ui=window.ConversationSurface.create();ui.identity(actor);ui.bind(binding);const envelope=sent.at(-1).message;
  const receive=(value,source=parent,origin='https://world.test')=>events.message({source,origin,data:{...envelope,...value}});
- return{ui,sent,timers,receive,parent,events,envelope};
+ return{ui,sent,timers,receive,parent,events,envelope,document,domEvents};
 }
 (async()=>{
  const b=boot();assert.equal(b.sent.length,1);assert.equal(b.sent[0].message.type,'ready');
@@ -18,6 +19,15 @@ function boot(){
  b.receive({type:'connect'},b.parent,'https://evil.test');await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text'}));
  b.receive({type:'connect',actor:'human:other'});await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text'}));
  b.receive({type:'connect'});
+ b.ui.playback(.8);assert.equal(b.sent.at(-1).message.type,'ready');
+ b.receive({type:'connect',features:{avatarPlayback:true}}, {}, 'https://evil.test');
+ b.ui.playback(.8);assert.equal(b.sent.at(-1).message.type,'ready');
+ b.receive({type:'connect',features:{avatarPlayback:true}});
+ b.ui.playback(.8);assert.equal(b.sent.at(-1).message.type,'avatar-playback');
+ assert.equal(b.sent.at(-1).message.level,.75);
+ b.document.hidden=true;b.domEvents.visibilitychange();
+ assert.equal(b.sent.at(-1).message.level,0);
+ b.document.hidden=false;
  for(const modality of ['text','audio']){
   const original=id(),promise=b.ui.prepare({id:original,binding,modality,files:[]}),request=b.sent.at(-1).message;
   assert.equal(request.id,original);assert.equal(request.modality,modality);assert(!('text' in request));

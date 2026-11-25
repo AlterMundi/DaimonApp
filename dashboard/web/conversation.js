@@ -187,7 +187,7 @@ window.Conversation = (() => {
     document.addEventListener('visibilitychange',()=>{if(document.hidden)clearHeaderSignal();});
     window.addEventListener('pagehide',clearHeaderSignal);
     headerMotion?.addEventListener?.('change',()=>{if(headerMotion.matches)clearHeaderSignal();});
-    const presentState=(patch,updateVoice=true)=>{showHeaderSignal(patch);if(Object.hasOwn(patch,'outputLevel'))avatarWorkshop?.speechLevel?.(patch.outputLevel);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
+    const presentState=(patch,updateVoice=true)=>{showHeaderSignal(patch);if(Object.hasOwn(patch,'outputLevel')){avatarWorkshop?.speechLevel?.(patch.outputLevel);hostSurface?.playback(patch.outputLevel);}else if(patch.playback&&patch.playback!=='playing')hostSurface?.playback(0);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
     let inspectorReturnFocus;
     if(standalone){
       const inspector=$("#conversation-diagnostics"),inspectButton=$("#conversation-inspect");
