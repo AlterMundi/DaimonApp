@@ -337,24 +337,31 @@ impl RemoteGateway<'_> {
     async fn read_readiness(&self) -> Result<IngressReply> {
         use std::io::{Error, ErrorKind};
 
-        // A saturated Gateway can close a same-owner connection before reading it.
-        // Repeat only this observation. Admission may already have taken effect.
-        for _ in 0..6 {
-            match self.ready(false).await {
-                Err(error)
-                    if error.downcast_ref::<Error>().is_some_and(|io| {
-                        matches!(
-                            io.kind(),
-                            ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
-                        )
-                    }) =>
-                {
-                    sleep(Duration::from_secs(1)).await;
-                }
-                result => return result,
-            }
+        let interrupted = |error: &anyhow::Error| {
+            error.downcast_ref::<Error>().is_some_and(|io| {
+                matches!(
+                    io.kind(),
+                    ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+                )
+            })
+        };
+        let initial = self.ready(false).await;
+        if !initial.as_ref().is_err_and(interrupted) {
+            return initial;
         }
-        self.ready(false).await
+        // A saturated Gateway can close a connection before reading it.
+        // Repeat only this observation. Admission may already have taken effect.
+        tokio::time::timeout(Duration::from_secs(7), async {
+            loop {
+                sleep(Duration::from_secs(1)).await;
+                let result = self.ready(false).await;
+                if !result.as_ref().is_err_and(interrupted) {
+                    return result;
+                }
+            }
+        })
+        .await
+        .context("Gateway readiness remained unavailable during socket backpressure")?
     }
 
     async fn projection_ready(&self) -> Result<Option<i64>> {
