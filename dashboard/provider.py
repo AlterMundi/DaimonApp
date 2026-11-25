@@ -317,6 +317,7 @@ class Provider:
                 if not entry_latest['source'].startswith('native:') or entry_latest.get('context_only') is not True:
                     raise ProviderUnavailable('Latest conversation reply is not contextual evidence')
             destinations_state='available'
+        from .session_view import result_revision
         directory=self.config.get('activity_state_dir')
         with closing(readonly(self.receiver['db_path'])) as db:
             inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
@@ -328,11 +329,17 @@ class Provider:
                 chat,topic=map(int,row['key'].split(':'))
                 requests=pending_requests(db,chat,topic,self.human) if row.get('native') else None
                 ident=self.identity({'id':row['session'],'chat_id':chat,'thread_id':topic,'codex_thread_id':row['native']})
+                available=results_available.get(row['key'])
+                latest_result=db.execute('''SELECT m.item_id FROM interaction_native_messages m
+                    JOIN turns t ON t.id=m.local_turn WHERE t.session_id=? AND m.native_thread=?
+                    AND COALESCE(m.phase,'final_answer') IN ('final_answer','final')
+                    ORDER BY m.rowid DESC LIMIT 1''', (row['session'],row['native'])).fetchone() if available else None
                 items.append({'id':ident,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
-                    'results_review':'unknown','result_available':results_available.get(row['key']),'destination':destinations.get(row['key']),
+                    'results_review':'unknown','result_available':available,'destination':destinations.get(row['key']),
+                    'result_revision':result_revision(latest_result[0]) if latest_result else None,
                     'latest_reply':entry_latest if chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id'] else latest_replies.get(row['key']),
                     'is_entry':chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']})
         items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Selected native history: bounded pagination, append races and private analysis."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -86,6 +87,18 @@ class SelectedHistory(unittest.TestCase):
         self.assertEqual(part['items'][0]['characters'],len(answer))
         raw=read(self.path,'owned',technical=True)
         self.assertEqual([item['text'] for item in raw['items']],[*samples,'My text\n'+receipt])
+
+    def test_only_ordinary_final_items_project_a_result_revision(self):
+        self.append(message('Same text',id='progress',phase='commentary'),
+                    message('Same text',id='final-one',phase='final_answer'),
+                    message('Same text',id='final-two',phase='final_answer'),
+                    message('A prompt','user',id='prompt'))
+        ordinary=read(self.path,'owned')['items']
+        self.assertEqual([item.get('result_revision') for item in ordinary],
+                         [None,hashlib.sha256(b'final-one').hexdigest(),
+                          hashlib.sha256(b'final-two').hexdigest(),None])
+        self.assertTrue(all('result_revision' not in item
+                            for item in read(self.path,'owned',technical=True)['items']))
 
     def test_partial_append_is_not_acknowledged_and_completion_appears_once(self):
         self.append(message('First'))
