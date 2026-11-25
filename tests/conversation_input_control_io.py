@@ -740,10 +740,41 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         assert malformed["error"] == "Sessions Telegram operation unconfirmed"
         journey.telegram_failures.pop("sendMessage")
         print("PASS paired Sessions alert and menu operations use TeleDaimon custody")
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from scripts.activity_indicator import GatewayTelegram, pending_markup
+        local_config = {"db_path":str(journey.root / "state.sqlite"),
+                        "session_control":{"socket_path":str(journey.socket)},
+                        "activity_telegram":{"credential_fingerprint":fingerprint}}
+        activity_client = GatewayTelegram(local_config)
+        assert not hasattr(activity_client, "token")
+        activity_client.pace = lambda _chat: None
+        journey.telegram_priority = []
+        bad_scope = owner_operation("activity_telegram", {
+            "chat":100, "topic":1, "native_thread":"stale",
+            "credential_fingerprint":fingerprint, "background":True,
+            "operation":{"kind":"send","text":"Do not send","pending_requests":False},
+        })
+        assert bad_scope["ok"] is False
+        assert ("sendMessage", "background") not in journey.telegram_priority
+        good = activity_client.call("sendMessage", {"chat_id":100,"message_thread_id":1,"text":"Activity card",
+                    "reply_markup":pending_markup(True)}, background=True)
+        msg = good["result"]["message_id"]
+        assert good["result"]["chat"]["id"] == 100 and good["result"]["message_thread_id"] == 1
+        assert activity_client.call("editMessageText", {"chat_id":100,"message_id":msg,"text":"Updated"},
+                                    topic=1)["ok"]
+        assert activity_client.call("deleteMessage", {"chat_id":100,"message_id":msg},topic=1)["ok"]
+        assert activity_client.call("editForumTopic", {"chat_id":100,"message_thread_id":1,"name":"Activity"},
+                                    background=True)["ok"]
+        assert [(m,p) for m,p in journey.telegram_priority if p] == [
+          ("sendMessage","background"), ("editMessageText","foreground"),
+          ("deleteMessage","foreground"), ("editForumTopic","background")]
+        print("PASS tokenless Activity relay binds the topic, bot, method and priority")
         journey.idle()
         stop_adapter(adapter)
         adapter = None
         assert not sessions_telegram("status")["ok"]
+        assert activity_client.call("sendMessage", {"chat_id":100,"message_thread_id":1,"text":"No adapter"}) == {
+            "ok":False,"not_submitted":True}
         unsent = sessions_telegram("alert", credential_fingerprint=fingerprint, text="No adapter")
         assert unsent["result"] == {"ok": False, "not_submitted": True}
         assert ingress({"operation": "ready", "bot_id": 123})["result"]["next_offset"] == first + 1

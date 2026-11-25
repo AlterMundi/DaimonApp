@@ -72,6 +72,8 @@ class Journey:
             def do_POST(self):
                 method = self.path.rsplit('/', 1)[-1]
                 if hasattr(owner,'telegram_methods'):owner.telegram_methods.append(method)
+                if hasattr(owner, 'telegram_priority'):
+                    owner.telegram_priority.append((method, self.headers.get('X-Telecodex-Priority')))
                 raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 failure = getattr(owner, 'telegram_failures', {}).get(method)
                 if failure is not None:

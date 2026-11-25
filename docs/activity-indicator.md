@@ -38,6 +38,25 @@ the conversation. Completed native final answers end the visible request even
 when steering keeps the outer native task open. Pending tools, child agents and
 native approval/input waits still keep the indicator active.
 
+When Activity uses the named Gateway and TeleDaimon, select
+`[activity_telegram]` with the verified `credential_fingerprint` in Activity's
+private configuration. Retain the existing `db_path` and
+`session_control.socket_path`. Start Activity as
+`python3 -B -m scripts.activity_indicator` from its qualified package so it can
+use the existing owner-socket client. This profile uses no Bot API token or
+endpoint. Gateway checks the selected chat, topic and current owned native
+binding again just before authorizing the operation. TeleDaimon checks the bot
+fingerprint, performs the allowlisted operation and retains the existing traffic
+meter priority. Activity keeps its existing card, status and marker receipts in
+the same state directory.
+
+Use `--retain-projections` for a service replacement that must preserve cards
+and markers. The retained state still prevents sending an original again after
+an uncertain Bot API outcome. An explicitly unsubmitted card remains eligible
+for the existing bounded retry. Explicit `--restore-topic-markers` keeps its
+ordinary meaning. Install the compatible Gateway route before selecting the
+tokenless Activity profile.
+
 With explicit `--status-requests` opt-in, plain `/status` receives a compact
 activity/quota response in addition to the bridge's existing session details.
 While work is active it creates or immediately edits the same live indicator;

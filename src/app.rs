@@ -18,6 +18,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[cfg(unix)]
+mod activity_telegram;
 mod artifact_outputs;
 mod attention;
 mod auth;

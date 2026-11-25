@@ -439,6 +439,7 @@ pub(super) async fn sessions_telegram(
                 JsonMethod::GetChatMenuButton,
                 Some(json!({"chat_id":human})),
                 Some(fingerprint.clone()),
+                None,
             )
             .await?;
             drop(prepared);
@@ -513,6 +514,7 @@ pub(super) async fn sessions_telegram(
         method,
         Some(document),
         Some(fingerprint),
+        None,
         authorize,
     )
     .await;

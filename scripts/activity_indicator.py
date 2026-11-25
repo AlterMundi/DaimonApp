@@ -693,15 +693,17 @@ class Telegram:
         self.next_chat = {}
         self.schedule_lock = threading.Lock()
 
-    def call(self, method, payload, *, background=False):
-        if method not in ('sendMessage', 'editMessageText', 'deleteMessage', 'editForumTopic'):
-            raise ValueError('observer Telegram method forbidden')
-        chat = payload['chat_id']
+    def pace(self, chat):
         with self.schedule_lock:
             now = time.monotonic()
             scheduled = max(now, self.next_chat.get(chat, now))
             self.next_chat[chat] = scheduled + (3.5 if chat < 0 else 1)
         time.sleep(max(0, scheduled - time.monotonic()))
+
+    def call(self, method, payload, *, background=False, topic=None):
+        if method not in ('sendMessage', 'editMessageText', 'deleteMessage', 'editForumTopic'):
+            raise ValueError('observer Telegram method forbidden')
+        self.pace(payload['chat_id'])
         request = urllib.request.Request(f'{self.base}/bot{self.token}/{method}',
                                          data=json.dumps(payload).encode(),
                                          headers={'Content-Type': 'application/json',
@@ -717,6 +719,63 @@ class Telegram:
         except (OSError, ValueError):
             return None  # Unknown delivery; do not log the credential-bearing URL.
         return value
+
+
+class GatewayTelegram(Telegram):
+    """Send Activity projections through the existing authenticated owner socket."""
+    def __init__(self, config):
+        self.database = config['db_path']
+        self.socket = config['session_control']['socket_path']
+        selection = config['activity_telegram']
+        if set(selection) != {'credential_fingerprint'}:
+            raise ValueError('Activity Gateway requires an exact bot fingerprint')
+        self.fingerprint = selection['credential_fingerprint']
+        if not isinstance(self.fingerprint, str) or len(self.fingerprint) != 64 or any(c not in '0123456789abcdef' for c in self.fingerprint):
+            raise ValueError('Invalid Activity bot fingerprint')
+        self.next_chat = {}
+        self.schedule_lock = threading.Lock()
+
+    def call(self, method, payload, *, background=False, topic=None):
+        from contextlib import closing
+        from dashboard.provider import OwnerControlNotSubmitted, ProviderUnavailable, control
+
+        chat = payload['chat_id']
+        selected_topic = payload.get('message_thread_id', 0) if topic is None else topic
+        with closing(readonly(self.database)) as db:
+            bound = db.execute("""SELECT s.codex_thread_id FROM sessions s
+              JOIN users u ON u.tg_user_id=s.creator_user_id
+              WHERE s.chat_id=? AND s.thread_id=? AND s.force_fresh_thread=0
+              AND s.codex_thread_id IS NOT NULL AND u.allowed=1""",(chat,selected_topic)).fetchone()
+        if not bound:
+            return {'ok': False, 'not_submitted': True}
+        if method == 'sendMessage':
+            operation = {'kind':'send', 'text':payload['text'],
+                         'reply_to':payload.get('reply_parameters',{}).get('message_id'),
+                         'pending_requests':payload.get('reply_markup') == pending_markup(True)}
+        elif method == 'editMessageText':
+            operation = {'kind':'edit', 'text':payload['text'], 'message_id':payload['message_id'],
+                         'pending_requests':payload.get('reply_markup') == pending_markup(True)}
+        elif method == 'deleteMessage':
+            operation = {'kind':'delete', 'message_id':payload['message_id']}
+        elif method == 'editForumTopic':
+            operation = {'kind':'topic_name', 'name':payload['name']}
+        else:
+            raise ValueError('observer Telegram method forbidden')
+        self.pace(chat)
+        try:
+            return control(self.socket,envelope={'activity_telegram':{
+                'chat':chat, 'topic':selected_topic, 'native_thread':bound[0],
+                'credential_fingerprint':self.fingerprint,'background':background,'operation':operation}})
+        except OwnerControlNotSubmitted:
+            return {'ok': False, 'not_submitted': True}
+        except (OSError, ValueError, ProviderUnavailable):
+            return None
+
+
+def telegram_transport(config):
+    if 'activity_telegram' in config:
+        return GatewayTelegram(config)
+    return Telegram(config['telegram'])
 
 
 class Publisher:
@@ -793,7 +852,7 @@ class Publisher:
                 return
             entry['turn'] = turn
             payload['message_id'] = message_id
-            result = self.telegram.call('editMessageText', payload, background=not requested)
+            result = self.telegram.call('editMessageText', payload, background=not requested, topic=topic)
         elif not entry['attempted']:
             entry['attempted'] = True
             self.save()  # Persist before crossing the Telegram boundary.
@@ -817,7 +876,9 @@ class Publisher:
             entry.pop('rejected_payload', None)
         if result and not result.get('ok'):
             code = result.get('error_code')
-            if code == 429:
+            if result.get('not_submitted') is True and not message_id:
+                entry['attempted'] = False
+            elif code == 429:
                 entry['next_update'] = now + max(30, result.get('parameters', {}).get('retry_after', 30))
                 entry['retry_after_until'] = entry['next_update']
                 if not message_id:
@@ -849,7 +910,9 @@ class Publisher:
         outcome = 'no_receipt'
         if message_id:
             payload = {'chat_id': entry['chat_id'], 'message_id': message_id}
-            result = self.telegram.call('deleteMessage', payload, background=background)
+            result = self.telegram.call('deleteMessage', payload, background=background, topic=entry.get('topic', 0))
+            if result and result.get('not_submitted') is True:
+                return
             if result and result.get('error_code') == 429:
                 entry['cleanup_retry'] = time.time() + max(30, result.get('parameters', {}).get('retry_after', 30))
                 self.save()
@@ -859,7 +922,7 @@ class Publisher:
             if not (result and result.get('ok') and result.get('result') is True) and not absent:
                 # Keep failed cleanup tracked across restart; never leave "Working".
                 payload.update(text='◻️ Activity monitoring ended', parse_mode='HTML')
-                result = self.telegram.call('editMessageText', payload, background=background)
+                result = self.telegram.call('editMessageText', payload, background=background, topic=entry.get('topic', 0))
                 if not result or not result.get('ok'):
                     return
                 outcome = 'marked_inactive'
@@ -1225,7 +1288,7 @@ def run(args):
     bridge = readonly(config['db_path'])
     if args.restore_topic_markers:
         try:
-            markers = TopicMarkers(Telegram(config['telegram']), state / 'topic-markers.json')
+            markers = TopicMarkers(telegram_transport(config), state / 'topic-markers.json')
             markers.update(bridge, {}, restore=True)
             print(json.dumps({'schema': 'telecodex.topic-marker-retirement/v1',
                               'outcomes': {key: item['phase'] for key, item in markers.state.items()}}))
@@ -1235,7 +1298,7 @@ def run(args):
         return
     native_home = pathlib.Path(os.environ.get('CODEX_HOME', pathlib.Path.home() / '.codex'))
     native_db = readonly(native_home / 'state_5.sqlite')
-    publisher = None if args.probe else Publisher(Telegram(config['telegram']), state / 'messages.json')
+    publisher = None if args.probe else Publisher(telegram_transport(config), state / 'messages.json')
     markers = TopicMarkers(publisher.telegram, state / 'topic-markers.json') if publisher and args.topic_markers else None
     stopped = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -1419,7 +1482,7 @@ def run(args):
             status_worker.join(timeout=2)
         if native:
             native.close()
-        if publisher:
+        if publisher and not args.retain_projections:
             if markers:
                 markers.update(bridge, topic_snapshot, restore=True)
             for key, entry in publisher.snapshot().items():
@@ -1444,6 +1507,8 @@ if __name__ == '__main__':
                         help='opt in to reversible goal/work markers on known canonical topic names')
     parser.add_argument('--activity-days', type=int, choices=range(1, 366), default=7,
                         metavar='DAYS', help='recent conversation window, 1–365 days (default 7)')
+    parser.add_argument('--retain-projections', action='store_true',
+                        help='keep Activity cards and marker receipts across a service replacement')
     parser.add_argument('--status-requests', action='store_true',
                         help='supplement newly handled /status commands with activity and weekly quota')
     try:
