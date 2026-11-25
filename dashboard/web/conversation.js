@@ -816,7 +816,11 @@ window.Conversation = (() => {
     draftStatus.append(draftNote,draftPrimary,draftOther);
     const draftState=readOnly?undefined:window.ConversationSurface?.mountDraft?.({field:draft,api,
       busy:()=>posting||captureBusy||!!transcriptPreview,
-      check:id=>api(`interaction/inputs/${encodeURIComponent(id)}`),
+      async check(id){
+        const owned=inputGeneration,selected=inputBinding;
+        const receipt=await api(`interaction/inputs/${encodeURIComponent(id)}`);
+        if(owned===inputGeneration&&selected===inputBinding)return draftReceipt(receipt);
+      },
       show(state,primary,other){
         draftStatus.hidden=!state;
         if(!state)return;
@@ -852,7 +856,7 @@ window.Conversation = (() => {
       composerNotice(phaseText(value),['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     }
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
-    let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
+    let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
@@ -974,7 +978,7 @@ window.Conversation = (() => {
       codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;voiceHistoryPanel.append(codexHistoryTools);
       publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
-      inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = undefined;
+      inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = inputEntryBinding = undefined;
       latestComposerId = undefined;syncComposerRecovery(); composerNotice("",false);clearFocus();routingChoices=[];
       telegramCursor=0;telegramNewest=0;telegramLoaded=false;
       $("#conversation-inputs").replaceChildren();
@@ -1059,8 +1063,17 @@ window.Conversation = (() => {
       voiceMode.update({admissionNotice:outcomes.includes('review') ? 'Check your recording in Conversation.'
         :outcomes.includes('waiting') ? 'Recording saved. Waiting for Conversation.' : ''});
     }
-    function inputCard(value, observed = ++inputObservation) {
-      draftState?.confirm(value);
+    function draftReceipt(value, scopedBinding){
+      // Direct native receipts identify their entry as a tuple. History rows
+      // inherit the verified page binding only for the current native entry.
+      const entry=value.entry_binding;
+      const sameEntry=Array.isArray(entry)&&entry.length===4&&inputEntryBinding&&entry[1]&&inputEntryBinding[1]
+        && entry[0]===inputEntryBinding[0] && entry[1].chat_id===inputEntryBinding[1].chat_id
+        && entry[1].thread_id===inputEntryBinding[1].thread_id && entry[2]===inputEntryBinding[2] && entry[3]===inputEntryBinding[3];
+      return value.binding===undefined&&(scopedBinding||sameEntry)?{...value,binding:scopedBinding||inputBinding}:value;
+    }
+    function inputCard(value, observed = ++inputObservation, scopedBinding) {
+      if(draftState&&value.phase)draftState.confirm(draftReceipt(value,scopedBinding));
       timing?.input(value);
       const followingLive=atTimelineEnd();
       let card = inputs.get(value.id);
@@ -1247,9 +1260,10 @@ window.Conversation = (() => {
       if (result.binding !== binding) throw new Error("Conversation changed. Refresh before sending.");
       if (inputBinding && inputBinding !== result.binding) {resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();}
       inputBinding = result.binding;
+      inputEntryBinding = Array.isArray(result.entry_binding)&&result.entry_binding.length===4?result.entry_binding:undefined;
       setCsrf(result.csrf);routingChoices=result.routing_choices||[];
       if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding);
-      for (const value of result.items) inputCard(value, observation);
+      for (const value of result.items) inputCard(value, observation,value.native_binding_current===true?inputBinding:undefined);
       draftState?.observe(result.conversation_draft);
       if (direction === "before" && remember) {
         inputCursor = result.cursor || 0;
@@ -1339,8 +1353,9 @@ window.Conversation = (() => {
         draftState?.attempt(id,text);
         const result = await api("interaction/inputs", {binding:selectedBinding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
         if (owned !== inputGeneration) return;
+        if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);
-        const confirmed = inputCard(result, observation);
+        const confirmed = inputCard(result, observation,selectedBinding);
         visual?.consumed(selectedVisual);attachedFiles?.consumed(selectedFiles);
         if(focusAtSubmit===focusVersion)clearFocus();
         if (draft.value === text) draft.value = "";

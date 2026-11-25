@@ -60,7 +60,21 @@ try:
       window.MediaRecorder=class extends EventTarget{static isTypeSupported(){return true}constructor(){super();this.state='inactive';this.mimeType='audio/webm'}start(){this.state='recording'}stop(){if(this.state==='inactive')return;this.state='inactive';queueMicrotask(()=>{this.dispatchEvent(Object.assign(new Event('dataavailable'),{data:new Blob(['synthetic original audio'])}));this.dispatchEvent(new Event('stop'));})}};
       Object.defineProperty(navigator,'mediaDevices',{value:{getUserMedia:async()=>{mediaRequests++;return{getTracks:()=>[{stop(){}}]}}}});
       const draftRead=async body=>await (await originalFetch('/fixture-draft',body?{method:'POST',body:JSON.stringify(body)}:undefined)).json();
-      const api=async(route,body)=>{if(route==='interaction/draft')return draftRead(body);if(route==='interaction/inputs'&&body){const v={...body,phase:'accepted',sequence:fixtureInputs.length+1};fixtureInputs.push(v);return v;}if(route.startsWith('interaction/inputs'))return{binding:'b'.repeat(64),csrf:'fixture',items:fixtureInputs,more:false,...(route.includes('draft=text')?{conversation_draft:{...await draftRead(),owner:'a'.repeat(64)}}:{})};return{binding:'b'.repeat(64),csrf:'fixture',items:[],newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,goal_controls:[]};};
+      const entry_binding=[100,{chat_id:100,thread_id:3},28,'native-fixture'];
+      const api=async(route,body)=>{
+        if(route==='interaction/draft')return draftRead(body);
+        if(route==='interaction/inputs'&&body){
+          const {binding,...original}=body;
+          const receipt={...original,entry_binding,phase:'accepted'};
+          fixtureInputs.push(receipt);
+          if(window.fixtureLoseAck)throw Error('Controlled lost acknowledgement');
+          return receipt;
+        }
+        if(route.startsWith('interaction/inputs?'))return{binding:'b'.repeat(64),entry_binding,csrf:'fixture',more:false,
+          items:fixtureInputs.map(({entry_binding,...receipt},index)=>({...receipt,sequence:index+1,native_binding_current:true})),
+          ...(route.includes('draft=text')?{conversation_draft:{...await draftRead(),owner:'a'.repeat(64)}}:{})};
+        return{binding:'b'.repeat(64),csrf:'fixture',items:[],newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,goal_controls:[]};
+      };
       window.fixtureUI=Conversation.mount({api,headers:()=>({'X-Dashboard-CSRF':'fixture'}),setCsrf(){},modeChanged(){},standalone:true});fixtureUI.identity('human:fixture:one');fixtureUI.authenticated();return fixtureUI.refresh();
     }'''
     with draft_lock:draft.update(revision=draft['revision']+1,text='')
@@ -98,6 +112,16 @@ try:
     original=frame.evaluate('fixtureInputs[0]');assert original['text']=='Exact fixture human words' and len(original['files'])==2 and original['files'][0]['name']=='fixture.txt'
     assert page.evaluate("messages.filter(m=>m.type==='prepare')[0].id")==original['id']
     assert page.evaluate("messages.findIndex(m=>m.type==='prepare')<messages.findIndex(m=>m.fixture==='file-start')"),'Context must precede the canonical text attachment upload'
+    frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
+    assert not frame.get_by_text('This message may already have been sent.').is_visible()
+    frame.evaluate('window.fixtureLoseAck=true')
+    field.fill('Kept while acknowledgement is missing');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    frame.get_by_text('This message may already have been sent.').wait_for()
+    assert field.input_value()=='Kept while acknowledgement is missing'
+    frame.evaluate('fixtureUI.refresh(true)')
+    frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
+    assert frame.evaluate('fixtureInputs.length')==2
+    assert not frame.get_by_text('This message may already have been sent.').is_visible()
     prior_messages=page.evaluate('messages.length');frame.locator('#conversation-files').set_input_files({'name':'voice-notes.txt','mimeType':'text/plain','buffer':b'synthetic voice attachment'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===1')
     frame.locator('#conversation-send').click();page.wait_for_function("messages.some(m=>m.type==='status'&&m.phase==='accepted'&&m.id===messages.filter(p=>p.type==='prepare').at(-1).id)",timeout=5000)
     assert posts and posts[-1]['files'][-1]['name']=='holodeck-situation.json'

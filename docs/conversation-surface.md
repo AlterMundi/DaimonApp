@@ -72,6 +72,10 @@ provisional transcripts retain their own lifecycle. Server drafts expire after
 seven days and are limited to 32 KiB per authorized actor and binding, with at
 most 128 retained revisions across those keys (one current revision per key).
 Tab recovery retains up to four recent bindings, with the same seven-day limit.
+The send response settles the draft using its exact original ID within the
+current submission. A later status read can settle it using the matching native
+entry, and a history row can do so under its verified page binding when it
+belongs to the current entry.
 
 ## Additive source-only discard notice
 

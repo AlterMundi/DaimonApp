@@ -138,7 +138,7 @@ window.ConversationSurface=(()=>{
     }
     function attempt(id,text){const s=current;if(s&&textOK(text)){s.pending={id,text};persist(s);}}
     function confirm(value){
-      const s=current;if(!s||!s.pending||value.id!==s.pending.id||value.binding!==s.binding||!value.phase||value.phase==='reselection')return;
+      const s=current;if(!s||!s.pending||value?.id!==s.pending.id||value.binding!==s.binding||!value.phase||value.phase==='reselection')return;
       if(s.text===s.pending.text){s.text='';s.dirty=true;}
       s.pending=undefined;persist(s);render(s);pulse(s);
     }
