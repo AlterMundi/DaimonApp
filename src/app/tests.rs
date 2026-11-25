@@ -3320,6 +3320,19 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
             })
         )
     };
+    for engine in ["claude", "goose", "antigravity"] {
+        let command = run(&id, "fixture-sender").replacen("claude", engine, 1);
+        for denied in [command, format!("matrix {engine} status {id}")] {
+            let error = stopping::telegram_command(&app, 100, &denied, None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("require the local owner socket"));
+        }
+    }
+    let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
+        .await
+        .unwrap();
+    assert!(status.is_null());
     let delivered = stopping::command(&app, 100, &run(&id, "fixture-sender"), None)
         .await
         .unwrap();

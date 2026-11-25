@@ -15,6 +15,20 @@ pub(super) fn input_epoch(shared: &AppShared, key: SessionKey) -> Result<String>
         Err(_) => shared.store.stop_admission_epoch(key),
     }
 }
+pub(super) async fn telegram_command(
+    app: &App,
+    human: i64,
+    args: &str,
+    nonce: Option<String>,
+) -> Result<Value> {
+    if let Some(selected) = args.strip_prefix("matrix ")
+        && matrix::foreground_command(selected).is_some()
+    {
+        bail!("Private Matrix foreground controls require the local owner socket");
+    }
+    command(app, human, args, nonce).await
+}
+
 pub(super) async fn command(
     app: &App,
     human: i64,
