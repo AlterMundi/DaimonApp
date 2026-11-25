@@ -20,6 +20,8 @@ const SOURCE_BYTES: u64 = 48 * 1024;
 const SOURCE_BASE64_BYTES: usize = 64 * 1024;
 const MAX_SOURCES_PER_SESSION: i64 = 512;
 const MAX_SOURCES: i64 = 1024;
+const MAX_ARCHIVED_PER_SESSION: i64 = 2048;
+const MAX_ARCHIVED: i64 = 4096;
 const UNAVAILABLE: &str = "Machine source receipt unavailable";
 
 fn pending_cutoff_on(conn: &Connection, wall: i64) -> Result<i64> {
@@ -84,15 +86,86 @@ fn new_expiry(source: &SourceProjection, wall: i64, cutoff: i64) -> Result<(i64,
     Ok((expires, true))
 }
 
-fn check_payload_capacity(conn: &Connection, session: i64) -> Result<()> {
+fn has_hot_capacity(conn: &Connection, session: i64) -> Result<bool> {
     let (all, owned): (i64,i64) = conn.query_row(
         "SELECT count(*),count(CASE WHEN s.session=?1 THEN 1 END)
-         FROM conversation_machine_source_bytes b JOIN conversation_machine_sources s USING(receipt)",
+         FROM conversation_machine_source_bytes b JOIN conversation_machine_sources s USING(receipt)
+         WHERE NOT EXISTS(SELECT 1 FROM conversation_machine_source_archive a WHERE a.receipt=b.receipt)",
         [session], |row| Ok((row.get(0)?,row.get(1)?)),
     )?;
+    Ok(all < MAX_SOURCES && owned < MAX_SOURCES_PER_SESSION)
+}
+
+fn archive_source_on(
+    tx: &rusqlite::Transaction<'_>,
+    human: i64,
+    entry: SessionKey,
+    binding: &str,
+    original: &str,
+) -> Result<Value> {
+    // The ordinary protected read checks exact current binding, original and digest.
+    let evidence = source_status_on(tx, human, entry, binding, original, false)?;
     anyhow::ensure!(
-        all < MAX_SOURCES && owned < MAX_SOURCES_PER_SESSION,
-        "Machine source storage is full; retained sources need archival before more can be added"
+        evidence["retained_original"] == true && evidence["storage"] == "owner-journal",
+        UNAVAILABLE
+    );
+    let (session, native) = super::presentation::entry_on(tx, human, entry)?;
+    // Archival does not record acceptance. Only the observed direct native state qualifies.
+    let receipt: String = tx.query_row(
+        "SELECT s.receipt FROM conversation_machine_sources s JOIN conversation_inputs i ON i.id=s.original
+         JOIN conversation_machine_source_bytes b ON b.receipt=s.receipt
+         WHERE s.original=?1 AND s.human=?2 AND s.session=?3 AND s.binding=?4
+           AND s.retained=1 AND s.source_inline=1 AND i.human_id=?2 AND i.session_id=?3
+           AND i.native_thread=?5 AND i.retired=0 AND i.phase='accepted'",
+        params![original,human,session,binding,native], |row|row.get(0),
+    ).optional()?.context(UNAVAILABLE)?;
+    if evidence["archived"] == true {
+        return Ok(evidence);
+    }
+    let (all, owned): (i64,i64) = tx.query_row(
+        "SELECT count(*),count(CASE WHEN s.session=?1 THEN 1 END)
+         FROM conversation_machine_source_archive a JOIN conversation_machine_sources s USING(receipt)",
+        [session],|row| Ok((row.get(0)?,row.get(1)?)),
+    )?;
+    anyhow::ensure!(
+        all < MAX_ARCHIVED && owned < MAX_ARCHIVED_PER_SESSION,
+        "Sealed machine source archive has reached its retained capacity"
+    );
+    let marked = tx.execute(
+        "INSERT INTO conversation_machine_source_archive(receipt,archived_at) VALUES(?1,?2)",
+        params![receipt, Utc::now().timestamp()],
+    )?;
+    anyhow::ensure!(marked == 1, UNAVAILABLE);
+    source_status_on(tx, human, entry, binding, original, false)
+}
+
+fn ensure_hot_capacity(
+    tx: &rusqlite::Transaction<'_>,
+    human: i64,
+    entry: SessionKey,
+    session: i64,
+    native: &str,
+    binding: &str,
+) -> Result<()> {
+    if has_hot_capacity(tx, session)? {
+        return Ok(());
+    }
+    let candidate: String = tx.query_row(
+        "SELECT s.original FROM conversation_machine_sources s
+         JOIN conversation_machine_source_bytes b ON b.receipt=s.receipt
+         JOIN conversation_inputs i ON i.id=s.original
+         WHERE s.human=?1 AND s.session=?2 AND s.binding=?3 AND s.retained=1 AND s.source_inline=1
+           AND i.human_id=?1 AND i.session_id=?2 AND i.native_thread=?4 AND i.retired=0 AND i.phase='accepted'
+           AND NOT EXISTS(SELECT 1 FROM conversation_machine_source_archive a WHERE a.receipt=s.receipt)
+         ORDER BY s.reservation_order,s.original LIMIT 1",
+        params![human,session,binding,native],|row|row.get(0),
+    ).optional()?.context("Machine source capacity is full and the current Conversation has no eligible sealed source")?;
+    archive_source_on(tx, human, entry, binding, &candidate).with_context(|| {
+        format!("Machine source capacity is full and the oldest eligible sealed source could not be archived ({candidate})")
+    })?;
+    anyhow::ensure!(
+        has_hot_capacity(tx, session)?,
+        "Machine source capacity remains full after one verified archive"
     );
     Ok(())
 }
@@ -136,6 +209,9 @@ impl Store {
              CREATE TABLE IF NOT EXISTS conversation_machine_source_bytes (
                receipt TEXT PRIMARY KEY REFERENCES conversation_machine_sources(receipt) ON DELETE CASCADE,
                bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=49152));
+             CREATE TABLE IF NOT EXISTS conversation_machine_source_archive (
+               receipt TEXT PRIMARY KEY REFERENCES conversation_machine_source_bytes(receipt) ON DELETE CASCADE,
+               archived_at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS conversation_machine_source_clock (
                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                reservation_order INTEGER NOT NULL CHECK(reservation_order>=0));
@@ -218,7 +294,7 @@ impl Store {
         let cutoff = expire_pending(&mut conn, wall)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let cutoff = pending_cutoff_on(&tx, cutoff)?;
-        let (session, _) = super::presentation::entry_on(&tx, human, entry)?;
+        let (session, native) = super::presentation::entry_on(&tx, human, entry)?;
         if offer.binding != super::presentation::entry_binding(&tx, human, entry, session)? {
             anyhow::bail!(UNAVAILABLE);
         }
@@ -262,7 +338,7 @@ impl Store {
                 params![id,human,session,offer.binding,epoch,observation,file], |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional()?.context(UNAVAILABLE)?;
             if !inline && let Some((bytes, _)) = checked.as_ref() {
-                check_payload_capacity(&tx, session)?;
+                ensure_hot_capacity(&tx, human, entry, session, &native, &offer.binding)?;
                 park_inline(&tx, &receipt, bytes)?;
                 tx.execute(
                     "UPDATE conversation_machine_sources SET source_inline=1 WHERE receipt=?1",
@@ -283,7 +359,7 @@ impl Store {
             if pending >= MAX_PENDING {
                 anyhow::bail!("Machine source reservation capacity reached");
             }
-            check_payload_capacity(&tx, session)?;
+            ensure_hot_capacity(&tx, human, entry, session, &native, &offer.binding)?;
             let (bytes, source) = checked.context("Exact machine source bytes required")?;
             let (expires, anchored) = new_expiry(&source, wall, cutoff)?;
             let receipt = Uuid::new_v4().to_string();
@@ -343,6 +419,19 @@ impl Store {
             true,
         )
     }
+    pub(crate) fn conversation_machine_source_archive(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        status: MachineSourceStatus,
+    ) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let result = archive_source_on(&tx, human, entry, &status.binding, &status.id.to_string())?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     pub(crate) fn conversation_machine_source_retained(
         &self,
         input: &super::conversation_inputs::ConversationInput,
@@ -935,13 +1024,15 @@ fn source_status_on(
     let epoch = super::stopping::admission_epoch_on(conn, entry)?;
     let wall = Utc::now().timestamp();
     let result = conn.query_row(
-        "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline,s.reservation_order FROM conversation_machine_sources s
+        "SELECT s.receipt,s.observation,s.file,s.retained,s.source_inline,s.reservation_order,
+          EXISTS(SELECT 1 FROM conversation_machine_source_archive a WHERE a.receipt=s.receipt)
+         FROM conversation_machine_sources s
          LEFT JOIN conversation_inputs i ON i.id=s.original
          WHERE s.original=?1 AND s.human=?2 AND s.session=?3 AND s.binding=?5
            AND ((s.retained=0 AND i.id IS NULL AND s.epoch=?6 AND s.expires>CASE WHEN s.capture_expiry_anchored=1 THEN ?7 ELSE ?8 END)
              OR (s.retained=1 AND i.human_id=s.human AND i.session_id=s.session AND i.native_thread=?4 AND i.retired=0))",
         params![id,human,session,native,binding,epoch,pending_cutoff_on(conn,wall)?,wall],
-        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?,r.get::<_,i64>(5)?)),
+        |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?,r.get::<_,bool>(4)?,r.get::<_,i64>(5)?,r.get::<_,bool>(6)?)),
     ).optional()?.context(UNAVAILABLE)?;
     let file: FileReference = serde_json::from_str(&result.2)?;
     let offer = MachineSourceOffer {
@@ -964,6 +1055,9 @@ fn source_status_on(
     // Preserve the receipt without inventing a position from its timestamps.
     if result.5 > 0 {
         value["reservation_order"] = json!(result.5);
+    }
+    if result.6 {
+        value["archived"] = json!(true);
     }
     if read_observation {
         value["observation_json"] = json!(projection.observation.get());
@@ -1228,6 +1322,198 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn archive_keeps_verified_bytes_and_separate_original_authority() {
+        let (root, store, entry, binding) = setup();
+        let id = Uuid::new_v4();
+        let offered = store
+            .conversation_machine_source_reserve(
+                100,
+                entry,
+                situated_offer(&binding, id, 0.0, "matter", 0),
+            )
+            .unwrap();
+        let selection = || MachineSourceStatus {
+            id,
+            binding: binding.clone(),
+        };
+        assert!(
+            store
+                .conversation_machine_source_archive(100, entry, selection())
+                .is_err()
+        );
+        let original = retain_situated(&store, entry, &binding, &offered);
+        assert!(
+            store
+                .conversation_machine_source_archive(100, entry, selection())
+                .is_err()
+        );
+        let full = store
+            .conversation_direct_machine_source(100, &original)
+            .unwrap()
+            .unwrap();
+        let turn = begin_situated(&store, entry, &original, &full);
+        accept_situated(&store, &original, turn);
+        assert!(
+            store
+                .conversation_machine_source_archive(101, entry, selection())
+                .is_err()
+        );
+        let prior = store
+            .conversation_machine_source_read(100, entry, selection())
+            .unwrap();
+        let archived = store
+            .conversation_machine_source_archive(100, entry, selection())
+            .unwrap();
+        assert_eq!(archived["archived"], true);
+        assert_eq!(archived["receipt"], prior["receipt"]);
+        assert_eq!(archived["source_sha256"], prior["source_sha256"]);
+        assert_eq!(
+            store
+                .conversation_machine_source_archive(100, entry, selection())
+                .unwrap(),
+            archived
+        );
+        drop(store);
+        let reopened = Store::open(
+            &root.path().join("control.sqlite"),
+            &[100],
+            &super::super::tests::defaults(),
+        )
+        .unwrap();
+        let read = reopened
+            .conversation_machine_source_read(100, entry, selection())
+            .unwrap();
+        assert_eq!(read["observation_json"], prior["observation_json"]);
+        assert_eq!(read["archived"], true);
+        // This is the preceding binary's unchanged payload read.
+        let raw: Vec<u8> = reopened
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT bytes FROM conversation_machine_source_bytes WHERE receipt=?1",
+                [read["receipt"].as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(raw)),
+            read["source_sha256"].as_str().unwrap()
+        );
+    }
+
+    fn fill_fixture_tier(store: &Store, session: i64, count: i64, archived: bool) {
+        let conn = store.conn.lock().unwrap();
+        // Minimal fixtures stand for unrelated payload-bearing originals.
+        // They have no accepted Conversation records and cannot be selected.
+        conn.execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?2)
+             INSERT INTO conversation_machine_sources(original,receipt,human,session,binding,epoch,observation,file,expires,source_inline,retained)
+             SELECT 'tier-fixture-'||i,'tier-receipt-'||i,100,?1,'fixture','fixture','fixture','{}',0,1,1 FROM n",
+            params![session,count],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO conversation_machine_source_bytes(receipt,bytes)
+             SELECT receipt,x'30' FROM conversation_machine_sources WHERE receipt LIKE 'tier-receipt-%'",
+            [],
+        ).unwrap();
+        if archived {
+            conn.execute(
+                "INSERT INTO conversation_machine_source_archive(receipt,archived_at)
+                 SELECT receipt,1 FROM conversation_machine_sources WHERE receipt LIKE 'tier-receipt-%'",
+                [],
+            ).unwrap();
+        }
+    }
+
+    #[test]
+    fn hot_pressure_releases_one_slot_atomically_and_archive_has_its_own_bound() {
+        for archive_full in [false, true] {
+            let (_root, store, entry, binding) = setup();
+            let id = Uuid::new_v4();
+            let offered = store
+                .conversation_machine_source_reserve(
+                    100,
+                    entry,
+                    situated_offer(&binding, id, 0.0, "matter", 0),
+                )
+                .unwrap();
+            let original = retain_situated(&store, entry, &binding, &offered);
+            let full = store
+                .conversation_direct_machine_source(100, &original)
+                .unwrap()
+                .unwrap();
+            let turn = begin_situated(&store, entry, &original, &full);
+            accept_situated(&store, &original, turn);
+            let session = store.get_session(entry).unwrap().unwrap().id;
+            let fixture_count = if archive_full {
+                MAX_ARCHIVED_PER_SESSION
+            } else {
+                MAX_SOURCES_PER_SESSION - 1
+            };
+            fill_fixture_tier(&store, session, fixture_count, archive_full);
+            if archive_full {
+                let error = store
+                    .conversation_machine_source_archive(
+                        100,
+                        entry,
+                        MachineSourceStatus {
+                            id,
+                            binding: binding.clone(),
+                        },
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains("archive has reached"));
+                assert!(has_hot_capacity(&store.conn.lock().unwrap(), session).unwrap());
+            } else {
+                assert!(!has_hot_capacity(&store.conn.lock().unwrap(), session).unwrap());
+                let expired = situated_offer(
+                    &binding,
+                    Uuid::new_v4(),
+                    0.0,
+                    "matter",
+                    -1000 * PENDING_SECONDS,
+                );
+                assert!(
+                    store
+                        .conversation_machine_source_reserve(100, entry, expired)
+                        .is_err()
+                );
+                assert!(
+                    control_status(&store, entry, &binding, id)
+                        .unwrap()
+                        .get("archived")
+                        .is_none(),
+                    "an invalid new reservation must not commit a side effect"
+                );
+                let next = store
+                    .conversation_machine_source_reserve(
+                        100,
+                        entry,
+                        situated_offer(&binding, Uuid::new_v4(), 0.0, "matter", 0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    control_status(&store, entry, &binding, id).unwrap()["archived"],
+                    true
+                );
+                assert_eq!(next["retained_original"], false);
+                let markers: i64 = store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM conversation_machine_source_archive",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(markers, 1);
+            }
+        }
     }
 
     #[test]

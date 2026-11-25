@@ -250,6 +250,10 @@ print(json.dumps({'text':item['text'],'final':True}))
                 if expected=='unchanged':assert 'changes' not in delivery
                 return ident
             initial=send_situated('full',0.0)
+            selected={'id':initial,'binding':binding}
+            archived=j.read('input','context','archive',json.dumps(selected))['result']
+            assert archived['archived'] and archived['receipt']==machine_receipts[initial]
+            assert j.read('input','context','archive',json.dumps(selected))['result']==archived
             unchanged=send_situated('unchanged',0.0,base=initial)
             spoken=send_situated('unchanged',0.0,base=unchanged,voice=True)
             send_situated('delta',2.0,base=spoken)

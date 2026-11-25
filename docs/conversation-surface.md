@@ -166,12 +166,24 @@ mechanism. Pending reservations are capped at 32 per Conversation.
 Opening the journal or submitting another validly encoded offer sweeps
 expired pending bytes. The sweep survives a subsequent refusal. The
 payload budget is distinct from human attachments. It allows at most 512
-inline sources per session and 1,024 in the receiving journal. An exact,
-pending file-backed receipt from the previous draft can move to the journal
-using the same pinned bytes, original and receipt. The native writer checks
-the source again when sealing and rolls back capture if the bytes are unavailable.
-Retained sources remain immutable. Before sustained activation, qualify their
-owning archival route so the journal's sealed-source limit is recoverable.
+unarchived inline sources per session and 1,024 in the receiving journal.
+An exact, pending file-backed receipt from the previous draft can move to the
+journal using the same pinned bytes, original and receipt. The native writer
+checks the source again when sealing and rolls back capture if the bytes are
+unavailable.
+
+The owner control `input context archive` accepts a JSON object with the
+current entry `binding` and original input `id`. It checks the receipt and
+digest against the retained bytes and requires direct native acceptance for
+that original. The archive adds a marker within the private journal. The bytes,
+receipt and native reuse stay available. The archive allows up to 2,048 sources
+per session and 4,096 per journal (up to 192 MiB of archived payload before
+SQLite overhead). At capacity, an eligible new reservation can archive one
+oldest sealed receipt from the same current binding in the same transaction.
+If the binding has no eligible receipt, the oldest receipt fails verification,
+or the archive is full, the owner receives a capacity error. There is no
+background archival or deletion. Older binaries still read the bytes and
+apply their original combined write cap on rollback.
 
 The native receiver candidate chooses a full, unchanged, or delta delivery
 for direct canonical Conversation. Each native input still identifies its

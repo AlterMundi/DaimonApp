@@ -178,6 +178,13 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .store
             .conversation_machine_source_read(human, cfg.entry(), status);
     }
+    if let Some(body) = args.strip_prefix("context archive ") {
+        let selected: crate::store::MachineSourceStatus = serde_json::from_str(body)?;
+        return app
+            .shared
+            .store
+            .conversation_machine_source_archive(human, cfg.entry(), selected);
+    }
     if let Some(id) = args.strip_prefix("context retained ") {
         let input = app
             .shared
