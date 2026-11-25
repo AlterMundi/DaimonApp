@@ -14,7 +14,9 @@ pub(crate) use artifacts::ArtifactRecord;
 mod conversation_entry;
 mod conversation_inputs;
 mod conversation_machine_sources;
-pub(crate) use conversation_machine_sources::{MachineSourceOffer, MachineSourceStatus};
+pub(crate) use conversation_machine_sources::{
+    MachineSourceOffer, MachineSourceStatus, NativeMachineSource,
+};
 mod conversation_routing;
 pub use conversation_routing::{
     ConversationFocus, ConversationReply, ConversationRouteAction, ConversationRouting,

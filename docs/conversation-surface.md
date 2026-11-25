@@ -161,6 +161,14 @@ exact retries, missing source bytes, expiry and eight human files. The owner
 command fixture also covers the full voice recovery command with a retained
 receipt and distinguishes a legacy original from a sealed machine source.
 
+For a sealed original, native start and steer project the retained observation
+in a separate machine-evidence block. This applies both to the Conversation
+entry and to a routed worker receiving the original. The original human text
+and attachments retain their identity. The writer parses the exact retained
+bytes as strict JSON and rechecks the receipt, binding, and digest at native
+admission. If the source has changed or become unreadable, the affected input
+fails admission. A failed routed source leaves other pending inputs available.
+
 The staged source bytes currently use the existing protected file vault.
 Before enabling unused offers in normal captures, qualify a separate
 machine-source budget and reclamation path. Keep source provenance, the

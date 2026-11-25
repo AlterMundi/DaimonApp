@@ -1208,10 +1208,15 @@ fn steer(
     let id = input.id.clone();
     let human = input.human;
     let entry = input.entry;
+    let machine_source = shared
+        .store
+        .conversation_native_machine_source(human, &id)?;
+    let machine_proof = machine_source.as_ref().map(|source| source.proof.clone());
     let retained_text = format!(
-        "{}{}",
+        "{}{}{}",
         input.rendered(),
-        crate::files::rendered(&app.shared.config.db_path, &input.files)?
+        crate::files::rendered(&app.shared.config.db_path, &input.files)?,
+        machine_source.map_or_else(String::new, |source| source.block)
     );
     let packet = CodexSteerRequest {
         tool_output: None,
@@ -1224,9 +1229,18 @@ fn steer(
             move || {
                 let shared = shared.clone();
                 let id = id.clone();
+                let machine_proof = machine_proof.clone();
                 Box::pin(async move {
                     super::tribu::validate_conversation(&shared, human, entry, &id).await?;
-                    shared.store.conversation_input_validate(human, &id)
+                    shared.store.conversation_input_validate(human, &id)?;
+                    let current = shared
+                        .store
+                        .conversation_native_machine_source(human, &id)?;
+                    anyhow::ensure!(
+                        current.map(|source| source.proof) == machine_proof,
+                        "Machine source changed before Conversation submission"
+                    );
+                    Ok(())
                 })
             },
         ))),

@@ -1290,6 +1290,18 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
         return Ok(());
     }
     let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
+    let machine_source = match app
+        .shared
+        .store
+        .interaction_native_machine_source(&i.id, i.human_id)
+    {
+        Ok(source) => source,
+        Err(error) => {
+            failure(app.shared.clone(), &i.id, i.human_id, &error.to_string());
+            return Ok(());
+        }
+    };
+    let machine_proof = machine_source.as_ref().map(|source| source.proof.clone());
     let text = match super::nexus::input_prompt(
         &app.shared,
         source.update_id,
@@ -1308,6 +1320,10 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
             return Ok(());
         }
     };
+    let text = format!(
+        "{text}{}",
+        machine_source.map_or_else(String::new, |source| source.block)
+    );
     let text = match &active.controller_hint {
         Some(hint) => format!("{text}\n\n[Controller access for this execution]{hint}"),
         None => text,
@@ -1349,6 +1365,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                     let shared = shared.clone();
                     let epoch = epoch.clone();
                     let input_id = input_id.clone();
+                    let machine_proof = machine_proof.clone();
                     Box::pin(async move {
                         if shared.store.heartbeat_workflow_delegation(human, target, &input_id)? {
                             bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
@@ -1374,6 +1391,9 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             bail!("Routed admission retired or held before native submission");
                         }
                         super::nexus::validate_input_target(&shared, update, target, human)?;
+                        let current=shared.store.interaction_native_machine_source(&input_id,human)?;
+                        anyhow::ensure!(current.map(|source|source.proof)==machine_proof,
+                            "Machine source changed before routed submission");
                         Ok(())
                     })
                 }))

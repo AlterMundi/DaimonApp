@@ -1916,6 +1916,17 @@ impl Store {
         )
     }
 
+    pub(crate) fn conversation_native_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<Option<super::NativeMachineSource>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = read_on(&conn, id, human)?;
+        eligible_on(&conn, &input)?;
+        super::conversation_machine_sources::native_machine_source_on(&conn, &input)
+    }
+
     pub fn conversation_input_validate(&self, human: i64, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = read_on(&conn, id, human)?;

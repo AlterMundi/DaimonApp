@@ -79,6 +79,17 @@ pub(super) async fn process_turn(
             return Ok(());
         }
     }
+    let machine_source = if let Some(id) = queued.conversation_input.as_deref() {
+        shared
+            .store
+            .conversation_native_machine_source(queued.request.from_user_id, id)?
+    } else if let Some(id) = queued.interaction.as_deref() {
+        shared
+            .store
+            .interaction_native_machine_source(id, queued.request.from_user_id)?
+    } else {
+        None
+    };
     if shared
         .store
         .stop_admission_epoch(queued.request.session_key)?
@@ -815,6 +826,10 @@ pub(super) async fn process_turn(
             .get_or_insert_with(String::new)
             .push_str(&hint);
     }
+    let machine_proof = machine_source.map(|source| {
+        runtime_request.prompt.push_str(&source.block);
+        source.proof
+    });
     let run =
         runner
             .run_turn(&session, &runtime_request, cancel.clone(), steer_rx, {
@@ -861,6 +876,7 @@ pub(super) async fn process_turn(
                     let admission_epoch=admission_epoch.clone();
                     let interaction=interaction.clone();
                     let conversation_input=conversation_input.clone();
+                    let machine_proof=machine_proof.clone();
                     let workflow_return=workflow_return.clone();
                     let client_message_id=client_message_id.clone();
                     let conversation_native=conversation_native.clone();
@@ -1075,6 +1091,10 @@ pub(super) async fn process_turn(
                                     let source=shared.store.interaction_source(id,requester_user_id)?;
                                     if let Some(external)=source.tribu_source.as_ref(){super::tribu::validate_integrated_source(&shared,external).await?;}
                                     super::nexus::validate_input_target(&shared,source.update_id,session_key,requester_user_id)?;
+                                    let current=shared.store.interaction_native_machine_source(id,requester_user_id)?;
+                                    anyhow::ensure!(current.map(|source|source.proof)==machine_proof,
+                                        "Machine source changed before the routed native turn was submitted");
+
                                     shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Submitting,None)?;
                                     shared.store.heartbeat_claim_workflow_delegate(turn_id,requester_user_id,session_key,id)?;
                                 }
@@ -1087,7 +1107,14 @@ pub(super) async fn process_turn(
                                 if shared.store.maintenance_writer_held(session_key)? {
                                     bail!("Native writer held during controlled maintenance; input retained without submission");
                                 }
-                                if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
+                                if let Some(id)=conversation_input.as_deref() {
+                                    super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;
+                                    shared.store.conversation_input_validate(requester_user_id,id)?;
+                                    let current=shared.store.conversation_native_machine_source(requester_user_id,id)?;
+                                    anyhow::ensure!(current.map(|source|source.proof)==machine_proof,
+                                        "Machine source changed before the Conversation native turn was submitted");
+                                    shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;
+                                }
                                 let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
                                 #[cfg(unix)]
                                 if allowance.is_some() && let Some((config,source))=super::native_account::configured(&shared)? {
