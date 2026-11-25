@@ -3,7 +3,7 @@ import argparse,json,re,threading,mimetypes,uuid
 from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from playwright.sync_api import sync_playwright
-parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);parser.add_argument('--machine-source',action='store_true');args=parser.parse_args()
 web=Path(__file__).resolve().parents[1]/'dashboard/web';binding='b'*64;actor='human:fixture:one';posts=[]
 draft={'revision':0,'text':''};draft_lock=threading.Lock()
 class Child(BaseHTTPRequestHandler):
@@ -34,14 +34,14 @@ class Child(BaseHTTPRequestHandler):
     result=dict(draft)
   elif '/voice' in self.path:
    from urllib.parse import unquote
-   result={'id':self.headers['X-Input-Id'],'binding':binding,'phase':'accepted','voice':{'audio_sha256':self.headers['X-Audio-Sha256']},'files':json.loads(unquote(self.headers.get('X-File-References','[]')))};posts.append(result)
+   result={'id':self.headers['X-Input-Id'],'binding':binding,'phase':'accepted','voice':{'audio_sha256':self.headers['X-Audio-Sha256']},'files':json.loads(unquote(self.headers.get('X-File-References','[]'))),'machine_source':self.headers.get('X-Machine-Source')};posts.append(result)
   else:self.send_error(404);return
   data=json.dumps(result).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(data)
 class Parent(BaseHTTPRequestHandler):
  def log_message(self,*a):pass
  def do_GET(self):
   data=('''<!doctype html><style>body{margin:0}iframe{width:100%;height:700px;border:0}</style><iframe allow="microphone" src="'''+child_origin+'''/?view=conversation&client=standalone&surface=holodeck"></iframe><script>
-  window.messages=[];addEventListener('message',e=>{const f=document.querySelector('iframe');if(e.source!==f.contentWindow||e.origin!=='''+json.dumps(child_origin)+''')return;const d=e.data;messages.push(d);if(d.type==='ready')f.contentWindow.postMessage({...d,type:'connect'},e.origin);if(d.type==='prepare')f.contentWindow.postMessage({...d,type:'prepared',file:{file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64}},e.origin);});</script>''').encode()
+  const machine='''+json.dumps(args.machine_source)+''';window.messages=[];window.machineReceipts={};addEventListener('message',e=>{const f=document.querySelector('iframe');if(e.source!==f.contentWindow||e.origin!=='''+json.dumps(child_origin)+''')return;const d=e.data;messages.push(d);if(d.type==='ready')f.contentWindow.postMessage({...d,type:'connect',features:machine?{machineSource:'owner-journal/v1'}:{}},e.origin);if(d.type==='prepare'&&machine){const receipt=crypto.randomUUID();machineReceipts[d.id]=receipt;f.contentWindow.postMessage({...d,type:'prepared',machine_source:receipt},e.origin);}else if(d.type==='prepare')f.contentWindow.postMessage({...d,type:'prepared',file:{file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64}},e.origin);});</script>''').encode()
   self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(data)
 child=ThreadingHTTPServer(('127.0.0.1',0),Child);parent=ThreadingHTTPServer(('127.0.0.1',0),Parent)
 child_origin='http://127.0.0.1:'+str(child.server_port);parent_origin='http://127.0.0.1:'+str(parent.server_port)
@@ -120,9 +120,15 @@ try:
     page.unroute('**/fixture-draft')
     other.close()
     page.wait_for_function("messages.some(m=>m.type==='ready')",timeout=5000)
-    frame.locator('#conversation-files').set_input_files({'name':'fixture.txt','mimeType':'text/plain','buffer':b'synthetic attached original'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-message').fill('Exact fixture human words');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    files=[{'name':f'fixture-{index}.txt','mimeType':'text/plain','buffer':b'synthetic attached original'} for index in range(8 if args.machine_source else 1)]
+    frame.locator('#conversation-files').set_input_files(files);frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-message').fill('Exact fixture human words');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     frame.wait_for_function('fixtureInputs.length===1')
-    original=frame.evaluate('fixtureInputs[0]');assert original['text']=='Exact fixture human words' and len(original['files'])==2 and original['files'][0]['name']=='fixture.txt'
+    original=frame.evaluate('fixtureInputs[0]')
+    assert original['text']=='Exact fixture human words' and original['files'][0]['name']==files[0]['name']
+    if args.machine_source:
+     assert len(original['files'])==8 and original['machine_source']==page.evaluate('id=>machineReceipts[id]',original['id'])
+    else:
+     assert len(original['files'])==2 and original['files'][-1]['name']=='holodeck-situation.json'
     assert page.evaluate("messages.filter(m=>m.type==='prepare')[0].id")==original['id']
     assert page.evaluate("messages.findIndex(m=>m.type==='prepare')<messages.findIndex(m=>m.fixture==='file-start')"),'Context must precede the canonical text attachment upload'
     frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
@@ -145,7 +151,12 @@ try:
     assert frame.evaluate('fixtureInputs.length')==3
     prior_messages=page.evaluate('messages.length');frame.locator('#conversation-files').set_input_files({'name':'voice-notes.txt','mimeType':'text/plain','buffer':b'synthetic voice attachment'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===1')
     frame.locator('#conversation-send').click();page.wait_for_function("messages.some(m=>m.type==='status'&&m.phase==='accepted'&&m.id===messages.filter(p=>p.type==='prepare').at(-1).id)",timeout=5000)
-    assert posts and posts[-1]['files'][-1]['name']=='holodeck-situation.json'
+    assert posts
+    if args.machine_source:
+     assert [file['name'] for file in posts[-1]['files']]==['voice-notes.txt']
+     assert posts[-1]['machine_source']==page.evaluate('id=>machineReceipts[id]',posts[-1]['id'])
+    else:
+     assert posts[-1]['files'][-1]['name']=='holodeck-situation.json'
     assert page.evaluate("messages.filter(m=>m.type==='prepare').at(-1).id")==posts[-1]['id']
     assert page.evaluate("n=>{const part=messages.slice(n);return part.findIndex(m=>m.type==='prepare')<part.findIndex(m=>m.fixture==='file-start');}",prior_messages),'Context must precede the canonical audio attachment upload'
     geometry=frame.locator('#conversation-compose').bounding_box();assert geometry['width']<=width and geometry['y']+geometry['height']<=701,geometry
@@ -155,4 +166,4 @@ try:
   finally:browser.close()
 finally:
  for server in (child,parent):server.shutdown();server.server_close()
-args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps({'scope':'Synthetic controlled IO in real cross-origin iframe; no physical capture/auth/hearing acceptance','cases':results},indent=2));print(json.dumps({'passed':len(results)}))
+args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps({'scope':'Synthetic controlled IO in real cross-origin iframe; no physical capture/auth/hearing acceptance','machine_source':args.machine_source,'cases':results},indent=2));print(json.dumps({'passed':len(results)}))

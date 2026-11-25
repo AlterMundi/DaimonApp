@@ -13,6 +13,10 @@ mod artifacts;
 pub(crate) use artifacts::ArtifactRecord;
 mod conversation_entry;
 mod conversation_inputs;
+mod conversation_machine_sources;
+pub(crate) use conversation_machine_sources::{
+    MachineSourceOffer, MachineSourceStatus, NativeMachineSource,
+};
 mod conversation_routing;
 pub use conversation_routing::{
     ConversationFocus, ConversationReply, ConversationRouteAction, ConversationRouting,
@@ -200,6 +204,7 @@ impl Store {
         store.init_merging()?;
         store.init_stopping()?;
         store.init_conversation_inputs()?;
+        store.init_conversation_machine_sources()?;
         store.init_conversation_entry()?;
         store.init_live_context()?;
         store.init_native_foreground_returns()?;

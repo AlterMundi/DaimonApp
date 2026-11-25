@@ -3586,3 +3586,134 @@ async fn cold_interaction_entry_never_adopts_another_owners_session() {
         Some("other-owners-history")
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn machine_source_voice_recovery_owner_command_uses_retained_receipt() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    let (mut app, _base) = sample_app();
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("entry.sqlite");
+    let shared = Arc::get_mut(&mut app.shared).unwrap();
+    shared.config = cold_interaction_config(db.clone(), root.path().into(), 100);
+    shared.config.voice = Some(crate::voice::VoiceConfig {
+        transcription_command: vec!["/usr/bin/false".into()],
+        completed_transcription_command: Some(vec!["/usr/bin/false".into()]),
+        transcriber_label: "fixture/unavailable".into(),
+        transcription_profiles: Default::default(),
+        default_transcription_profile: None,
+        timeout_seconds: 2,
+    });
+    shared.store = Store::open(&db, &[100], &sample_defaults()).unwrap();
+    let entry = shared.config.interaction.as_ref().unwrap().entry();
+    let store = &shared.store;
+    store
+        .ensure_session(entry, 100, &sample_defaults())
+        .unwrap();
+    store
+        .set_session_codex_thread(entry, "fixture-native")
+        .unwrap();
+    let binding = store
+        .interaction_presentation_list(100, entry, 0, 0)
+        .unwrap()["binding"]
+        .clone();
+    let original = Uuid::new_v4();
+    let observation = Uuid::new_v4();
+    let bytes = serde_json::to_vec(&json!({
+        "schema":"holodeck.native-situation-source/v1","speaker":"human:fixture","human_input_id":original,
+        "observation":{"schema":"holodeck.situation/v1","id":observation,"observer":"human:fixture",
+        "inputAssociation":{"humanInputId":original}}
+    })).unwrap();
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    let voices = root.path().join("entry.sqlite.voice");
+    std::fs::create_dir(&voices).unwrap();
+    std::fs::set_permissions(&voices, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let audio = b"exact test audio";
+    let audio_path = voices.join(original.to_string());
+    std::fs::write(&audio_path, audio).unwrap();
+    std::fs::set_permissions(&audio_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let reserve = json!({"id":original,"binding":binding,"observation_id":observation,
+        "source_b64":STANDARD.encode(&bytes),
+        "file":{"file_id":Uuid::new_v4(),"sha256":hash,"name":"holodeck-situation.json","mime":"application/json","size":bytes.len()}});
+    let offered = conversation_inputs::command(&app, 100, &format!("context reserve {reserve}"))
+        .await
+        .unwrap();
+    assert_eq!(offered["storage"], "owner-journal");
+    assert!(!root.path().join("entry.sqlite.files").exists());
+    let receipt = Uuid::parse_str(offered["receipt"].as_str().unwrap()).unwrap();
+    let store = &app.shared.store;
+    store
+        .conversation_voice_capture_files(
+            100,
+            entry,
+            binding.as_str().unwrap(),
+            &original.to_string(),
+            crate::store::ConversationVoice {
+                transcription_profile: None,
+                avatar_interrupt: None,
+                preserve_original: None,
+                audio_sha256: format!("{:x}", Sha256::digest(audio)),
+                mime: "audio/wav".into(),
+                capture_stop: None,
+                transcription: None,
+            },
+            true,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            Some(receipt),
+        )
+        .unwrap();
+    store
+        .conversation_voice_fail(100, &original.to_string())
+        .unwrap();
+    let request = json!({"id":original,"binding":binding});
+    let resumed = conversation_inputs::command(&app, 100, &format!("voice recover {request}"))
+        .await
+        .unwrap();
+    assert_eq!(resumed["id"], original.to_string());
+    assert_eq!(resumed["phase"], "preparing");
+    let historical =
+        conversation_inputs::command(&app, 100, &format!("context retained {original}"))
+            .await
+            .unwrap();
+    assert_eq!(historical["machine_source_retained"], true);
+    assert_eq!(historical["receipt"], receipt.to_string());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store
+                .conversation_input_read(100, entry, &original.to_string())
+                .unwrap()
+                .phase
+                == "preparation_unconfirmed"
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let legacy = Uuid::new_v4().to_string();
+    store
+        .conversation_input_capture(
+            100,
+            entry,
+            binding.as_str().unwrap(),
+            &legacy,
+            "Legacy original",
+        )
+        .unwrap();
+    let history = conversation_inputs::command(&app, 100, &format!("context retained {legacy}"))
+        .await
+        .unwrap();
+    assert_eq!(history["original_retained"], true);
+    assert_eq!(history["machine_source_retained"], false);
+    assert!(history["receipt"].is_null());
+}

@@ -273,6 +273,18 @@ impl Store {
         Ok(input.files)
     }
 
+    pub(crate) fn interaction_native_machine_source(
+        &self,
+        instruction: &str,
+        human: i64,
+    ) -> Result<Option<super::NativeMachineSource>> {
+        let source = self.interaction_source(instruction, human)?;
+        if source.channel != "conversation" {
+            return Ok(None);
+        }
+        self.conversation_native_machine_source(human, &source.event_id)
+    }
+
     pub fn interaction_source_order(&self, source: &SourceInput) -> Result<Option<i64>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         original_order_on(&conn, source)

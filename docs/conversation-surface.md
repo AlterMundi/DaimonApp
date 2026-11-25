@@ -112,3 +112,153 @@ An authenticated host can opt in to the cosmetic avatar playback signal with
 level from the existing playback observer. It sends silence on pause, hide or
 disconnect. The parent expires old levels locally. This signal carries no
 audio, transcription, microphone input, or turn activity.
+
+## Owner-local machine source receipts
+
+A receiving Holodeck bridge can prepare a bounded source through the existing
+owner-local control socket. `input context capabilities` identifies the
+current binding and the `owner-journal/v1` protocol. `input context reserve`
+accepts the original UUID, that binding, observation UUID, exact source digest
+and up to 48 KiB of source JSON encoded as base64. It returns a receipt UUID.
+`input context status` verifies the retained bytes and returns metadata.
+`input context read` selects the exact bound and sealed original and can return
+the observation JSON to an authorized local caller. Neither operation starts work.
+
+The native text and ordinary voice writers can select that UUID through
+`machine_source` (`x-machine-source` at the ordinary voice HTTP boundary).
+For a new voice original, the dashboard checks the exact owner-journal receipt
+before staging audio. A mismatched or expired source can therefore fail before
+using recording storage. Native admission still verifies the receipt inside
+the write transaction. A retained original continues through the existing
+immutable retry path.
+SQLite matches the original, current owner, session, native
+thread, binding and admission epoch. It seals the receipt in the same
+transaction that inserts the original and its ingress order. The entry binding
+remains stable through first native-thread establishment. Retained status
+checks the original’s actual thread, and voice recovery reloads the server-side
+receipt for that same original. The receipt
+uses a separate table and leaves all human attachment slots available. A
+retry must select the same receipt. A legacy capture with no selected receipt
+retires its pending offer. The owner status command reads only the matching
+current Conversation and returns receipt and digest metadata. The independent
+retained lookup can show the receipt for an exact owned original after a binding
+change. The source speaker is an assertion from the owner-local producer. A
+receiving integration must verify the actual registered speaker before offering it. The seal is
+evidence of canonical retention. Delivery and permission for any subsequent
+Holodeck action still require independent proof.
+
+New reservations carry an owner-journal `reservation_order`, allocated
+in the same transaction as the receipt and its immutable bytes. The number
+orders reservations inside the current journal. It is independent of
+capture timestamps, world event sequences, canonical admission and native
+delivery. An exact retry preserves it. Expiration does not reset the
+sequence. New situated reservations expire 24 hours after the trusted
+Holodeck server capture. A maximum 60-second producer clock lead is
+tolerated. The browser-supplied capture time is independent evidence.
+A durable receiver wall-time floor prevents a backward clock step from
+reissuing a swept situated original. The expiry boundary commits with the
+sweep. The compatibility trigger also retains the deadline if a previous
+writer removes an expired anchored offer. A large forward correction can
+expire situated offers and subsequently cause an older server time to be
+refused. Legacy offers continue to use their ordinary wall time. A restored
+journal remains a new baseline incarnation.
+
+Only capture-anchored receipts contribute to a semantic checkpoint. Older
+and unscoped sources remain readable and retain the full transport behavior.
+Pending unscoped reservations retain their issue-based 24-hour deadline.
+Settled originals and exact retained bytes do not expire through this
+mechanism. Pending reservations are capped at 32 per Conversation.
+Opening the journal or submitting another validly encoded offer sweeps
+expired pending bytes. The sweep survives a subsequent refusal. The
+payload budget is distinct from human attachments. It allows at most 512
+unarchived inline sources per session and 1,024 in the receiving journal.
+An exact, pending file-backed receipt from the previous draft can move to the
+journal using the same pinned bytes, original and receipt. The native writer
+checks the source again when sealing and rolls back capture if the bytes are
+unavailable.
+
+The owner control `input context archive` accepts a JSON object with the
+current entry `binding` and original input `id`. It checks the receipt and
+digest against the retained bytes and requires direct native acceptance for
+that original. The archive adds a marker within the private journal. The bytes,
+receipt and native reuse stay available. The archive allows up to 2,048 sources
+per session and 4,096 per journal (up to 192 MiB of archived payload before
+SQLite overhead). At capacity, an eligible new reservation can archive one
+oldest sealed receipt from the same current binding in the same transaction.
+If the binding has no eligible receipt, the oldest receipt fails verification,
+or the archive is full, the owner receives a capacity error. There is no
+background archival or deletion. Older binaries still read the bytes and
+apply their original combined write cap on rollback.
+
+The native receiver candidate chooses a full, unchanged, or delta delivery
+for direct canonical Conversation. Each native input still identifies its
+exact original, retained machine receipt and digest. A full delivery
+includes the authorized snapshot and its semantic state. A delta includes
+only changed sections relative to the explicitly named accepted original.
+An unchanged delivery carries the source identifiers and the baseline
+reference. It omits the snapshot and change data. Every full canonical
+source stays available to its existing authorized audit and world routes.
+
+Both direct start and steer bind their selected projection to the exact
+execution and writer before native submission. The checkpoint advances at
+`ConversationInputEvent::Accepted` with the matching native execution and
+base. The generic Telegram receipt, canonical journal seal, queued phase
+and later reply do not establish a baseline. If a checkpoint is lost, its
+reservation floor survives. A late original carries its own historical
+full view. Captures compare stable section fields, use half-meter cells
+with hysteresis, and preserve a bounded recent-work window. Room or world
+changes require a new full view. Writer restart, observed context
+compaction and unprovable acceptance invalidate the reusable checkpoint.
+Routed targets retain the full source and never establish a direct
+checkpoint.
+
+An affected patch that no longer matches its selected baseline is refused
+before native submission. Its original remains available through the
+existing retained-input controls. A qualifying full plan can survive an
+intervening acceptance while its order is still current. The semantic
+candidate is separate from activation. Verification of sealed-source archival and the selected live pair remains
+required before sustained receiving use.
+
+The dashboard candidate negotiates the receipt path only when both the
+canonical frame and the authorized Holodeck host advertise it. Each
+original freezes its chosen mode. The legacy mode reserves one slot and
+appends the full context file. The journal mode leaves the eight human
+slots available and submits the receipt independently. Text and edited
+dictation use the existing canonical input route, ordinary voice uses the
+existing header, and local voice recovery stores the exact receipt with the
+frozen original. Receipt-bearing recovery uses version 9 so older clients
+cannot silently send an original without its receipt. A directly delivered
+native question answer retains its existing native-answer behavior.
+
+Controlled Chromium at desktop and narrow widths exercised old and new
+frame modes, separate text and audio receipts, eight attached text files,
+and uncertain text acknowledgment recovery. The microphone fixture confirms
+that edited-dictation recovery sends the same original and receipt without
+repeating capture or preparation. The selected service remains on the legacy
+path. Holodeck #19 owns receiving qualification and the conditions for
+enabling the journal transport on the live pair.
+
+Fable High reviewed the transaction boundary and identified the requirements
+for idempotence, admission epochs, and an additive table. Opus 5.5 High
+found that first-thread establishment and voice recovery could lose the
+receipt. The corrected path follows the original’s stable binding and reads
+the receipt back from the owner journal during recovery. Local SQLite tests
+cover cold establishment before and after capture, voice restart recovery,
+exact retries, missing source bytes, expiry and eight human files. The owner
+command fixture also covers the full voice recovery command with a retained
+receipt and distinguishes a legacy original from a sealed machine source.
+
+For a sealed original, native start and steer project the retained observation
+in a separate machine-evidence block. This applies both to the Conversation
+entry and to a routed worker receiving the original. The original human text
+and attachments retain their identity. The writer parses the exact retained
+bytes as strict JSON and rechecks the receipt, binding, and digest at native
+admission. If the source has changed or become unreadable, the affected input
+fails admission. A failed routed source leaves other pending inputs available.
+
+The controlled real HTTP test seals and recovers exact text and voice receipts
+without creating a human attachments directory. It delays voice past newer
+text and inspects the actual native protocol packets for both the general
+Conversation and the routed worker using a simulated native engine. JSON
+number tokens survive native projection without conversion. Source provenance,
+native delivery and baseline eligibility remain independent.

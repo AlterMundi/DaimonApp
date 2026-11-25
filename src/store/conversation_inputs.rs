@@ -319,12 +319,25 @@ impl ConversationInput {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ConversationInputEvent {
+pub enum ConversationInputEvent<'a> {
     Queue,
-    Begin { local_turn: i64, steer: bool },
-    Accepted { local_turn: i64 },
-    Rejected { local_turn: i64 },
-    Uncertain { local_turn: i64 },
+    Begin {
+        local_turn: i64,
+        steer: bool,
+    },
+    BeginDirect {
+        local_turn: i64,
+        proof: Option<&'a str>,
+    },
+    Accepted {
+        local_turn: i64,
+    },
+    Rejected {
+        local_turn: i64,
+    },
+    Uncertain {
+        local_turn: i64,
+    },
 }
 
 pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<ConversationInput> {
@@ -623,6 +636,7 @@ impl Store {
             playback,
             capture_questions,
             Vec::new(),
+            None,
         )
     }
 
@@ -640,12 +654,13 @@ impl Store {
         playback: Option<ConversationPlayback>,
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
         voice.validate()?;
         if voice.transcription.is_some() {
             bail!("Transcription is receiving-owned");
         }
-        self.capture_original(
+        self.capture_original_mode(
             human,
             entry,
             binding,
@@ -658,6 +673,9 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
+            None,
+            machine_source,
         )
     }
 
@@ -702,12 +720,28 @@ impl Store {
         visual: Option<crate::visual::VisualSelection>,
         playback: Option<ConversationPlayback>,
         files: Vec<crate::files::FileReference>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
-        self.capture_original(
-            human, entry, binding, id, text, None, true, reply, visual, playback, None, files,
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            reply,
+            visual,
+            playback,
+            None,
+            files,
+            None,
+            None,
+            machine_source,
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &self,
@@ -737,6 +771,7 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
             None,
             None,
         )
@@ -775,6 +810,7 @@ impl Store {
             Vec::new(),
             None,
             Some((source, max_pending)),
+            None,
         )
     }
 
@@ -811,6 +847,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -853,6 +890,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -1102,7 +1140,27 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
+        machine_source: Option<Uuid>,
     ) -> Result<(ConversationInput, bool)> {
+        if machine_source.is_some()
+            && (tribu.is_some()
+                || foreground_dialogue.is_some()
+                || reply
+                    .as_ref()
+                    .is_some_and(|r| r.source.starts_with("request:") && !r.context_only)
+                || voice
+                    .as_ref()
+                    .is_some_and(|v| v.avatar_interrupt == Some(true)))
+        {
+            bail!("Machine source requires an ordinary conversation input");
+        }
+        if machine_source.is_some()
+            && files
+                .iter()
+                .any(|file| file.name == "holodeck-situation.json")
+        {
+            bail!("Select exactly one Holodeck source for this original");
+        }
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1179,6 +1237,13 @@ impl Store {
             {
                 bail!("Original conversation input identity is immutable");
             }
+            super::conversation_machine_sources::match_machine_source(
+                &tx,
+                &input,
+                binding,
+                machine_source,
+                true,
+            )?;
             return Ok((input, false));
         }
         if let Some((_, max_pending)) = &tribu {
@@ -1273,6 +1338,13 @@ impl Store {
             [&input.id],
         )?;
         tx.execute("INSERT INTO conversation_inputs(id,human_id,session_id,native_thread,phase,doc,instance_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![input.id,human,session,input.native,input.phase,serde_json::to_string(&input)?,self.instance_id,now_string()])?;
+        super::conversation_machine_sources::match_machine_source(
+            &tx,
+            &input,
+            binding,
+            machine_source,
+            false,
+        )?;
         tx.commit()?;
         Ok((input, true))
     }
@@ -1867,6 +1939,58 @@ impl Store {
         )
     }
 
+    pub(crate) fn conversation_native_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<Option<super::NativeMachineSource>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = read_on(&conn, id, human)?;
+        eligible_on(&conn, &input)?;
+        super::conversation_machine_sources::native_machine_source_on(&conn, &input)
+    }
+
+    pub(crate) fn conversation_direct_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<Option<super::NativeMachineSource>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = read_on(&conn, id, human)?;
+        eligible_on(&conn, &input)?;
+        super::conversation_machine_sources::preview_direct_projection_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )
+    }
+
+    pub(crate) fn conversation_bind_direct_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+        turn: i64,
+        proof: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let input = read_on(&tx, id, human)?;
+        eligible_on(&tx, &input)?;
+        anyhow::ensure!(
+            input.phase == "steering" && input.local_turn == Some(turn),
+            "Original changed before selecting its native context"
+        );
+        super::conversation_machine_sources::bind_direct_projection_on(
+            &tx,
+            &input,
+            &self.instance_id,
+            turn,
+            proof,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn conversation_input_validate(&self, human: i64, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = read_on(&conn, id, human)?;
@@ -2006,7 +2130,8 @@ impl Store {
                 }
                 ("queued", None)
             }
-            ConversationInputEvent::Begin { local_turn, steer }
+            ConversationInputEvent::Begin { local_turn, .. }
+            | ConversationInputEvent::BeginDirect { local_turn, .. }
                 if input.phase == "queued"
                     || (input.phase == "rejected" && input.local_turn == Some(local_turn)) =>
             {
@@ -2015,6 +2140,16 @@ impl Store {
                 if !matches {
                     bail!("Conversation input execution mismatch");
                 }
+                if let ConversationInputEvent::BeginDirect { proof, .. } = event {
+                    super::conversation_machine_sources::bind_direct_projection_on(
+                        &tx,
+                        &input,
+                        &self.instance_id,
+                        local_turn,
+                        proof,
+                    )?;
+                }
+                let steer = matches!(event, ConversationInputEvent::Begin { steer: true, .. });
                 (if steer { "steering" } else { "sending" }, Some(local_turn))
             }
             ConversationInputEvent::Accepted { local_turn }
@@ -2044,6 +2179,11 @@ impl Store {
         let updated = read_on(&tx, id, human)?;
         if phase == "accepted" {
             super::topic_publications::conversation_accepted_on(&tx, &updated)?;
+            super::conversation_machine_sources::acknowledge_direct_projection_on(
+                &tx,
+                &updated,
+                &self.instance_id,
+            )?;
         }
         tx.commit()?;
         Ok(updated)
