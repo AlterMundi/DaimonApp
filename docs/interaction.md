@@ -1,8 +1,7 @@
 # Integrating conversation controller
 
 Product direction: [full roadmap and current continuous-voice plan](interaction-roadmap.md).
-Current execution: [milestone9](https://github.com/AlterMundi/telecodex/milestone/9).
-Remaining v0.2 obligations: [milestone8](https://github.com/AlterMundi/telecodex/milestone/8).
+Current execution: [DaimonApp issues](https://github.com/AlterMundi/DaimonApp/issues) and the [DaimonGateway milestone](https://github.com/AlterMundi/daimon-matrix/milestone/8).
 
 ## DaimonGateway and TeleDaimon boundary
 
@@ -11,7 +10,8 @@ session routing, one writer per native turn, pending work, recovery and
 canonical results. Native harness adapters own execution and report the
 session identity, submission outcome and controls they actually support.
 Matrix authenticates bodies and records their authorized communication.
-Codex and Claude are execution choices made by Gateway for new work.
+Gateway selects the execution adapter for new work. Existing work keeps its
+recorded harness and native session.
 
 TeleDaimon owns the Telegram Bot API, polling offsets, Telegram-specific
 media, topic bindings and outbound delivery receipts. It should exchange
@@ -84,10 +84,21 @@ receipt. It advances only with the durable cursor supplied by Gateway. Before
 each Bot API poll and before admitting a returned original, the adapter checks
 the current Gateway's readiness. If Gateway restarted during a long poll, the
 adapter can re-identify the verified bot and reattach its projection listener
-before continuing from the durable cursor. A missing owner or lost admission acknowledgement ends that adapter
-run. Start it again through the existing service supervisor to read the
-retained cursor. The existing admission journal dispatches each new original
-once.
+before continuing from the durable cursor. A connection reset, broken pipe
+or early EOF during the readiness read retries only that read for up to
+seven seconds. A missing owner, exhausted readiness retry or lost admission
+acknowledgement ends that adapter run. The supervisor can restart it from the
+durable cursor. Admission and publication acknowledgements retain their
+original uncertainty semantics.
+
+For an adapter-only release, check the candidate against the running Gateway
+and retain the previous adapter selector. Restart TeleDaimon through the
+receiving supervisor, leaving Gateway and its other clients running. Confirm
+the loaded adapter, the verified bot binding through the owner socket, the
+same journal and a cursor at or beyond its previous value. Check that retained
+sessions and unresolved receipts are still available. If the candidate cannot
+reattach, restore the previous adapter selector and verify those same
+receiving signals before further Telegram activity.
 
 For retained topic and artifact publications, Gateway selects the audience
 and freezes the parts in the existing journal. TeleDaimon formats and sends
@@ -147,6 +158,35 @@ Retire the Telecodex binary and product name after the independent clients
 have passed receiving acceptance and existing installations have a migration
 path. The MIT license retains the upstream copyright and Telecodex provenance.
 No separate repository or second durable store is required for the cutover.
+
+### Qualify a private Matrix foreground route
+
+Select a signed sibling body and the approved model account in the existing
+Gateway profile. For Claude or Goose, configure the chosen
+`interaction.claude_foreground` or `interaction.goose_foreground` section
+with its authenticated Matrix transport and worker command. The sender and
+receiver must select the same private sibling conversation. Keep the provider
+credential and any approved memory selection in the receiving worker's
+private configuration.
+
+Select one authorized, retained original with `event_id`, `author`,
+`thread_id` and its retained `cursor` if available. The owner command
+`daimon-gateway --control CONFIG matrix ENGINE run SELECTION_JSON` reads
+that original from Matrix. The worker checks the receiving identity and
+effective model-facing tools before Gateway journals the exact native session
+and permits provider exposure. Use one bounded input with a verifiable
+answer. Inspect the same original with
+`daimon-gateway --control CONFIG matrix ENGINE status EVENT_ID`.
+Verify the provider result and read the signed reply as the sender in the
+original thread. A loopback fixture qualifies the adapter boundary. A live
+acceptance also requires the actual body, approved provider and sender readback.
+
+After restart, use the retained event ID to read the prior outcome. A refusal
+before provider exposure is a known rejection. Missing evidence after the
+exposure commit stays uncertain. Keep the original and its native session
+binding for reconciliation. Changing engines or submitting a new event ID
+would create different work. See [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497)
+for per-harness evidence and pending live acceptance.
 
 ## Current repair direction — human correction, 2026-10-19
 
