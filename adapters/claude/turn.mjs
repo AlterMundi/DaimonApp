@@ -1,5 +1,7 @@
 // The foreground Claude adapter consumes one already selected Gateway input.
 // The caller owns the Matrix broker and the canonical request journal.
+import { bodyMatches } from './matrix-broker.mjs';
+
 const SERVER = 'matrix';
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_INPUT_BYTES = 16 * 1024;
@@ -16,15 +18,6 @@ function catalogMatches(status, expectedTools) {
   }
   const names = server.tools.map(({ name }) => name).sort();
   return [...expectedTools].sort().every((name, index) => name === names[index]);
-}
-
-function bodyMatches(status, expected) {
-  return status?.schema === 'dm.runtime.status/v1'
-    && status.integrity === 'ok'
-    && status.being_ref === expected.beingRef
-    && status.manifest_hash === expected.manifestHash
-    && status.local_origin?.embodiment_id === expected.embodimentId
-    && status.local_origin?.incarnation_id === expected.incarnationId;
 }
 
 /**
@@ -61,7 +54,6 @@ export async function runClaudeTurn({
   if (stop.aborted) cancel();
   let dispatched = false;
   let native;
-  let sessionId;
   let reason = 'matrix_identity_unverified';
 
   async function* prompt() {
@@ -116,13 +108,13 @@ export async function runClaudeTurn({
             ? { phase: 'uncertain', reason: 'claude_session_changed', sessionId: input.sessionId }
             : { phase: 'not_submitted', reason: 'claude_session_changed' };
         }
-        sessionId = event.session_id;
       }
       if (event.type !== 'result' || !dispatched) continue;
-      if (event.subtype === 'success' && !event.is_error && sessionId
+      if (event.subtype === 'success' && event.is_error === false
+          && event.session_id === input.sessionId
           && typeof event.result === 'string' && event.result.trim()
           && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES) {
-        return { phase: 'completed', sessionId, text: event.result };
+        return { phase: 'completed', sessionId: input.sessionId, text: event.result };
       }
       return { phase: 'uncertain', reason: 'claude_result_unqualified', sessionId: input.sessionId };
     }

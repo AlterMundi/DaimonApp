@@ -338,6 +338,20 @@ pub(super) async fn tool(
     }
 }
 
+pub(super) fn foreground_command(
+    args: &str,
+) -> Option<(crate::interaction::ForegroundEngine, &str)> {
+    use crate::interaction::ForegroundEngine;
+    let (name, selected) = args.split_once(' ')?;
+    let engine = match name {
+        "claude" => ForegroundEngine::Claude,
+        "goose" => ForegroundEngine::Goose,
+        "antigravity" => ForegroundEngine::Antigravity,
+        _ => return None,
+    };
+    Some((engine, selected))
+}
+
 pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     let cfg = app
         .shared
@@ -348,16 +362,8 @@ pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     if human != cfg.human_id {
         bail!("Matrix origin owner differs from the authenticated controller");
     }
-    use crate::interaction::ForegroundEngine;
-    if let Some((engine, selected)) = args.split_once(' ') {
-        let engine = match engine {
-            "claude" => Some(ForegroundEngine::Claude),
-            "goose" => Some(ForegroundEngine::Goose),
-            _ => None,
-        };
-        if let Some(engine) = engine {
-            return foreground::owner(app, cfg, engine, selected).await;
-        }
+    if let Some((engine, selected)) = foreground_command(args) {
+        return foreground::owner(app, cfg, engine, selected).await;
     }
     if let Some(selected) = args.strip_prefix("publication ") {
         let publication = cfg

@@ -3259,11 +3259,15 @@ if first["text"] == "reject-before-commit":
     print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
                       reason="claude_catalog_mismatch"))), flush=True)
     sys.exit(0)
-goose = first["schema"] == "daimon-gateway.goose-turn/v1"
-native = "goose-native-id" if goose else first["sessionId"]
+engine = first["schema"].removeprefix("daimon-gateway.").removesuffix("-turn/v1")
+assert engine in ("claude", "goose", "antigravity")
+native = "goose-native-id" if engine == "goose" else first["sessionId"]
+preparation = dict(ids, type="prepare_submission", nativeSessionId=native)
 if first["text"] == "wrong-native-id":
-    native = "different-session"
-print(json.dumps(dict(ids, type="prepare_submission", nativeSessionId=native)), flush=True)
+    preparation["nativeSessionId"] = "different-session"
+if first["text"] == "missing-native-id":
+    del preparation["nativeSessionId"]
+print(json.dumps(preparation), flush=True)
 ack = json.loads(sys.stdin.readline())
 assert ack == dict(ids, type="submission_decision", committed=True)
 with sqlite3.connect(db) as conn:
@@ -3273,8 +3277,8 @@ assert phase == "provider_exposed"
 frozen = json.loads(raw)
 assert frozen["session_id"] == first["sessionId"]
 assert json.loads(submission)["native_session_id"] == native
-if goose:
-    assert json.loads(submission)["engine"] == "goose"
+if engine != "claude":
+    assert json.loads(submission)["engine"] == engine
 assert frozen["original"]["text"] == first["text"]
 assert frozen["body"]["manifest_hash"] == first["body"]["manifestHash"]
 with open(marker, "a") as f:
@@ -3297,7 +3301,11 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     );
     let interaction = config.interaction.as_mut().unwrap();
     interaction.goose_foreground = interaction.claude_foreground.clone();
+    interaction.antigravity_foreground = interaction.claude_foreground.clone();
     let app = App::bootstrap(config.clone()).await.unwrap();
+    let antigravity_id = uuid::Uuid::now_v7().to_string();
+    let antigravity_missing_id = uuid::Uuid::now_v7().to_string();
+    let antigravity_wrong_id = uuid::Uuid::now_v7().to_string();
     let goose_id = uuid::Uuid::now_v7().to_string();
     let id = uuid::Uuid::now_v7().to_string();
     let uncertain = uuid::Uuid::now_v7().to_string();
@@ -3312,6 +3320,19 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
             })
         )
     };
+    for engine in ["claude", "goose", "antigravity"] {
+        let command = run(&id, "fixture-sender").replacen("claude", engine, 1);
+        for denied in [command, format!("matrix {engine} status {id}")] {
+            let error = stopping::telegram_command(&app, 100, &denied, None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("require the local owner socket"));
+        }
+    }
+    let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
+        .await
+        .unwrap();
+    assert!(status.is_null());
     let delivered = stopping::command(&app, 100, &run(&id, "fixture-sender"), None)
         .await
         .unwrap();
@@ -3330,6 +3351,29 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     assert_eq!(goose["engine"], "goose");
     assert_eq!(goose["native_session_id"], "goose-native-id");
     assert_ne!(goose["native_session_id"], goose["session_id"]);
+    let antigravity_run = |id, author| run(id, author).replacen("claude", "antigravity", 1);
+    let antigravity = stopping::command(
+        &app,
+        100,
+        &antigravity_run(&antigravity_id, "fixture-sender"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(antigravity["phase"], "delivered");
+    assert_eq!(antigravity["engine"], "antigravity");
+    assert_eq!(antigravity["native_session_id"], antigravity["session_id"]);
+    for (id, author) in [
+        (&antigravity_missing_id, "missing-native-id"),
+        (&antigravity_wrong_id, "wrong-native-id"),
+    ] {
+        let result = stopping::command(&app, 100, &antigravity_run(id, author), None)
+            .await
+            .unwrap();
+        assert_eq!(result["phase"], "rejected");
+        assert_eq!(result["engine"], "antigravity");
+        assert!(result["native_session_id"].is_null());
+    }
     let nonce = delivered["result"]["send_id"].as_str().unwrap();
     let lost = stopping::command(&app, 100, &run(&uncertain, "lose-provider-result"), None)
         .await
@@ -3419,6 +3463,10 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .await
         .unwrap();
     assert_eq!(retained_goose, goose);
+    let retained_antigravity = stopping::command(&app, 100, &goose_run(&antigravity_id), None)
+        .await
+        .unwrap();
+    assert_eq!(retained_antigravity, antigravity);
     let interrupted_id = interrupted.clone();
     for (id, author, phase) in [
         (id, "fixture-sender", "delivered"),
@@ -3447,7 +3495,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     }
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
-        "provider\nreturn\nprovider\nreturn\nprovider\n"
+        "provider\nreturn\nprovider\nreturn\nprovider\nreturn\nprovider\n"
     );
     let database = rusqlite::Connection::open(database).unwrap();
     for table in ["turns", "incoming_updates"] {

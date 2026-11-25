@@ -174,7 +174,10 @@ Select one authorized, retained original with `event_id`, `author`,
 `daimon-gateway --control CONFIG matrix ENGINE run SELECTION_JSON` reads
 that original from Matrix. The worker checks the receiving identity and
 effective model-facing tools before Gateway journals the exact native session
-and permits provider exposure. Use one bounded input with a verifiable
+and permits provider exposure. The local owner socket is required for foreground
+run and status commands. Claude's Matrix status tool checks the selected
+manifest and incarnation on every read, and its terminal result must attest
+the same native session. Use one bounded input with a verifiable
 answer. Inspect the same original with
 `daimon-gateway --control CONFIG matrix ENGINE status EVENT_ID`.
 Verify the provider result and read the signed reply as the sender in the
