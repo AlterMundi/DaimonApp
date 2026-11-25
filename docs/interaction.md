@@ -70,8 +70,11 @@ send retains its publication and part IDs without an invented message ID.
 Verify a new durable admission after TeleDaimon connects and one independent
 Gateway original while TeleDaimon is stopped. To roll back,
 stop the external poller first, restore the retained embedded executable and
-configuration, then start the selected service with the same database.
-Preserve all earlier originals and uncertain receipts.
+configuration, then start the selected service with the current database.
+Confirm that the first poll starts at the advanced offset and that the
+results and Telegram receipts retained during external operation are still
+readable. Submit one new selected original to verify embedded operation.
+Previously uncertain sends stay uncertain and are not replayed.
 
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission

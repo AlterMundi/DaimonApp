@@ -493,7 +493,7 @@ def gateway_survives_telegram_failure(binary):
             journey.close()
     print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
 
-def independent_telegram_polling(binary, *, named_roles=False):
+def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=None):
     class MigratingInputs(Inputs):
         unknown_steer = None
         deferred_steer = None
@@ -519,8 +519,10 @@ def independent_telegram_polling(binary, *, named_roles=False):
                 return True
             return super().handle_extra_rpc(message, send)
 
-    journey = MigratingInputs(binary)
+    embedded_binary = embedded_binary or binary
+    journey = MigratingInputs(embedded_binary)
     journey.acknowledged_updates = True
+    journey.poll_offsets = []
     original_config = journey.config.read_text()
     external_config = original_config.replace(
         "[telegram]\n", "[telegram]\nexternal_polling=true\n")
@@ -650,8 +652,7 @@ def independent_telegram_polling(binary, *, named_roles=False):
         )
         before_cutover = len(journey.packets)
         journey.stop()
-        if named_roles:
-            journey.binary = str(gateway_path)
+        journey.binary = str(gateway_path) if named_roles else binary
         wrong_bot = journey.root / "wrong-bot.toml"
         wrong_bot.write_text(external_config.replace(
             "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n"))
@@ -736,6 +737,45 @@ def independent_telegram_polling(binary, *, named_roles=False):
         adapter = None
         print("PASS tokenless Gateway migration with retained bot, cursor, history, grant and goal accounting; "
               "queued and uncertain inputs retained without replay, and one dispatch per new original")
+
+        cutover_result = journey.read("input", "status", original["id"])["result"]
+        postcutover_history = journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        )
+        assert cutover_result["phase"] == "accepted" and len(postcutover_history) == 1
+        before_rollback = journey.native_turns
+        packets_before_rollback = len(journey.packets)
+        journey.stop()
+        with journey.lock:
+            journey.poll_offsets.clear()
+        journey.binary = embedded_binary
+        journey.config.write_text(original_config)
+        final = journey.admit("First Telegram original after restoring embedded polling", topic=1)
+        journey.start()
+        journey.wait_control_socket(journey.socket)
+        journey.wait(lambda: thread in journey.holding)
+        assert journey.poll_offsets[0] == second + 1
+        journey.finish(thread, journey.holding.pop(thread))
+        journey.wait(lambda: settled(final))
+        journey.idle()
+        assert journey.row("SELECT update_id FROM incoming_updates ORDER BY update_id") == [
+            (seeded,), (first,), (second,), (final,),
+        ]
+        assert journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=1") == retained
+        assert journey.read("input", "status", original["id"])["result"] == cutover_result
+        assert journey.row(
+            "SELECT text, native_turn FROM interaction_native_messages WHERE native_turn=?",
+            (journey.web_turn,),
+        ) == postcutover_history
+        assert journey.read("goal", "delegation")["result"] == original_grant
+        assert journey.read("goal", "inspect", "100", "1")["result"]["snapshot"] == original_goal
+        for retained_original, expected in ((unknown, "uncertain"), (deferred, "retained_unsent")):
+            status = journey.read("input", "submit", json.dumps(retained_original))["result"]
+            assert status["phase"] == expected and not status["new_input"]
+        assert journey.native_turns == before_rollback + 1
+        assert len(journey.packets) == packets_before_rollback
+        print("PASS embedded rollback resumes at the advanced cursor and retains post-cutover work without replay")
     finally:
         if adapter is not None and adapter.poll() is None:
             adapter.kill()

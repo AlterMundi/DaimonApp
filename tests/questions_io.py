@@ -97,6 +97,8 @@ class Journey:
                               'username': 'FixtureBot', 'has_topics_enabled': True}
                 elif method == 'getUpdates':
                     with owner.lock:
+                        if hasattr(owner, 'poll_offsets'):
+                            owner.poll_offsets.append(payload.get('offset') or 0)
                         if getattr(owner, 'acknowledged_updates', False):
                             # A response can be lost during listener replacement.
                             # Telegram confirms updates only through the next offset.

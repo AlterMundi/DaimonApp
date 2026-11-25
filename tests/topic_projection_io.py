@@ -48,9 +48,13 @@ class Projected(CanonicalRouting):
 
     def start_adapter(self):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "C.UTF-8"}
+        profile = str(self.adapter_config or self.config)
+        gateway = Path(self.binary)
+        command = [str(gateway.with_name("teledaimon")), profile] if gateway.name == "daimon-gateway" else [
+            self.binary, "--tele-daimon-poll", profile,
+        ]
         self.adapter = subprocess.Popen(
-            [self.binary, "--tele-daimon-poll", str(self.adapter_config or self.config)], cwd=self.root,
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            command, cwd=self.root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         )
 
     def stop_adapter(self):
@@ -137,8 +141,10 @@ class Projected(CanonicalRouting):
                    for message, _ in self.messages)
 
 
-def qualify(binary, *, external=False, migrate=False):
-    j = Projected(str(Path(binary).resolve()))
+def qualify(binary, *, external=False, migrate=False, embedded_binary=None):
+    external_binary = str(Path(binary).resolve())
+    embedded_binary = str(Path(embedded_binary).resolve()) if embedded_binary else external_binary
+    j = Projected(embedded_binary if migrate else external_binary)
     j.external = external and not migrate
     try:
         j.start()
@@ -148,6 +154,7 @@ def qualify(binary, *, external=False, migrate=False):
         j.stop()
         j.config.write_text(j.config.read_text().replace('[interaction]\n',
             '[interaction]\ntelegram_projection=true\n')+j.target_config)
+        embedded_config = j.config.read_text()
         j.start(); j.wait_control_socket(j.socket); j.routing = True
         binding = j.read('presentation', 'list', '0', '0')['result']['binding']
         j.messages.clear()
@@ -197,21 +204,22 @@ def qualify(binary, *, external=False, migrate=False):
         j.answer(7, 'Lost mirror acknowledgment.')
         j.wait(lambda: j.primary('Lost mirror acknowledgment.'))
         j.wait(lambda: j.row("SELECT COUNT(*) FROM topic_publications WHERE phase='uncertain'") == [(1,)])
-        def lost_receipt():
+        def publication_receipt(text):
             return j.row(
                 "SELECT p.id,p.phase,x.part,x.phase,x.message_id FROM topic_publications p "
                 "JOIN topic_publication_parts x ON x.publication=p.id WHERE p.body=?",
-                ("Lost mirror acknowledgment.",),
+                (text,),
             )
-        before_restart = lost_receipt()
+        before_restart = publication_receipt("Lost mirror acknowledgment.")
         assert len(before_restart) == 1 and before_restart[0][1:] == ("uncertain", 0, "uncertain", None)
         j.idle()
         j.stop()
         if migrate:
             j.external = True
+            j.binary = external_binary
         j.start()
         j.wait_control_socket(j.socket)
-        assert lost_receipt() == before_restart
+        assert publication_receipt("Lost mirror acknowledgment.") == before_restart
         assert j.sent('Lost mirror acknowledgment.', 7) == 1
         if migrate:
             print('PASS lost Bot API acknowledgement remains uncertain across embedded-to-external migration')
@@ -264,6 +272,33 @@ def qualify(binary, *, external=False, migrate=False):
             j.wait(lambda: j.telegram_methods.count("getUpdates") > polls)
             assert j.sent(j.hold_match, 7) == 1
             print('PASS adapter stop after Bot API submission preserves uncertainty and the canonical result')
+        if migrate:
+            answer = 'New work after uncertain publication.'
+            sent_receipt = publication_receipt(answer)
+            interrupted_receipt = publication_receipt(j.hold_match)
+            assert len(sent_receipt) == 1 and sent_receipt[0][1:4] == ("sent", 0, "sent")
+            assert isinstance(sent_receipt[0][4], int)
+            assert len(interrupted_receipt) == 1 and interrupted_receipt[0][1:] == (
+                "uncertain", 0, "uncertain", None,
+            )
+            j.idle()
+            j.stop()
+            j.external = False
+            j.binary = embedded_binary
+            j.config.write_text(embedded_config)
+            j.start()
+            j.wait_control_socket(j.socket)
+            assert publication_receipt(answer) == sent_receipt
+            assert publication_receipt(j.hold_match) == interrupted_receipt
+            assert publication_receipt("Lost mirror acknowledgment.") == before_restart
+            assert j.primary(j.hold_match)
+            assert j.sent("Lost mirror acknowledgment.", 7) == j.sent(j.hold_match, 7) == 1
+            j.submit(binding, '#Alpha Confirm publication after rollback')
+            j.wait(lambda: len(j.instructions(7)) == 6 and j.instructions(7)[-1][1] == 'accepted')
+            j.answer(7, 'First publication after rollback.')
+            j.wait(lambda: j.sent('First publication after rollback.', 7) == 1)
+            assert j.sent("Lost mirror acknowledgment.", 7) == j.sent(j.hold_match, 7) == 1
+            print('PASS rollback preserves acknowledged and uncertain Telegram receipts without resending them')
         print('PASS canonical event/destination identity, attributed echoes, independent return/parallel topic, direct switch, bot feedback, duplicate/restart/lost ACK and known rejection')
     finally:
         j.release_echo.set()
