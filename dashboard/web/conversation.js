@@ -353,7 +353,8 @@ window.Conversation = (() => {
       line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
       getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[]),...internalAttentionItems()]
     });
-    const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed,maxFiles:8-(hostSurface?.reservedFiles||0),maxBytes:40*1024*1024-(hostSurface?.reservedBytes||0)});
+    const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed,
+      getLimits:()=>({maxFiles:8-(hostSurface?.reservedFiles||0),maxBytes:40*1024*1024-(hostSurface?.reservedBytes||0)})});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
     let transcriptPreview,editedPreview;
     function previewTranscript(value){
@@ -1333,14 +1334,16 @@ window.Conversation = (() => {
       const id=crypto.randomUUID(),owned=inputGeneration,observation=++inputObservation,focusAtSubmit=focusVersion,selectedBinding=binding;
       const context=inputReference();
       const reply=context&&JSON.parse(JSON.stringify(context)),playback=playbackContext();
-      let selectedVisual,selectedFiles;
+      let selectedVisual,selectedFiles,machineSource;
       posting=true;send.disabled=true;
       let contextPreparation;
       try {
         // Dispatch the host snapshot before any visual/file operation can yield.
-        if(hostSurface){contextPreparation=hostSurface.prepare({id,binding:selectedBinding,modality:'text',files:[]});contextPreparation.catch(()=>{});}
+        if(hostSurface){contextPreparation=hostSurface.prepare({id,binding:selectedBinding,modality:'text',files:[],reply});contextPreparation.catch(()=>{});}
         if(visual)selectedVisual=await visual.capture();if(attachedFiles)selectedFiles=await attachedFiles.capture();
-        if(contextPreparation)selectedFiles=[...(selectedFiles||[]),...await contextPreparation];
+        if(contextPreparation){const source=await contextPreparation;
+          if(Array.isArray(source))selectedFiles=[...(selectedFiles||[]),...source];
+          else machineSource=source.machine_source;}
         if((selectedFiles?.length||0)>8||(selectedFiles||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024)throw Error('Attachments and world context exceed eight files or 40 MiB. Your draft is kept.');
       }
       catch(e){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});posting=false;send.disabled=!inputBinding;microphone?.syncControls?.();composerNotice(e.message||"Select your image again.");return;}
@@ -1351,7 +1354,7 @@ window.Conversation = (() => {
       try {
         hostSurface?.attempt?.({id,binding:selectedBinding});
         draftState?.attempt(id,text);
-        const result = await api("interaction/inputs", {binding:selectedBinding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
+        const result = await api("interaction/inputs", {binding:selectedBinding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{}),...(machineSource?{machine_source:machineSource}:{})});
         if (owned !== inputGeneration) return;
         if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);

@@ -7,6 +7,9 @@ window.VoiceInput = (() => {
   // uncertain original for capacity. Matching confirmation/explicit discard
   // retires it. Reload only reads. Older clients retain the unknown two-item
   // envelope rather than overwriting it; use this decoder to recover both.
+  const validMachineSource=value=>value.machine_source===undefined||
+    typeof value.machine_source==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.machine_source)
+      &&!value.avatarInterrupt&&!value.foreground_dialogue;
   function recoveryStore(key='pending') {
     if(!['pending','codex_voice'].includes(key))throw Error('Unknown recording recovery key');
     if(!window.indexedDB)return;
@@ -35,12 +38,14 @@ window.VoiceInput = (() => {
     }
     function records(old){
       if(!old)return [];
-      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)){
+      if(['telecodex.voice-recovery/v5','telecodex.voice-recovery/v6','telecodex.voice-recovery/v7','telecodex.voice-recovery/v8','telecodex.voice-recovery/v9'].includes(old.schema)){
         if(!Array.isArray(old.items)||!old.items.length||old.items.length>128||old.items.some(v=>!v.id||!v.blob||v.transcriptionProfile!==undefined&&!['openai','previous',...(!old.schema.endsWith('/v5')?['openai-live','previous-live']:[])].includes(v.transcriptionProfile))||new Set(old.items.map(v=>v.id)).size!==old.items.length||old.items.reduce((sum,v)=>sum+v.blob.size,0)>20*1024*1024)throw Error('Recording profile recovery is malformed');
-        if(old.items.some(v=>v.avatarInterrupt!==undefined&&(!old.schema.endsWith('/v8')||v.avatarInterrupt!==true||v.transcriptionProfile!=='openai-live'||v.dictation||v.foreground_dialogue||v.captureStop)))throw Error('Interruption recovery is malformed');
+        if(old.items.some(v=>v.avatarInterrupt!==undefined&&(!/\/v[89]$/.test(old.schema)||v.avatarInterrupt!==true||v.transcriptionProfile!=='openai-live'||v.dictation||v.foreground_dialogue||v.captureStop)))throw Error('Interruption recovery is malformed');
+        if(old.items.some(v=>!validMachineSource(v)||v.machine_source!==undefined&&!old.schema.endsWith('/v9')))
+          throw Error('Recording context recovery is malformed');
         for(const item of old.items.filter(v=>v.dictation)){
           const d=item.dictation;
-          if(!['telecodex.voice-recovery/v7','telecodex.voice-recovery/v8'].includes(old.schema)||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
+          if(!['telecodex.voice-recovery/v7','telecodex.voice-recovery/v8','telecodex.voice-recovery/v9'].includes(old.schema)||typeof d.text!=='string'||!d.text.trim()||new TextEncoder().encode(d.text).length>32768||typeof d.automatic!=='string'||new TextEncoder().encode(d.automatic).length>65536||typeof d.automaticFinal!=='boolean'||!d.audio||!d.transcript)throw Error('Edited recording recovery is malformed');
         }
         return [...old.items];
       }
@@ -64,6 +69,7 @@ window.VoiceInput = (() => {
     }
     function storeRecords(store,items){
       if(!items.length)store.delete(key);
+      else if(items.some(v=>v.machine_source!==undefined))store.put({schema:'telecodex.voice-recovery/v9',items},key);
       else if(items.some(v=>v.avatarInterrupt))store.put({schema:'telecodex.voice-recovery/v8',items},key);
       else if(items.some(v=>v.dictation))store.put({schema:'telecodex.voice-recovery/v7',items},key);
       else if(items.some(v=>['openai-live','previous-live'].includes(v.transcriptionProfile)))store.put({schema:'telecodex.voice-recovery/v6',items},key);
@@ -98,6 +104,7 @@ window.VoiceInput = (() => {
       list:()=>operation('readonly',(_store,old)=>records(old)),
       put:(value,parallel=false)=>{
         const {blob,...meta}=value;
+        if(!validMachineSource(value))return Promise.reject(Error('Invalid recording context receipt'));
         if(value.native_fragment===true&&(key!=='codex_voice'||!value.fragment_group||!Number.isSafeInteger(value.fragment_offset)))return Promise.reject(Error('Invalid native recording fragment'));
         if(value.avatarInterrupt!==undefined&&(value.avatarInterrupt!==true||value.transcriptionProfile!=='openai-live'||value.dictation||value.foreground_dialogue||value.captureStop))return Promise.reject(Error('Invalid interruption recording'));
         if(!blob || blob.size>20*1024*1024 || new Blob([JSON.stringify(meta)]).size>65536)return Promise.reject(Error('Recording recovery limit reached'));
@@ -108,7 +115,7 @@ window.VoiceInput = (() => {
             const prior=items[index];
             const markBeforeSend=prior.avatarInterrupt===undefined&&value.avatarInterrupt===true
               &&!prior.submissionRequested&&!prior.uncertainSubmission;
-            if(prior.audio_sha256!==value.audio_sha256||prior.binding!==value.binding
+            if(prior.audio_sha256!==value.audio_sha256||prior.binding!==value.binding||prior.machine_source!==value.machine_source
                 ||prior.avatarInterrupt!==value.avatarInterrupt&&!markBeforeSend)throw Error('Recording identity changed');
             items[index]=value;
           }
@@ -389,7 +396,7 @@ window.VoiceInput = (() => {
       }
       if(pending!==frozen||frozen.binding!==getBinding()||active.signal.aborted)return;
       originalAttempt(frozen);
-      const value=await api('interaction/inputs',{binding:frozen.binding,id:frozen.id,text:d.text,files:[...(frozen.files||[]),d.audio,d.transcript],...(frozen.reply?{reply:frozen.reply}:{}),...(frozen.visual?{visual:frozen.visual}:{}),...(frozen.playback?{playback:frozen.playback}:{})});
+      const value=await api('interaction/inputs',{binding:frozen.binding,id:frozen.id,text:d.text,files:[...(frozen.files||[]),d.audio,d.transcript],...(frozen.reply?{reply:frozen.reply}:{}),...(frozen.visual?{visual:frozen.visual}:{}),...(frozen.playback?{playback:frozen.playback}:{}),...(frozen.machine_source?{machine_source:frozen.machine_source}:{})});
       await confirmed(value,frozen);
     }
     async function upload(automatic=false) {
@@ -426,7 +433,7 @@ window.VoiceInput = (() => {
             'X-Audio-Sha256':frozen.audio_sha256,'X-Foreground-Dialogue':frozen.foreground_dialogue,
             ...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{})},body:frozen.blob
         }):await fetch(route+(frozen.captureStop?'/limited':''),{method:'POST',credentials:'same-origin',signal:active.signal,
-          headers:{...headers(),...(frozen.reply?{'X-Reply-Source':(frozen.reply.context_only?'context:':'')+frozen.reply.source,'X-Reply-Revision':frozen.reply.revision}:{}),...(frozen.visual?{'X-Visual-Reference':JSON.stringify(frozen.visual)}:{}),...(frozen.playback?{'X-Playback-Context':JSON.stringify(frozen.playback)}:{}),...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{}),...(frozen.captureStop?{'X-Recording-Stop':frozen.captureStop}:{}),...(frozen.files?.length?{'X-File-References':encodeURIComponent(JSON.stringify(frozen.files))}:{}),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,'X-Audio-Sha256':frozen.audio_sha256},body:frozen.blob});
+          headers:{...headers(),...(frozen.reply?{'X-Reply-Source':(frozen.reply.context_only?'context:':'')+frozen.reply.source,'X-Reply-Revision':frozen.reply.revision}:{}),...(frozen.visual?{'X-Visual-Reference':JSON.stringify(frozen.visual)}:{}),...(frozen.playback?{'X-Playback-Context':JSON.stringify(frozen.playback)}:{}),...(frozen.captureQuestions!==undefined?{'X-Capture-Questions':JSON.stringify(frozen.captureQuestions)}:{}),...(frozen.captureStop?{'X-Recording-Stop':frozen.captureStop}:{}),...(frozen.files?.length?{'X-File-References':encodeURIComponent(JSON.stringify(frozen.files))}:{}),...(frozen.machine_source?{'X-Machine-Source':frozen.machine_source}:{}),'Content-Type':frozen.mime,'X-Input-Binding':frozen.binding,'X-Input-Id':frozen.id,'X-Audio-Sha256':frozen.audio_sha256},body:frozen.blob});
         const value=await response.json();
         if(!response.ok){const error=new Error('Recording not confirmed');error.status=response.status;if(response.status===507)error.retentionFull=true;if(value.code==='visual_reselection'&&value.submission_attempted===false)error.visualReselection=true;throw error;}
         await confirmed(value,frozen);
@@ -470,7 +477,7 @@ window.VoiceInput = (() => {
           dictation={text:previewText,automatic,automaticFinal:!!preparedText,audio:reference('Original recording.'+(mime.includes('wav')?'wav':mime.includes('ogg')?'ogg':mime.includes('mp4')?'m4a':'webm'),mime,blob.size),transcript:reference('Automatic transcript.txt','text/plain',automaticBlob.size)};
 
         }
-        pending={dictation,transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
+        pending={dictation,transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,machine_source:selection?.machine_source,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
         const attachmentsFull=dictation&&((selection?.files?.length||0)+2>8||blob.size+dictation.transcript.size+(selection?.files||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024);
         if(attachmentsFull)pending.retentionBlocked=true;
         if(needsReview||attachmentsFull){
@@ -498,18 +505,20 @@ window.VoiceInput = (() => {
       notice('Allow microphone access to begin.');pauseAudio();controls();
       try {
         // Start the host snapshot synchronously, before visual/file preparation.
-        let contextPreparation;
-        if(beforeOriginal){contextPreparation=Promise.resolve(beforeOriginal({id:selection.captureId,binding,modality:'audio',files:[]}));contextPreparation.catch(()=>{});}
+        let contextPreparation,machineSource;
+        if(beforeOriginal){contextPreparation=Promise.resolve(beforeOriginal({id:selection.captureId,binding,modality:'audio',files:[],reply:selection.reference}));contextPreparation.catch(()=>{});}
         let selectedVisual;
         try {const candidate=conversational?undefined:getVisual();selectedVisual=candidate?.then?await candidate:candidate;}
         catch(_){if(owned===generation)cancelRecording('Selected image unavailable. Choose another image or remove it before recording.','preparation-failed');return;}
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
         const fileCandidate=conversational?undefined:getFiles();let selectedFiles=fileCandidate?.then?await fileCandidate:fileCandidate;
-        if(contextPreparation){try{selectedFiles=[...(selectedFiles||[]),...await contextPreparation];}
+        if(contextPreparation){try{const source=await contextPreparation;
+          if(Array.isArray(source))selectedFiles=[...(selectedFiles||[]),...source];
+          else machineSource=source.machine_source;}
           catch{if(owned===generation)cancelRecording('World context was not confirmed. Your draft is kept; nothing was recorded or sent.','preparation-failed');return;}}
         if((selectedFiles?.length||0)>8||(selectedFiles||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024)throw Error('Attachment capacity');
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
-        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:selection.captureId};
+        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,machine_source:machineSource,captureId:selection.captureId};
         onTiming(frozenSelection.captureId,'requested');
         const media=await window.navigator.mediaDevices.getUserMedia({audio:true,video:false});
         if(owned!==generation || binding!==getBinding() || document.hidden){for(const track of media.getTracks())track.stop();return;}

@@ -50,5 +50,17 @@ function boot(){
  b.receive({...prepared,type:'prepared',file:{file_id:id(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:5}});await attempted;b.ui.attempt({id:attemptedId,binding});const beforeUnsafe=b.sent.length;b.ui.discard({id:attemptedId,binding,reason:'preparation-failed'});assert.equal(b.sent.length,beforeUnsafe,'No source-only discard after any original attempt, including unknown outcomes');
  const changed=b.ui.prepare({id:id(),binding,modality:'audio'});b.ui.bind('c'.repeat(64));await assert.rejects(changed);
  const gone=boot();gone.receive({type:'connect'});const pending=gone.ui.prepare({id:id(),binding,modality:'audio'});gone.events.pagehide();await assert.rejects(pending);const beforeReturn=gone.sent.length;gone.events.pageshow({persisted:true});assert.equal(gone.sent.length,beforeReturn+1);assert.equal(gone.sent.at(-1).message.type,'ready','BFCache return needs a fresh handshake and never repeats preparation');
- console.log('PASS exact parent/frame/actor/binding/visit/channel, text/audio IDs, capacity, no private payload, no timeout replay and lifecycle fencing');
+ const inline=boot();inline.receive({type:'connect',features:{machineSource:'owner-journal/v1'}});
+ assert.equal(inline.ui.reservedFiles,0);assert.equal(inline.ui.reservedBytes,0);
+ for(const modality of ['text','audio']){
+  const proof=id(),work=inline.ui.prepare({id:id(),binding,modality,files:Array(8).fill({size:5*1024*1024})});
+  const d=inline.sent.at(-1).message;assert.equal(d.mode,'owner-journal/v1');assert.equal(d.capacity.files,0);
+  inline.receive({...d,type:'prepared',file:{file_id:id()},machine_source:proof});assert(!inline.timers.at(-1).closed);
+  inline.receive({...d,type:'prepared',machine_source:proof});assert.equal((await work).machine_source,proof);
+ }
+ const sends=inline.sent.length;
+ for(const modality of ['text','audio'])
+  assert.deepEqual(Array.from(await inline.ui.prepare({id:id(),binding,modality,reply:{source:'request:1'}})),[]);
+ assert.equal(inline.sent.length,sends,'A bound answer uses its native request route');
+ console.log('PASS frame identity fencing, legacy attachments and exact unshared machine receipts with all eight slots');
 })().catch(e=>{console.error(e);process.exitCode=1;});

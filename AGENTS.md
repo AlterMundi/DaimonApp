@@ -3,8 +3,10 @@
 Hosted Conversation surfaces reuse the canonical shell/composer and one original
 writer. Follow docs/conversation-surface.md: exact configured parent/frame/actor/
 binding/visit/channel, no private payload in postMessage, same ID allocated before
-async context/file/media work, one reserved context file slot and bounded waits.
-Host context is an immutable machine file, never human speech or authority.
+async context/file/media work and bounded waits. The legacy frame reserves one
+context file slot. The advertised owner-journal protocol keeps context separate
+from human attachments. Host context is immutable machine evidence, never human
+speech or authority.
 Preserve drafts/recovered originals and never prepare again on original retry.
 
 Read `CONTRIBUTING.md` before integration. Apply Nicolas's recorded operational

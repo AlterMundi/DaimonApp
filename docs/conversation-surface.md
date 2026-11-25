@@ -153,12 +153,24 @@ the source again when sealing and rolls back capture if the bytes are unavailabl
 Retained sources remain immutable. Before sustained activation, qualify their
 owning archival route so the journal's sealed-source limit is recoverable.
 
-The dashboard has an authenticated HTTP path for selecting a receipt. The
-selected Holodeck browser integration still uses a full source attachment.
-The owner bridge candidate can reserve and verify a receipt against a current
-registered pair and world grant. The browser producer and baseline eligibility
-still need integration and receiving qualification. An older receiver retains
-the existing full-source path. Holodeck #19 tracks semantic deltas and rollout.
+The dashboard candidate negotiates the receipt path only when both the
+canonical frame and the authorized Holodeck host advertise it. Each
+original freezes its chosen mode. The legacy mode reserves one slot and
+appends the full context file. The journal mode leaves the eight human
+slots available and submits the receipt independently. Text and edited
+dictation use the existing canonical input route, ordinary voice uses the
+existing header, and local voice recovery stores the exact receipt with the
+frozen original. Receipt-bearing recovery uses version 9 so older clients
+cannot silently send an original without its receipt. A directly delivered
+native question answer retains its existing native-answer behavior.
+
+Controlled Chromium at desktop and narrow widths exercised old and new
+frame modes, separate text and audio receipts, eight attached text files,
+and uncertain text acknowledgment recovery. The microphone fixture confirms
+that edited-dictation recovery sends the same original and receipt without
+repeating capture or preparation. The selected service remains on the legacy
+path. Holodeck #19 owns admission-based semantic baselines, older-original
+ordering and live qualification before changing the selected transport.
 
 Fable High reviewed the transaction boundary and identified the requirements
 for idempotence, admission epochs, and an additive table. Opus 5.5 High

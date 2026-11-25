@@ -1,14 +1,16 @@
 "use strict";
 window.FileInput=(()=>{
- function mount({headers,getBinding,unauthorized,maxFiles=8,maxBytes=40*1024*1024}){
+ function mount({headers,getBinding,unauthorized,maxFiles=8,maxBytes=40*1024*1024,getLimits}){
   const picker=document.querySelector('#conversation-files'),list=document.querySelector('#conversation-files-list'),status=document.querySelector('#conversation-files-state');
   let files=[],generation=0,preparing=false;
   function render(){list.replaceChildren();files.forEach(file=>{const row=document.createElement('div'),name=document.createElement('span'),remove=document.createElement('button');name.textContent=`${file.ref.name} · ${(file.ref.size/1024).toFixed(1)} KiB`;remove.type='button';remove.textContent='×';remove.setAttribute('aria-label',`Remove ${file.ref.name}`);remove.addEventListener('click',()=>{generation++;preparing=false;files=files.filter(f=>f!==file);render();});row.append(name,remove);list.append(row);});list.hidden=!files.length;}
   async function addFiles(selection){
    const owned=++generation,binding=getBinding();preparing=true;status.textContent='Preparing original files…';
    try{
-    const selected=Array.from(selection||[]);if(files.length+selected.length>maxFiles)throw Error(`Attach at most ${maxFiles} files.`);
-    if(selected.some(f=>f.size>20*1024*1024)||[...files.map(f=>f.ref),...selected].reduce((n,f)=>n+f.size,0)>maxBytes)throw Error(maxFiles===8?'At most20MiB per file and40MiB total.':'At most 20 MiB per file; leave room for the attached world context.');
+    const limits=getLimits?.()??{maxFiles,maxBytes};
+    const {maxFiles:limitFiles,maxBytes:limitBytes}=limits;
+    const selected=Array.from(selection||[]);if(files.length+selected.length>limitFiles)throw Error(`Attach at most ${limitFiles} files.`);
+    if(selected.some(f=>f.size>20*1024*1024)||[...files.map(f=>f.ref),...selected].reduce((n,f)=>n+f.size,0)>limitBytes)throw Error(limitFiles===8?'At most 20 MiB per file and 40 MiB total.':'At most 20 MiB per file; leave room for the attached world context.');
     const prepared=[];
     for(const file of selected){const blob=await file.arrayBuffer();if(blob.byteLength!==file.size)throw Error('Original file size changed. Nothing was added.');const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',blob)),x=>x.toString(16).padStart(2,'0')).join('');prepared.push({blob,ref:{file_id:crypto.randomUUID(),sha256,name:file.name,mime:file.type||'application/octet-stream',size:file.size},uploaded:false});}
     if(owned!==generation||binding!==getBinding())throw Error('File access changed. Nothing was added.');files.push(...prepared);render();status.textContent='Original files selected. Send with your message or recording.';
