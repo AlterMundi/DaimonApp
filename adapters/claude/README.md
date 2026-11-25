@@ -132,3 +132,27 @@ within the return bound is retained locally. There is no background intake.
 Synthetic owner-route tests cover durable sequencing and repeat requests after
 restart. Live Matrix credentials, provider inference, native session recovery,
 signed reply delivery and human readback require receiving evidence.
+
+### Signed interop with the native SDK
+
+Use the pinned Matrix checkout's `src` and repository root in `PYTHONPATH`.
+Set `CLAUDE_TEST_SDK_PATH` to the pinned Agent SDK entry point and pass the
+matching native executable. Run as the normal test user for Matrix's Unix
+peer-credential checks.
+
+```sh
+python3 -B tests/foreground_signed_io.py claude \
+  /absolute/gateway-executable /absolute/native/claude
+```
+
+The test uses an owner-private profile with a synthetic API key and a wrapper
+that directs the native CLI only to the loopback Anthropic fixture. It checks
+the actual provider-facing catalog and one Matrix status read, the durable
+exposure decision, the signed return and the sender's original thread. The
+reply remains available after restarting Gateway without another provider call.
+
+For the composed Gateway and TeleDaimon candidate, set
+`FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
+external Telegram transport unavailable and no usable Codex executable.
+`CLAUDE_TEST_WORKER_PATH` can select that candidate's exact worker source.
+All Matrix identities, user input and provider output are synthetic.

@@ -8,6 +8,8 @@ All identity, model output and memory content belong to fixtures.
 from http.server import ThreadingHTTPServer
 import importlib.util
 import json
+import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -16,6 +18,7 @@ from threading import Thread
 import unittest
 
 import antigravity_foreground_io as foreground
+from claude_provider_fixture import ANSWER, ClaudeProvider
 from conversation_input_control_io import Inputs
 
 
@@ -66,14 +69,31 @@ def configure_worker(engine, executable, root, state, profile, port, config):
         config.update(node="/usr/bin/node", providerPort=port)
         return [executable, "-B", str(foreground.WORKER), "--profile", str(profile)]
 
+    key = root / "provider-fixture"
+    key.touch(mode=0o600)
+    key.write_text("fixture-only\n")
+    if engine == "claude":
+        wrapper = root / "claude-loopback"
+        wrapper.write_text(f"""#!/bin/sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:{port}
+exec {shlex.quote(executable)} "$@"
+""")
+        wrapper.chmod(0o700)
+        del config["stateRoot"]
+        config.update(sdk=os.environ["CLAUDE_TEST_SDK_PATH"], binary=str(wrapper), cwd=str(root),
+                      home=str(state), configurationDirectory=str(state), apiKeyFile=str(key),
+                      cliVersion=os.environ.get("CLAUDE_TEST_CLI_VERSION", "2.1.325"),
+                      maxBudgetUsd=0.1)
+        worker = os.environ.get("CLAUDE_TEST_WORKER_PATH", str(
+            foreground.ROOT / "adapters/claude/gateway-worker.mjs"
+        ))
+        return ["/usr/bin/node", worker, "--profile", str(profile)]
+
     home = state / "config" / "goose"
     home.mkdir(parents=True)
     extensions = {name: {"name": name, "type": "platform", "enabled": False}
                   for name in ("developer", "extensionmanager", "summon", "tom", "todo", "summarize")}
     (home / "config.yaml").write_text(json.dumps({"extensions": extensions}))
-    key = root / "provider-fixture"
-    key.touch(mode=0o600)
-    key.write_text("fixture-only\n")
     wrapper = root / "goose-loopback"
     wrapper.write_text(f"""#!/bin/sh
 export OPENAI_HOST=http://127.0.0.1:{port}
@@ -138,22 +158,37 @@ operator.main()
             )
             status = json.loads(live_status.stdout)
             self.assertEqual(status["local_origin"]["embodiment_id"], body)
-            memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"], engine)
-            initial_database = database.read_bytes()
+            memory = None
+            if engine != "claude":
+                memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"], engine)
+                initial_database = database.read_bytes()
             journey = Inputs(gateway)
             self.addCleanup(journey.close)
+            if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+                gateway_config = re.sub(r'^(bot_token_file|api_base)=.*\n', '', journey.config.read_text(),
+                                        flags=re.MULTILINE)
+                gateway_config = gateway_config.replace(
+                    "[telegram]\n",
+                    '[telegram]\nexternal_polling=true\nexternal_bot_id=123\n'
+                    'api_base="http://127.0.0.1:1"\n',
+                )
+                journey.config.write_text(gateway_config)
+                (journey.root / "codex").write_text("#!/bin/sh\nexit 7\n")
             profile = root / "worker.json"
             state = root / "native-state"
             state.mkdir(mode=0o700)
             profile.touch(mode=0o600)
 
-            with ThreadingHTTPServer(("127.0.0.1", 0), foreground.Provider) as provider:
+            handler = ClaudeProvider if engine == "claude" else foreground.Provider
+            with ThreadingHTTPServer(("127.0.0.1", 0), handler) as provider:
                 provider.journey = journey
                 provider.calls = []
                 provider.failure = None
                 provider.mode = "accepted"
                 provider.engine = engine
-                provider.model = "fixture" if engine == "antigravity" else "gpt-4o-mini"
+                provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
+                                  "claude": "claude-sonnet-4-5"}[engine]
+                provider.body = body
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
                 provider.current = original["message_id"]
                 provider.original = "Material for the selected turn"
@@ -161,8 +196,9 @@ operator.main()
                     "stateRoot": str(state), "model": provider.model, "matrixStatusCommand": host,
                     "body": {"beingRef": being, "embodimentId": body, "incarnationId": origin["incarnation_id"],
                              "manifestHash": status["manifest_hash"]},
-                    "selectedMemory": memory,
                 }
+                if memory:
+                    config["selectedMemory"] = memory
                 command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
                 profile.write_text(json.dumps(config))
                 journey.config.write_text(journey.config.read_text() + f"""
@@ -183,18 +219,21 @@ timeout_seconds=5
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
                     self.assertEqual(reply["phase"], "delivered", reply)
-                    self.assertEqual(reply["engine"], engine)
+                    # The original Claude-only journal did not emit an engine field.
+                    self.assertEqual(reply.get("engine", "claude"), engine)
                     self.assertTrue(reply["native_session_id"])
                     self.assertEqual(return_attempts, [reply["result"]["send_id"]])
                     self.assertEqual(provider.calls, [original["message_id"]] * 2)
-                    self.assertEqual(database.read_bytes(), initial_database)
+                    if memory:
+                        self.assertEqual(database.read_bytes(), initial_database)
                     synced = fixture.ledger_a
                     result = reply["result"]["delivery"]
                     event = next(row for row in synced.conversation_evidence()
                                  if row["event_id"] == result["message_id"])
                     self.assertEqual(event["origin"]["embodiment_id"], body)
                     self.assertEqual(event["payload"]["intent"]["thread_id"], original["thread_id"])
-                    self.assertIn(foreground.MARKER, event["payload"]["body"]["text"])
+                    expected = ANSWER if engine == "claude" else foreground.MARKER
+                    self.assertIn(expected, event["payload"]["body"]["text"])
                     receipt = synced.event(result["receipt_event_id"])
                     self.assertEqual(receipt["origin"]["embodiment_id"], author)
                     self.assertEqual(receipt["payload"]["message_ref"]["event_hash"], result["message_hash"])
@@ -207,6 +246,9 @@ timeout_seconds=5
                     self.assertEqual(observed, reply)
                     self.assertEqual(provider.calls, [original["message_id"]] * 2)
                     self.assertEqual(return_attempts, [reply["result"]["send_id"]])
+                    if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+                        self.assertEqual(journey.telegram_methods, [])
+                        self.assertEqual(journey.rpc, [])
                 finally:
                     provider.shutdown()
                     server.join()
@@ -216,6 +258,9 @@ timeout_seconds=5
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5 or sys.argv[1] not in ("antigravity", "goose"):
-        raise SystemExit("Usage: foreground_signed_io.py ENGINE GATEWAY SDK_PYTHON_OR_GOOSE_ACP DMK_SCRIPTS")
-    raise SystemExit(qualify(sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])))
+    if len(sys.argv) < 4 or sys.argv[1] not in ("antigravity", "claude", "goose"):
+        raise SystemExit("Usage: foreground_signed_io.py ENGINE GATEWAY NATIVE_EXECUTABLE [DMK_SCRIPTS]")
+    engine, gateway, executable = sys.argv[1:4]
+    if len(sys.argv) != (4 if engine == "claude" else 5):
+        raise SystemExit("Supply the DMK scripts directory for Antigravity and Goose.")
+    raise SystemExit(qualify(engine, gateway, executable, Path(sys.argv[4]) if engine != "claude" else None))

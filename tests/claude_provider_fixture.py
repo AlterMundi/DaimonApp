@@ -1,0 +1,73 @@
+"""Deterministic Anthropic streaming endpoint for the signed foreground fixture."""
+
+from http.server import BaseHTTPRequestHandler
+import json
+
+
+TOOL = "mcp__matrix__daimon_status"
+ANSWER = "The selected Matrix body reported integrity ok."
+
+
+class ClaudeProvider(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        try:
+            assert self.path.startswith("/v1/messages")
+            length = int(self.headers["Content-Length"])
+            assert 0 < length < 262_144
+            data = json.loads(self.rfile.read(length))
+            assert [tool["name"] for tool in data["tools"]] == [TOOL]
+            assert self.server.original in json.dumps(data["messages"])
+            phase, submission = self.server.journey.row(
+                "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
+                (self.server.current,),
+            )[0]
+            assert phase == "provider_exposed"
+            assert json.loads(submission)["native_session_id"]
+            prior = len(self.server.calls)
+            self.server.calls.append(self.server.current)
+            result = [
+                item for message in data["messages"] if isinstance(message["content"], list)
+                for item in message["content"] if item["type"] == "tool_result"
+            ]
+            if prior == 0:
+                assert not result
+                block = {"type": "tool_use", "id": "toolu_fixture", "name": TOOL, "input": {}}
+                delta = {"type": "input_json_delta", "partial_json": "{}"}
+                reason = "tool_use"
+            else:
+                assert prior == 1 and len(result) == 1
+                assert result[0]["tool_use_id"] == "toolu_fixture"
+                assert result[0].get("is_error") is not True
+                assert self.server.body in json.dumps(result[0]["content"])
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": ANSWER}
+                reason = "end_turn"
+            message = {
+                "id": "msg_fixture", "type": "message", "role": "assistant", "content": [],
+                "model": data["model"], "stop_reason": None, "stop_sequence": None,
+                "usage": {"input_tokens": 8, "output_tokens": 1},
+            }
+            frames = [
+                ("message_start", {"message": message}),
+                ("content_block_start", {"index": 0, "content_block": block}),
+                ("content_block_delta", {"index": 0, "delta": delta}),
+                ("content_block_stop", {"index": 0}),
+                ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
+                                   "usage": {"output_tokens": 4}}),
+                ("message_stop", {}),
+            ]
+            response = "".join(
+                f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
+                for event, value in frames
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+        except Exception as error:
+            self.server.failure = error
+            self.send_error(400)
