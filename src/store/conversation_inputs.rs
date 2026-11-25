@@ -319,12 +319,25 @@ impl ConversationInput {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum ConversationInputEvent {
+pub enum ConversationInputEvent<'a> {
     Queue,
-    Begin { local_turn: i64, steer: bool },
-    Accepted { local_turn: i64 },
-    Rejected { local_turn: i64 },
-    Uncertain { local_turn: i64 },
+    Begin {
+        local_turn: i64,
+        steer: bool,
+    },
+    BeginDirect {
+        local_turn: i64,
+        proof: Option<&'a str>,
+    },
+    Accepted {
+        local_turn: i64,
+    },
+    Rejected {
+        local_turn: i64,
+    },
+    Uncertain {
+        local_turn: i64,
+    },
 }
 
 pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<ConversationInput> {
@@ -1937,6 +1950,47 @@ impl Store {
         super::conversation_machine_sources::native_machine_source_on(&conn, &input)
     }
 
+    pub(crate) fn conversation_direct_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<Option<super::NativeMachineSource>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = read_on(&conn, id, human)?;
+        eligible_on(&conn, &input)?;
+        super::conversation_machine_sources::preview_direct_projection_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )
+    }
+
+    pub(crate) fn conversation_bind_direct_machine_source(
+        &self,
+        human: i64,
+        id: &str,
+        turn: i64,
+        proof: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let input = read_on(&tx, id, human)?;
+        eligible_on(&tx, &input)?;
+        anyhow::ensure!(
+            input.phase == "steering" && input.local_turn == Some(turn),
+            "Original changed before selecting its native context"
+        );
+        super::conversation_machine_sources::bind_direct_projection_on(
+            &tx,
+            &input,
+            &self.instance_id,
+            turn,
+            proof,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn conversation_input_validate(&self, human: i64, id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = read_on(&conn, id, human)?;
@@ -2076,7 +2130,8 @@ impl Store {
                 }
                 ("queued", None)
             }
-            ConversationInputEvent::Begin { local_turn, steer }
+            ConversationInputEvent::Begin { local_turn, .. }
+            | ConversationInputEvent::BeginDirect { local_turn, .. }
                 if input.phase == "queued"
                     || (input.phase == "rejected" && input.local_turn == Some(local_turn)) =>
             {
@@ -2085,6 +2140,16 @@ impl Store {
                 if !matches {
                     bail!("Conversation input execution mismatch");
                 }
+                if let ConversationInputEvent::BeginDirect { proof, .. } = event {
+                    super::conversation_machine_sources::bind_direct_projection_on(
+                        &tx,
+                        &input,
+                        &self.instance_id,
+                        local_turn,
+                        proof,
+                    )?;
+                }
+                let steer = matches!(event, ConversationInputEvent::Begin { steer: true, .. });
                 (if steer { "steering" } else { "sending" }, Some(local_turn))
             }
             ConversationInputEvent::Accepted { local_turn }
@@ -2114,6 +2179,11 @@ impl Store {
         let updated = read_on(&tx, id, human)?;
         if phase == "accepted" {
             super::topic_publications::conversation_accepted_on(&tx, &updated)?;
+            super::conversation_machine_sources::acknowledge_direct_projection_on(
+                &tx,
+                &updated,
+                &self.instance_id,
+            )?;
         }
         tx.commit()?;
         Ok(updated)

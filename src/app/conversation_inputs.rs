@@ -1223,9 +1223,10 @@ fn steer(
     let id = input.id.clone();
     let human = input.human;
     let entry = input.entry;
+    let turn = active.turn_id;
     let machine_source = shared
         .store
-        .conversation_native_machine_source(human, &id)?;
+        .conversation_direct_machine_source(human, &id)?;
     let machine_proof = machine_source.as_ref().map(|source| source.proof.clone());
     let retained_text = format!(
         "{}{}{}",
@@ -1248,13 +1249,12 @@ fn steer(
                 Box::pin(async move {
                     super::tribu::validate_conversation(&shared, human, entry, &id).await?;
                     shared.store.conversation_input_validate(human, &id)?;
-                    let current = shared
-                        .store
-                        .conversation_native_machine_source(human, &id)?;
-                    anyhow::ensure!(
-                        current.map(|source| source.proof) == machine_proof,
-                        "Machine source changed before Conversation submission"
-                    );
+                    shared.store.conversation_bind_direct_machine_source(
+                        human,
+                        &id,
+                        turn,
+                        machine_proof.as_deref(),
+                    )?;
                     Ok(())
                 })
             },
@@ -1277,7 +1277,6 @@ fn steer(
             steer: true,
         },
     )?;
-    let turn = active.turn_id;
     if active.sender.send(packet).is_err() {
         return defer_and_enqueue(app, &input, worker, Some(turn), "steer_channel_closed");
     }

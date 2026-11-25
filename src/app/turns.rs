@@ -82,7 +82,7 @@ pub(super) async fn process_turn(
     let machine_source = if let Some(id) = queued.conversation_input.as_deref() {
         shared
             .store
-            .conversation_native_machine_source(queued.request.from_user_id, id)?
+            .conversation_direct_machine_source(queued.request.from_user_id, id)?
     } else if let Some(id) = queued.interaction.as_deref() {
         shared
             .store
@@ -989,6 +989,7 @@ pub(super) async fn process_turn(
                                 }
                                 shared.store.native_input_receipt(turn_id,Some(&client_id),&native_id)?;
                                 if let Some(id)=client_id.strip_prefix("conversation:") {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;}
+                                else {shared.store.invalidate_native_situation(turn_id,None)?;}
                                 if shared.store.interaction_instruction(&client_id,requester_user_id)?.is_some() {
                                     shared.store.interaction_transport(&client_id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;
                                 }
@@ -1002,6 +1003,7 @@ pub(super) async fn process_turn(
                                 }
                                 shared.store.native_input_receipt(turn_id,None,&native_id)?;
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;}
+                                else {shared.store.invalidate_native_situation(turn_id,None)?;}
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
                                 if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
 
@@ -1015,6 +1017,10 @@ pub(super) async fn process_turn(
                                     // Display failure cannot interrupt native work or authorize replay.
                                     let _=shared.store.interaction_response_draft(requester_user_id,session_key,turn_id,&thread_id,&native_turn,&item_id,&text,started,completed);
                                 }
+                                Ok(CodexEventOutcome::None)
+                            }
+                            CodexEvent::NativeContextCompacted { thread_id } => {
+                                shared.store.invalidate_native_situation(turn_id,Some(&thread_id))?;
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeMessageCompleted { thread_id, turn_id: native_turn, item_id, phase, text, async_questions } => {
@@ -1110,10 +1116,9 @@ pub(super) async fn process_turn(
                                 if let Some(id)=conversation_input.as_deref() {
                                     super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;
                                     shared.store.conversation_input_validate(requester_user_id,id)?;
-                                    let current=shared.store.conversation_native_machine_source(requester_user_id,id)?;
-                                    anyhow::ensure!(current.map(|source|source.proof)==machine_proof,
-                                        "Machine source changed before the Conversation native turn was submitted");
-                                    shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;
+                                    shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::BeginDirect{
+                                        local_turn:turn_id,proof:machine_proof.as_deref(),
+                                    })?;
                                 }
                                 let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
                                 #[cfg(unix)]
@@ -1955,6 +1960,7 @@ impl LiveTurnSink {
                 tracing::debug!("codex thread started: {thread_id}");
             }
             CodexEvent::NativeMessageCompleted { .. }
+            | CodexEvent::NativeContextCompacted { .. }
             | CodexEvent::NativeMessageDraft { .. }
             | CodexEvent::NativeModelConfigured { .. }
             | CodexEvent::UserInputRequest { .. }

@@ -166,19 +166,34 @@ the source again when sealing and rolls back capture if the bytes are unavailabl
 Retained sources remain immutable. Before sustained activation, qualify their
 owning archival route so the journal's sealed-source limit is recoverable.
 
-For semantic delivery, the acceptance point is the exact canonical
-`ConversationInputEvent::Accepted` following native start or steer acceptance.
-The generic native receipt table here records Telegram ingress and is
-insufficient for canonical Conversation. An original sealed in SQLite,
-a queued turn, or an agent reply does not acknowledge its semantic
-projection. The candidate reducer will fold coarse pose and recent work
-only against a state actually installed on the current native thread and
-authorized lane. It must retain both the installed state and a separate
-order floor; losing the state requires a full projection without allowing
-an earlier reservation to replace a newer observation. Route changes,
-first-thread binding and interrupted submissions need exact per-original
-evidence. Forwarded inputs keep their full source until their destination
-can establish its own baseline.
+The native receiver candidate chooses a full, unchanged, or delta delivery
+for direct canonical Conversation. Each native input still identifies its
+exact original, retained machine receipt and digest. A full delivery
+includes the authorized snapshot and its semantic state. A delta includes
+only changed sections relative to the explicitly named accepted original.
+An unchanged delivery carries the source identifiers and the baseline
+reference. It omits the snapshot and change data. Every full canonical
+source stays available to its existing authorized audit and world routes.
+
+Both direct start and steer bind their selected projection to the exact
+execution and writer before native submission. The checkpoint advances at
+`ConversationInputEvent::Accepted` with the matching native execution and
+base. The generic Telegram receipt, canonical journal seal, queued phase
+and later reply do not establish a baseline. If a checkpoint is lost, its
+reservation floor survives. A late original carries its own historical
+full view. Captures compare stable section fields, use half-meter cells
+with hysteresis, and preserve a bounded recent-work window. Room or world
+changes require a new full view. Writer restart, observed context
+compaction and unprovable acceptance invalidate the reusable checkpoint.
+Routed targets retain the full source and never establish a direct
+checkpoint.
+
+An affected patch that no longer matches its selected baseline is refused
+before native submission. Its original remains available through the
+existing retained-input controls. A qualifying full plan can survive an
+intervening acceptance while its order is still current. The semantic
+candidate is separate from activation. Retention and expired-source
+ordering still require qualification before sustained receiving use.
 
 The dashboard candidate negotiates the receipt path only when both the
 canonical frame and the authorized Holodeck host advertise it. Each
@@ -196,8 +211,8 @@ frame modes, separate text and audio receipts, eight attached text files,
 and uncertain text acknowledgment recovery. The microphone fixture confirms
 that edited-dictation recovery sends the same original and receipt without
 repeating capture or preparation. The selected service remains on the legacy
-path. Holodeck #19 owns admission-based semantic baselines, older-original
-ordering and live qualification before changing the selected transport.
+path. Holodeck #19 owns receiving qualification and the conditions for
+enabling the journal transport on the live pair.
 
 Fable High reviewed the transaction boundary and identified the requirements
 for idempotence, admission epochs, and an additive table. Opus 5.5 High

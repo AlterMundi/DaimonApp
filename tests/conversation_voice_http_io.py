@@ -66,10 +66,14 @@ print(json.dumps({'text':item['text'],'final':True}))
         token=client.post('/api/session',json={'init_data':'100'},headers=headers).json()['session_token'];headers['authorization']='Bearer '+token
         page=client.get('/api/interaction',headers=headers).json();assert page['can_speak'];headers['x-dashboard-csrf']=page['csrf']
         transcripts={};machine_receipts={}
-        def offer_context(ident,label):
+        def offer_context(ident,label,x=0.0,room="matter"):
             observation_id=str(uuid.uuid4());speaker='human:telegram:100'
             observation={'schema':'holodeck.situation/v1','id':observation_id,'observer':speaker,
                 'inputAssociation':{'humanInputId':ident},'fixtureLabel':label}
+            if machine_source:
+                observation.update(run='fixture-world',edition='torus-v1',scope='structured-interior-room',
+                    place={'id':room,'title':room},capturedAt=len(machine_receipts),
+                    clientReportedView={'value':{'connectionId':ident,'local':{'position':{'x':x,'y':0,'z':0}}}})
             data=json.dumps({'schema':'holodeck.native-situation-source/v1','human_input_id':ident,
                 'speaker':speaker,'observation':observation}).encode()
             ref={'file_id':str(uuid.uuid4()),'name':'holodeck-situation.json','mime':'application/json',
@@ -214,6 +218,50 @@ print(json.dumps({'text':item['text'],'final':True}))
         assert status(interrupted)['phase']=='preparation_unconfirmed'
         assert upload(data3,interrupted)[1].json()['new_input'] is False and calls().count(digest3)==1
         assert not j.messages,'Canonical microphone fabricated Telegram publication'
+        if machine_source:
+            # The exact packets below cross the canonical HTTP writer, owner
+            # journal and native receiving boundary. No model is invoked.
+            def send_situated(expected, x, room="matter", base=None, voice=False):
+                ident=str(uuid.uuid4())
+                receipt=offer_context(ident,expected,x,room)
+                if voice:
+                    voice_data=audio(840)
+                    register(voice_data,'Observe situated fixture')
+                    _,response=upload(voice_data,ident,stop=stop_reason)
+                else:
+                    response=client.post('/api/interaction/inputs',json={
+                        'binding':binding,'id':ident,'text':'Observe situated fixture','machine_source':receipt,
+                    },headers=headers)
+                assert response.status_code==200,response.text
+                j.wait(lambda:status(ident)['phase']=='accepted')
+                method,params=j.packets[-1]
+                assert params['clientUserMessageId']=='conversation:'+ident
+                assert method in ('turn/start','turn/steer')
+                packet=params['input'][0]['text']
+                context=packet.split('[Holodeck machine source]\n',1)[1]
+                evidence=json.loads(next(line for line in context.splitlines() if line.startswith('{')))
+                delivery=evidence['delivery']
+                assert delivery['kind']==expected,delivery
+                assert evidence['receipt']==receipt and evidence['original_id']==ident
+                assert not status(ident).get('files')
+                assert ('observation' in evidence)==(expected=='full')
+                if base is not None:assert delivery['base_original']==base
+                if expected=='delta':assert sorted(delivery['changes'])==['pose']
+                if expected=='unchanged':assert 'changes' not in delivery
+                return ident
+            initial=send_situated('full',0.0)
+            unchanged=send_situated('unchanged',0.0,base=initial)
+            spoken=send_situated('unchanged',0.0,base=unchanged,voice=True)
+            send_situated('delta',2.0,base=spoken)
+            with sqlite3.connect(j.root/'state.sqlite') as db:
+                db.execute('UPDATE conversation_machine_source_checkpoint SET original=NULL')
+            send_situated('full',2.0)
+            j.broadcast(j.web_thread,'item/completed',{'turnId':j.web_turn,
+                'item':{'type':'contextCompaction','id':'situated-compaction-fixture'}})
+            j.wait(lambda:j.row('SELECT original FROM conversation_machine_source_checkpoint')==[(None,)])
+            send_situated('full',2.0)
+            send_situated('full',2.0,room='foyer')
+            print('PASS native situated full, unchanged, pose patch, lost checkpoint and room boundary.')
         print('PASS committed browser voice: actual HTTP/owner/SQLite/decoder/native, one retained clip identity, final ASR only, source order before later text, attributed worker routing, silence, duplicate/changed upload, grant ABA and restart without replay; zero models.')
         if machine_source:print('PASS owner journal machine sources: exact text, delayed voice and routed native evidence, sealed readback and zero human attachment slots.')
     finally:
