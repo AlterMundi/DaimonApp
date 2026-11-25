@@ -11,6 +11,8 @@ struct Submit {
     id: String,
     text: String,
     #[serde(default)]
+    target: Option<InputTarget>,
+    #[serde(default)]
     visual: Option<crate::visual::VisualSelection>,
     #[serde(default)]
     files: Vec<crate::files::FileReference>,
@@ -18,6 +20,12 @@ struct Submit {
     reply: Option<crate::store::ConversationReply>,
     #[serde(default)]
     playback: Option<crate::store::ConversationPlayback>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum InputTarget {
+    Claude,
 }
 
 /// Only a leading explicit command with a request can interrupt for Avatar.
@@ -46,6 +54,12 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
     if let Some(dialogue) = &input.foreground_dialogue {
         value["foreground_dialogue"] = json!(dialogue);
         value["foreground_delegation"] = json!(input.foreground_delegation);
+    }
+    if input.private_matrix.is_some() {
+        value["target"] = json!("claude");
+    }
+    if let Some(reply) = &input.private_matrix_reply {
+        value["claude_reply"] = json!({"text":reply.text,"message_id":reply.event_id});
     }
     value
 }
@@ -883,6 +897,61 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         args.strip_prefix("submit ")
             .context("Expected input submit JSON, status UUID or list cursor")?,
     )?;
+    if let Some(InputTarget::Claude) = request.target {
+        anyhow::ensure!(
+            request.visual.is_none()
+                && request.files.is_empty()
+                && request.reply.is_none()
+                && request.playback.is_none(),
+            "The private Claude route currently accepts plain text"
+        );
+        let receiver = cfg
+            .claude_foreground
+            .as_ref()
+            .context("Claude is unavailable")?;
+        let origin = receiver
+            .interaction_origin
+            .as_ref()
+            .context("Claude is unavailable")?;
+        let (input, fresh) = {
+            let _ingress = app.shared.conversation_ingress.lock().await;
+            app.shared.store.conversation_private_matrix_capture(
+                human,
+                cfg.entry(),
+                &request.binding,
+                &request.id,
+                &request.text,
+                &origin.source,
+                &receiver.transport.source,
+            )?
+        };
+        if fresh && input.phase == "retained" {
+            let (app, cfg, origin) = (app.clone(), cfg.clone(), origin.clone());
+            tokio::spawn(async move {
+                let result =
+                    super::matrix::submit_claude_original(&app, &cfg, &input, &origin).await;
+                if result.is_err() {
+                    tracing::warn!(input_id = %input.id,
+                        "Private Claude input ended before authenticated reply readback");
+                }
+                if app
+                    .shared
+                    .store
+                    .conversation_private_matrix_finish_unsent(&input)
+                    .is_err()
+                {
+                    tracing::warn!(input_id = %input.id, "Private Claude unsent outcome unavailable");
+                }
+            });
+        }
+        return response(
+            app,
+            &app.shared
+                .store
+                .conversation_input_read(human, cfg.entry(), &request.id)?,
+            fresh,
+        );
+    }
     // Preserve capture/handoff order for this configured integrating entry. The
     // lock is released before native acknowledgments, so later steering proceeds.
     if crate::interaction::explicit_selector(&request.text).is_none()

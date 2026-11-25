@@ -957,8 +957,11 @@ class Provider:
         return value
 
     def conversation_input_submit(self, body):
-        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files'}:
+        if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files','target'}:
             raise ValueError('Select the conversation and provide one original message')
+        if 'target' in body and (body['target'] != 'claude'
+                or set(body) & {'reply', 'visual', 'playback', 'files'}):
+            raise ValueError('Claude currently accepts plain text')
         self.input_id(body['id'])
         self.check_reply(body.get('reply'))
         self.check_playback(body.get('playback'))
@@ -969,8 +972,8 @@ class Provider:
         import re
         if (not isinstance(body['binding'], str) or not re.fullmatch('[a-f0-9]{64}', body['binding'])
                 or not isinstance(body['text'], str) or not body['text'].strip() and not body.get('files')
-                or '\0' in body['text'] or len(body['text'].encode('utf-8')) > 32768):
-            raise ValueError('A message must contain text and fit within 32 KiB')
+                or '\0' in body['text'] or len(body['text'].encode('utf-8')) > (16384 if 'target' in body else 32768)):
+            raise ValueError('A message must contain text and fit the selected destination')
         # The Rust journal owns idempotency and exact-source checks. No retry.
         return self.decorate_input(self.presentation('input submit ' + json.dumps(body, ensure_ascii=False)))
 

@@ -312,6 +312,22 @@ def we_origin(value, client, *, timeout, recipient):
     )
 
 
+def we_baseline(value, client, *, timeout):
+    """Pin the current observation frontier without inspecting prior messages."""
+    closed(value, ("source", "thread_id"))
+    client = replace(client, timeout_seconds=timeout,
+                     deadline_ns=time.monotonic_ns() + int(timeout * 1_000_000_000))
+    body = body_status(value, client, timeout=timeout)
+    _, response = client.invoke("we.conversation.page", {
+        "cursor": "tail", "limit": 1, "thread_id": identifier(value["thread_id"]),
+    })
+    page = response.get("result", {}) if response.get("ok") is True else {}
+    if (page.get("schema") != "dm.we.conversation-page/v2"
+            or page.get("entries") != [] or page.get("more") is not False):
+        raise MatrixExecutionError("Authenticated Matrix observation frontier unavailable")
+    return {"body": body, "cursor": text(page.get("cursor"), 2048)}
+
+
 def we_submit(client, *, request_id, thread_id, recipient, content, schema):
     request_id = identifier(request_id)
     params = {
@@ -861,6 +877,7 @@ def receiving_command(
     body_status_only=False,
     we_read_only=False,
     we_return_only=False,
+    we_baseline_only=False,
     we_origin_recipient=None,
     funding_binding=None,
 ):
@@ -871,7 +888,7 @@ def receiving_command(
     host interpreter/import selection. Do not execute a connection's code string.
     """
     modes = (receive_only, inbox_only, respond_only, response_status_only,
-             native_owner_only, body_status_only, we_read_only, we_return_only,
+             native_owner_only, body_status_only, we_read_only, we_return_only, we_baseline_only,
              we_origin_recipient is not None)
     if sum(modes) > 1:
         raise MatrixExecutionError("Select one host mode")
@@ -940,7 +957,8 @@ def receiving_command(
         str(binding),
         next((flag for active, flag in zip(
             modes, ("--receive", "--inbox", "--respond", "--response-status",
-                    "--native-owner", "--body-status", "--we-read", "--we-return", ""),
+                    "--native-owner", "--body-status", "--we-read", "--we-return",
+                    "--we-baseline", ""),
         ) if active), ""),
     ] + (["--funding-binding", str(funding_binding)] if native_owner_only else []) + (
         ["--we-origin", we_origin_recipient] if we_origin_recipient is not None else []
@@ -995,6 +1013,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
                        help="Submit one retained return to the original same-being author")
     modes.add_argument("--we-origin", metavar="EMBODIMENT_ID",
                        help="Submit one retained original to the configured recipient")
+    modes.add_argument("--we-baseline", action="store_true",
+                       help="Pin the current observation frontier without reading past messages")
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
@@ -1006,6 +1026,7 @@ def main(*, clock=time.time, monotonic=time.monotonic):
             response_status_only=args.response_status,
             native_owner_only=args.native_owner, body_status_only=args.body_status,
             we_read_only=args.we_read, we_return_only=args.we_return,
+            we_baseline_only=args.we_baseline,
             we_origin_recipient=args.we_origin,
             funding_binding=args.funding_binding,
         )
@@ -1020,6 +1041,11 @@ def main(*, clock=time.time, monotonic=time.monotonic):
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")
+    if args.we_baseline:
+        value = closed(strict_json(raw), ("source", "thread_id"))
+        client = configured_client(args.binding, value["source"], same_being=True)
+        write_host_outcome(we_baseline(value, client, timeout=host_timeout()))
+        return
     if args.we_origin is not None:
         value = closed(strict_json(raw), ("source", "body", "request_id", "thread_id", "text"))
         client = configured_client(args.binding, value["source"], same_being=True)

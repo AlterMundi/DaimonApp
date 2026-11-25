@@ -8,6 +8,16 @@ sender before using the existing `we.converse` capability. It only reports
 delivery when the exact recipient has a matching native receipt. Callers must
 retain an uncertain submission and inspect the original rather than send it again.
 
+The private Claude text route uses the existing authenticated Interaction input
+contract with `target: "claude"`. It is available only when the owner configures
+`interaction.claude_foreground.interaction_origin` for the distinct local sending
+body. Its host command ends in `--we-origin` and the configured receiving
+embodiment. The original row pins both signed bodies and a Matrix thread derived
+from the current Interaction conversation. Only the exact signed receipt can
+admit the retained text to Claude. The response is projected on the original
+Conversation card after authenticated readback from the sending body. Native
+submission and return uncertainty remain in their existing journals.
+
 ## Portable Conversation publication
 
 The optional `interaction.matrix_publication` configuration adds a typed,

@@ -41,6 +41,7 @@ from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
 from matrix_operator import respond as operator_respond
 from matrix_operator import send as operator_send
+from matrix_operator import we_baseline as operator_we_baseline
 from matrix_operator import we_conversation as operator_we_conversation
 from matrix_operator import we_origin as operator_we_origin
 from tests.test_execution_instruction import request
@@ -1942,6 +1943,10 @@ class AuthenticatedWeHostTests(unittest.TestCase):
             source=source, body=selected["body"], request_id=str(uuid.uuid4()),
             thread_id=str(uuid.uuid4()), text="An original retained by Interaction",
         )
+        baseline = operator_we_baseline(
+            {"source": source, "thread_id": authored["thread_id"]}, client, timeout=5,
+        )
+        self.assertEqual(baseline["body"], authored["body"])
         for wrong, recipient in (
             (authored, body),
             (dict(authored, body=dict(authored["body"], manifest_hash="c" * 64)), author),
@@ -1954,6 +1959,11 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         self.assertEqual(result["state"], "delivered")
         self.assertEqual(result["thread_id"], authored["thread_id"])
         self.assertEqual(return_attempts, [authored["request_id"]])
+        _, page = client.invoke("we.conversation.page", {
+            "cursor": baseline["cursor"], "limit": 4, "thread_id": authored["thread_id"],
+        })
+        self.assertTrue(any(row["event_id"] == result["message_id"]
+                            for row in page["result"]["entries"]))
         received = next(
             row for row in sdk.ledger_a.conversation_evidence()
             if row["event_id"] == result["message_id"]

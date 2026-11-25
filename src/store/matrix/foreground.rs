@@ -7,7 +7,7 @@ use serde_json::Value;
 // catalog without removing originals or uncertain effects.
 const MAX_REQUESTS: i64 = 64;
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WeOriginal {
     pub schema: String,
@@ -181,6 +181,7 @@ impl Store {
             .map(|(request, phase, result)| view(&request, phase, result, &self.instance_id)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn we_start(
         &self,
         owner: i64,
@@ -189,6 +190,7 @@ impl Store {
         source: MatrixAuthor,
         body: Value,
         original: WeOriginal,
+        input: Option<&crate::store::ConversationInput>,
     ) -> Result<Option<WeAttempt>> {
         anyhow::ensure!(
             original.schema == "daimon-gateway.matrix-we-original/v1"
@@ -206,6 +208,34 @@ impl Store {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         use crate::store::{presentation, stopping};
         let (session, _) = presentation::entry_on(&tx, owner, entry)?;
+        if let Some(input) = input {
+            use crate::interaction::MatrixDestination::Body;
+            let retained = crate::store::conversation_inputs::read_on(&tx, &input.id, owner)?;
+            crate::store::conversation_inputs::eligible_binding_on(&tx, &retained)?;
+            let selection = retained
+                .private_matrix
+                .as_ref()
+                .context("Private Matrix selection missing")?;
+            let receipt = retained
+                .private_matrix_origin
+                .as_ref()
+                .context("Private Matrix receipt missing")?;
+            anyhow::ensure!(
+                retained.entry == entry
+                    && retained.phase == "matrix_received"
+                    && selection.recipient
+                        == (Body {
+                            being_ref: source.being_ref.clone(),
+                            embodiment_id: source.embodiment_id.clone()
+                        })
+                    && matches!(&selection.sender, Body { embodiment_id, .. } if embodiment_id == &original.author)
+                    && selection.thread_id == original.thread_id
+                    && receipt.message_id == original.event_id
+                    && receipt.receipt_event_id == original.receipt_event_id
+                    && retained.text == original.text,
+                "Private Matrix work differs from the retained human original"
+            );
+        }
         if selected_on(&tx, owner, "/we", &original.event_id, None)?.is_some() {
             return Ok(None);
         }

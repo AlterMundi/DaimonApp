@@ -19,7 +19,19 @@ pub(super) async fn owner(
     };
     anyhow::ensure!(raw.len() <= 4096, "Bounded Matrix selection required");
     let selected: WeSelection = serde_json::from_str(raw)?;
+    run_selected(app, cfg, engine, selected, None).await
+}
+
+pub(super) async fn run_selected(
+    app: &App,
+    cfg: &InteractionConfig,
+    engine: ForegroundEngine,
+    selected: WeSelection,
+    input: Option<&crate::store::ConversationInput>,
+) -> Result<Value> {
     selected.validate()?;
+    let store = &app.shared.store;
+    let (human, entry) = (cfg.human_id, cfg.entry());
     if let Some(existing) = store.we_status(human, entry, &selected.event_id)? {
         return Ok(existing);
     }
@@ -63,7 +75,8 @@ pub(super) async fn owner(
     );
     let text = original.text.clone();
     let id = selected.event_id;
-    let Some(attempt) = store.we_start(human, entry, engine, source, observed, original)? else {
+    let Some(attempt) = store.we_start(human, entry, engine, source, observed, original, input)?
+    else {
         return store
             .we_status(human, entry, &id)?
             .context("Retained original unavailable");
