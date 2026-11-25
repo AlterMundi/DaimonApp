@@ -22,6 +22,36 @@ both UUIDs. Cancellation or execution loss past that boundary keeps the
 original uncertain. A completed result is output for Gateway to commit and
 return to Matrix.
 
+### Interactive Code Mode
+
+Use the native interactive launcher when a Claude task benefits from batching,
+chaining, or filtering several tool results. It uses the installed Claude
+subscription login and the explicitly selected native executable. Claude keeps
+its normal interactive workspace and permission prompts. Check the Code Mode
+indicator in the terminal before sending new work. Resume a recorded Code Mode
+session using the same launcher and its `--resume <session-id>` option.
+
+```sh
+python3 adapters/claude/code-mode.py --binary /path/to/native/claude run
+python3 adapters/claude/code-mode.py --binary /path/to/native/claude compare --pairs 2
+```
+
+The POSIX comparison enables only the fixture read tools and, for Code Mode,
+the experimental REPL. It submits the same extraction prompt to fresh native
+sessions with the same executable, model and synthetic files, alternating
+which mode goes first. It verifies the actual model, requested tool mode and
+exact result against the native transcript. The report includes elapsed time
+from submission to the recorded final response, provider requests, tool calls,
+and separate uncached input, cache creation, cache read and output token
+counts. Treat cache usage and wall time as variable across runs. Token counts
+measure reported provider usage and do not represent subscription quota units.
+The comparison removes its temporary fixtures and completed synthetic
+transcripts. Incomplete attempts retain their native evidence.
+
+The private Matrix foreground connector uses the Agent SDK. Claude's documented
+Code Mode surface is the native interactive terminal.
+[Claude Code Mode](https://code.claude.com/docs/en/code-mode)
+
 ### Gateway worker
 
 Launch `gateway-worker.mjs --profile <owner profile>` once for a selected
