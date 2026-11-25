@@ -11,7 +11,7 @@ class Child(BaseHTTPRequestHandler):
  def do_GET(self):
   if self.path.split('?',1)[0]=='/':
    s=(web/'index.html').read_text();s=re.sub(r'\s*<script src="(?:https://telegram.org[^"\n]*|assets/app.js)" defer></script>','',s)
-   if 'surface=holodeck' in self.path:s=s.replace('<html lang="en">','<html lang="en" data-surface-parent="'+parent_origin+'" data-surface-visit="'+visit+'">')
+   if 'surface=holodeck' in self.path:s=s.replace('<html lang="en">','<html lang="en" data-style-policy="authored" data-surface-parent="'+parent_origin+'" data-surface-visit="'+visit+'">')
    s=s.replace('<body>','<body class="conversation-mode standalone-conversation conversation-surface">').replace('<section id="conversation" hidden','<section id="conversation"')
    data=s.encode();mime='text/html'
   elif self.path.startswith('/assets/'):
@@ -51,7 +51,7 @@ try:
  with sync_playwright() as pw:
   browser=pw.chromium.launch(executable_path='/usr/bin/chromium',args=['--no-sandbox'])
   try:
-   for width in (1280,375):
+   for width in (1011,375):
     page=browser.new_page(viewport={'width':width,'height':800});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(parent_origin);frame=page.frames[1];frame.wait_for_function('!!window.Conversation')
     mount='''()=>{
@@ -138,6 +138,18 @@ try:
     field.fill('Wait for the matching entry');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     warning=frame.get_by_text('This message may already have been sent.')
     warning.wait_for();check=warning.locator('..').get_by_role('button',name='Check message status')
+    layout=warning.evaluate('''note=>{
+      const notice=note.parentElement, form=notice.closest('form');
+      const lineCount=node=>{const range=document.createRange();range.selectNodeContents(node);return range.getClientRects().length;};
+      const button=notice.querySelector('button');
+      return {notice:notice.clientWidth,form:form.clientWidth,lines:lineCount(note),buttonLines:lineCount(button),
+        sameRow:Math.abs(note.getBoundingClientRect().top+(note.offsetHeight-button.offsetHeight)/2-button.getBoundingClientRect().top)<2,
+        spilled:notice.scrollWidth>notice.clientWidth};
+    }''')
+    assert layout['notice']>=layout['form']-30 and not layout['spilled'],layout
+    assert layout['lines']<=2 and layout['buttonLines']==1,layout
+    if width>=1000:
+     assert layout['lines']==1 and layout['sameRow'],layout
     frame.evaluate('window.fixtureWrongEntry=true');check.click()
     assert field.input_value()=='Wait for the matching entry'
     frame.evaluate('window.fixtureWrongEntry=false');check.click()
