@@ -21,7 +21,7 @@ import urllib.request
 
 from .alerts_contract import validate
 from .private_state import private_directory
-from .provider import ProviderUnavailable, control
+from .provider import OwnerControlNotSubmitted, ProviderUnavailable, control
 
 
 class AlertsUnavailable(Exception):
@@ -179,6 +179,8 @@ class Sender:
             raise AlertsUnavailable('unsupported_telegram_operation')
         try:
             result = control(self.socket_path, envelope={'sessions_telegram': request})
+        except OwnerControlNotSubmitted:
+            return None if method == 'getMe' else {'ok': False, 'not_submitted': True}
         except (OSError, ValueError, ProviderUnavailable):
             return None
         if method == 'getMe':

@@ -346,6 +346,8 @@ class Receiving(unittest.TestCase):
             self.assertEqual(tuple(db.execute("SELECT request_id,state FROM attempts WHERE delivery_id='held'").fetchone()),
                              ('request-held','sending'))
         self.assertIsNone(new_alerts.sender.call('getMe', {}))
+        self.assertEqual(new_alerts.sender.send(self.projection), {'outcome':'failed'})
+        new_alerts.sender.next_send = 0
         from unittest.mock import patch
         online = True
         sends = []
@@ -374,6 +376,9 @@ class Receiving(unittest.TestCase):
             new_alerts.tick()
             self.assertEqual(self.incident()['deliveries'][0]['state'], 'delivered')
             self.assertEqual(len(sends), 1)
+        with patch('dashboard.alerts.control', side_effect=ConnectionResetError('Lost response')):
+            new_alerts.sender.next_send = 0
+            self.assertEqual(new_alerts.sender.send(self.projection), {'outcome':'uncertain'})
         new_traffic = Traffic(new_config, candidate, health=lambda:{'ok':True,'dropped_records':0})
         self.assertEqual(traffic.state['binding'], new_traffic.state['binding'])
         new_app = create_app(new_config, candidate, alerts=new_alerts, traffic=new_traffic)

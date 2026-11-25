@@ -26,6 +26,10 @@ class ProviderUnavailable(Exception):
     pass
 
 
+class OwnerControlNotSubmitted(ProviderUnavailable):
+    """The owner socket was unavailable before any request bytes were written."""
+
+
 class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
     """Known admission refusal, also compatible with existing voice consumers."""
     pass
@@ -65,18 +69,23 @@ def receiving_authority(receiver, *, legacy_native_helpers=False):
 
 def control(path, nonce=None, command='all', *, envelope=None):
     """One bounded connect-only request; a lost acknowledgement is not retried."""
-    meta = Path(path).lstat()
-    parent = Path(path).parent.lstat()
-    if (not stat.S_ISSOCK(meta.st_mode) or meta.st_uid != os.getuid()
-            or meta.st_mode & 0o077 or not stat.S_ISDIR(parent.st_mode)
-            or parent.st_uid != os.getuid() or parent.st_mode & 0o077):
-        raise ProviderUnavailable('Receiving control socket unavailable')
     with socket.socket(socket.AF_UNIX) as stream:
         stream.settimeout(12)
-        stream.connect(str(path))
-        _, uid, _ = struct.unpack('3i', stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-        if uid != os.getuid():
-            raise ProviderUnavailable('Receiving control owner mismatch')
+        try:
+            meta = Path(path).lstat()
+            parent = Path(path).parent.lstat()
+            if (not stat.S_ISSOCK(meta.st_mode) or meta.st_uid != os.getuid()
+                    or meta.st_mode & 0o077 or not stat.S_ISDIR(parent.st_mode)
+                    or parent.st_uid != os.getuid() or parent.st_mode & 0o077):
+                raise ProviderUnavailable('Receiving control socket unavailable')
+            stream.connect(str(path))
+            _, uid, _ = struct.unpack('3i', stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if uid != os.getuid():
+                raise ProviderUnavailable('Receiving control owner mismatch')
+        except (OSError, ProviderUnavailable) as error:
+            if envelope is not None:
+                raise OwnerControlNotSubmitted('Receiving operation was not submitted') from error
+            raise
         request = envelope if envelope is not None else {'command': command, 'nonce': nonce}
         stream.sendall(json.dumps(request).encode() + b'\n')
         data = bytearray()
