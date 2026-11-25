@@ -96,6 +96,7 @@ type Capture = tokio::task::JoinHandle<Result<()>>;
 pub(super) struct TelegramGateway {
     app: App,
     adapter_identified: bool,
+    pub(super) credential_fingerprint: Option<String>,
     dispatchers: HashMap<SessionKey, mpsc::UnboundedSender<(Update, Capture)>>,
 }
 
@@ -104,6 +105,7 @@ impl TelegramGateway {
         Self {
             app,
             adapter_identified: false,
+            credential_fingerprint: None,
             dispatchers: HashMap::new(),
         }
     }
@@ -123,8 +125,30 @@ impl TelegramGateway {
             "External Telegram ingress is unavailable for the selected bot"
         );
         match request {
-            IngressRequest::Ready { identity, .. } => {
+            IngressRequest::Ready {
+                identity,
+                credential_fingerprint,
+                ..
+            } => {
+                anyhow::ensure!(
+                    identity.is_some() || credential_fingerprint.is_none(),
+                    "TeleDaimon credential fingerprint requires verified identity"
+                );
                 if let Some(identity) = identity {
+                    anyhow::ensure!(
+                        credential_fingerprint
+                            .as_ref()
+                            .is_none_or(|fingerprint| fingerprint.len() == 64
+                                && fingerprint
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+                        "Invalid TeleDaimon credential fingerprint"
+                    );
+                    anyhow::ensure!(
+                        self.credential_fingerprint.is_none()
+                            || self.credential_fingerprint == credential_fingerprint,
+                        "TeleDaimon credential changed"
+                    );
                     anyhow::ensure!(
                         identity.is_bot && identity.id == bot_id,
                         "Telegram bot identity mismatch"
@@ -136,6 +160,7 @@ impl TelegramGateway {
                         .bot_metadata
                         .lock()
                         .expect("bot metadata lock poisoned") = Some(identity);
+                    self.credential_fingerprint = credential_fingerprint;
                     self.adapter_identified = true;
                 }
                 Ok(IngressReply::Ready {
@@ -330,5 +355,163 @@ mod tests {
             )
             .unwrap();
         assert_eq!(counts, (2, 2));
+    }
+}
+
+#[cfg(unix)]
+#[derive(serde::Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum SessionsTelegram {
+    Status,
+    Alert {
+        credential_fingerprint: String,
+        text: String,
+    },
+    MenuRead {
+        credential_fingerprint: String,
+    },
+    MenuWrite {
+        credential_fingerprint: String,
+        menu: SessionsMenu,
+    },
+}
+
+#[cfg(unix)]
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum SessionsMenu {
+    Default,
+    Commands,
+    WebApp {
+        text: String,
+        web_app: SessionsWebApp,
+    },
+}
+
+#[cfg(unix)]
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SessionsWebApp {
+    url: String,
+}
+
+#[cfg(unix)]
+pub(super) async fn sessions_telegram(
+    app: &App,
+    human: i64,
+    gateway: &Mutex<TelegramGateway>,
+    request: SessionsTelegram,
+) -> Result<serde_json::Value> {
+    use crate::tele_daimon::projection::{self, JsonMethod};
+    use serde_json::json;
+
+    let shared = &app.shared;
+    let authorize = || {
+        anyhow::ensure!(
+            shared
+                .store
+                .get_user(human)?
+                .is_some_and(|user| user.allowed),
+            "Sessions Telegram grant unavailable"
+        );
+        Ok(())
+    };
+    authorize()?;
+    let fingerprint = gateway
+        .lock()
+        .await
+        .credential_fingerprint
+        .clone()
+        .context("TeleDaimon credential not observed")?;
+    let (method, document, expected) = match request {
+        SessionsTelegram::Status => {
+            let identity = shared
+                .bot_metadata
+                .lock()
+                .expect("bot metadata lock poisoned");
+            let identity = identity
+                .as_ref()
+                .context("TeleDaimon identity not observed")?;
+            return Ok(json!({
+                "id": identity.id, "username": identity.username,
+                "has_main_web_app": identity.has_main_web_app.unwrap_or(false),
+                "credential_fingerprint": fingerprint
+            }));
+        }
+        SessionsTelegram::Alert {
+            text,
+            credential_fingerprint,
+        } => {
+            anyhow::ensure!(
+                !text.trim().is_empty() && text.chars().count() <= 4096,
+                "Invalid Sessions alert text"
+            );
+            (
+                JsonMethod::SendMessage,
+                json!({"chat_id":human,"text":text}),
+                credential_fingerprint,
+            )
+        }
+        SessionsTelegram::MenuRead {
+            credential_fingerprint,
+        } => (
+            JsonMethod::GetChatMenuButton,
+            json!({"chat_id":human}),
+            credential_fingerprint,
+        ),
+        SessionsTelegram::MenuWrite {
+            menu,
+            credential_fingerprint,
+        } => {
+            if let SessionsMenu::WebApp { text, web_app } = &menu {
+                let url = reqwest::Url::parse(&web_app.url).context("Invalid Sessions menu URL")?;
+                anyhow::ensure!(
+                    !text.trim().is_empty()
+                        && text.chars().count() <= 64
+                        && web_app.url.len() <= 2048
+                        && url.scheme() == "https"
+                        && url.host().is_some()
+                        && url.username().is_empty()
+                        && url.password().is_none(),
+                    "Invalid Sessions web app menu"
+                );
+            }
+            (
+                JsonMethod::SetChatMenuButton,
+                json!({"chat_id":human,"menu_button":menu}),
+                credential_fingerprint,
+            )
+        }
+    };
+    anyhow::ensure!(
+        expected == fingerprint,
+        "Sessions Telegram credential changed"
+    );
+    let socket = &shared
+        .config
+        .session_control
+        .as_ref()
+        .context("Missing owner control socket")?
+        .socket_path;
+    if matches!(method, JsonMethod::SendMessage) {
+        shared.telegram.wait_projection(human).await?;
+    }
+    let result = projection::json(
+        socket,
+        shared.bot_id,
+        method,
+        Some(document),
+        Some(fingerprint),
+        authorize,
+    )
+    .await;
+    match result {
+        Ok(result) => Ok(json!({"ok":true,"result":result})),
+        Err(error) => {
+            if let Some(provider) = error.downcast_ref::<crate::telegram::TelegramError>() {
+                return Ok(json!({"ok":false,"error_code":provider.status.as_u16()}));
+            }
+            bail!("Sessions Telegram operation unconfirmed")
+        }
     }
 }

@@ -46,6 +46,8 @@ pub(super) enum Payload<'a> {
     Json {
         method: JsonMethod,
         document: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credential_fingerprint: Option<String>,
     },
     Download {
         #[serde(borrow)]
@@ -133,10 +135,12 @@ pub(crate) enum JsonMethod {
     EditForumTopic,
     GetForumTopicIconStickers,
     SendMessageDraft,
+    GetChatMenuButton,
+    SetChatMenuButton,
 }
 
 impl JsonMethod {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::SendMessage,
         Self::SendChatAction,
         Self::EditMessageText,
@@ -147,6 +151,8 @@ impl JsonMethod {
         Self::EditForumTopic,
         Self::GetForumTopicIconStickers,
         Self::SendMessageDraft,
+        Self::GetChatMenuButton,
+        Self::SetChatMenuButton,
     ];
 
     pub(crate) fn from_api(method: &str) -> Option<Self> {
@@ -167,6 +173,8 @@ impl JsonMethod {
             Self::EditForumTopic => "editForumTopic",
             Self::GetForumTopicIconStickers => "getForumTopicIconStickers",
             Self::SendMessageDraft => "sendMessageDraft",
+            Self::GetChatMenuButton => "getChatMenuButton",
+            Self::SetChatMenuButton => "setChatMenuButton",
         }
     }
 }
@@ -217,6 +225,7 @@ pub(crate) async fn json(
     bot: i64,
     method: JsonMethod,
     document: Option<serde_json::Value>,
+    credential_fingerprint: Option<String>,
     authorize: impl FnOnce() -> Result<()>,
 ) -> Result<serde_json::Value> {
     let mut stream = open_offer(
@@ -225,7 +234,11 @@ pub(crate) async fn json(
             bot,
             chat: 0,
             topic: None,
-            payload: Payload::Json { method, document },
+            payload: Payload::Json {
+                method,
+                document,
+                credential_fingerprint,
+            },
         },
         &[],
     )
@@ -420,7 +433,17 @@ async fn receive(
         bot > 0 && offer.bot == bot,
         "Telegram projection bot mismatch"
     );
-    if let Payload::Json { method, document } = offer.payload {
+    if let Payload::Json {
+        method,
+        document,
+        credential_fingerprint,
+    } = offer.payload
+    {
+        ensure!(
+            credential_fingerprint
+                .is_none_or(|expected| expected == client.credential_fingerprint()),
+            "TeleDaimon credential binding mismatch"
+        );
         return receive_json(stream, client, method, document).await;
     }
     if let Payload::Download { file_id, max_bytes } = offer.payload {

@@ -19,6 +19,7 @@ import tomllib
 from scripts.activity_indicator import Native, Rollout, linked_child, readonly, timestamp, read_topic_inventory, topic_activity_inventory, pending_requests, goal_recovery_state, read_owner_json, inventory_source
 from scripts.speech_render import sync_directory
 from .media_retention import RetentionUnavailable
+from .private_state import read_json
 
 
 class ProviderUnavailable(Exception):
@@ -30,15 +31,20 @@ class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
     pass
 
 
-def receiving_authority(receiver):
+def receiving_authority(receiver, *, legacy_native_helpers=False):
     """Only dependencies that select this dashboard's actor/data/control scope."""
     telegram = receiver.get('telegram', {})
     interaction = receiver.get('interaction')
+    if legacy_native_helpers and isinstance(interaction, dict):
+        # Some installed Sessions profiles excluded native-only helper selectors.
+        interaction = {key: value for key, value in interaction.items()
+                       if key not in ('private_projection', 'alerts_repair')}
     if isinstance(interaction, dict) and isinstance(interaction.get('matrix_transport'), dict):
         # Resource/tool ceilings constrain native work, not dashboard identity.
         # Keep all actor, route, credential and funding selectors in the binding.
         transport = {key: value for key, value in interaction['matrix_transport'].items()
-                     if key != 'native_host_restrictions'}
+                     if key != 'native_host_restrictions'
+                     and not (legacy_native_helpers and key == 'native_attention_host_restrictions')}
         interaction = {**interaction, 'matrix_transport': transport}
     return json.dumps({
         'db_path': receiver.get('db_path'),
@@ -50,12 +56,14 @@ def receiving_authority(receiver):
         # post-start change away from explicitly disabled Telegram.
         'telegram': {**{key: telegram.get(key) for key in
                        ('api_base', 'bot_token', 'bot_token_file')},
-                     **({'enabled': False} if telegram.get('enabled') is False else {})},
+                     **({'enabled': False} if telegram.get('enabled') is False else {}),
+                     **({'external_polling': True, 'external_bot_id': telegram.get('external_bot_id')}
+                        if telegram.get('external_polling') is True else {})},
         'native_binary': receiver.get('codex', {}).get('binary', 'codex'),
     }, sort_keys=True, separators=(',', ':')).encode()
 
 
-def control(path, nonce, command='all'):
+def control(path, nonce=None, command='all', *, envelope=None):
     """One bounded connect-only request; a lost acknowledgement is not retried."""
     meta = Path(path).lstat()
     parent = Path(path).parent.lstat()
@@ -69,7 +77,8 @@ def control(path, nonce, command='all'):
         _, uid, _ = struct.unpack('3i', stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         if uid != os.getuid():
             raise ProviderUnavailable('Receiving control owner mismatch')
-        stream.sendall(json.dumps({'command': command, 'nonce': nonce}).encode() + b'\n')
+        request = envelope if envelope is not None else {'command': command, 'nonce': nonce}
+        stream.sendall(json.dumps(request).encode() + b'\n')
         data = bytearray()
         while b'\n' not in data:
             block = stream.recv(min(4096, 262145 - len(data)))
@@ -138,8 +147,16 @@ class Provider:
         self.receiver_path = Path(config['receiver_config'])
         self.receiver_bytes = self.receiver_path.read_bytes()
         self.receiver = tomllib.loads(self.receiver_bytes.decode())
-        self.binding_bytes = receiving_authority(self.receiver)
+        self.selected_binding = receiving_authority(self.receiver)
+        self.binding_bytes = self.selected_binding
         self.human = int(self.receiver['session_control']['human_id'])
+        self.telegram_split_path = None
+        self.telegram_split = None
+        if config.get('telegram_split_binding') is not None:
+            self.telegram_split_path = Path(config['telegram_split_binding'])
+            from .telegram_split import verified_binding
+            self.telegram_split = verified_binding(read_json(self.telegram_split_path), self)
+            self.binding_bytes = bytes.fromhex(self.telegram_split['legacy_authority'])
         self.native_home = Path(config.get('native_home', Path.home() / '.codex'))
         self.native = None
         self.lock = threading.Lock()
@@ -150,9 +167,11 @@ class Provider:
     def assert_binding(self):
         try:
             current = receiving_authority(tomllib.loads(self.receiver_path.read_text()))
+            if self.telegram_split_path is not None and read_json(self.telegram_split_path) != self.telegram_split:
+                raise ValueError('Sessions Telegram binding changed')
         except (OSError, ValueError):
             raise ProviderUnavailable('Receiving configuration unavailable') from None
-        if current != self.binding_bytes:
+        if current != self.selected_binding:
             raise ProviderUnavailable('Receiving grant changed; operator must requalify the dashboard')
 
     def close(self):

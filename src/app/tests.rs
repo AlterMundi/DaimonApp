@@ -868,6 +868,7 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
         first_name: "Fixture".into(),
         username: None,
         has_topics_enabled: Some(true),
+        has_main_web_app: None,
     });
     shared.telegram = TelegramClient::new("synthetic".to_string(), api);
     let key = SessionKey::new(100, Some(12));

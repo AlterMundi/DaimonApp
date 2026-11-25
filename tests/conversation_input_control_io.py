@@ -4,6 +4,7 @@
 All accounts, Telegram, native peers and output are synthetic; zero model calls.
 """
 import json
+import hashlib
 import errno
 import os
 import time
@@ -561,13 +562,19 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         _, error = process.communicate(timeout=8)
         assert process.returncode == 0, error
 
-    def ingress(request):
+    def owner_operation(surface, request):
         with socket.socket(socket.AF_UNIX) as conn:
             conn.settimeout(5)
             conn.connect(str(journey.socket))
-            conn.sendall(json.dumps({"telegram_ingress": request}).encode() + b"\n")
+            conn.sendall(json.dumps({surface: request}).encode() + b"\n")
             with conn.makefile("rb") as stream:
                 return json.loads(stream.readline())
+
+    def ingress(request):
+        return owner_operation("telegram_ingress", request)
+
+    def sessions_telegram(operation, **fields):
+        return owner_operation("sessions_telegram", {"operation": operation, **fields})
 
     def settled(update):
         return journey.row(
@@ -708,6 +715,22 @@ def independent_telegram_polling(binary, *, named_roles=False, embedded_binary=N
         journey.wait(lambda: thread in journey.holding)
         journey.finish(thread, journey.holding.pop(thread))
         journey.wait(lambda: settled(first))
+        fingerprint = hashlib.sha256(b"synthetic-question-token").hexdigest()
+        status = sessions_telegram("status")["result"]
+        assert status["id"] == 123 and status["username"] == "FixtureBot"
+        assert status["credential_fingerprint"] == fingerprint
+        sends = journey.telegram_methods.count("sendMessage")
+        assert not sessions_telegram("alert", credential_fingerprint="0" * 64, text="Wrong credential")["ok"]
+        assert not sessions_telegram("alert", credential_fingerprint=fingerprint, chat_id=999, text="Wrong audience")["ok"]
+        assert journey.telegram_methods.count("sendMessage") == sends
+        delivered = sessions_telegram("alert", credential_fingerprint=fingerprint, text="Private Sessions alert")
+        assert delivered["result"]["result"]["chat"]["id"] == 100
+        assert delivered["result"]["result"]["text"] == "Private Sessions alert"
+        assert sessions_telegram("menu_read", credential_fingerprint=fingerprint)["result"]["result"] == {"type": "default"}
+        menu = {"type": "web_app", "text": "Sessions", "web_app": {"url": "https://example.test/sessions"}}
+        assert sessions_telegram("menu_write", credential_fingerprint=fingerprint, menu=menu)["result"]["result"] is True
+        assert sessions_telegram("menu_read", credential_fingerprint=fingerprint)["result"]["result"] == menu
+        print("PASS paired Sessions alert and menu operations use TeleDaimon custody")
         journey.idle()
         stop_adapter(adapter)
         adapter = None

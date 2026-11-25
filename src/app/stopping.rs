@@ -673,6 +673,29 @@ pub(super) async fn start_control_socket(app: App) -> Result<()> {
                                     Err(error) => json!({"ok":false,"error":error.to_string()}),
                                 }
                             }
+                            Ok(v) if n <= 262144 && v.get("sessions_telegram").is_some() => {
+                                let result = async {
+                                    let gateway = telegram
+                                        .as_ref()
+                                        .context("External Telegram polling is disabled")?;
+                                    anyhow::ensure!(
+                                        v.as_object().is_some_and(|object| object.len() == 1),
+                                        "Invalid Sessions Telegram envelope"
+                                    );
+                                    let request =
+                                        serde_json::from_value(v["sessions_telegram"].clone())
+                                            .context("Invalid Sessions Telegram request")?;
+                                    super::telegram_ingress::sessions_telegram(
+                                        &app, human, gateway, request,
+                                    )
+                                    .await
+                                }
+                                .await;
+                                match result {
+                                    Ok(value) => json!({"ok":true,"result":value}),
+                                    Err(error) => json!({"ok":false,"error":error.to_string()}),
+                                }
+                            }
                             Ok(v) if n <= 262144 => match command(
                                 &app,
                                 human,

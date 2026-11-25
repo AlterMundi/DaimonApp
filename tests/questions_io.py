@@ -95,6 +95,12 @@ class Journey:
                 if method == 'getMe':
                     result = {'id': 123, 'is_bot': True, 'first_name': 'Fixture',
                               'username': 'FixtureBot', 'has_topics_enabled': True}
+                elif method == 'getChatMenuButton':
+                    result = getattr(owner, 'menu_button', {'type': 'default'})
+                elif method == 'setChatMenuButton':
+                    assert payload['chat_id'] == 100
+                    owner.menu_button = payload['menu_button']
+                    result = True
                 elif method == 'getUpdates':
                     with owner.lock:
                         if hasattr(owner, 'poll_offsets'):

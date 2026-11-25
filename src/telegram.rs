@@ -878,11 +878,15 @@ impl TelegramClient {
             let operation = crate::tele_daimon::projection::JsonMethod::from_api(method)
                 .context("Unsupported direct Telegram operation")?;
             let document = payload.map(serde_json::to_value).transpose()?;
-            let result =
-                crate::tele_daimon::projection::json(socket, *bot, operation, document, || {
-                    self.check_publication()
-                })
-                .await?;
+            let result = crate::tele_daimon::projection::json(
+                socket,
+                *bot,
+                operation,
+                document,
+                None,
+                || self.check_publication(),
+            )
+            .await?;
             return serde_json::from_value(result)
                 .map_err(|_| anyhow::anyhow!("telegram {method} JSON decode failed"));
         }
@@ -899,6 +903,12 @@ impl TelegramClient {
             .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT)
             .await?;
         Ok(self.redact_relay_value(result))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn credential_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(self.token.as_bytes()))
     }
 
     #[cfg(unix)]
@@ -1497,6 +1507,8 @@ pub struct User {
     pub first_name: String,
     pub username: Option<String>,
     pub has_topics_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_main_web_app: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

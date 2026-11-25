@@ -275,9 +275,18 @@ pub(crate) const INGRESS_FRAME_LIMIT: u64 = 1_048_832;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum IngressRequest {
-    Ready { bot_id: i64, identity: Option<User> },
-    ProjectionReady { bot_id: i64 },
-    Admit { bot_id: i64, update: Box<Update> },
+    Ready {
+        bot_id: i64,
+        identity: Option<User>,
+        credential_fingerprint: Option<String>,
+    },
+    ProjectionReady {
+        bot_id: i64,
+    },
+    Admit {
+        bot_id: i64,
+        update: Box<Update>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -297,6 +306,7 @@ pub(crate) enum IngressReply {
 struct RemoteGateway<'a> {
     socket: &'a Path,
     identity: User,
+    credential_fingerprint: String,
     initial_offset: Option<i64>,
 }
 
@@ -319,6 +329,7 @@ impl RemoteGateway<'_> {
         self.request(IngressRequest::Ready {
             bot_id: self.identity.id,
             identity: identify.then(|| self.identity.clone()),
+            credential_fingerprint: identify.then(|| self.credential_fingerprint.clone()),
         })
         .await
     }
@@ -392,6 +403,7 @@ pub(crate) async fn run_external(config: crate::config::TelegramPollConfig) -> R
     let mut gateway = RemoteGateway {
         socket,
         identity,
+        credential_fingerprint: client.credential_fingerprint(),
         initial_offset: None,
     };
     let IngressReply::Ready {

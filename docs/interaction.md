@@ -115,6 +115,30 @@ Configured Telegram destinations and pending receipts keep their existing
 semantics. Restore a failed Telegram adapter through the ordinary operator
 startup path once its connection is healthy.
 
+Sessions sends paired-human Alerts and reads or updates the Telegram menu through
+the same owner socket. The narrow request contains no destination, Bot API URL
+or token. Gateway selects the paired human from its existing grant and rechecks
+it immediately before authorizing TeleDaimon. The adapter checks its credential
+fingerprint before using the Bot API. Alerts keeps its existing receipt writer
+and treats a lost acknowledgement as uncertain. Traffic compares the retained
+credential fingerprint with its existing meter journal and uses the configured
+loopback health route.
+
+Before changing an existing Sessions profile, run
+`python -m dashboard.operator --config DASHBOARD_CONFIG prepare-telegram-split
+--gateway-config GATEWAY_CONFIG --adapter-config ADAPTER_CONFIG --output
+SPLIT_BINDING`. Add `--legacy-native-helpers` only when the installed Sessions
+release excludes the native-only helpers from its web authority binding. The
+command checks the old credential against the adapter and meter, verifies the
+existing Alerts binding, and writes an owner-private compatibility record.
+It does not dispatch Telegram. Select the new Gateway config as
+`receiver_config` and the record as `telegram_split_binding` in Sessions. Keep
+the existing state directory and companion grants. Web authorization checks the
+retained binding locally while TeleDaimon is unavailable. Menu inspection,
+publish and restore use the same typed owner control after activation. If an
+older manual menu rollback is already bound to a different receiver config,
+keep that record for its original profile.
+
 Track the remaining client extraction in [DaimonApp #452](https://github.com/AlterMundi/DaimonApp/issues/452)
 and the native dispatch boundary in [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
 Retire the Telecodex binary and product name after the independent clients
