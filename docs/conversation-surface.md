@@ -99,3 +99,11 @@ native completion or human approval. Missing/in-flight source responses require
 the host's bounded graceful retirement, never replay. A changed frame/binding does
 not permit sending an old source notice under the new identity. Normal non-hosted
 Conversation retains its existing capture/submission behavior.
+
+
+An authenticated host can opt in to the cosmetic avatar playback signal with
+`features.avatarPlayback: true` on `connect`. The child publishes
+`avatar-playback` on the same bound channel using only the rounded 0–1 output
+level from the existing playback observer. It sends silence on pause, hide or
+disconnect. The parent expires old levels locally. This signal carries no
+audio, transcription, microphone input, or turn activity.
