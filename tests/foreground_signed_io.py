@@ -228,8 +228,8 @@ timeout_seconds=5
                         self.assertEqual(database.read_bytes(), initial_database)
                     synced = fixture.ledger_a
                     result = reply["result"]["delivery"]
-                    event = next(row for row in synced.conversation_evidence()
-                                 if row["event_id"] == result["message_id"])
+                    event = synced.event(result["message_id"])
+                    self.assertIsNotNone(event)
                     self.assertEqual(event["origin"]["embodiment_id"], body)
                     self.assertEqual(event["payload"]["intent"]["thread_id"], original["thread_id"])
                     expected = ANSWER if engine == "claude" else foreground.MARKER
