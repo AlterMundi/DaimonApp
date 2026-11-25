@@ -58,7 +58,7 @@ pub(super) async fn command(
         return observer::owner_command(app, human, selected);
     }
     if let Some(selected) = args.strip_prefix("matrix ") {
-        return matrix::owner(app, human, selected);
+        return matrix::owner(app, human, selected).await;
     }
     if let Some(selected) = args.strip_prefix("presentation ") {
         return presentation::owner_read(app, human, selected);

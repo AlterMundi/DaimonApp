@@ -54,9 +54,16 @@ pub async fn controller(path: &std::path::Path, payload: &str) -> Result<()> {
 #[cfg(unix)]
 async fn exchange(path: &std::path::Path, command: &str) -> Result<()> {
     let nonce = uuid::Uuid::now_v7().to_string();
-    let reply = request(
+    // A selected Claude run includes bounded Matrix host and worker calls.
+    let timeout = if command.starts_with("matrix claude run ") {
+        320
+    } else {
+        30
+    };
+    let reply = request_with_timeout(
         path,
         serde_json::json!({"command": command, "nonce": nonce}),
+        timeout,
     )
     .await?;
     println!("{}", serde_json::to_string_pretty(&reply)?);
@@ -74,8 +81,17 @@ pub(crate) async fn request(
     path: &std::path::Path,
     request: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    request_with_timeout(path, request, 30).await
+}
+
+#[cfg(unix)]
+async fn request_with_timeout(
+    path: &std::path::Path,
+    request: serde_json::Value,
+    timeout: u64,
+) -> Result<serde_json::Value> {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
         let mut stream = connect_owner(path).await?;
         let mut bytes = serde_json::to_vec(&request)?;
         if bytes.len() as u64 >= crate::tele_daimon::INGRESS_FRAME_LIMIT {

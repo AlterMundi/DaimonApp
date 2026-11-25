@@ -1,0 +1,153 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const executable = fileURLToPath(new URL('gateway-worker.mjs', import.meta.url));
+const correlation = {
+  schema: 'daimon-gateway.claude-turn/v1',
+  inputId: 'bd55cfc3-710f-44b8-b778-d15be1b77997',
+  sessionId: '3d5ef97e-bd13-4ee1-9f4c-f2807b2b472b',
+};
+const original = 'Reply using this selected fixture original.';
+const realBinary = process.env.CLAUDE_TEST_BINARY;
+
+test('worker sends one native input only after exact owner persistence decision',
+  { timeout: 12_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'gateway-claude-worker-'));
+    const sdk = join(root, 'fixture.mjs');
+    const cli = join(root, 'claude-fixture');
+    const selection = join(root, 'profile.json');
+    const exposure = join(root, 'submitted.txt');
+    const apiKeyFile = join(root, 'provider.key');
+    const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
+    try {
+      await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
+      await writeFile(cli, `#!${process.execPath}
+if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
+const key = process.env.ANTHROPIC_API_KEY;
+console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
+  ? { loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: 'ANTHROPIC_API_KEY' }
+  : { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }));
+`, { mode: 0o700 });
+      await writeFile(sdk, `
+        import { writeFile } from 'node:fs/promises';
+        import assert from 'node:assert/strict';
+        export const tool = (name) => ({ name });
+        export const createSdkMcpServer = (description) => description;
+        export function query({ prompt, options }) {
+          assert.equal(options.env.ANTHROPIC_API_KEY, ${JSON.stringify(fixtureKey)});
+          assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
+          assert.equal(options.maxTurns, 2);
+          assert.equal(options.maxBudgetUsd, 0.10);
+          return {
+            async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+            async mcpServerStatus() { return [{
+              name: 'matrix', source: 'sdk', status: 'connected', tools: options.mcpServers.matrix.tools
+            }]; },
+            async *[Symbol.asyncIterator]() {
+              for await (const request of prompt) {
+                await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
+                if (request.message.content === 'Synthetic loss after native input.') return;
+                yield { type: 'result', subtype: 'success', is_error: false,
+                  session_id: request.session_id, result: 'Qualified fixture reply.' };
+              }
+            },
+            close() {},
+          };
+        }
+      `);
+      const body = { beingRef: 'being-test', embodimentId: 'body-test',
+        incarnationId: 'incarnation-test', manifestHash: 'manifest-test' };
+      const status = {
+        schema: 'dm.runtime.status/v1', integrity: 'ok', manifest_hash: body.manifestHash,
+        being_ref: body.beingRef, local_origin: {
+          embodiment_id: body.embodimentId, incarnation_id: body.incarnationId,
+        },
+      };
+      const profile = {
+        sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
+        cliVersion: 'fixture-version', model: 'fixture-model',
+        matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
+          JSON.stringify(status), '--'],
+        body,
+      };
+      await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
+
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'committed', 'result-lost'];
+      // Native bootstrap with a synthetic key timed out offline.
+      // Exercise the native auth selector here with the isolated fixture SDK.
+      if (realBinary) decisions.push('native-auth-rejected');
+      for (const decision of decisions) {
+        if (decision === 'native-auth-rejected') {
+          await writeFile(selection, JSON.stringify({ ...profile, binary: realBinary }));
+        }
+        const worker = spawn(process.execPath, [executable, '--profile', selection], {
+          env: {},
+          stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        const exited = once(worker, 'close');
+        const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
+        try {
+          const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
+          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
+          assert.deepEqual(JSON.parse((await lines.next()).value),
+            { ...correlation, type: 'prepare_submission', nativeSessionId: correlation.sessionId });
+          await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+          if (decision === 'disconnected') worker.stdin.end();
+          else {
+            worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
+              sessionId: decision === 'wrong-correlation' ? correlation.inputId : correlation.sessionId,
+              committed: decision !== 'rejected' && decision !== 'native-auth-rejected',
+            }) + '\n');
+          }
+          const frame = JSON.parse((await lines.next()).value);
+          const committed = ['committed', 'result-lost'].includes(decision);
+          const outcome = decision === 'committed'
+            ? { phase: 'completed', sessionId: correlation.sessionId, text: 'Qualified fixture reply.' }
+            : committed
+              ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: correlation.sessionId }
+              : { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' };
+          assert.deepEqual(frame, { ...correlation, type: 'outcome', outcome }, decision);
+          if (committed) {
+            assert.equal(await readFile(exposure, 'utf8'), text);
+            await rm(exposure);
+          } else {
+            await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+          }
+          assert.equal((await exited)[0], 0);
+        } finally {
+          worker.kill();
+          await exited;
+        }
+      }
+      await writeFile(selection, JSON.stringify(profile));
+      for (const key of ['wrong-fixture-key', '']) {
+        await writeFile(apiKeyFile, key);
+        const worker = spawn(process.execPath, [executable, '--profile', selection], {
+          env: { ANTHROPIC_API_KEY: fixtureKey }, stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        const exited = once(worker, 'close');
+        const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
+        try {
+          worker.stdin.end(JSON.stringify({ ...correlation, type: 'start', text: original, body }) + '\n');
+          assert.deepEqual(JSON.parse((await lines.next()).value), {
+            ...correlation, type: 'outcome',
+            outcome: { phase: 'not_submitted', reason: 'claude_api_auth_unverified' },
+          });
+          assert.equal((await exited)[0], 0);
+          await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+        } finally {
+          worker.kill();
+          await exited;
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });

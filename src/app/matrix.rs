@@ -4,6 +4,7 @@ use super::*;
 use crate::{interaction::MatrixDestination, store::MatrixInboxReadFailure as InboxFailure};
 use serde::Deserialize;
 use serde_json::{Value, json};
+mod foreground;
 
 pub(super) fn capabilities(shared: &AppShared, value: &mut Value) -> Result<()> {
     let profile = super::routing::profile(shared)?;
@@ -337,7 +338,7 @@ pub(super) async fn tool(
     }
 }
 
-pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
+pub(super) async fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
     let cfg = app
         .shared
         .config
@@ -346,6 +347,9 @@ pub(super) fn owner(app: &App, human: i64, args: &str) -> Result<Value> {
         .context("Integrating entry unavailable")?;
     if human != cfg.human_id {
         bail!("Matrix origin owner differs from the authenticated controller");
+    }
+    if let Some(selected) = args.strip_prefix("claude ") {
+        return foreground::owner(app, cfg, selected).await;
     }
     if let Some(selected) = args.strip_prefix("publication ") {
         let publication = cfg

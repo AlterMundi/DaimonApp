@@ -3207,6 +3207,224 @@ pub(super) fn cold_interaction_config(database: PathBuf, cwd: PathBuf, human: i6
     config
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_claude_journals_before_both_effects_and_restarts_without_replay() {
+    use serde_json::json;
+
+    let root = tempfile::tempdir().unwrap();
+    let database = root.path().join("entry.sqlite");
+    let marker = root.path().join("effects");
+    let transport = root.path().join("transport.py");
+    let worker = root.path().join("worker.py");
+    std::fs::write(&transport, r#"
+import json, sqlite3, sys, uuid
+db, marker, operation = sys.argv[1:]
+input = json.load(sys.stdin)
+source = input["source"]
+if operation == "--body-status":
+    print(json.dumps(dict(schema="dm.runtime.status/v1", integrity="ok", manifest_hash="a"*64,
+                     being_ref=source["being_ref"], local_origin=dict(
+                         incarnation_id="incarnation:test", embodiment_id=source["embodiment_id"]))))
+elif operation == "--we-read":
+    pick = input["original"]
+    fields = {key: pick[key] for key in ("event_id", "thread_id", "author")}
+    text = "Synthetic prompt" if pick["author"] == "fixture-sender" else pick["author"]
+    print(json.dumps(dict(fields, schema="daimon-gateway.matrix-we-original/v1",
+                          receipt_event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, pick["event_id"])), text=text)))
+else:
+    assert operation == "--we-return"
+    original = input["original"]
+    with sqlite3.connect(db) as conn:
+        phase, raw = conn.execute("select phase, submission from interaction_matrix_requests where source_event=?",
+                                  [original["event_id"]]).fetchone()
+    assert phase == "returning"
+    retained = json.loads(raw)
+    assert retained.pop("native_session_id")
+    assert retained == dict(send_id=input["send_id"], text="Synthetic result")
+    assert input["text"] == "Synthetic result"
+    with open(marker, "a") as f:
+        f.write("return\n")
+    print(json.dumps(dict(schema="daimon-gateway.matrix-we-return/v1", request_id=input["send_id"],
+                          state="delivered", thread_id=original["thread_id"],
+                          message_id=str(uuid.uuid4()), message_hash="b"*64, receipt_event_id=str(uuid.uuid4()))))
+"#).unwrap();
+    std::fs::write(&worker, r#"
+import json, os, sqlite3, sys
+db, marker = sys.argv[1:]
+first = json.loads(sys.stdin.readline())
+ids = {key: first[key] for key in ("schema", "inputId", "sessionId")}
+if first["text"] == "reject-before-commit":
+    print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
+                      reason="claude_catalog_mismatch"))), flush=True)
+    sys.exit(0)
+native = "different-session" if first["text"] == "wrong-native-id" else first["sessionId"]
+print(json.dumps(dict(ids, type="prepare_submission", nativeSessionId=native)), flush=True)
+ack = json.loads(sys.stdin.readline())
+assert ack == dict(ids, type="submission_decision", committed=True)
+with sqlite3.connect(db) as conn:
+    phase, raw, submission = conn.execute("select phase, doc, submission from interaction_matrix_requests where source_event=?",
+                                          [first["inputId"]]).fetchone()
+assert phase == "provider_exposed"
+frozen = json.loads(raw)
+assert frozen["session_id"] == json.loads(submission)["native_session_id"] == first["sessionId"]
+assert frozen["original"]["text"] == first["text"]
+assert frozen["body"]["manifest_hash"] == first["body"]["manifestHash"]
+with open(marker, "a") as f:
+    f.write("provider\n")
+if first["text"] == "lose-provider-result":
+    os._exit(9)
+assert first["text"] == "Synthetic prompt"
+print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessionId=first["sessionId"],
+                                                       text="Synthetic result"))), flush=True)
+"#).unwrap();
+
+    let mut config = cold_interaction_config(database.clone(), root.path().into(), 100);
+    config.interaction.as_mut().unwrap().claude_foreground = Some(
+        serde_json::from_value(json!({
+            "transport":{"command":["/usr/bin/python3",transport,database,marker],
+                "source":{"kind":"body","being_ref":format!("dm:being:v1:{}", "A".repeat(43)),
+                    "embodiment_id":"fixture-receiver"},"timeout_seconds":5},
+            "worker_command":["/usr/bin/python3",worker,database,marker]
+        }))
+        .unwrap(),
+    );
+    let app = App::bootstrap(config.clone()).await.unwrap();
+    let id = uuid::Uuid::now_v7().to_string();
+    let uncertain = uuid::Uuid::now_v7().to_string();
+    let refused = uuid::Uuid::now_v7().to_string();
+    let mismatched = uuid::Uuid::now_v7().to_string();
+    let thread = uuid::Uuid::now_v7().to_string();
+    let run = |id: &str, author: &str| {
+        format!(
+            "matrix claude run {}",
+            json!({
+                "event_id":id,"author":author,"thread_id":thread,"cursor":null
+            })
+        )
+    };
+    let delivered = stopping::command(&app, 100, &run(&id, "fixture-sender"), None)
+        .await
+        .unwrap();
+    assert_eq!(delivered["phase"], "delivered");
+    assert_eq!(delivered["native_session_id"], delivered["session_id"]);
+    let nonce = delivered["result"]["send_id"].as_str().unwrap();
+    let lost = stopping::command(&app, 100, &run(&uncertain, "lose-provider-result"), None)
+        .await
+        .unwrap();
+    assert_eq!(lost["phase"], "provider_uncertain");
+    let rejection = stopping::command(&app, 100, &run(&refused, "reject-before-commit"), None)
+        .await
+        .unwrap();
+    assert_eq!(rejection["phase"], "rejected");
+    assert!(rejection["native_session_id"].is_null());
+    assert_eq!(rejection["result"]["reason"], "claude_catalog_mismatch");
+    let wrong = stopping::command(&app, 100, &run(&mismatched, "wrong-native-id"), None)
+        .await
+        .unwrap();
+    assert_eq!(wrong["phase"], "rejected");
+    assert!(wrong["native_session_id"].is_null());
+    // Simulate a process dying after commit and before a worker outcome.
+    let interrupted = uuid::Uuid::now_v7().to_string();
+    let blocked = uuid::Uuid::now_v7().to_string();
+    let entry = config.interaction.as_ref().unwrap().entry();
+    let source = crate::store::MatrixAuthor {
+        being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+        embodiment_id: "fixture-receiver".into(),
+    };
+    let original = crate::store::WeOriginal {
+        schema: "daimon-gateway.matrix-we-original/v1".into(),
+        event_id: interrupted.clone(),
+        author: "fixture-sender".into(),
+        thread_id: thread.clone(),
+        receipt_event_id: uuid::Uuid::now_v7().to_string(),
+        text: "Synthetic interrupted input".into(),
+    };
+    use crate::store::WePhase;
+    let store = &app.shared.store;
+    let attempt = store
+        .we_start(100, entry, source, json!({}), original)
+        .unwrap()
+        .unwrap();
+    assert!(
+        store.we_status(100, entry, &interrupted).unwrap().unwrap()["native_session_id"].is_null()
+    );
+    assert!(
+        store
+            .we_transition(
+                100,
+                entry,
+                &attempt,
+                WePhase::Starting,
+                WePhase::ProviderExposed,
+                json!({"native_session_id": "invalid identity"}),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        store.we_status(100, entry, &interrupted).unwrap().unwrap()["phase"],
+        "starting"
+    );
+    let native_session = "fixture-native-session-123";
+    assert!(
+        store
+            .we_transition(
+                100,
+                entry,
+                &attempt,
+                WePhase::Starting,
+                WePhase::ProviderExposed,
+                json!({"native_session_id": native_session})
+            )
+            .unwrap()
+    );
+    let full = stopping::command(&app, 100, &run(&blocked, "fixture-sender"), None)
+        .await
+        .unwrap_err();
+    assert!(full.to_string().contains("at capacity"));
+    assert!(store.we_status(100, entry, &blocked).unwrap().is_none());
+    drop(app);
+
+    let app = App::bootstrap(config).await.unwrap();
+    let interrupted_id = interrupted.clone();
+    for (id, author, phase) in [
+        (id, "fixture-sender", "delivered"),
+        (uncertain, "lose-provider-result", "provider_uncertain"),
+        (refused, "reject-before-commit", "rejected"),
+        (mismatched, "wrong-native-id", "rejected"),
+        (interrupted, "fixture-sender", "provider_uncertain"),
+    ] {
+        let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
+            .await
+            .unwrap();
+        assert_eq!(status["phase"], phase);
+        assert_eq!(
+            status,
+            stopping::command(&app, 100, &run(&id, author), None)
+                .await
+                .unwrap()
+        );
+        if id == interrupted_id {
+            assert_eq!(status["native_session_id"], native_session);
+            assert_ne!(status["native_session_id"], status["session_id"]);
+        }
+        if phase == "delivered" {
+            assert_eq!(status["result"]["send_id"], nonce);
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "provider\nreturn\nprovider\n"
+    );
+    let database = rusqlite::Connection::open(database).unwrap();
+    for table in ["turns", "incoming_updates"] {
+        let count: i64 = database
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
 #[tokio::test]
 async fn cold_interaction_entry_bootstraps_readable_owned_metadata_without_a_model() {
     let root = tempfile::tempdir().unwrap();

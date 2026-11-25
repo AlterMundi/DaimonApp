@@ -35,11 +35,13 @@ from matrix_execution import (
     validate_task,
 )
 from matrix_operator import NativeOwnerClient, configured_client, receiving_command
+from matrix_operator import body_status as operator_body_status
 from matrix_operator import host_timeout, usage_receipt_command
 from matrix_operator import inbox as operator_inbox
 from matrix_operator import receive as operator_receive
 from matrix_operator import respond as operator_respond
 from matrix_operator import send as operator_send
+from matrix_operator import we_conversation as operator_we_conversation
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -701,7 +703,9 @@ class AdapterTests(unittest.TestCase):
                     receiving_command(path, Path("/private/host.json"),
                                       inbox_only=True, receive_only=True)
                 for flag, expected in (("respond_only", "--respond"),
-                                       ("response_status_only", "--response-status")):
+                                       ("response_status_only", "--response-status"),
+                                       ("we_read_only", "--we-read"),
+                                       ("we_return_only", "--we-return")):
                     selected = receiving_command(path, Path("/private/host.json"), **{flag: True})
                     result = subprocess.run(selected, input="same retained intent", text=True,
                                             capture_output=True, check=True, timeout=5)
@@ -1786,6 +1790,154 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(self.receiver.page(after=0, limit=10)), 1)
 
 
+class AuthenticatedWeHostTests(unittest.TestCase):
+    def test_exact_original_and_signed_same_thread_return(self):
+        import socketserver
+        import tempfile
+        import threading
+
+        from daimon_matrix.daemon import serve_connection
+        from daimon_matrix.local_api import create_capability
+        from daimon_matrix.peer_transport import PeerTransportAmbiguous
+        from daimon_matrix.scopes import ScopeResolver
+        from daimon_matrix.service import HostedWeave
+        from tests import test_we_messaging as we_fixtures
+
+        sdk = we_fixtures.WeLaneTests()
+        sdk.setUp()
+        self.addCleanup(sdk.doCleanups)
+        now = we_fixtures.NOW
+        author, body = we_fixtures.LEGION, we_fixtures.REMOTE
+        sender = sdk.lane("legion", at_ms=now)
+        receiver = sdk.lane("daimonmatrix", at_ms=now + 5)
+        original = sender.converse(
+            text="Material for the selected turn",
+            addressees=[body],
+            request_id=str(uuid.uuid4()),
+            targets=sdk.canonical_targets(),
+            ttl_ms=30_000,
+            deliver=lambda _, payload: receiver.intake(payload),
+        )
+        return_attempts = []
+
+        def deliver(payload, **kwargs):
+            return_attempts.append(kwargs["correlation_id"])
+            receipt = sdk.lane("legion", at_ms=now + 15).intake(payload)
+            if len(return_attempts) > 1:
+                raise PeerTransportAmbiguous("outcome lost")
+            return receipt
+
+        def peer(embodiment):
+            self.assertEqual(embodiment, author)
+            return None, SimpleNamespace(call=deliver)
+
+        capabilities = {
+            purpose: create_capability(
+                key, client_id=purpose, methods=methods,
+                not_before_ms=now - 100, not_after_ms=now + 60_000,
+            )
+            for purpose, key, methods in (
+                ("conversation", b"w" * 32, ["we.converse"]),
+                ("observation", b"o" * 32, ["runtime.status", "we.conversation.page"]),
+            )
+        }
+        service = HostedWeave(
+            sdk.ledger_b,
+            sdk.signers["daimonmatrix"],
+            {cap.capability_id: cap for cap in capabilities.values()},
+            lambda: now + 10,
+            "dm:runtime:v1:" + "W" * 43,
+            "gateway-we-test",
+            scopes=ScopeResolver(sdk.ledger_b, clock=lambda: now + 10),
+            peer_context=SimpleNamespace(configured=peer, authority=sdk.authority,
+                                         local_origin=sdk.ledger_b.local_origin),
+            we_lane=sdk.lane("daimonmatrix", at_ms=now + 10),
+        )
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                serve_connection(SimpleNamespace(service=service), self.request)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            socket = path / "sdk.sock"
+            with socketserver.UnixStreamServer(str(socket), Handler) as server:
+                socket.chmod(0o600)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    self._check_round_trip(path, socket, sdk, service, capabilities, original,
+                                           author, body, return_attempts)
+                finally:
+                    server.shutdown()
+                    worker.join()
+
+    def _check_round_trip(self, path, socket, sdk, service, capabilities, original,
+                          author, body, return_attempts):
+        from daimon_matrix.client import CLIENT_CONFIG_SCHEMA_V3
+
+        source = {"being_ref": sdk.ledger_b.authority.manifest.being_ref, "embodiment_id": body}
+        binding = {"schema": "daimon-gateway.matrix-we-binding/v1", "source": source}
+        for purpose, cap in capabilities.items():
+            config, key = path / f"{purpose}.json", path / f"{purpose}.key"
+            config.write_text(canonical({
+                "schema": CLIENT_CONFIG_SCHEMA_V3,
+                "capability": cap.descriptor,
+                "expected_server": sdk.ledger_b.local_origin,
+                "runtime_id": service.runtime_id,
+                "runtime_label": service.runtime_label,
+            }))
+            key.write_bytes({"conversation": b"w", "observation": b"o"}[purpose] * 32)
+            config.chmod(0o600)
+            key.chmod(0o600)
+            binding[purpose] = dict(socket=str(socket), client_config=str(config), client_key=str(key))
+        document = path / "binding.json"
+        document.write_text(canonical(binding))
+        document.chmod(0o600)
+        client = configured_client(document, source, same_being=True)
+        client = replace(client, messaging=replace(client.messaging, clock=service.clock),
+                         observation=replace(client.observation, clock=service.clock))
+        selected = {
+            "source": source,
+            "body": operator_body_status({"source": source}, client),
+            "original": {"cursor": None, "thread_id": original["thread_id"],
+                         "event_id": original["message_id"], "author": author},
+        }
+        received = operator_we_conversation(selected, client, timeout=5)
+        self.assertEqual(received["text"], "Material for the selected turn")
+        self.assertEqual(received["receipt_event_id"], original["deliveries"][0]["receipt_event_id"])
+
+        intent = dict(selected, send_id=str(uuid.uuid4()), text="Reply from the selected body")
+        for wrong in (
+            dict(intent, body=dict(intent["body"], manifest_hash="c" * 64)),
+            dict(intent, original=dict(intent["original"], thread_id=str(uuid.uuid4()))),
+            dict(intent, original=dict(intent["original"], author=body)),
+        ):
+            with self.assertRaises(MatrixExecutionError):
+                operator_we_conversation(wrong, client, timeout=5, respond=True)
+        self.assertEqual(return_attempts, [])
+        reply = operator_we_conversation(intent, client, timeout=5, respond=True)
+        self.assertEqual(reply["state"], "delivered")
+        remote = next(row for row in sdk.ledger_a.conversation_evidence()
+                      if row["event_id"] == reply["message_id"])
+        self.assertEqual(remote["origin"]["embodiment_id"], body)
+        self.assertEqual(remote["payload"]["body"]["text"], intent["text"])
+        self.assertEqual(remote["payload"]["intent"]["thread_id"], original["thread_id"])
+        receipt = sdk.ledger_a.event(reply["receipt_event_id"])
+        self.assertEqual(receipt["origin"]["embodiment_id"], author)
+        self.assertEqual(receipt["payload"]["message_ref"]["event_hash"], reply["message_hash"])
+
+        uncertain = dict(intent, send_id=str(uuid.uuid4()), text="Reply with a lost receipt")
+        outcome = operator_we_conversation(uncertain, client, timeout=5, respond=True)
+        self.assertEqual(outcome["state"], "undetermined")
+        self.assertNotIn("receipt_event_id", outcome)
+        self.assertEqual(return_attempts, [intent["send_id"], uncertain["send_id"]])
+        self.assertTrue(any(
+            row["subject"] == "communication" and row["payload"]["body"]["text"] == uncertain["text"]
+            for row in sdk.ledger_a.conversation_evidence()
+        ))
+
+
 class AuthenticatedGroupHostTests(unittest.TestCase):
     def test_separate_capabilities_send_through_actual_authenticated_group_service(
         self,
@@ -1912,6 +2064,14 @@ class AuthenticatedGroupHostTests(unittest.TestCase):
                     messaging=replace(loaded.messaging, clock=group.lane.clock),
                     observation=replace(loaded.observation, clock=group.lane.clock),
                 )
+                observed = operator_body_status({"source": source}, host)
+                self.assertEqual(observed["being_ref"], source["being_ref"])
+                self.assertEqual(observed["local_origin"]["embodiment_id"], source["embodiment_id"])
+                self.assertEqual(observed["local_origin"]["incarnation_id"], group.ledger.local_origin["incarnation_id"])
+                self.assertEqual(set(observed), {"schema", "integrity", "being_ref", "manifest_hash", "local_origin"})
+                with self.assertRaises(MatrixExecutionError):
+                    operator_body_status({"source": {**source, "embodiment_id": "another-body"}}, host)
+
                 status = sdk.technical_status()
                 outcome = operator_send({"status": status, "source": source}, host)
                 transport = MatrixConversationTransport(status, source, host)

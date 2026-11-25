@@ -42,6 +42,7 @@ pub struct InteractionConfig {
     #[serde(default)]
     pub matrix_targets: Vec<MatrixTarget>,
     pub matrix_transport: Option<MatrixTransportConfig>,
+    pub claude_foreground: Option<ClaudeForegroundConfig>,
     /// Owner-only durable visibility publication; never a model signing API.
     pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
@@ -89,6 +90,22 @@ pub struct MatrixTransportConfig {
     pub native_funding_binding: Option<std::path::PathBuf>,
     /// Additional native ceilings, selected only by this private host config.
     pub native_host_restrictions: Option<NativeHostRestrictions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeForegroundConfig {
+    pub transport: MatrixTransportConfig,
+    pub worker_command: Vec<String>,
+}
+
+fn valid_owner_command(command: &[String]) -> bool {
+    !command.is_empty()
+        && command.len() <= 32
+        && std::path::Path::new(&command[0]).is_absolute()
+        && !command
+            .iter()
+            .any(|arg| arg.is_empty() || arg.len() > 4096 || arg.contains('\0'))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -284,6 +301,20 @@ impl InteractionConfig {
         if let Some(publication) = &self.matrix_publication {
             publication.validate()?;
         }
+        if let Some(foreground) = &self.claude_foreground {
+            let host = &foreground.transport;
+            host.source.validate()?;
+            if !matches!(host.source, MatrixDestination::Body { .. })
+                || !valid_owner_command(&host.command)
+                || !valid_owner_command(&foreground.worker_command)
+                || !(1..=60).contains(&host.timeout_seconds)
+                || host.native_funding_binding.is_some()
+                || host.native_host_restrictions.is_some()
+                || !cfg!(unix)
+            {
+                bail!("Invalid explicit Claude foreground configuration");
+            }
+        }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
                 restrictions.validate()?;
@@ -291,13 +322,7 @@ impl InteractionConfig {
             transport.source.validate()?;
             if !matches!(transport.source, MatrixDestination::Body { .. })
                 || (self.matrix_targets.is_empty() && self.matrix_inbox_channel.is_none())
-                || transport.command.is_empty()
-                || transport.command.len() > 32
-                || !std::path::Path::new(&transport.command[0]).is_absolute()
-                || transport
-                    .command
-                    .iter()
-                    .any(|arg| arg.is_empty() || arg.len() > 4096 || arg.contains('\0'))
+                || !valid_owner_command(&transport.command)
                 || !(1..=60).contains(&transport.timeout_seconds)
                 || transport
                     .native_funding_binding
@@ -703,6 +728,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            claude_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![

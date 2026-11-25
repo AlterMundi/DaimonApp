@@ -876,6 +876,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            claude_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {
@@ -1438,6 +1439,7 @@ mod tests {
             observer_reasoning_effort: None,
             matrix_targets: vec![],
             matrix_transport: None,
+            claude_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {
