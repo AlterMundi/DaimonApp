@@ -20,17 +20,25 @@ owner API. Web and Matrix are independent clients of the same Gateway.
 Keep one coordinator and journal. In particular, Telegram delivery failure
 does not change native admission or invalidate canonical output.
 
-The compatible executable supports embedded polling by default. To run
-TeleDaimon separately, select `telegram.external_polling=true` on the Gateway
-and keep its existing database and owner control socket. Gateway uses the bot
-ID retained in the journal. For a fresh journal, set `telegram.external_bot_id`
-to the owner-selected bot. An ID that conflicts with the retained journal
-identity is refused. Gateway needs no Bot API token or endpoint in this mode.
+Install the shared release executable as `daimon-gateway` and expose
+`teledaimon` as a symbolic link to that same executable in the release
+directory. The invocation name selects the component. Use
+`daimon-gateway GATEWAY_CONFIG` and
+`daimon-gateway --control GATEWAY_CONFIG …` for its owner controls.
 
-Start exactly one `telecodex --tele-daimon-poll ADAPTER_CONFIG` with the bot
-credential and the same owner socket. TeleDaimon performs `getMe` and reports
-the verified identity before polling. Gateway accepts the report only for its
-selected bot over the existing owner-only Unix socket.
+Select `telegram.external_polling=true` on Gateway and keep its existing
+database and owner control socket. Gateway uses the bot ID retained in the
+journal. For a fresh journal, set `telegram.external_bot_id` to the
+owner-selected bot. A conflicting ID is refused. The named Gateway entry
+requires external or disabled Telegram transport and refuses bot credential
+settings before validation can resolve them.
+
+Start exactly one `teledaimon ADAPTER_CONFIG` with the bot credential and the
+same owner socket. TeleDaimon performs `getMe` and reports the verified identity
+before polling. Gateway accepts the report only for its selected bot over the
+existing owner-only Unix socket. The named adapter runs only the Telegram
+poller. The historical executable name retains the embedded listener and
+`--tele-daimon-poll` command for existing deployments during the transition.
 
 The process opens neither the journal nor the native harness. TeleDaimon
 executes retained text and file projections, ordinary JSON Bot API
@@ -61,9 +69,9 @@ unsent original stays available for explicit recovery. An unconfirmed Bot API
 send retains its publication and part IDs without an invented message ID.
 Verify a new durable admission after TeleDaimon connects and one independent
 Gateway original while TeleDaimon is stopped. To roll back,
-stop the external poller first, restore the original token configuration, clear
-`external_polling` and restart the selected service with the same database. Preserve all earlier originals and
-uncertain receipts.
+stop the external poller first, restore the retained embedded executable and
+configuration, then start the selected service with the same database.
+Preserve all earlier originals and uncertain receipts.
 
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission

@@ -289,10 +289,31 @@ impl SearchMode {
 
 impl Config {
     pub fn load(path: PathBuf) -> Result<Self> {
+        Self::load_with_role(path, false)
+    }
+
+    pub fn load_gateway(path: PathBuf) -> Result<Self> {
+        Self::load_with_role(path, true)
+    }
+
+    fn load_with_role(path: PathBuf, dedicated_gateway: bool) -> Result<Self> {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Config = toml::from_str(&raw)
             .with_context(|| format!("failed to parse config {}", path.display()))?;
+        if dedicated_gateway {
+            let telegram = &config.telegram;
+            anyhow::ensure!(
+                !telegram.enabled || telegram.external_polling,
+                "Daimon Gateway requires external or disabled Telegram transport"
+            );
+            anyhow::ensure!(
+                telegram.bot_token.is_none()
+                    && telegram.bot_token_env.is_none()
+                    && telegram.bot_token_file.is_none(),
+                "Configure Telegram bot credentials only in TeleDaimon"
+            );
+        }
         config.validate()?;
         Ok(config)
     }

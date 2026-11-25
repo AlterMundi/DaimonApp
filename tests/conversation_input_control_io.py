@@ -493,7 +493,7 @@ def gateway_survives_telegram_failure(binary):
             journey.close()
     print('PASS Gateway admits and retains a native result after Telegram identity, setup and polling failures.')
 
-def independent_telegram_polling(binary):
+def independent_telegram_polling(binary, *, named_roles=False):
     class MigratingInputs(Inputs):
         unknown_steer = None
         deferred_steer = None
@@ -534,13 +534,24 @@ def independent_telegram_polling(binary):
     external_config = external_config.replace(
         "[telegram]\n", '[telegram]\napi_base="http://127.0.0.1:1"\n')
     adapter = None
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(journey.root), "LANG": "C.UTF-8"}
+    adapter_command = [binary, "--tele-daimon-poll", str(poll_config)]
+    if named_roles:
+        gateway_path = journey.root / "daimon-gateway"
+        gateway_path.symlink_to(Path(binary).resolve())
+        adapter_path = journey.root / "teledaimon"
+        adapter_path.symlink_to(gateway_path.name)
+        adapter_command = [str(adapter_path), str(poll_config)]
 
     def start_adapter():
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(journey.root), "LANG": "C.UTF-8"}
         return subprocess.Popen(
-            [binary, "--tele-daimon-poll", str(poll_config)],
-            cwd=journey.root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            adapter_command, cwd=journey.root, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+
+    def assert_command_refused(args, error):
+        result = subprocess.run(args, cwd=journey.root, env=env, capture_output=True, text=True, timeout=12)
+        assert result.returncode != 0 and error in result.stderr, result.stderr
 
     def stop_adapter(process):
         if process.poll() is None:
@@ -562,6 +573,26 @@ def independent_telegram_polling(binary):
         ) == [("settled",)]
 
     try:
+        if named_roles:
+            assert_command_refused(
+                [str(gateway_path), str(journey.config)],
+                "requires external or disabled Telegram transport",
+            )
+            assert_command_refused(
+                [str(gateway_path), "--tele-daimon-poll", str(poll_config)], "teledaimon CONFIG",
+            )
+            assert_command_refused(
+                [str(adapter_path), "--control", str(journey.config), "presentation", "list", "0", "0"],
+                "Usage: teledaimon CONFIG",
+            )
+            token_profile = journey.root / "token-in-gateway.toml"
+            token_profile.write_text(external_config.replace(
+                "[telegram]\n", '[telegram]\nbot_token_file="/unreadable/test-token"\n',
+            ))
+            assert_command_refused(
+                [str(gateway_path), str(token_profile)], "Configure Telegram bot credentials only in TeleDaimon",
+            )
+            assert journey.telegram_methods == []
         journey.start()
         journey.wait_control_socket(journey.socket)
         seeded = journey.admit("Original from the embedded listener", topic=1)
@@ -619,13 +650,12 @@ def independent_telegram_polling(binary):
         )
         before_cutover = len(journey.packets)
         journey.stop()
+        if named_roles:
+            journey.binary = str(gateway_path)
         wrong_bot = journey.root / "wrong-bot.toml"
         wrong_bot.write_text(external_config.replace(
             "external_polling=true\n", "external_polling=true\nexternal_bot_id=124\n"))
-        rejected = subprocess.run([binary, str(wrong_bot)], cwd=journey.root,
-                                  env={"PATH": "/usr/bin:/bin", "HOME": str(journey.root)},
-                                  capture_output=True, text=True, timeout=12)
-        assert rejected.returncode != 0 and "does not match the journal identity" in rejected.stderr
+        assert_command_refused([journey.binary, str(wrong_bot)], "does not match the journal identity")
         journey.config.write_text(external_config)
         journey.telegram_methods.clear()
         journey.start()
@@ -716,7 +746,7 @@ def independent_telegram_polling(binary):
 if __name__=='__main__':
     binary=str(Path(sys.argv[1]).resolve())
     gateway_survives_telegram_failure(binary)
-    independent_telegram_polling(binary)
+    independent_telegram_polling(binary, named_roles=True)
     foreground_retention(binary)
     foreground_delegation(binary)
     reconsider_queued_steer(binary)
