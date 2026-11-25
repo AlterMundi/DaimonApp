@@ -126,6 +126,11 @@ the observation JSON to an authorized local caller. Neither operation starts wor
 
 The native text and ordinary voice writers can select that UUID through
 `machine_source` (`x-machine-source` at the ordinary voice HTTP boundary).
+For a new voice original, the dashboard checks the exact owner-journal receipt
+before staging audio. A mismatched or expired source can therefore fail before
+using recording storage. Native admission still verifies the receipt inside
+the write transaction. A retained original continues through the existing
+immutable retry path.
 SQLite matches the original, current owner, session, native
 thread, binding and admission epoch. It seals the receipt in the same
 transaction that inserts the original and its ingress order. The entry binding

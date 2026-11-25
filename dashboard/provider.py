@@ -966,6 +966,30 @@ class Provider:
         self.input_id(ident)
         return self.presentation('input context read ' + json.dumps({'binding':binding,'id':ident}))
 
+    def check_voice_machine_source(self, metadata):
+        """Check a fresh receipt or an exact existing voice original before staging media."""
+        receipt = metadata.get('machine_source')
+        if receipt is None:
+            return
+        with closing(readonly(self.receiver['db_path'])) as db:
+            retained = db.execute("SELECT json_extract(doc, '$.voice.audio_sha256') "
+                                  'FROM conversation_inputs WHERE id=? AND human_id=?',
+                                  (metadata['id'], self.human)).fetchone()
+        if retained:
+            if retained[0] != metadata['audio_sha256']:
+                raise ValueError('The original recording does not match')
+            proof = self.retained_conversation_machine_source(metadata['id'])
+            if (proof.get('schema') != 'telecodex.conversation-retained-machine-source/v1'
+                    or proof.get('id') != metadata['id'] or proof.get('receipt') != receipt):
+                raise ProviderUnavailable('The original world context could not be verified')
+            return
+        selected = {'binding':metadata['binding'], 'id':metadata['id']}
+        proof = self.presentation('input context status ' + json.dumps(selected))
+        if (proof.get('schema') != 'telecodex.conversation-machine-source/v1'
+                or proof.get('id') != selected['id'] or proof.get('receipt') != receipt
+                or proof.get('storage') not in ('owner-journal', 'legacy-vault')):
+            raise ProviderUnavailable('The original world context could not be verified')
+
     def retained_conversation_machine_source(self, ident):
         return self.presentation('input context retained ' + self.input_id(ident))
 
@@ -1224,6 +1248,7 @@ class Provider:
         self.assert_binding()
         if not self.receiver.get('voice') or not self.authorized(self.human):
             raise ProviderUnavailable('Voice input unavailable')
+        self.check_voice_machine_source(metadata)
         capabilities = None
         if avatar_interrupt:
             capabilities=self.presentation('input voice capabilities')

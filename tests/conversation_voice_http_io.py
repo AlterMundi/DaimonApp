@@ -88,9 +88,9 @@ print(json.dumps({'text':item['text'],'final':True}))
             p=j.root/'asr-calls';return p.read_text().splitlines() if p.exists() else []
         def register(data,text,hold=False):
             digest=hashlib.sha256(data).hexdigest();transcripts[digest]={'text':text,'hold':hold};(j.root/'transcripts.json').write_text(json.dumps(transcripts));return digest
-        def upload(data,ident=None,selected=None,digest=None,stop=None):
+        def upload(data,ident=None,selected=None,digest=None,stop=None,selected_binding=None):
             ident=ident or str(uuid.uuid4());digest=digest or hashlib.sha256(data).hexdigest()
-            h={**(headers if selected is None else selected),'content-type':'audio/wav','x-input-binding':binding,'x-input-id':ident,'x-audio-sha256':digest}
+            h={**(headers if selected is None else selected),'content-type':'audio/wav','x-input-binding':selected_binding if selected_binding is not None else binding,'x-input-id':ident,'x-audio-sha256':digest}
             if ident in machine_receipts:h['x-machine-source']=machine_receipts[ident]
             if stop is not None:h['x-recording-stop']=stop
             route='/api/interaction/voice/openai' if profile and not default else '/api/interaction/voice'
@@ -113,6 +113,7 @@ print(json.dumps({'text':item['text'],'final':True}))
         original,response=upload(data,original,stop=stop_reason);assert response.status_code==200,response.text
         assert response.json()['phase']=='preparing' and response.json()['text']==''
         j.wait(lambda:digest in calls());assert not j.packets,'Partial ASR admitted work'
+        assert (Path(str(j.root/'state.sqlite')+'.voice')/original).is_file()
         repeated=upload(data,original,stop=stop_reason)[1];assert repeated.status_code==200 and not repeated.json()['new_input']
         assert upload(audio(555),original)[1].status_code==400
         assert calls().count(digest)==1
@@ -159,6 +160,9 @@ print(json.dumps({'text':item['text'],'final':True}))
         assert '"capture_order":'+str(orders[0][1]) in worker_packet
         assert calls().count(digest)==1 and len(j.packets)==2
         assert not Path(str(j.root/'state.sqlite')+'.voice').joinpath(original).exists()
+        if machine_source:
+            with sqlite3.connect(j.root/'state.sqlite') as db:
+                assert db.execute('UPDATE conversation_machine_sources SET expires=1 WHERE original=?',(original,)).rowcount==1
         repeated = upload(data,original,stop=stop_reason)[1]
         assert repeated.status_code==200 and calls().count(digest)==1
         assert not Path(str(j.root/'state.sqlite')+'.voice').joinpath(original).exists()
@@ -265,7 +269,60 @@ print(json.dumps({'text':item['text'],'final':True}))
             j.wait(lambda:j.row('SELECT original FROM conversation_machine_source_checkpoint')==[(None,)])
             send_situated('full',2.0)
             send_situated('full',2.0,room='foyer')
+            # A failed context proof must fail the original, including while a
+            # client still holds an earlier visit's receipt during a rollout.
+            before_packets=len(j.packets)
+            before_asr=calls()
+            borrowed=str(uuid.uuid4())
+            borrowed_receipt=offer_context(borrowed,'Own receipt for borrowed claim')
+            pending=str(uuid.uuid4())
+            pending_receipt=offer_context(pending,'Pending wrong binding')
+            expired=str(uuid.uuid4())
+            expired_receipt=offer_context(expired,'Expired source')
+            with sqlite3.connect(j.root/'state.sqlite') as db:
+                db.execute('UPDATE conversation_machine_sources SET expires=1 WHERE original=?',(expired,))
+            for ident,receipt,selected_binding in (
+                (borrowed,pending_receipt,binding),
+                (pending,pending_receipt,'0'*64),
+                (expired,expired_receipt,binding),
+            ):
+                rejected=client.post('/api/interaction/inputs',json={
+                    'binding':selected_binding,'id':ident,'text':'Refuse this context proof',
+                    'machine_source':receipt,
+                },headers=headers)
+                assert rejected.status_code==503,rejected.text
+                assert not j.row('SELECT id FROM conversation_inputs WHERE id=?',(ident,))
+            machine_receipts[borrowed]=pending_receipt
+            assert initial in machine_receipts
+            for ident,selected_binding in ((borrowed,binding),(expired,binding),(pending,'0'*64),(initial,binding)):
+                _,rejected=upload(audio(841),ident,selected_binding=selected_binding)
+                assert rejected.status_code==(400 if ident==initial else 503),rejected.text
+                if ident!=initial:
+                    assert not j.row('SELECT id FROM conversation_inputs WHERE id=?',(ident,))
+                assert not (Path(str(j.root/'state.sqlite')+'.voice')/ident).exists()
+            previous=machine_receipts[original]
+            machine_receipts[original]=pending_receipt
+            try:
+                _,rejected=upload(data,original,stop=stop_reason)
+                assert rejected.status_code==503,rejected.text
+                assert not (Path(str(j.root/'state.sqlite')+'.voice')/original).exists()
+            finally:
+                machine_receipts[original]=previous
+            assert j.row('SELECT receipt,retained FROM conversation_machine_sources WHERE original=?',(borrowed,))==[(borrowed_receipt,0)]
+            retry={'binding':binding,'id':initial,'text':'Observe situated fixture'}
+            for wrong in ({'machine_source':pending_receipt},{}):
+                rejected=client.post('/api/interaction/inputs',json={**retry,**wrong},headers=headers)
+                assert rejected.status_code==503,rejected.text
+            repeated=client.post('/api/interaction/inputs',json={**retry,'machine_source':archived['receipt']},headers=headers)
+            assert repeated.status_code==200 and not repeated.json()['new_input'],repeated.text
+            assert len(j.packets)==before_packets and calls()==before_asr
+            assert client.post('/api/interaction/inputs',json={
+                'binding':binding,'id':pending,'text':'Accept this exact proof','machine_source':pending_receipt,
+            },headers=headers).status_code==200
+            j.wait(lambda:status(pending)['phase']=='accepted')
+            assert len(j.packets)==before_packets+1
             print('PASS native situated full, unchanged, pose patch, lost checkpoint and room boundary.')
+            print('PASS HTTP refuses swapped, wrong-binding and expired proofs, preserves the archived retry and accepts the exact pending proof.')
         print('PASS committed browser voice: actual HTTP/owner/SQLite/decoder/native, one retained clip identity, final ASR only, source order before later text, attributed worker routing, silence, duplicate/changed upload, grant ABA and restart without replay; zero models.')
         if machine_source:print('PASS owner journal machine sources: exact text, delayed voice and routed native evidence, sealed readback and zero human attachment slots.')
     finally:
