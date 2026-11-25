@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Joined Antigravity qualification with signed disposable Matrix and native DMK.
+"""Joined Gateway harness qualification with signed disposable Matrix and native DMK.
 
 Use PYTHONPATH=<Matrix>/src:<Matrix> and a disposable test environment.
 All identity, model output and memory content belong to fixtures.
@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 from threading import Thread
@@ -28,7 +29,7 @@ def matrix_fixture():
     return module.AuthenticatedWeHostTests
 
 
-def selected_memory(root, python, scripts, being, original):
+def selected_memory(root, python, scripts, being, original, engine):
     database = root / "fixture-dmk.db"
     result = subprocess.run(
         [python, "-B", "-c", """
@@ -47,7 +48,7 @@ print(json.dumps(memory._read_chapter(selected)))
     )
     selected = json.loads(result.stdout)
     binding = root / "dmk.json"
-    body_ref = "fixture:antigravity"
+    body_ref = f"fixture:{engine}"
     binding.touch(mode=0o600)
     binding.write_text(json.dumps({
         "schema": "hmk.deep-recall.binding/v1", "being_ref": being, "body_ref": body_ref,
@@ -60,10 +61,34 @@ print(json.dumps(memory._read_chapter(selected)))
     }, database
 
 
-def qualify(gateway, sdk_python, scripts):
+def configure_worker(engine, executable, root, state, profile, port, config):
+    if engine == "antigravity":
+        config.update(node="/usr/bin/node", providerPort=port)
+        return [executable, "-B", str(foreground.WORKER), "--profile", str(profile)]
+
+    home = state / "config" / "goose"
+    home.mkdir(parents=True)
+    extensions = {name: {"name": name, "type": "platform", "enabled": False}
+                  for name in ("developer", "extensionmanager", "summon", "tom", "todo", "summarize")}
+    (home / "config.yaml").write_text(json.dumps({"extensions": extensions}))
+    key = root / "provider-fixture"
+    key.touch(mode=0o600)
+    key.write_text("fixture-only\n")
+    wrapper = root / "goose-loopback"
+    wrapper.write_text(f"""#!/bin/sh
+export OPENAI_HOST=http://127.0.0.1:{port}
+exec {shlex.quote(executable)} "$@"
+""")
+    wrapper.chmod(0o700)
+    config.update(binary=str(wrapper), cwd=str(root), provider="openai", providerKeyFile=str(key))
+    worker = foreground.ROOT / "adapters/acp/gateway-worker.mjs"
+    return ["/usr/bin/node", str(worker), "--profile", str(profile)]
+
+
+def qualify(engine, gateway, executable, scripts):
     parent = matrix_fixture()
 
-    class SignedAntigravity(parent):
+    class SignedForeground(parent):
         def _check_round_trip(self, root, socket, fixture, service, capabilities, original,
                               author, body, return_attempts):
             import daimon_matrix
@@ -113,7 +138,7 @@ operator.main()
             )
             status = json.loads(live_status.stdout)
             self.assertEqual(status["local_origin"]["embodiment_id"], body)
-            memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"])
+            memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"], engine)
             initial_database = database.read_bytes()
             journey = Inputs(gateway)
             self.addCleanup(journey.close)
@@ -127,19 +152,23 @@ operator.main()
                 provider.calls = []
                 provider.failure = None
                 provider.mode = "accepted"
+                provider.engine = engine
+                provider.model = "fixture" if engine == "antigravity" else "gpt-4o-mini"
+                provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
                 provider.current = original["message_id"]
                 provider.original = "Material for the selected turn"
-                profile.write_text(json.dumps({
-                    "node": "/usr/bin/node", "stateRoot": str(state), "model": "fixture",
-                    "providerPort": provider.server_port, "matrixStatusCommand": host,
+                config = {
+                    "stateRoot": str(state), "model": provider.model, "matrixStatusCommand": host,
                     "body": {"beingRef": being, "embodimentId": body, "incarnationId": origin["incarnation_id"],
                              "manifestHash": status["manifest_hash"]},
                     "selectedMemory": memory,
-                }))
+                }
+                command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
+                profile.write_text(json.dumps(config))
                 journey.config.write_text(journey.config.read_text() + f"""
-[interaction.antigravity_foreground]
-worker_command={json.dumps([sdk_python, "-B", str(foreground.WORKER), "--profile", str(profile)])}
-[interaction.antigravity_foreground.transport]
+[interaction.{engine}_foreground]
+worker_command={json.dumps(command)}
+[interaction.{engine}_foreground.transport]
 command={json.dumps(host)}
 source={{kind="body", being_ref="{being}", embodiment_id="{body}"}}
 timeout_seconds=5
@@ -151,9 +180,11 @@ timeout_seconds=5
                     journey.wait_control_socket(journey.socket)
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
-                    reply = journey.read("matrix", "antigravity", "run", json.dumps(selected))["result"]
+                    reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
                     self.assertEqual(reply["phase"], "delivered", reply)
+                    self.assertEqual(reply["engine"], engine)
+                    self.assertTrue(reply["native_session_id"])
                     self.assertEqual(return_attempts, [reply["result"]["send_id"]])
                     self.assertEqual(provider.calls, [original["message_id"]] * 2)
                     self.assertEqual(database.read_bytes(), initial_database)
@@ -167,15 +198,24 @@ timeout_seconds=5
                     receipt = synced.event(result["receipt_event_id"])
                     self.assertEqual(receipt["origin"]["embodiment_id"], author)
                     self.assertEqual(receipt["payload"]["message_ref"]["event_hash"], result["message_hash"])
+                    journey.stop()
+                    journey.start()
+                    journey.wait_control_socket(journey.socket)
+                    status = journey.read("matrix", engine, "status", original["message_id"])["result"]
+                    self.assertEqual(status, reply)
+                    observed = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
+                    self.assertEqual(observed, reply)
+                    self.assertEqual(provider.calls, [original["message_id"]] * 2)
+                    self.assertEqual(return_attempts, [reply["result"]["send_id"]])
                 finally:
                     provider.shutdown()
                     server.join()
 
-    result = unittest.TextTestRunner(verbosity=2).run(SignedAntigravity("test_exact_original_and_signed_same_thread_return"))
+    result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        raise SystemExit("Usage: antigravity_signed_io.py GATEWAY SDK_PYTHON DMK_SCRIPTS")
-    raise SystemExit(qualify(sys.argv[1], sys.argv[2], Path(sys.argv[3])))
+    if len(sys.argv) != 5 or sys.argv[1] not in ("antigravity", "goose"):
+        raise SystemExit("Usage: foreground_signed_io.py ENGINE GATEWAY SDK_PYTHON_OR_GOOSE_ACP DMK_SCRIPTS")
+    raise SystemExit(qualify(sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])))

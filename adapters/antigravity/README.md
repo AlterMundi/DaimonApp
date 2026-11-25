@@ -67,7 +67,7 @@ checkout's `src` and repository root. Run as the normal test user so the
 fixture's Unix peer credentials and private file permissions match:
 
 ```sh
-python3 -B tests/antigravity_signed_io.py \
+python3 -B tests/foreground_signed_io.py antigravity \
   /absolute/gateway-executable /absolute/sdk-venv/bin/python /absolute/dmk/scripts
 ```
 

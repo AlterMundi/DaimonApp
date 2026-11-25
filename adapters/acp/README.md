@@ -91,3 +91,18 @@ Set `DMK_TEST_SCRIPTS` to the installed DMK scripts directory and
 `DMK_TEST_PYTHON` to its interpreter for the read contract. This creates a
 disposable synthetic pool, which verifies the returned native record, the
 other-record refusal, revision drift and byte-for-byte datastore preservation.
+
+## Signed interop qualification
+
+Set `PYTHONPATH` to the pinned Matrix checkout's `src` and repository root.
+Run as the normal test user so the fixture's Unix peer credentials match.
+
+```sh
+python3 -B tests/foreground_signed_io.py goose \
+  /absolute/gateway-executable /absolute/patched/goose-acp /absolute/dmk/scripts
+```
+
+The fixture checks the exact provider-facing tool list, a read through the
+real DMK reader, a signed same-thread reply observed by the sender and
+restart without resubmission. It uses a disposable Matrix authority,
+synthetic memory and a loopback model responder.

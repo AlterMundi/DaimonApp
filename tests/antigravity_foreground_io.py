@@ -34,13 +34,15 @@ class Provider(BaseHTTPRequestHandler):
             text = json.dumps(call["messages"])
             assert self.server.original in text
             assert "A decoy record." not in text
-            assert "dmk_read_selected" in {item["function"]["name"] for item in call["tools"]}
+            tool = self.server.tool_prefix + "dmk_read_selected"
+            names = [item["function"]["name"] for item in call["tools"]]
+            assert sorted(names) == sorted([self.server.tool_prefix + "daimon_status", tool]), names
             phase, raw = j.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
                 (self.server.current,),
             )[0]
             assert phase == "provider_exposed"
-            assert json.loads(raw)["engine"] == "antigravity"
+            assert json.loads(raw)["engine"] == self.server.engine
             self.server.calls.append(self.server.current)
             if self.server.mode == "held":
                 self.server.arrived.set()
@@ -56,16 +58,23 @@ class Provider(BaseHTTPRequestHandler):
             else:
                 assert self.server.calls.count(self.server.current) == 1
                 payload = {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_fixture",
-                    "type": "function", "function": {"name": "dmk_read_selected", "arguments": "{}"}}]}
+                    "type": "function", "function": {"name": tool, "arguments": "{}"}}]}
                 finish = "tool_calls"
             streaming = call.get("stream")
-            choice = {"index": 0, "finish_reason": finish, "delta" if streaming else "message": payload}
-            result = {"id": "fixture", "created": 1, "model": "fixture", "choices": [choice],
+            result = {"id": "fixture", "created": 1, "model": self.server.model,
                       "object": "chat.completion.chunk" if streaming else "chat.completion"}
+            usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             if streaming:
-                body = ("data: " + json.dumps(result) + "\n\ndata: [DONE]\n\n").encode()
+                chunks = [
+                    {**result, "choices": [{"index": 0, "finish_reason": None, "delta": payload}]},
+                    {**result, "choices": [{"index": 0, "finish_reason": finish, "delta": {}}]},
+                    {**result, "choices": [], "usage": usage},
+                ]
+                body = ("".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+                        + "data: [DONE]\n\n").encode()
             else:
-                result["usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                result["choices"] = [{"index": 0, "finish_reason": finish, "message": payload}]
+                result["usage"] = usage
                 body = json.dumps(result).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream" if streaming else "application/json")
@@ -122,6 +131,9 @@ print(json.dumps(reply))
 def qualify(j, python, provider):
     provider.journey = j
     provider.original = ORIGINAL
+    provider.engine = "antigravity"
+    provider.model = "fixture"
+    provider.tool_prefix = ""
     provider.calls = []
     provider.mode = None
     provider.failure = None
