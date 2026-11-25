@@ -56,6 +56,11 @@ No background recorder, provider call or new login is created. Iframe reload is
 not safe while capture/upload/unknown submission is unresolved; normal existing
 recovery rules remain authoritative. Real device/hearing acceptance is separate.
 
+The hosted frame presents the general conversation and the human's original
+inputs. It omits independent session reply cards and the workspace switcher.
+Replies from the general conversation, the same input writer, draft recovery
+and situated attachments continue through the shared component.
+
 ### Conversation text drafts
 
 The canonical composer saves ordinary typed text immediately in the current
