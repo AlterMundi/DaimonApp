@@ -693,15 +693,17 @@ class Telegram:
         self.next_chat = {}
         self.schedule_lock = threading.Lock()
 
-    def call(self, method, payload, *, background=False):
-        if method not in ('sendMessage', 'editMessageText', 'deleteMessage', 'editForumTopic'):
-            raise ValueError('observer Telegram method forbidden')
-        chat = payload['chat_id']
+    def pace(self, chat):
         with self.schedule_lock:
             now = time.monotonic()
             scheduled = max(now, self.next_chat.get(chat, now))
             self.next_chat[chat] = scheduled + (3.5 if chat < 0 else 1)
         time.sleep(max(0, scheduled - time.monotonic()))
+
+    def call(self, method, payload, *, background=False, topic=None, native_thread=None):
+        if method not in ('sendMessage', 'editMessageText', 'deleteMessage', 'editForumTopic'):
+            raise ValueError('observer Telegram method forbidden')
+        self.pace(payload['chat_id'])
         request = urllib.request.Request(f'{self.base}/bot{self.token}/{method}',
                                          data=json.dumps(payload).encode(),
                                          headers={'Content-Type': 'application/json',
@@ -719,6 +721,56 @@ class Telegram:
         return value
 
 
+class GatewayTelegram(Telegram):
+    """Send Activity projections through the existing authenticated owner socket."""
+    def __init__(self, config):
+        self.socket = config['session_control']['socket_path']
+        selection = config['activity_telegram']
+        if set(selection) != {'credential_fingerprint'}:
+            raise ValueError('Activity Gateway requires an exact bot fingerprint')
+        self.fingerprint = selection['credential_fingerprint']
+        if not isinstance(self.fingerprint, str) or len(self.fingerprint) != 64 or any(c not in '0123456789abcdef' for c in self.fingerprint):
+            raise ValueError('Invalid Activity bot fingerprint')
+        self.next_chat = {}
+        self.schedule_lock = threading.Lock()
+
+    def call(self, method, payload, *, background=False, topic=None, native_thread=None):
+        from dashboard.provider import OwnerControlNotSubmitted, ProviderUnavailable, control
+
+        chat = payload['chat_id']
+        selected_topic = payload.get('message_thread_id', 0) if topic is None else topic
+        if not isinstance(native_thread, str) or not native_thread:
+            return {'ok': False, 'not_submitted': True}
+        if method == 'sendMessage':
+            operation = {'kind':'send', 'text':payload['text'],
+                         'reply_to':payload.get('reply_parameters',{}).get('message_id'),
+                         'pending_requests':payload.get('reply_markup') == pending_markup(True)}
+        elif method == 'editMessageText':
+            operation = {'kind':'edit', 'text':payload['text'], 'message_id':payload['message_id'],
+                         'pending_requests':payload.get('reply_markup') == pending_markup(True)}
+        elif method == 'deleteMessage':
+            operation = {'kind':'delete', 'message_id':payload['message_id']}
+        elif method == 'editForumTopic':
+            operation = {'kind':'topic_name', 'name':payload['name']}
+        else:
+            raise ValueError('observer Telegram method forbidden')
+        self.pace(chat)
+        try:
+            return control(self.socket,envelope={'activity_telegram':{
+                'chat':chat, 'topic':selected_topic, 'native_thread':native_thread,
+                'credential_fingerprint':self.fingerprint,'background':background,'operation':operation}})
+        except OwnerControlNotSubmitted:
+            return {'ok': False, 'not_submitted': True}
+        except (OSError, ValueError, ProviderUnavailable):
+            return None
+
+
+def telegram_transport(config):
+    if 'activity_telegram' in config:
+        return GatewayTelegram(config)
+    return Telegram(config['telegram'])
+
+
 class Publisher:
     def __init__(self, telegram, path):
         self.telegram, self.path = telegram, path
@@ -733,15 +785,24 @@ class Publisher:
         atomic_json(self.path, self.entries)
 
     def update(self, key, chat, topic, turn, text, now, *, requested=False,
-               reply_to=None, active_text=None, position=None, markup=None):
+               reply_to=None, active_text=None, position=None, markup=None, native_thread=None):
         with self.lock:
             self._update(key, chat, topic, turn, text, now, requested=requested,
-                         reply_to=reply_to, active_text=active_text, position=position, markup=markup)
+                         reply_to=reply_to, active_text=active_text, position=position, markup=markup,
+                         native_thread=native_thread)
             return self.entries.get(key, {}).get('message_id')
 
     def _update(self, key, chat, topic, turn, text, now, *, requested,
-                reply_to, active_text, position, markup):
+                reply_to, active_text, position, markup, native_thread):
         entry = self.entries.get(key)
+        if (entry and native_thread and entry.get('native_thread') is None
+                and turn is not None and entry.get('turn') == turn
+                and (entry.get('chat_id'),entry.get('topic')) == (chat,topic)):
+            # Same physical turn is a proof for an older unannotated receipt.
+            entry['native_thread'] = native_thread
+            self.save()
+        if entry and native_thread and entry.get('native_thread') not in (None,native_thread):
+            return  # A newly routed topic cannot operate on the old card.
         if entry and entry.get('turn') != turn and entry.get('message_id'):
             # Repost once for a new human request, rather than editing above it.
             self.retire(key, entry, background=not requested)
@@ -765,7 +826,7 @@ class Publisher:
                 self.retire(key, entry)
             return
         if entry is None:
-            entry = {'chat_id': chat, 'topic': topic, 'turn': turn, 'attempted': False}
+            entry = {'chat_id': chat, 'topic': topic, 'turn': turn, 'attempted': False, 'native_thread': native_thread}
             self.entries[key] = entry
         if position is not None:
             entry['position'] = dict(position)
@@ -793,7 +854,7 @@ class Publisher:
                 return
             entry['turn'] = turn
             payload['message_id'] = message_id
-            result = self.telegram.call('editMessageText', payload, background=not requested)
+            result = self.telegram.call('editMessageText', payload, background=not requested, topic=topic, native_thread=native_thread)
         elif not entry['attempted']:
             entry['attempted'] = True
             self.save()  # Persist before crossing the Telegram boundary.
@@ -802,7 +863,7 @@ class Publisher:
                 payload['reply_parameters'] = {'message_id': reply_to}
             if topic:
                 payload['message_thread_id'] = topic
-            result = self.telegram.call('sendMessage', payload, background=not requested)
+            result = self.telegram.call('sendMessage', payload, background=not requested, native_thread=native_thread)
             if result and result.get('ok'):
                 message = result.get('result', {})
                 if message.get('chat', {}).get('id') == chat and message.get('message_thread_id', 0) == topic:
@@ -817,7 +878,9 @@ class Publisher:
             entry.pop('rejected_payload', None)
         if result and not result.get('ok'):
             code = result.get('error_code')
-            if code == 429:
+            if result.get('not_submitted') is True and not message_id:
+                entry['attempted'] = False
+            elif code == 429:
                 entry['next_update'] = now + max(30, result.get('parameters', {}).get('retry_after', 30))
                 entry['retry_after_until'] = entry['next_update']
                 if not message_id:
@@ -849,7 +912,9 @@ class Publisher:
         outcome = 'no_receipt'
         if message_id:
             payload = {'chat_id': entry['chat_id'], 'message_id': message_id}
-            result = self.telegram.call('deleteMessage', payload, background=background)
+            result = self.telegram.call('deleteMessage', payload, background=background, topic=entry.get('topic', 0), native_thread=entry.get('native_thread'))
+            if result and result.get('not_submitted') is True:
+                return
             if result and result.get('error_code') == 429:
                 entry['cleanup_retry'] = time.time() + max(30, result.get('parameters', {}).get('retry_after', 30))
                 self.save()
@@ -859,7 +924,7 @@ class Publisher:
             if not (result and result.get('ok') and result.get('result') is True) and not absent:
                 # Keep failed cleanup tracked across restart; never leave "Working".
                 payload.update(text='◻️ Activity monitoring ended', parse_mode='HTML')
-                result = self.telegram.call('editMessageText', payload, background=background)
+                result = self.telegram.call('editMessageText', payload, background=background, topic=entry.get('topic', 0), native_thread=entry.get('native_thread'))
                 if not result or not result.get('ok'):
                     return
                 outcome = 'marked_inactive'
@@ -935,7 +1000,8 @@ class StatusRequests:
                 position['input_id'] = latest['message_id'] if latest else row['message']
                 message_id = publisher.update(key, row['chat'], row['topic'],
                     context['turn'], text, time.time(), requested=True,
-                    reply_to=row['message'], position=position if context.get('position') else None)
+                    reply_to=row['message'], position=position if context.get('position') else None,
+                    native_thread=(bindings or {}).get(key))
                 if message_id is not None:
                     self.state['attempted'][identity]['message_id'] = message_id
                     atomic_json(self.path, self.state)
@@ -947,7 +1013,7 @@ class StatusRequests:
                 payload['message_thread_id'] = row['topic']
             if pending:
                 payload['reply_markup'] = pending_markup(pending)
-            result = self.telegram.call('sendMessage', payload)
+            result = self.telegram.call('sendMessage', payload, native_thread=(bindings or {}).get(key))
             if result and result.get('ok'):
                 message = result.get('result', {})
                 if message.get('chat', {}).get('id') == row['chat'] and message.get('message_thread_id', 0) == row['topic']:
@@ -1191,12 +1257,13 @@ class TopicMarkers:
             if not current or json.loads(current['value']).get('name') != name:
                 continue
             entry.update({'revision': revision, 'human': item['human'], 'base': base,
-                          'desired': desired, 'phase': 'attempting', 'attempted_at': now})
+                          'desired': desired, 'phase': 'attempting', 'attempted_at': now, 'native_thread':item['native']})
             self.state[key] = entry
             self.save()  # Lost ACK/restart cannot replay this attempt.
             chat, topic = (int(value) for value in key.split(':'))
             response = self.telegram.call('editForumTopic',
-                {'chat_id': chat, 'message_thread_id': topic, 'name': desired}, background=True)
+                {'chat_id': chat, 'message_thread_id': topic, 'name': desired},
+                background=True, native_thread=item['native'])
             if response is None:
                 entry['phase'] = 'uncertain'
             elif response.get('ok') is True and response.get('result') is True:
@@ -1225,7 +1292,7 @@ def run(args):
     bridge = readonly(config['db_path'])
     if args.restore_topic_markers:
         try:
-            markers = TopicMarkers(Telegram(config['telegram']), state / 'topic-markers.json')
+            markers = TopicMarkers(telegram_transport(config), state / 'topic-markers.json')
             markers.update(bridge, {}, restore=True)
             print(json.dumps({'schema': 'telecodex.topic-marker-retirement/v1',
                               'outcomes': {key: item['phase'] for key, item in markers.state.items()}}))
@@ -1235,7 +1302,7 @@ def run(args):
         return
     native_home = pathlib.Path(os.environ.get('CODEX_HOME', pathlib.Path.home() / '.codex'))
     native_db = readonly(native_home / 'state_5.sqlite')
-    publisher = None if args.probe else Publisher(Telegram(config['telegram']), state / 'messages.json')
+    publisher = None if args.probe else Publisher(telegram_transport(config), state / 'messages.json')
     markers = TopicMarkers(publisher.telegram, state / 'topic-markers.json') if publisher and args.topic_markers else None
     stopped = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -1290,7 +1357,8 @@ def run(args):
                     except (OSError, ValueError):
                         if publisher and key in publisher.snapshot():
                             publisher.update(key, topic['chat_id'], topic['thread_id'], reader.turn_id,
-                                '⚠️ Native activity unavailable · rollout unconfirmed', time.time())
+                                '⚠️ Native activity unavailable · rollout unconfirmed', time.time(),
+                                native_thread=tid)
                         continue
                     status = native.status(tid)
                     children = [native.status(child) for child in sorted(reader.agents)[:32]
@@ -1361,7 +1429,7 @@ def run(args):
                     if publisher:
                         publications.append((key, topic['chat_id'], topic['thread_id'],
                                              command['operation'] if command else reader.request_id or reader.turn_id, text, now,
-                                             active_text, position, pending_markup(pending)))
+                                             active_text, position, pending_markup(pending), tid))
                 # Publish the native snapshot before automatic Telegram delivery can wait.
                 cache.update(reports, bindings, weekly, contexts)
                 topic_snapshot['connected'] = True
@@ -1373,7 +1441,8 @@ def run(args):
                         markers.update(bridge, topic_snapshot)
                     for publication in publications:
                         publisher.update(*publication[:6], active_text=publication[6],
-                                         position=publication[7], markup=publication[8])
+                                         position=publication[7], markup=publication[8],
+                                         native_thread=publication[9])
                     for key, entry in publisher.snapshot().items():
                         if key not in known:
                             publisher.retire(key, entry)
@@ -1402,7 +1471,8 @@ def run(args):
                 if publisher:
                     for key, entry in publisher.snapshot().items():
                         publisher.update(key, entry['chat_id'], entry['topic'], entry['turn'],
-                                         '⚠️ Native connection unavailable · activity unconfirmed', time.time())
+                                         '⚠️ Native connection unavailable · activity unconfirmed', time.time(),
+                                         native_thread=entry.get('native_thread'))
                 atomic_json(state / 'health.json', {'updated_at': time.time(), 'connected': False})
                 topic_snapshot['connected'] = False
                 atomic_json(state / 'topics.json', topic_snapshot)
@@ -1419,7 +1489,7 @@ def run(args):
             status_worker.join(timeout=2)
         if native:
             native.close()
-        if publisher:
+        if publisher and not args.retain_projections:
             if markers:
                 markers.update(bridge, topic_snapshot, restore=True)
             for key, entry in publisher.snapshot().items():
@@ -1444,6 +1514,8 @@ if __name__ == '__main__':
                         help='opt in to reversible goal/work markers on known canonical topic names')
     parser.add_argument('--activity-days', type=int, choices=range(1, 366), default=7,
                         metavar='DAYS', help='recent conversation window, 1–365 days (default 7)')
+    parser.add_argument('--retain-projections', action='store_true',
+                        help='keep Activity cards and marker receipts across a service replacement')
     parser.add_argument('--status-requests', action='store_true',
                         help='supplement newly handled /status commands with activity and weekly quota')
     try:

@@ -884,13 +884,14 @@ impl TelegramClient {
                 operation,
                 document,
                 None,
+                None,
                 || self.check_publication(),
             )
             .await?;
             return serde_json::from_value(result)
                 .map_err(|_| anyhow::anyhow!("telegram {method} JSON decode failed"));
         }
-        self.post_local(method, payload, timeout, false).await
+        self.post_local(method, payload, timeout, false, None).await
     }
 
     #[cfg(unix)]
@@ -899,9 +900,16 @@ impl TelegramClient {
         method: &str,
         document: Option<&serde_json::Value>,
         strict_denial: bool,
+        background: Option<bool>,
     ) -> Result<serde_json::Value> {
         let result = self
-            .post_local(method, document, TELEGRAM_REQUEST_TIMEOUT, strict_denial)
+            .post_local(
+                method,
+                document,
+                TELEGRAM_REQUEST_TIMEOUT,
+                strict_denial,
+                background,
+            )
             .await?;
         Ok(self.redact_relay_value(result))
     }
@@ -945,6 +953,7 @@ impl TelegramClient {
         payload: Option<&T>,
         timeout: Duration,
         strict_denial: bool,
+        background: Option<bool>,
     ) -> Result<R>
     where
         T: Serialize + ?Sized,
@@ -957,6 +966,16 @@ impl TelegramClient {
             request = request.json(payload);
         }
         request = request.timeout(timeout);
+        if let Some(background) = background {
+            request = request.header(
+                "X-Telecodex-Priority",
+                if background {
+                    "background"
+                } else {
+                    "foreground"
+                },
+            );
+        }
 
         self.check_publication()?;
         let response = request
@@ -979,7 +998,10 @@ impl TelegramClient {
             {
                 return Err(TelegramError {
                     status: reqwest::StatusCode::from_u16(code)?,
-                    description: "Telegram rejected the operation".into(),
+                    description: parsed
+                        .description
+                        .unwrap_or_default()
+                        .replace(&self.token, "[redacted]"),
                     retry_after: parsed
                         .parameters
                         .and_then(|parameters| parameters.retry_after),

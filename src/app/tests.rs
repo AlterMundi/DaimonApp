@@ -296,6 +296,7 @@ fn sample_config(db_path: PathBuf, default_cwd: PathBuf) -> Config {
         voice: None,
         interaction: None,
         nexus: None,
+        activity_projection_state: None,
         session_control: None,
         tribu: None,
         telegram: crate::config::TelegramConfig {
