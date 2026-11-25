@@ -7,6 +7,7 @@ import json
 import re
 from secrets import token_hex
 from threading import Event, Lock, Thread
+from time import monotonic
 
 
 _LOCAL_TIME = re.compile(
@@ -64,20 +65,28 @@ class ProviderGate:
         self.lock = Lock()
         self.request_waiting = Event()
         self.approval = Event()
+        self.pending_first = None
+        self.first_deadline = 0.0
+        self.closed = False
 
     def release(self):
         with self.lock:
-            if not self.checked or not self.request_waiting.is_set() or self.released:
-                raise ValueError("Unverified provider catalog")
+            if (not self.checked or self.pending_first is None or self.released
+                    or self.closed or monotonic() >= self.first_deadline):
+                raise ValueError("There is no current verified provider request")
             self.released = True
             self.approval.set()
 
     def abort(self):
-        self.approval.set()
+        with self.lock:
+            self.closed = True
+            self.pending_first = None
+            self.request_waiting.clear()
+            self.approval.set()
 
     def allow_followup(self):
         with self.lock:
-            if not self.released or self.forwarded != 1 or self.ready_for_followup:
+            if self.closed or not self.released or self.forwarded != 1 or self.ready_for_followup:
                 raise ValueError("Unexpected tool result")
             self.ready_for_followup = True
 
@@ -99,6 +108,8 @@ class ProviderGate:
             raise ValueError("Provider catalog or model mismatch")
         messages = request["messages"]
         with self.lock:
+            if self.closed:
+                raise ValueError("Provider gate closed")
             if not self.checked:
                 if not matches_selected_input(messages, self.challenge):
                     raise ValueError("Unexpected preflight input")
@@ -106,16 +117,23 @@ class ProviderGate:
                 return self._preflight(request.get("stream"))
             if not matches_selected_input(messages, self.original) or self.marker in json.dumps(messages):
                 raise ValueError("Provider input differs from the selected original")
-            waiting = not self.released
-            if waiting:
-                if self.request_waiting.is_set():
+            first = self.forwarded == 0
+            if first:
+                if self.pending_first is not None or self.released:
                     raise ValueError("Additional provider request refused")
+                self.pending_first = request
+                self.first_deadline = monotonic() + 20
                 self.request_waiting.set()
-        if waiting and not self.approval.wait(20):
+        if first and not self.approval.wait(max(0, self.first_deadline - monotonic())):
+            self.abort()
             raise ValueError("Gateway did not authorize provider exposure")
         with self.lock:
-            if not self.released:
+            if self.closed or not self.released:
                 raise ValueError("Gateway refused provider exposure")
+            if first:
+                if self.pending_first is not request or monotonic() >= self.first_deadline:
+                    raise ValueError("Reserved provider request expired")
+                self.pending_first = None
             if self.forwarded:
                 if (
                     self.forwarded != 1 or not self.ready_for_followup

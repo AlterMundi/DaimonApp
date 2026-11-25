@@ -47,9 +47,11 @@ callbacks and enables no built-ins or subagents. It checks the exact effective
 provider catalog through a one-use loopback endpoint. The SDK's readiness
 challenge is answered in a disposable native session without contacting the
 selected model endpoint. The final session uses the journal-selected UUID.
-The gate requires the exact original in every provider request. The worker checks the native ID and Matrix binding again and
-waits for the journal decision before submitting any original. Each
-subsequent provider request must carry the same tool catalog. One follow-up
+The local SDK receives the exact original to materialize its native session.
+The gate holds that request while the worker verifies the native ID, Matrix
+binding and Gateway journal decision. The selected provider receives it only
+after that decision. Each subsequent provider request must carry the exact
+original and the same tool catalog. One follow-up
 is permitted after one approved observation. Failure after commit is
 uncertain and never triggers resubmission.
 
