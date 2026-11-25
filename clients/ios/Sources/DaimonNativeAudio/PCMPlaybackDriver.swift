@@ -32,6 +32,7 @@ import Foundation
     private var paused = false
     private var closed = false
     private var reportedPlaying = false
+    private var capacityWaiter: (id: UUID, bytes: Int, continuation: CheckedContinuation<Void, Error>)?
 
     public convenience init(seconds: Int = 300, activate: @escaping @MainActor () throws -> Void,
                             deactivate: @escaping @MainActor () -> Void, emit: @escaping (Event) -> Void) throws {
@@ -58,6 +59,44 @@ import Foundation
         try queue.append(sequence: sequence, utterance: utterance, end: end, data: data, sha256: sha256)
         do { try pump() } catch { close(); emit(.unavailable); throw error }
     }
+    /// One decoder can await current queue room without buffering more PCM,
+    /// polling or acquiring audio/session authority. This is not a reservation:
+    /// append must still validate its exact source/sequence after the wait.
+    func waitForCapacity(_ bytes: Int) async throws {
+        try check(); try Task.checkCancellation()
+        if try queue.hasRoom(for: bytes) { return }
+        guard capacityWaiter == nil else { throw PCMPlaybackQueue.Refusal.invalidSpan }
+        let id = UUID(), generation = epoch
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                capacityWaiter = (id, bytes, continuation)
+            }
+        }, onCancel: { [weak self] in
+            Task { @MainActor in self?.cancelCapacity(id) }
+        })
+        try check(); try Task.checkCancellation()
+        guard epoch == generation else { throw Refusal.closed }
+    }
+    private func cancelCapacity(_ id: UUID) {
+        guard capacityWaiter?.id == id else { return }
+        let waiter = capacityWaiter; capacityWaiter = nil
+        waiter?.continuation.resume(throwing: CancellationError())
+    }
+    private func retireCapacity() {
+        let waiter = capacityWaiter; capacityWaiter = nil
+        waiter?.continuation.resume(throwing: Refusal.closed)
+    }
+    private func updateCapacity() {
+        guard let waiter = capacityWaiter else { return }
+        do {
+            if try queue.hasRoom(for: waiter.bytes) {
+                capacityWaiter = nil; waiter.continuation.resume()
+            }
+        } catch {
+            capacityWaiter = nil; waiter.continuation.resume(throwing: error)
+        }
+    }
     private func pump() throws {
         guard !closed, !paused else { return }
         try check()
@@ -81,6 +120,7 @@ import Foundation
             while tickets.first?.complete == true { end = tickets.removeFirst().end }
             if let end {
                 let changed = try queue.advance(to: end)
+                updateCapacity()
                 if !reportedPlaying { reportedPlaying = true; emit(.playing) }
                 guard !closed, epoch == generation else { return }
                 if !changed.isEmpty { emit(.progress(changed)) }
@@ -102,12 +142,13 @@ import Foundation
         } catch { close(); emit(.unavailable); throw error }
     }
     public func flush() throws {
-        try check(); epoch = UUID(); tickets.removeAll(); queue.flush(); device.stop()
+        try check(); retireCapacity(); epoch = UUID(); tickets.removeAll(); queue.flush(); device.stop()
         release(); reportedPlaying = false; emit(.quiet)
     }
     public func close() {
         guard !closed else { return }
         closed = true; epoch = UUID(); deadline?.cancel(); deadline = nil
+        retireCapacity()
         tickets.removeAll(); queue.flush(); device.stop(); release(); emit(.closed)
     }
     deinit {
