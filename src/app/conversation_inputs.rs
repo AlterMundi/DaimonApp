@@ -174,7 +174,7 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
             .conversation_machine_source_retained(&input)?;
         return Ok(
             json!({"schema":"telecodex.conversation-retained-machine-source/v1",
-            "id":input.id,"receipt":receipt,"retained_original":true,
+            "id":input.id,"receipt":receipt,"original_retained":true,"machine_source_retained":receipt.is_some(),
             "entry_binding":[human,input.entry,input.session,input.native]}),
         );
     }

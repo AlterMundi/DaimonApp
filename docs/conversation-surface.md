@@ -157,7 +157,9 @@ found that first-thread establishment and voice recovery could lose the
 receipt. The corrected path follows the original’s stable binding and reads
 the receipt back from the owner journal during recovery. Local SQLite tests
 cover cold establishment before and after capture, voice restart recovery,
-exact retries, missing source bytes, expiry and eight human files.
+exact retries, missing source bytes, expiry and eight human files. The owner
+command fixture also covers the full voice recovery command with a retained
+receipt and distinguishes a legacy original from a sealed machine source.
 
 The staged source bytes currently use the existing protected file vault.
 Before enabling unused offers in normal captures, qualify a separate
