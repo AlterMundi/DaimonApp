@@ -1502,7 +1502,7 @@ impl App {
                     }
                 }
                 BridgeCommand::StopControl { args } => {
-                    let result = stopping::command(
+                    let result = stopping::telegram_command(
                         self,
                         user.tg_user_id,
                         &args,

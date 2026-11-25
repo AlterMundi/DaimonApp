@@ -28,7 +28,13 @@ function options(overrides) {
 }
 
 test('submission is recorded before input and loss leaves the same request uncertain', async () => {
-  for (const hasResult of [true, false]) {
+  const success = {
+    type: 'result', subtype: 'success', is_error: false,
+    session_id: input.sessionId, result: 'Synthetic body status.',
+  };
+  for (const result of [
+    success, undefined, { ...success, session_id: undefined }, { ...success, is_error: undefined },
+  ]) {
     const events = [];
     const outcome = await runClaudeTurn(options({
       beforeSubmit: (id, sessionId) => { events.push(['record', id, sessionId]); return true; },
@@ -40,16 +46,13 @@ test('submission is recorded before input and loss leaves the same request uncer
             events.push(['input', request.message.content]);
           }
           yield { type: 'system', session_id: input.sessionId };
-          if (hasResult) {
-            yield { type: 'result', subtype: 'success', is_error: false,
-              session_id: input.sessionId, result: 'Synthetic body status.' };
-          }
+          if (result) yield result;
         },
         close() {},
       }),
     }));
     assert.deepEqual(events, [['record', input.id, input.sessionId], ['input', input.text]]);
-    assert.equal(outcome.phase, hasResult ? 'completed' : 'uncertain');
+    assert.equal(outcome.phase, result === success ? 'completed' : 'uncertain');
     assert.equal(outcome.sessionId, input.sessionId);
   }
 });

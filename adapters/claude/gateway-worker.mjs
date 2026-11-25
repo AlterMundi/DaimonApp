@@ -82,9 +82,8 @@ async function main() {
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
     const broker = createMatrixStatusBroker({
-      command: profile.matrixStatusCommand, source: {
-        being_ref: expectedBody.beingRef, embodiment_id: expectedBody.embodimentId,
-      }, createSdkMcpServer, tool, signal: stop.signal,
+      command: profile.matrixStatusCommand, expectedBody,
+      createSdkMcpServer, tool, signal: stop.signal,
     });
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
