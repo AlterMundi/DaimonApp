@@ -508,6 +508,7 @@ timeout_seconds=5
             provider.original = "Fixture input whose provider result will remain unconfirmed."
             interrupted = dict(request, id=str(uuid.uuid4()), text=provider.original)
             provider.current = interrupted["id"]
+            provider.interrupted_id = interrupted["id"]
             provider.exposed = Event()
             provider.hold = Event()
             try:

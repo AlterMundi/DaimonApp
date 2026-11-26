@@ -75,7 +75,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 item for message in data["messages"] if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
-            if hasattr(self.server, "old_skill_marker"):
+            if self.server.current == getattr(self.server, "interrupted_id", None):
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "A delayed synthetic response."}
+                reason = "end_turn"
+            elif hasattr(self.server, "old_skill_marker"):
                 assert submission["native_session_id"] != self.server.previous_session
                 messages = json.dumps(data["messages"])
                 assert self.server.old_skill_marker not in messages and REVOKED_ANSWER not in messages

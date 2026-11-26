@@ -393,6 +393,19 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn portable_turn_running(&self, key: SessionKey, human: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_inputs c ON c.local_turn=t.id AND c.session_id=s.id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+               AND t.from_user_id=?3 AND t.execution_harness<>'codex' AND t.status='running'
+               AND c.instance_id=?4 AND json_type(c.doc,'$.portable')='object')",
+            params![key.chat_id, key.thread_id, human, self.instance_id],
+            |row| row.get(0),
+        )?)
+    }
+
     pub(crate) fn conversation_claude_reply(
         &self,
         input: &ConversationInput,
