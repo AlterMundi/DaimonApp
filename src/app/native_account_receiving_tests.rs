@@ -261,6 +261,7 @@ while True:
         },
         timeout_seconds: 5,
         native_funding_binding: financial_owner.then(|| "synthetic-test-selection".into()),
+        native_attention_host_restrictions: Default::default(),
         native_host_restrictions: Some(
             serde_json::from_value(json!({
                 "processLimits":if process_owner {json!({"memoryBytes":536870912,"cpuPercent":50,"tasks":128})}else{Value::Null},

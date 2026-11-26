@@ -9,11 +9,13 @@ pub(in crate::store) use delegation::{
 };
 pub(in crate::store) mod producer;
 pub use producer::{HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose};
+#[cfg(target_os = "linux")]
+mod projection;
 mod reports;
 pub use reports::HeartbeatReportSource;
 mod resources;
 pub(in crate::store) mod review;
-pub(super) use executions::claim_on as execution_claim_on;
+pub(super) use executions::{claim_on as execution_claim_on, recover_departed_collection_on};
 pub use resources::HeartbeatResources;
 #[cfg(test)]
 pub(in crate::store) use resources::test_contract;
