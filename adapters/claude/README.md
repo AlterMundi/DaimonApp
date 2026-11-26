@@ -68,17 +68,33 @@ access that also retires earlier disclosed context should rotate the
 Foundation capability, which starts a fresh Claude session. The stdio wrapper
 clears inherited provider credential environment variables.
 
-`hostTools` optionally selects Claude Code's native `Bash`, `Read`, `Write`,
-`Edit`, `Glob`, `Grep` and `NotebookEdit` tools. The Gateway includes the
-authenticated-original marker only for the dashboard's paired-human session
-and after checking the retained private Interaction input against the signed
-Matrix original. Companion credentials and manual Matrix owner runs get the
-existing MCP and skill catalog without these host tools. Upgrade the dashboard
-producer together with the Gateway and worker for this permission. Changes
-to the native tool selection retire the previous Claude session for
-continuation. Tool effects use the process owner's existing host access.
-Bash uses Claude Code's subprocess credential-environment scrub. This is
-separate from OS permissions on local credential files.
+For private turns authenticated as the paired human, portable harnesses use
+their native full-access mode without per-tool approvals. Claude's Agent SDK
+uses `permissionMode: 'bypassPermissions'` with
+`allowDangerouslySkipPermissions: true` and Bash sandboxing disabled. The
+default native tool catalog is Bash, Read, Write, Edit, Glob, Grep and
+NotebookEdit. Use `hostTools` to select a subset explicitly.
+
+Gateway includes the authenticated-original marker only after checking the
+retained private Interaction input against the signed Matrix original. Companion
+credentials and manual Matrix owner runs retain their existing MCP and skill
+catalog. Upgrade the dashboard producer, Gateway and worker together. Changes
+to the permission mode or native tool selection start a fresh Claude session.
+Tool effects use the process owner's existing OS permissions. Bash uses Claude
+Code's subprocess credential-environment scrub.
+
+To try experimental Code Mode in the interactive terminal, use the same
+permission mode and disable the Bash sandbox:
+
+```bash
+CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude --model opus --effort medium \
+  --permission-mode bypassPermissions --settings '{"sandbox":{"enabled":false}}'
+```
+
+The interactive CLI handles Code Mode activation. Code Mode uses the same
+permission configuration for its tool calls. This headless Agent SDK worker does
+not activate it. See [Claude Code permissions](https://code.claude.com/docs/en/permissions)
+and [Code Mode](https://code.claude.com/docs/en/code-mode).
 
 Select one authentication mode in the owner profile:
 

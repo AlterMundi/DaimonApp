@@ -87,7 +87,7 @@ exec {shlex.quote(executable)} "$@"
         config.update(sdk=os.environ["CLAUDE_TEST_SDK_PATH"], binary=str(wrapper), cwd=str(root),
                       home=str(state), configurationDirectory=str(state), apiKeyFile=str(key),
                       cliVersion=os.environ.get("CLAUDE_TEST_CLI_VERSION", "2.1.325"),
-                      maxBudgetUsd=0.1, displayName="Fixture CompAII · claude@fixture")
+                      maxBudgetUsd=0.1, displayName="Fixture CompAII · claude@fixture", hostTools=[])
         worker = os.environ.get("CLAUDE_TEST_WORKER_PATH", str(
             foreground.ROOT / "adapters/claude/gateway-worker.mjs"
         ))

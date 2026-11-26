@@ -26,7 +26,7 @@ function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal)
       selector?.command ?? null, selector?.bodyRef ?? null,
       profile.sharedSkillsDirectory ?? null, skills,
       foundation?.revision ?? null,
-      hostTools, humanOriginal,
+      hostTools, humanOriginal ? 'bypassPermissions' : false,
     ]))
     .update(bytes)
     .digest('hex');
@@ -266,7 +266,7 @@ async function main() {
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
     const sharedSkills = skills.names.length
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
-    const hostTools = first.humanOriginal ? [...(profile.hostTools ?? [])].sort() : [];
+    const hostTools = first.humanOriginal ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
     const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, first.humanOriginal);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
@@ -276,7 +276,7 @@ async function main() {
       const [bytes, inventory, currentFoundation] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
       ]);
-      const currentTools = first.humanOriginal ? [...(current.hostTools ?? [])].sort() : [];
+      const currentTools = first.humanOriginal ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, first.humanOriginal) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
@@ -292,6 +292,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
+        fullAccess: first.humanOriginal,
         persistSession: true, maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
         maxBudgetUsd: profile.maxBudgetUsd,
         env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,

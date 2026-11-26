@@ -73,8 +73,15 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }]; },
             async *[Symbol.asyncIterator]() {
               for await (const request of prompt) {
-                assert.deepEqual(options.tools,
-                  request.message.content === 'Synthetic private tool grant.' ? ['Bash', 'Read'] : []);
+                const ownerDefault = request.message.content === 'Synthetic private default.';
+                const paired = ownerDefault || request.message.content === 'Synthetic private tool grant.';
+                assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
+                assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
+                assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
+                const expectedTools = ownerDefault
+                  ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
+                  : paired ? ['Bash', 'Read'] : [];
+                assert.deepEqual(options.tools, expectedTools);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
                 yield { type: 'result', subtype: 'success', is_error: false,
@@ -106,7 +113,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const { apiKeyFile: _keyFile, configurationDirectory: _directory, ...commonProfile } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
-        'companion-after-human', 'companion-resume',
+        'companion-after-human', 'companion-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       let restrictedScope;
       let hostScope;
@@ -114,6 +121,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       // Exercise the native auth selector here with the isolated fixture SDK.
       if (realBinary) decisions.push('native-auth-rejected');
       for (const decision of decisions) {
+        if (decision === 'owner-default') {
+          const { hostTools: _tools, ...defaultProfile } = profile;
+          await writeFile(selection, JSON.stringify(defaultProfile));
+        }
         if (decision === 'subscription-committed') await writeFile(selection, JSON.stringify(subscription));
         if (decision === 'subscription-wrong-account') {
           await writeFile(selection, JSON.stringify({ ...subscription, subscriptionEmail: 'other@example.test' }));
@@ -131,8 +142,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = decision === 'committed';
-          const text = humanOriginal ? 'Synthetic private tool grant.'
+          const humanOriginal = ['committed', 'owner-default'].includes(decision);
+          const text = decision === 'owner-default' ? 'Synthetic private default.'
+            : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
           const previousScope = decision === 'companion-after-human' ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
@@ -166,7 +178,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'owner-default'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }

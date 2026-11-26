@@ -131,10 +131,17 @@ export async function runClaudeTurn({
           ].join(' '),
         },
         maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
-        settingSources: [], settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
+        settingSources: [],
+        settings: {
+          autoMemoryEnabled: false, autoDreamEnabled: false,
+          ...(profile.fullAccess ? { sandbox: { enabled: false } } : {}),
+        },
         ...(sharedSkills ? { plugins: [{ type: 'local', path: sharedSkills.path }], skills: sharedSkills.names } : {}),
         strictMcpConfig: true, tools: builtins,
-        allowedTools, mcpServers, permissionMode: 'dontAsk',
+        allowedTools, mcpServers,
+        ...(profile.fullAccess
+          ? { permissionMode: 'bypassPermissions', allowDangerouslySkipPermissions: true }
+          : { permissionMode: 'dontAsk' }),
         permissionPrompts: 'none', persistSession: profile.persistSession === true,
       },
     });
