@@ -83,7 +83,7 @@ export async function runClaudeTurn({
     if (profile.fullAccess && profile.maxBudgetUsd === undefined) clearTimeout(timer);
     yield {
       type: 'user', uuid: input.id, session_id: input.sessionId, parent_tool_use_id: null,
-      client_composed: true,
+      ...(input.nativeGoalCommand ? { origin: { kind: 'human' } } : { client_composed: true }),
       message: { role: 'user', content: input.text },
     };
   }
@@ -126,7 +126,11 @@ export async function runClaudeTurn({
       prompt: prompt(),
       options: {
         abortController, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
-        env: foundationSearch ? { ...profile.env, ENABLE_TOOL_SEARCH: 'true' } : profile.env,
+        env: {
+          ...profile.env,
+          CLAUDE_CODE_GOAL_CHECKIN_MINUTES: '0',
+          ...(foundationSearch ? { ENABLE_TOOL_SEARCH: 'true' } : {}),
+        },
         model: profile.model,
         ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
         ...(profile.effort ? { effort: profile.effort } : {}),
@@ -187,13 +191,18 @@ export async function runClaudeTurn({
     if (!await connectedCatalog(native, expected, abortController.signal)) {
       return { phase: 'not_submitted', reason: 'claude_catalog_mismatch' };
     }
-    if (sharedSkills) {
-      reason = 'claude_skills_unverified';
-      const commands = (await native.supportedCommands()).map(command => command.name)
-        .filter(name => name.startsWith(`${SKILL_NAMESPACE}:`)).sort();
-      if (commands.length !== sharedSkills.names.length
-          || !commands.every((name, index) => name === sharedSkills.names[index])) {
-        return { phase: 'not_submitted', reason: 'claude_skills_mismatch' };
+    if (input.nativeGoalCommand || sharedSkills) {
+      const commands = (await native.supportedCommands()).map(command => command.name);
+      if (input.nativeGoalCommand && !commands.some(name => /^\/?goal$/.test(name))) {
+        return { phase: 'not_submitted', reason: 'claude_goal_command_unavailable' };
+      }
+      if (sharedSkills) {
+        reason = 'claude_skills_unverified';
+        const skills = commands.filter(name => name.startsWith(`${SKILL_NAMESPACE}:`)).sort();
+        if (skills.length !== sharedSkills.names.length
+            || !skills.every((name, index) => name === sharedSkills.names[index])) {
+          return { phase: 'not_submitted', reason: 'claude_skills_mismatch' };
+        }
       }
     }
     reason = 'matrix_identity_unverified';

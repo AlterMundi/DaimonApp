@@ -233,6 +233,14 @@ pub(super) fn portable_topic(
     profile.portable_route(key)
 }
 
+pub(super) fn native_claude_goal(text: &str) -> bool {
+    let text = text.trim_end();
+    text == "/goal"
+        || text.strip_prefix("/goal ").is_some_and(|condition| {
+            !condition.trim().is_empty() && condition.chars().count() <= 4000
+        })
+}
+
 pub(super) async fn handle_portable_topic(
     app: &App,
     message: &Message,
@@ -263,8 +271,18 @@ pub(super) async fn handle_portable_topic(
         notice(app.shared.clone(), origin, "Send a text message directly in this topic. Forwarded messages and attachments aren't supported here yet.".into());
         return Ok(());
     };
-    if text.trim_start().starts_with('/') {
-        notice(app.shared.clone(), origin, "Use /status to see whether this topic is working, /interrupt to stop the current turn, or /interaction to inspect a saved input.".into());
+    if text.trim_start().starts_with('/')
+        && !(selected.0 == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
+    {
+        let commands = match selected.0 {
+            crate::interaction::ForegroundEngine::Claude => {
+                "Use /status for activity, /goal for Claude's goal, /interrupt to stop the current turn, or /interaction to inspect a saved input."
+            }
+            _ => {
+                "Use /status to see whether this topic is working, /interrupt to stop the current turn, or /interaction to inspect a saved input."
+            }
+        };
+        notice(app.shared.clone(), origin, commands.into());
         return Ok(());
     }
     let update = HUMAN_UPDATE_ID

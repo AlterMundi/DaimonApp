@@ -67,6 +67,36 @@ test('submission is recorded before input and loss leaves the same request uncer
   }
 });
 
+test('only an explicitly selected human goal uses the native command mode', async () => {
+  for (const [nativeGoalCommand, supported] of [[false, true], [true, true], [true, false]]) {
+    const observed = [];
+    const text = '/goal';
+    const outcome = await runClaudeTurn(options({
+      input: { ...input, text, nativeGoalCommand },
+      beforeSubmit: () => { observed.push('committed'); return true; },
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async supportedCommands() { return supported ? [{ name: 'goal' }] : []; },
+        async *[Symbol.asyncIterator]() {
+          for await (const request of prompt) {
+            observed.push('submitted');
+            assert.equal(request.message.content, text);
+            assert.equal(request.client_composed, nativeGoalCommand ? undefined : true);
+            assert.deepEqual(request.origin, nativeGoalCommand ? { kind: 'human' } : undefined);
+          }
+          yield { type: 'result', subtype: 'success', is_error: false,
+            session_id: input.sessionId, result: 'No goal set.' };
+        },
+        close() {},
+      }),
+    }));
+    assert.deepEqual(observed, supported ? ['committed', 'submitted'] : []);
+    assert.equal(outcome.phase, supported ? 'completed' : 'not_submitted');
+    if (!supported) assert.equal(outcome.reason, 'claude_goal_command_unavailable');
+  }
+});
+
 test('wrong receiving incarnation refuses before spawning Claude', async () => {
   const result = await runClaudeTurn(options({
     expectedBody: { ...expectedBody, incarnationId: 'replacement' },

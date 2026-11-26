@@ -12,6 +12,7 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub session: &'a str,
     pub resume: Option<&'a ClaudeContinuation>,
     pub human_original: bool,
+    pub native_goal_command: bool,
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
@@ -93,6 +94,7 @@ pub(in crate::app) async fn execute_worker(
         session,
         resume,
         human_original,
+        native_goal_command,
         routed_human,
         routed_host_access,
         session_instructions,
@@ -140,6 +142,9 @@ pub(in crate::app) async fn execute_worker(
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume);
             start["humanOriginal"] = json!(human_original);
+            if native_goal_command {
+                start["nativeGoalCommand"] = json!(true);
+            }
             if routed_human {
                 start["routedHuman"] = json!(true);
                 if routed_host_access {
@@ -358,6 +363,8 @@ pub(super) async fn run_portable_turn(
                 session: &input.id,
                 resume: resume.as_ref(),
                 human_original: true,
+                native_goal_command: input.paired_actor
+                    && super::routing::native_claude_goal(&input.text),
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
@@ -453,6 +460,8 @@ pub(super) async fn run_routed_portable(
         } else {None};
         execute_worker(&config.worker_command,engine,WorkerTurn{
             id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:direct_original,
+            native_goal_command:engine==ForegroundEngine::Claude && direct_original
+                && routed_host_access && super::routing::native_claude_goal(&request.prompt),
             routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
             session_instructions:session.session_prompt.as_deref(),
             text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,

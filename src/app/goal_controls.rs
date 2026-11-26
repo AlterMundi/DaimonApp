@@ -140,6 +140,10 @@ pub(super) async fn tool(
                 return Ok(json!({"kind":"clarification_required","candidates":targets}));
             }
             let target = targets[0];
+            anyhow::ensure!(
+                super::goals::portable_goal_unavailable(&app.shared, target).is_none(),
+                "Goal controls are not connected for the selected harness"
+            );
             let native = app
                 .shared
                 .store
@@ -212,6 +216,10 @@ pub(super) async fn tool(
                     .as_ref()
                     .is_some_and(|g| g.status == "active"));
             let target: SessionKey = serde_json::from_value(retained["intent"]["target"].clone())?;
+            anyhow::ensure!(
+                super::goals::portable_goal_unavailable(&app.shared, target).is_none(),
+                "The retained goal control belongs to a different execution harness"
+            );
             let target_session = app
                 .shared
                 .store
