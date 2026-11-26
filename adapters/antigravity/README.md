@@ -110,6 +110,15 @@ native tool, and checks the result and provider shutdown. Existing Codex
 bindings and real conversations are outside the fixture. The deployed
 Gateway and TeleDaimon use their independently named executables.
 
+For a receiving trial in an existing Interaction topic, enable
+`interaction_direct` in the Antigravity foreground profile and set
+`harness = "antigravity"` on the owner-selected target. Preflight the exact
+candidate Gateway profile before activating it. Keep the previous profile for
+rollback. Verify the harness and result of a newly authored input in that
+topic. Existing admitted inputs retain their original execution binding.
+A private Matrix exchange qualifies the signed body and return path. The
+paired Interaction trial also needs observed delivery in the selected topic.
+
 `matrix antigravity interrupt EVENT_ID` stops the selected current worker.
 Set `FOREGROUND_TEST_SIGNED_INTERRUPT=before` in the signed fixture to test
 the boundary before provider exposure, or `=1` to test a stop after
