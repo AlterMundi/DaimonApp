@@ -1,5 +1,7 @@
 //! Original authenticated conversation inputs, independent of Telegram updates.
 //! Capturing text is not native acceptance; uncertain transport is never replayed.
+mod claude;
+const TRACE_TEXT_PART: usize = 2048;
 use super::*;
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
@@ -89,6 +91,8 @@ pub struct ConversationInput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix: Option<PrivateMatrixSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude: Option<claude::DirectClaude>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) private_matrix_host_access: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +133,11 @@ pub struct ConversationInput {
     pub phase: String,
     pub local_turn: Option<i64>,
     pub retired: bool,
+}
+
+enum ClaudeDestination {
+    Matrix(PrivateMatrixSelection, bool),
+    Direct(crate::interaction::MatrixDestination),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,7 +371,11 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     let mut input: ConversationInput = serde_json::from_str(&doc)?;
     input.phase = phase;
     input.local_turn = local_turn;
-    input.retired = retired;
+    input.retired = if input.claude.is_some() {
+        !claude::binding_is_current(conn, &input)?
+    } else {
+        retired
+    };
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
@@ -484,8 +497,8 @@ fn trace_original_on(
 }
 
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
-    if input.private_matrix.is_some() {
-        bail!("Private Matrix text belongs to its retained destination");
+    if input.private_matrix.is_some() || input.claude.is_some() {
+        bail!("Claude text belongs to its retained destination");
     }
     if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
         bail!("Foreground conversation has not been delegated as work");
@@ -592,6 +605,12 @@ impl Store {
             CREATE TRIGGER IF NOT EXISTS conversation_focus_session_deleted AFTER DELETE ON sessions BEGIN
             UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=OLD.id AND phase IN ('preparing','retained','queued','awaiting_target'); END;")?;
         conn.execute("UPDATE conversation_inputs SET phase=CASE WHEN phase IN ('sending','steering') THEN 'uncertain' WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('retained','queued','sending','steering','preparing')",[&self.instance_id])?;
+        conn.execute(
+            "UPDATE conversation_inputs
+             SET phase=CASE phase WHEN 'claude_running' THEN 'claude_unconfirmed' ELSE 'claude_rejected' END
+             WHERE instance_id!=?1 AND phase IN ('claude_preparing','claude_running')",
+            [&self.instance_id],
+        )?;
         Ok(())
     }
 
@@ -778,7 +797,6 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn conversation_private_matrix_capture(
         &self,
         human: i64,
@@ -823,7 +841,7 @@ impl Store {
             Vec::new(),
             None,
             None,
-            Some((selection, host_access)),
+            Some(ClaudeDestination::Matrix(selection, host_access)),
         )
     }
 
@@ -1340,12 +1358,17 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
-        private_matrix: Option<(PrivateMatrixSelection, bool)>,
+        destination: Option<ClaudeDestination>,
     ) -> Result<(ConversationInput, bool)> {
-        let (private_matrix, private_matrix_host_access) = private_matrix
-            .map_or((None, false), |(selection, access)| {
-                (Some(selection), access)
-            });
+        let (private_matrix, private_matrix_host_access, claude) = match destination {
+            Some(ClaudeDestination::Matrix(selection, access)) => (Some(selection), access, None),
+            Some(ClaudeDestination::Direct(body)) => (
+                None,
+                false,
+                Some(claude::DirectClaude::new(body, binding.into())),
+            ),
+            None => (None, false, None),
+        };
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1397,10 +1420,14 @@ impl Store {
         )?;
         if existing {
             let input = read_on(&tx, id, human)?;
+            let same_route = input.same_claude_destination(
+                private_matrix.as_ref(),
+                private_matrix_host_access,
+                claude.as_ref(),
+            );
             if input.entry != entry
                 || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
-                || input.private_matrix != private_matrix
-                || input.private_matrix_host_access != private_matrix_host_access
+                || !same_route
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -1480,6 +1507,7 @@ impl Store {
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
             private_matrix,
+            claude,
             private_matrix_host_access,
             private_matrix_origin: None,
             private_matrix_reply: None,
@@ -1983,6 +2011,11 @@ impl Store {
         let original = trace_original_on(&conn, human, entry, id)?;
         let text = if source == "original" {
             original["text"].as_str().unwrap_or_default().to_owned()
+        } else if source == "claude-reply" && original["channel_kind"] == "conversation" {
+            read_on(&conn, id, human)?
+                .direct_claude_reply_text()
+                .context("No retained direct Claude response")?
+                .to_owned()
         } else {
             let raw:String=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id WHERE i.id=?1 AND o.event_id=?2 AND o.human_id=?3 AND ((?4='conversation' AND o.channel='conversation') OR (?4='telegram' AND o.channel LIKE 'telegram:%' AND o.update_id=?5 AND o.origin_chat=?6 AND o.origin_thread=?7))",params![source,original["source_event"].as_str(),human,original["channel_kind"].as_str(),original["update_id"].as_i64(),entry.chat_id,entry.thread_id],|r|r.get(0))?;
             let instruction: Instruction = serde_json::from_str(&raw)?;
@@ -1995,11 +2028,15 @@ impl Store {
         if offset > length {
             bail!("Invalid trace text offset");
         }
-        let part = text.chars().skip(offset).take(2048).collect::<String>();
+        let part = text
+            .chars()
+            .skip(offset)
+            .take(TRACE_TEXT_PART)
+            .collect::<String>();
         Ok(
             json!({"schema":"telecodex.conversation-trace-text/v1","id":id,"source":source,
             "entry_binding":[human,entry,session,native],"offset":offset,"text":part,
-            "next_offset":(offset+2048<length).then_some(offset+2048),"read_only":true}),
+            "next_offset":(offset+TRACE_TEXT_PART<length).then_some(offset+TRACE_TEXT_PART),"read_only":true}),
         )
     }
 
@@ -2099,17 +2136,16 @@ impl Store {
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
                 "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
-                "native_binding_current":input.native==native,
+                "native_binding_current":if input.claude.is_some() { !input.retired } else { input.native==native },
             });
             if let Some(dialogue) = &input.foreground_dialogue {
                 item["foreground_dialogue"] = serde_json::json!(dialogue);
             }
-            if input.private_matrix.is_some() {
+            if input.targets_claude() {
                 item["target"] = serde_json::json!("claude");
             }
-            if let Some(reply) = &input.private_matrix_reply {
-                item["claude_reply"] =
-                    serde_json::json!({"text":reply.text,"message_id":reply.event_id});
+            if let Some(reply) = input.claude_reply() {
+                item["claude_reply"] = reply;
             }
             items.push(item);
         }

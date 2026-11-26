@@ -53,7 +53,7 @@ pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
 pub(crate) use matrix::foreground::{
-    WeAttempt, WeOriginal, WePhase, WeSelection, valid_claude_scope,
+    ClaudeContinuation, WeOriginal, WePhase, WeSelection, valid_claude_scope,
 };
 pub(crate) use matrix::inbox::{
     Page as MatrixInboxPage, ReadFailure as MatrixInboxReadFailure,

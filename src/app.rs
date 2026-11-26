@@ -29,6 +29,7 @@ mod conversation_inputs;
 mod conversation_requests;
 mod creation;
 mod dialogue;
+mod foreground;
 mod forum;
 mod goal_controls;
 mod goal_recovery;

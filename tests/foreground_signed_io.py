@@ -13,10 +13,11 @@ import re
 from pathlib import Path
 import shlex
 import socketserver
+import sqlite3
 import subprocess
 import sys
 import time
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -109,7 +110,7 @@ exec {shlex.quote(executable)} "$@"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
 
-def qualify(engine, gateway, executable, scripts, *, interaction=False):
+def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
@@ -199,7 +200,22 @@ operator.main()
                     )[0][0]
                     super().do_POST()
 
-            handler = InteractionProvider if interaction else (
+            class DirectProvider(ClaudeProvider):
+                def admitted(self):
+                    phase, session, scope = self.server.journey.row(
+                        "SELECT phase,json_extract(doc,'$.claude.native.sessionId'),"
+                        "json_extract(doc,'$.claude.native.scope') FROM conversation_inputs WHERE id=?",
+                        (self.server.current,),
+                    )[0]
+                    if phase != "claude_running":
+                        raise AssertionError("Direct original was released before journal exposure")
+                    if getattr(self.server, "hold", None):
+                        self.server.exposed.set()
+                        if not self.server.hold.wait(10):
+                            raise AssertionError("The bounded fixture never released this provider call")
+                    return {"native_session_id":session, "native_session_scope":scope}
+
+            handler = DirectProvider if direct else InteractionProvider if interaction else (
                 ClaudeProvider if engine == "claude" else foreground.Provider)
             with ThreadingHTTPServer(("127.0.0.1", 0), handler) as provider:
                 provider.journey = journey
@@ -210,6 +226,7 @@ operator.main()
                 provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
+                provider.paired_human = direct
                 if engine == "claude":
                     provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
@@ -304,7 +321,7 @@ for await (const line of createInterface({ input: process.stdin })) {
                     config["hostTools"] = provider.host_tools
                 profile.write_text(json.dumps(config))
                 original_host = ""
-                if interaction:
+                if interaction and not direct:
                     sender_source, sender = self._start_sender(root, fixture, service, capabilities, body)
                     original_host = f"""
 [interaction.claude_foreground.interaction_origin]
@@ -315,6 +332,7 @@ timeout_seconds=5
                 journey.config.write_text(journey.config.read_text() + f"""
 [interaction.{engine}_foreground]
 worker_command={json.dumps(command)}
+interaction_direct={str(direct).lower()}
 [interaction.{engine}_foreground.transport]
 command={json.dumps(host)}
 source={{kind="body", being_ref="{being}", embodiment_id="{body}"}}
@@ -325,6 +343,9 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if direct:
+                        self._direct_exchange(journey, provider, return_attempts)
+                        return
                     if interaction:
                         self._interaction_exchange(journey, provider, fixture, body, return_attempts)
                         return
@@ -407,6 +428,80 @@ timeout_seconds=5
             self.addCleanup(worker.join)
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
+
+        def _direct_exchange(self, journey, provider, return_attempts):
+            page = journey.read("presentation", "list", "0", "0")["result"]
+            self.assertIs(page["can_select_claude"], True)
+            request = dict(binding=page["binding"], id=str(uuid.uuid4()), text=provider.original,
+                           target="claude")
+
+            def submit(original, *, fresh):
+                result = journey.read("input","submit-human",json.dumps(original))["result"]
+                self.assertIs(result["new_input"], fresh)
+                return result
+
+            def readback(original):
+                ident = original["id"]
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (ident,)
+                )[0][0] in ("claude_replied", "claude_rejected", "claude_unconfirmed"), seconds=30)
+                self.assertIsNone(provider.failure)
+                result = journey.read("input", "status", ident)["result"]
+                self.assertEqual(result["phase"], "claude_replied", result)
+                return result["claude_reply"]["text"]
+
+            journey.read("input","submit",json.dumps(request),ok=False)
+            self.assertEqual(journey.row("SELECT count(*) FROM conversation_inputs"), [(0,)])
+            provider.current = request["id"]
+            submit(request, fresh=True)
+            self.assertIn(ANSWER, readback(request))
+            self.assertEqual(provider.calls, [request["id"]] * 2)
+            provider.previous_session = journey.row(
+                "SELECT json_extract(doc,'$.claude.native.sessionId') FROM conversation_inputs WHERE id=?",
+                (request["id"],),
+            )[0][0]
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(submit(request, fresh=False)["phase"], "claude_replied")
+            self.assertEqual(provider.calls, [request["id"]] * 2)
+            # Simulate first Codex initialization of this logical conversation.
+            # This uses the real generation triggers and performs no native work.
+            with sqlite3.connect(journey.root / "state.sqlite") as db:
+                db.execute(
+                    "UPDATE sessions SET codex_thread_id='fixture-codex-thread' WHERE chat_id=100 AND thread_id=1"
+                )
+            self.assertEqual(journey.read("presentation", "list", "0", "0")["result"]["binding"], request["binding"])
+            self.assertIs(journey.read("input", "status", request["id"])["result"]["retired"], False)
+
+            provider.previous_original = provider.original
+            provider.followup_answer = "I retained the first turn. " * 180 + "End of full reply."
+            provider.original = "What did this same conversation retain?"
+            followup = dict(request, id=str(uuid.uuid4()), text=provider.original)
+            provider.current = followup["id"]
+            provider.exposed = Event()
+            provider.hold = Event()
+            try:
+                submit(followup, fresh=True)
+                self.assertTrue(provider.exposed.wait(8))
+                busy = dict(request, id=str(uuid.uuid4()), text="A distinct input while Claude is busy.")
+                self.assertEqual(submit(busy, fresh=True)["phase"], "retained_unsent")
+                self.assertEqual(submit(busy, fresh=False)["phase"], "retained_unsent")
+            finally:
+                provider.hold.set()
+            self.assertEqual(readback(followup), provider.followup_answer[:2048])
+            offset = 0
+            retained = []
+            while offset is not None:
+                part = journey.read("input", "trace-text", followup["id"], "claude-reply", str(offset))["result"]
+                retained.append(part["text"])
+                offset = part["next_offset"]
+            self.assertEqual("".join(retained), provider.followup_answer)
+            self.assertEqual(provider.calls, [request["id"], request["id"], followup["id"]])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+            self.assertEqual(return_attempts, [])
+            self.assertEqual(journey.telegram_methods, [])
+            self.assertEqual(journey.rpc, [])
 
         def _interaction_exchange(self, journey, provider, fixture, receiver, return_attempts):
             from fastapi.testclient import TestClient
@@ -563,10 +658,11 @@ if __name__ == "__main__":
     if len(sys.argv) != (4 if engine == "claude" else 5):
         raise SystemExit("Supply the DMK scripts directory for Antigravity and Goose.")
     interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
-    if interaction:
+    direct = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION_DIRECT") == "1"
+    if interaction or direct:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
         sys.path.insert(0, str(foreground.ROOT))
     dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
-                            interaction=interaction))
+                            interaction=interaction, direct=direct))

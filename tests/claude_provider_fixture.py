@@ -15,6 +15,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def admitted(self):
+        phase, submission = self.server.journey.row(
+            "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
+            (self.server.current,),
+        )[0]
+        assert phase == "provider_exposed"
+        return json.loads(submission)
+
     def do_POST(self):
         try:
             assert self.path.startswith("/v1/messages")
@@ -24,6 +32,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             system = json.dumps(data["system"], ensure_ascii=False)
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
+            if getattr(self.server, "paired_human", False):
+                assert "The Gateway authenticated that sender as the human paired with this daimon." in system
+                assert "The Claude subscription account is a service credential and does not identify the sender." in system
             memory = getattr(self.server, "dmk_record", None)
             skill = getattr(self.server, "skill_name", None)
             foundation = getattr(self.server, "foundation_marker", None)
@@ -55,12 +66,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                      "Native shell readback marker."),
                 ]
             assert self.server.original in json.dumps(data["messages"])
-            phase, submission = self.server.journey.row(
-                "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
-                (self.server.current,),
-            )[0]
-            assert phase == "provider_exposed"
-            assert json.loads(submission)["native_session_id"]
+            submission = self.admitted()
+            assert submission["native_session_id"]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
             previous = getattr(self.server, "previous_original", None)
@@ -69,7 +76,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 for item in message["content"] if item["type"] == "tool_result"
             ]
             if hasattr(self.server, "old_skill_marker"):
-                assert json.loads(submission)["native_session_id"] != self.server.previous_session
+                assert submission["native_session_id"] != self.server.previous_session
                 messages = json.dumps(data["messages"])
                 assert self.server.old_skill_marker not in messages and REVOKED_ANSWER not in messages
                 if not result:
@@ -86,8 +93,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert not result
                 assert self.server.dmk_marker not in json.dumps(data["messages"])
                 assert ANSWER not in json.dumps(data["messages"])
-                assert json.loads(submission)["native_session_id"] != self.server.previous_session
-                assert json.loads(submission)["native_session_scope"] != self.server.previous_scope
+                assert submission["native_session_id"] != self.server.previous_session
+                assert submission["native_session_scope"] != self.server.previous_scope
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
@@ -95,9 +102,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
                 assert ANSWER in json.dumps(data["messages"])
-                assert json.loads(submission)["native_session_id"] == self.server.previous_session
+                assert submission["native_session_id"] == self.server.previous_session
                 block = {"type": "text", "text": ""}
-                delta = {"type": "text_delta", "text": "I retained the first turn."}
+                delta = {"type": "text_delta", "text": getattr(self.server, "followup_answer", "I retained the first turn.")}
                 reason = "end_turn"
             else:
                 assert prior <= len(steps) and len(result) == prior

@@ -8,6 +8,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 mod foreground;
+pub(super) use foreground::authenticate_foreground_body;
 
 pub(super) fn capabilities(shared: &AppShared, value: &mut Value) -> Result<()> {
     let profile = super::routing::profile(shared)?;
@@ -732,18 +733,6 @@ async fn host_send(
 }
 
 #[cfg(unix)]
-pub(super) struct OwnedMatrixCommand(pub(super) u32);
-#[cfg(unix)]
-impl Drop for OwnedMatrixCommand {
-    fn drop(&mut self) {
-        // Only the process group created for this one configured host command.
-        unsafe {
-            libc::kill(-(self.0 as i32), libc::SIGKILL);
-        }
-    }
-}
-
-#[cfg(unix)]
 async fn host_command(
     config: &crate::interaction::MatrixTransportConfig,
     input: &Value,
@@ -794,7 +783,8 @@ async fn host_command_mode(
         .stderr(Stdio::null())
         .kill_on_drop(true);
     let mut child = command.spawn().context(InboxFailure::AdapterUnavailable)?;
-    let group = OwnedMatrixCommand(child.id().context("Missing Matrix host process")?);
+    let group =
+        super::foreground::OwnedProcessGroup(child.id().context("Missing Matrix host process")?);
     let mut stdin = child.stdin.take().context("Missing Matrix host input")?;
     let mut stdout = child
         .stdout

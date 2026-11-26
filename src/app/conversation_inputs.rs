@@ -55,11 +55,11 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
         value["foreground_dialogue"] = json!(dialogue);
         value["foreground_delegation"] = json!(input.foreground_delegation);
     }
-    if input.private_matrix.is_some() {
+    if input.targets_claude() {
         value["target"] = json!("claude");
     }
-    if let Some(reply) = &input.private_matrix_reply {
-        value["claude_reply"] = json!({"text":reply.text,"message_id":reply.event_id});
+    if let Some(reply) = input.claude_reply() {
+        value["claude_reply"] = reply;
     }
     value
 }
@@ -920,6 +920,44 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             .claude_foreground
             .as_ref()
             .context("Claude is unavailable")?;
+        if receiver.interaction_direct {
+            anyhow::ensure!(
+                private_host_access,
+                "Claude requires the paired Interaction actor"
+            );
+            let (input, fresh, claimed) = {
+                let _ingress = app.shared.conversation_ingress.lock().await;
+                let store = &app.shared.store;
+                let (input, fresh) = store.conversation_claude_capture(
+                    human,
+                    cfg.entry(),
+                    &request.binding,
+                    &request.id,
+                    &request.text,
+                    &receiver.transport.source,
+                )?;
+                let claimed = fresh && store.conversation_claude_claim(&input)?;
+                (input, fresh, claimed)
+            };
+            if claimed {
+                let (app, receiver, input) = (app.clone(), receiver.clone(), input.clone());
+                tokio::spawn(async move {
+                    if super::foreground::run_direct_claude(&app, &receiver, &input)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(input_id = %input.id, "Direct Claude outcome could not be recorded");
+                    }
+                });
+            }
+            return response(
+                app,
+                &app.shared
+                    .store
+                    .conversation_input_read(human, cfg.entry(), &input.id)?,
+                fresh,
+            );
+        }
         let origin = receiver
             .interaction_origin
             .as_ref()

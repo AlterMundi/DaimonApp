@@ -97,7 +97,7 @@ pub(crate) struct WeAttempt {
     original: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClaudeContinuation {
     pub session_id: String,
@@ -301,6 +301,12 @@ impl Store {
                       AND json_extract(request.doc,'$.entry_generation')=?3
                       AND json_extract(request.doc,'$.original.author')=?4
                       AND json_extract(request.doc,'$.original.thread_id')=?5
+                      AND NOT EXISTS(
+                        SELECT 1 FROM conversation_inputs AS direct
+                        WHERE direct.human_id=?1 AND direct.session_id=?2 AND direct.rowid>input.rowid
+                          AND json_extract(direct.doc,'$.claude.binding')=?3
+                          AND (json_type(direct.doc,'$.claude.native')='object'
+                            OR json_extract(direct.doc,'$.claude.resume_unavailable')=1))
                       AND (request.phase NOT IN ('starting','rejected')
                         OR (request.phase='rejected'
                           AND json_extract(request.submission,'$.reason')='claude_resume_session_missing'))
