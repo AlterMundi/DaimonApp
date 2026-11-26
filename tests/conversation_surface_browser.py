@@ -79,7 +79,7 @@ try:
           if(!receipt)throw Error('No fixture receipt');
           return window.fixtureWrongEntry?{...receipt,entry_binding:[100,{chat_id:100,thread_id:9},28,'wrong-native']}:receipt;
         }
-        const items=route.startsWith('interaction?')?['integrator_answer','worker_result'].map((kind,index)=>({
+        const items=route.startsWith('interaction?')?['integrator_answer','worker_result','matrix_visibility'].map((kind,index)=>({
           id:'fixture-'+kind,kind,label:kind,sequence:index,revision:'a'.repeat(64),
           preview:index?'Other session fixture':'General conversation fixture',observed_at:'2026-11-25T01:00:00Z',
           current:true,native_binding_current:true
@@ -133,8 +133,18 @@ try:
       return fixtureUI.refresh(true);
     }''')
     card=other.locator(f'[data-input-id="{retained["id"]}"]')
-    card.get_by_text('Private Claude fixture reply',exact=True).wait_for()
-    assert card.get_by_text('Claude Code',exact=True).is_visible()
+    reply=other.locator(f'[data-claude-reply-to="{retained["id"]}"]')
+    reply.get_by_text('Private Claude fixture reply',exact=True).wait_for()
+    assert reply.get_by_text('Claude Code',exact=True).is_visible()
+    assert card.get_by_text('You',exact=True).is_visible()
+    assert card.get_by_text('Private Claude fixture reply',exact=True).count()==0
+    assert card.evaluate('(element)=>element.nextElementSibling.dataset.claudeReplyTo')==retained['id']
+    record=other.locator('[data-source-id="fixture-matrix_visibility"]')
+    assert record.count()==1 and record.is_hidden()
+    other.get_by_label('Show Matrix records').check()
+    assert record.is_visible()
+    other.get_by_label('Show Matrix records').uncheck()
+    assert record.is_hidden()
     other.close()
     page.wait_for_function("messages.some(m=>m.type==='ready')",timeout=5000)
     frame.evaluate('window.fixtureHoldAck=true')
