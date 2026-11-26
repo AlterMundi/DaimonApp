@@ -190,7 +190,10 @@ export async function runClaudeTurn({
           && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES) {
         return { phase: 'completed', sessionId: input.sessionId, text: event.result };
       }
-      return { phase: 'uncertain', reason: 'claude_result_unqualified', sessionId: input.sessionId };
+      const budgetExhausted = event.subtype === 'error_max_budget_usd'
+        && event.is_error === true && event.session_id === input.sessionId;
+      const reason = budgetExhausted ? 'claude_budget_exhausted' : 'claude_result_unqualified';
+      return { phase: 'uncertain', reason, sessionId: input.sessionId };
     }
   } catch (error) {
     if (input.resume && !dispatched && error?.message ===

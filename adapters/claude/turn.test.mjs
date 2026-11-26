@@ -32,8 +32,10 @@ test('submission is recorded before input and loss leaves the same request uncer
     type: 'result', subtype: 'success', is_error: false,
     session_id: input.sessionId, result: 'Synthetic body status.',
   };
+  const budgetExhausted = { ...success, subtype: 'error_max_budget_usd', is_error: true };
   for (const result of [
     success, undefined, { ...success, session_id: undefined }, { ...success, is_error: undefined },
+    budgetExhausted, { ...budgetExhausted, session_id: undefined },
   ]) {
     const events = [];
     const resume = result === success;
@@ -60,6 +62,8 @@ test('submission is recorded before input and loss leaves the same request uncer
     assert.deepEqual(events, [['record', input.id, input.sessionId], ['input', input.text]]);
     assert.equal(outcome.phase, result === success ? 'completed' : 'uncertain');
     assert.equal(outcome.sessionId, input.sessionId);
+    if (result === budgetExhausted) assert.equal(outcome.reason, 'claude_budget_exhausted');
+    else assert.notEqual(outcome.reason, 'claude_budget_exhausted');
   }
 });
 

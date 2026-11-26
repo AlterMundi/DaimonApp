@@ -378,6 +378,48 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     Ok(input)
 }
 
+fn projected_phase_on<'a>(
+    conn: &Connection,
+    input: &'a ConversationInput,
+    writer: &str,
+) -> Result<&'a str> {
+    let Some(origin) = input.private_matrix_origin.as_ref() else {
+        return Ok(&input.phase);
+    };
+    if input.phase != "matrix_received" {
+        return Ok(&input.phase);
+    }
+    let attempt: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT phase, json_extract(doc,'$.instance')=?5
+            FROM interaction_matrix_requests
+            WHERE human_id=?1 AND entry_session=?2 AND source_channel='/we' AND source_event=?3
+                AND (claude_input=?4 OR claude_input IS NULL)",
+            params![
+                input.human,
+                input.session,
+                origin.message_id,
+                input.id,
+                writer
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(
+        match attempt
+            .as_ref()
+            .map(|(phase, current)| (phase.as_str(), *current))
+        {
+            Some(("rejected", _) | ("starting", false)) => "claude_rejected",
+            Some(
+                ("provider_uncertain" | "return_uncertain" | "result_retained", _)
+                | ("provider_exposed" | "returning" | "delivered", false),
+            ) => "claude_unconfirmed",
+            _ => &input.phase,
+        },
+    )
+}
+
 /// Historical inspection never grants admission or refreshes a voice transcript.
 fn trace_original_on(
     conn: &Connection,
@@ -783,6 +825,17 @@ impl Store {
             None,
             Some((selection, host_access)),
         )
+    }
+
+    pub(crate) fn conversation_input_projected_phase<'a>(
+        &self,
+        input: &'a ConversationInput,
+    ) -> Result<&'a str> {
+        if input.phase != "matrix_received" {
+            return Ok(&input.phase);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        projected_phase_on(&conn, input, &self.instance_id)
     }
 
     /// Reserve before invoking the native sender. Recovery observes uncertainty.
@@ -2044,7 +2097,7 @@ impl Store {
             )?;
             let mut item = serde_json::json!({
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
-                "phase":input.phase,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
+                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
                 "native_binding_current":input.native==native,
             });
@@ -4539,13 +4592,21 @@ mod tests {
             .unwrap();
         drop(store);
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
-        let (_, _, continuation, _) = start(&store);
+        let (interrupted_id, _, continuation, _) = start(&store);
         assert_eq!(continuation.resume.as_ref().unwrap().session_id, native);
         assert_ne!(continuation.session_id, attempt.session_id);
         // Lose the process after authorization. The next original must not
         // reopen the transcript that may contain the interrupted turn.
         drop(store);
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let lost = store
+            .conversation_input_read(100, key, &interrupted_id)
+            .unwrap();
+        assert_eq!(lost.phase, "matrix_received");
+        assert_eq!(
+            store.conversation_input_projected_phase(&lost).unwrap(),
+            "claude_unconfirmed"
+        );
         let (_, _, successor, _) = start(&store);
         assert!(successor.resume.is_none());
         assert_ne!(successor.session_id, continuation.session_id);

@@ -66,6 +66,7 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
     let mut value = outcome(input, fresh);
+    value["phase"] = json!(app.shared.store.conversation_input_projected_phase(input)?);
     value["clarifiable"] = json!(
         input.phase == "awaiting_target"
             && app

@@ -539,6 +539,9 @@ timeout_seconds=5
                         "SELECT json_extract(doc,'$.private_matrix_origin.message_id') "
                         "FROM conversation_inputs WHERE id=?) AND phase='rejected'", (denied["id"],)
                     ) == [("rejected",)], seconds=20)
+                    status = client.get("/api/interaction/inputs/"+denied["id"], headers=headers).json()
+                    self.assertEqual(status["phase"], "claude_rejected")
+                    self.assertNotIn("claude_reply", status)
                     self.assertEqual(provider.calls, previous_calls)
                     self.assertEqual(len(return_attempts), 4)
 

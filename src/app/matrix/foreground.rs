@@ -149,14 +149,22 @@ pub(super) async fn run_selected(
                 )?;
             }
         }
-        (true, _) => {
+        (true, outcome) => {
+            let budget_exhausted = outcome.is_ok_and(|value| {
+                value["phase"] == "uncertain" && value["reason"] == "claude_budget_exhausted"
+            });
+            let reason = if budget_exhausted {
+                "claude_budget_exhausted"
+            } else {
+                "native_result_unconfirmed"
+            };
             store.we_transition(
                 human,
                 entry,
                 &attempt,
                 WePhase::ProviderExposed,
                 WePhase::ProviderUncertain,
-                json!({"reason":"native_result_unconfirmed"}),
+                json!({"reason":reason}),
             )?;
         }
     }
