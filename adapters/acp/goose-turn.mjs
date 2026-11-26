@@ -164,7 +164,11 @@ export async function runGooseTurn({
       if (answerBytes > MAX_TEXT) throw new Error('Goose response exceeds bound');
       answer += chunk;
     });
-    if (terminal?.stopReason !== 'end_turn' || !answer.trim()) {
+    const visible = answer.trim();
+    const rawToolCall = visible.startsWith('<tool_call>')
+      && visible.includes('<function=')
+      && !visible.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+    if (terminal?.stopReason !== 'end_turn' || !visible || rawToolCall) {
       return { phase: 'uncertain', reason, sessionId: nativeSessionId };
     }
     return { phase: 'completed', sessionId: nativeSessionId, text: answer };
