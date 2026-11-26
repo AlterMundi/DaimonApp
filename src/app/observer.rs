@@ -545,7 +545,16 @@ async fn portfolio_inspection(
         .store
         .interaction_observation(key, human)?
         .context("Selected source unavailable")?;
-    if o.native_thread.as_deref() != live["native_thread"].as_str() {
+    let portable = live["availability"] == "unsupported";
+    let binding_changed = live["target_binding"]["binding"]
+        .as_str()
+        .is_some_and(|revision| revision != o.execution.revision);
+    let observed_native = if portable {
+        &live["target_binding"]["entry_binding"][3]
+    } else {
+        &live["native_thread"]
+    };
+    if binding_changed || o.native_thread.as_deref() != observed_native.as_str() {
         bail!("Selected source changed");
     }
     let goal = &live["snapshot"]["goal"];
@@ -560,13 +569,23 @@ async fn portfolio_inspection(
             "updated_at_unix_seconds":goal["updatedAt"],"tokens_used":goal["tokensUsed"],"token_budget":goal["tokenBudget"]})
     };
     let mut result = portfolio_evidence(o, true);
+    if portable {
+        let retained = serde_json::json!({
+            "native":result["native"].take(),"execution":result["execution"].take(),
+            "semantic":result["semantic"].take(),"last_local_turn":result["last_local_turn"].take(),
+            "last_native_item":result["last_native_item"].take(),
+            "presentation_gaps":result["presentation_gaps"].take()
+        });
+        result["retained_codex"] = retained;
+        result["selected_harness"] = live["harness"].clone();
+    }
     // Never disguise a shortened objective as an exact CAS snapshot. A future
     // goal mutation must obtain its full preconditions through goal_inspect.
     let history = &live["historical_failure_evidence"];
     let history_items = history["items"].as_array().cloned().unwrap_or_default();
     let history_view = serde_json::json!({"items":history_items.iter().take(2).collect::<Vec<_>>(),
         "more":history["more"].as_bool().unwrap_or(false) || history_items.len()>2,"historical":true});
-    result["live_status"] = serde_json::json!({"availability":live["availability"],"goal":goal_view,
+    result["live_status"] = serde_json::json!({"availability":live["availability"],"harness":live["harness"],"goal":goal_view,
         "native_thread":live["native_thread"],"native_activity":live["native_activity"],"receiver_busy":live["receiver_busy"],
         "stop_held":live["stop_held"],"maintenance_held":live["maintenance_held"],
         "historical_failure_evidence":history_view,

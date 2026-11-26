@@ -846,6 +846,15 @@ timeout_seconds=5
                              previous_codex)
             history = journey.call("route-inverse-history", "target_inputs", {"selector":"Alpha"})["inputs"]
             self.assertTrue(any(row["instruction"] == instruction for row in history))
+            observed = journey.call("route-inverse-observer", "candidates",
+                                    {"mode":"inspect", "selectors":["Alpha"]})
+            evidence = observed["candidates"][0]["evidence"]
+            self.assertEqual(evidence["selected_harness"], engine)
+            self.assertEqual(evidence["live_status"]["availability"], "unsupported")
+            self.assertIsNone(evidence["live_status"]["native_thread"])
+            self.assertEqual(evidence["retained_codex"]["native"], previous_codex[0][0])
+            attempts = {row["harness"]: row["phase"] for row in evidence["latest_executions"]}
+            self.assertEqual(attempts, {engine: "accepted", "codex": "completed"})
 
             extra_turns = 0
             extra_results = 0

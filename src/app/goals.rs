@@ -852,7 +852,7 @@ pub(super) async fn inspect_shared(
     if let Some(harness) = portable_goal_unavailable(shared, target) {
         return Ok(
             json!({"kind":"goal_inspection","target":target,"harness":harness,
-            "availability":"unsupported","receiver_busy":session.busy,"read_only":true,
+            "availability":"unsupported","target_binding":binding,"receiver_busy":session.busy,"read_only":true,
             "detail":"Goal controls are not connected for this session's selected harness."}),
         );
     }
