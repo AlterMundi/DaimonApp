@@ -320,6 +320,25 @@ pub(in crate::app) async fn execute_worker(
             child.wait().await?.success(),
             "native worker exited without a verified outcome"
         );
+        let mut outcome = outcome;
+        if let Some(object) = outcome.as_object_mut() {
+            object.remove("resumeUnavailableBody");
+        }
+        if outcome["reason"] == "claude_resume_session_missing"
+            && let Some(unavailable) = outcome.get("resumeUnavailable")
+        {
+            anyhow::ensure!(
+                engine == ForegroundEngine::Claude
+                    && outcome["phase"] == "not_submitted"
+                    && native_session.is_none()
+                    && resume.iter().any(|prior| {
+                        unavailable["scope"].as_str() == Some(prior.scope.as_str())
+                            && unavailable["sessionId"].as_str() == Some(prior.session_id.as_str())
+                    }),
+                "Missing Claude history does not match a selected candidate"
+            );
+            outcome["resumeUnavailableBody"] = body.clone();
+        }
         Ok(outcome)
     };
     let result = tokio::select! {

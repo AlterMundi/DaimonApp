@@ -254,13 +254,15 @@ existing `conversation` and `conversation_part` readers. Selection of a differen
 original, a rebind or an admission fence cannot extend this turn's authority.
 
 Routed Claude turns keep separate continuation candidates for their effective
-authorization scopes. A turn resumes only the candidate that matches its
+authorization scopes, including their controller grant. Older privileged
+transcripts without that distinction remain retained for explicit recovery. A turn resumes only the candidate that matches its
 current scope and authenticated being, embodiment and incarnation. A change
 to the signed roster alone preserves that incarnation's native history. A
 known quota rejection before work leaves the last completed candidate usable.
 An uncertain turn or a missing resume target protects the affected history
 from implicit replay. Session-authored dependencies use the parent admission
-epoch and remain attributed when routed into a portable topic.
+epoch and remain attributed when routed into a Claude topic. Other portable
+harnesses require a separately qualified dependency return contract.
 
 An owner can set the harness on an explicit target to Claude, Goose or
 Antigravity and enable direct routing on that harness's configured foreground

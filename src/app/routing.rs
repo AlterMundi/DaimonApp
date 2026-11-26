@@ -1386,6 +1386,13 @@ fn queue_root(
             &packet(shared, i, None)?,
         )?
     };
+    anyhow::ensure!(
+        !i.target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            || prompt.len() <= 16 * 1024,
+        "The complete Claude input exceeds the native byte limit"
+    );
     let epoch = i
         .admission_epoch
         .clone()

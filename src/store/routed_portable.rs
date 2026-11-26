@@ -461,12 +461,21 @@ impl Store {
                 )?;
             }
         }
-        let resume_unavailable = outcome["reason"] == "claude_resume_session_missing";
+        let missing = (outcome["reason"] == "claude_resume_session_missing")
+            .then_some(&outcome["resumeUnavailable"]);
+        let missing_scope =
+            missing.map(|candidate| candidate["scope"].as_str().unwrap_or("resume_unavailable"));
+        let missing_session = missing.and_then(|candidate| candidate["sessionId"].as_str());
+        let missing_body = outcome
+            .get("resumeUnavailableBody")
+            .map(serde_json::to_string)
+            .transpose()?;
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,
-            execution_native_scope=CASE WHEN ?5 THEN 'resume_unavailable' ELSE execution_native_scope END
+            execution_native_scope=coalesce(?5,execution_native_scope),
+            native_thread_id=coalesce(?7,native_thread_id),execution_body=coalesce(?8,execution_body)
             WHERE id=?4 AND status='running'
               AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?6)",
-            params![if reply.is_some() {"completed"} else {"failed"},reply,now_string(),local,resume_unavailable,self.instance_id])?==1,
+            params![if reply.is_some() {"completed"} else {"failed"},reply,now_string(),local,missing_scope,self.instance_id,missing_session,missing_body])?==1,
             "Routed result writer changed");
         tx.execute(
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
@@ -522,6 +531,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![from_previous_manifest.as_str(), one.as_str()]
         );
+        record("failed", &first, &body);
+        let (next, _) = record("running", "", &body);
+        let scopes = store.routed_claude_continuations(next, &body).unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].session_id, from_previous_manifest);
         record("failed", "resume_unavailable", &body);
         let (next, _) = record("running", "", &body);
         assert!(

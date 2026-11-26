@@ -1,6 +1,6 @@
 //! Attributed, bounded local session dependencies, separate from human speech.
 use super::*;
-use crate::interaction::{Instruction, RequestRelation, SourceInput};
+use crate::interaction::{ForegroundEngine, Instruction, RequestRelation, SourceInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -16,6 +16,20 @@ pub struct SessionRequest {
     pub epoch: String,
     pub return_instruction: Option<String>,
     pub phase: String,
+}
+
+const CLAUDE_LOCAL_TEXT_BYTES: usize = 8192;
+
+fn local_claude_route(
+    config: Option<&crate::interaction::InteractionConfig>,
+    target: SessionKey,
+) -> Result<Option<(ForegroundEngine, &crate::interaction::MatrixDestination)>> {
+    let route = config.and_then(|cfg| cfg.portable_route(target));
+    anyhow::ensure!(
+        route.is_none_or(|(engine, _)| engine == ForegroundEngine::Claude),
+        "This portable harness does not support attributed session dependencies"
+    );
+    Ok(route.map(|(engine, worker)| (engine, &worker.transport.source)))
 }
 
 pub(super) fn author_on(conn: &Connection, input: &str) -> Result<Option<Value>> {
@@ -221,9 +235,11 @@ impl Store {
         if current_epoch(&tx, human)? != epoch || closed.is_cancelled() {
             return Err(anyhow!("Parent admission retired or closed"));
         }
-        let route = config
-            .and_then(|cfg| cfg.portable_route(target))
-            .map(|(engine, worker)| (engine, &worker.transport.source));
+        let route = local_claude_route(config, target)?;
+        anyhow::ensure!(
+            route.is_none() || text.len() <= CLAUDE_LOCAL_TEXT_BYTES,
+            "The selected Claude handoff is too large"
+        );
         let target_id: i64 = tx.query_row(
             "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
              WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
@@ -496,12 +512,20 @@ impl Store {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        let route = local_claude_route(config, call.caller)?;
+        let result_text = if route.is_some() {
+            let end = d
+                .body
+                .char_indices()
+                .find(|(index, ch)| index + ch.len_utf8() > CLAUDE_LOCAL_TEXT_BYTES)
+                .map_or(d.body.len(), |(index, _)| index);
+            d.body[..end].to_owned()
+        } else {
+            d.body.chars().take(16000).collect()
+        };
         let text = format!(
             "Selected local session dependency returned. This is session-authored evidence, not a new human instruction or independent proof of completion. Local request: {}. Helper instruction: {}. Canonical result: {}. Worker-declared current completed coverage.\n\n{}",
-            call.id,
-            helper.id,
-            result_id,
-            d.body.chars().take(16000).collect::<String>()
+            call.id, helper.id, result_id, result_text
         );
         let source = SourceInput {
             telegram_files: vec![],
@@ -521,9 +545,7 @@ impl Store {
             call.caller,
             RequestRelation::Context(parent.requests),
             &self.instance_id,
-            config
-                .and_then(|cfg| cfg.portable_route(call.caller))
-                .map(|(engine, worker)| (engine, &worker.transport.source)),
+            route,
             &call.epoch,
         )?;
         if !fresh {
