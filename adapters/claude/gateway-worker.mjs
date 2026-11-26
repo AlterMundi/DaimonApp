@@ -227,8 +227,75 @@ async function providerEnvironment(profile, signal) {
   return env;
 }
 
+async function observeRuntime(path) {
+  const profile = await ownerProfile(path);
+  if (!profile.subscriptionEmail) return {};
+  const deadline = AbortSignal.timeout(10000);
+  const env = await providerEnvironment(profile, deadline);
+  // The SDK suppresses account-limit retrieval under this option. The
+  // observer explicitly reads /usage and does not submit model work.
+  delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  const { query } = await import(pathToFileURL(profile.sdk));
+  const abortController = new AbortController();
+  const cancel = () => abortController.abort();
+  deadline.addEventListener('abort', cancel, { once: true });
+  let permit;
+  const ready = new Promise(resolve => { permit = resolve; });
+  const prompt = (async function* () {
+    if (!await ready) return;
+    // This is a fixed account query. No caller text can enter this session.
+    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: '/usage' } };
+  })();
+  const native = query({ prompt, options: {
+    abortController, env, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
+    model: profile.model, effort: profile.effort, tools: [], settingSources: [],
+    persistSession: false, strictMcpConfig: true,
+  } });
+  try {
+    const { account, claude_code_version: cliVersion } = await native.initializationResult();
+    if (cliVersion !== profile.cliVersion || account?.email !== profile.subscriptionEmail
+        || account.apiProvider !== 'firstParty' || !account.subscriptionType || account.apiKeySource != null
+        || !(await native.supportedCommands()).some(command => /^\/?usage$/.test(command.name))) return {};
+    permit(true);
+    let model, weekly;
+    for await (const event of native) {
+      if (event.type === 'system' && event.subtype === 'init'
+          && typeof event.model === 'string' && /^claude-[a-z0-9-]{1,96}$/.test(event.model)) {
+        model = event.model;
+      }
+      if (event.type === 'assistant') {
+        const limits = event.usage_report?.rate_limits?.limits;
+        if (Array.isArray(limits)) {
+          const matches = limits.filter(window => window?.kind === 'weekly_all' && window.group === 'weekly'
+            && window.scope == null && Number.isFinite(window.percent) && window.percent >= 0 && window.percent <= 100);
+          if (matches.length === 1) {
+            const reset = Date.parse(matches[0].resets_at);
+            if (Number.isFinite(reset) && reset > Date.now()) {
+              weekly = { available: 100 - matches[0].percent, resets_at: Math.floor(reset / 1000) };
+            }
+          }
+        }
+      }
+      if (event.type === 'result') {
+        if (event.subtype === 'success' && event.is_error === false && event.local_command === 'usage'
+            && event.duration_api_ms === 0) return { model, weekly };
+        return {};
+      }
+    }
+    return {};
+  } finally {
+    permit(false);
+    native.close();
+    deadline.removeEventListener('abort', cancel);
+  }
+}
+
 async function main() {
   const [flag, path, ...extra] = process.argv.slice(2);
+  if (flag === '--observe-runtime' && extra.length === 0) {
+    process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
+    return;
+  }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
   const stop = new AbortController();
   const timeout = setTimeout(() => stop.abort(), 125_000);
@@ -249,8 +316,9 @@ async function main() {
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
       || (routedHostAccess && !routedHuman)
-      || (routedHuman && (first.humanOriginal || controllerSelected))
-      || ((controllerSelected || nativeGoalCommand) && first.humanOriginal !== true)
+      || (routedHuman && first.humanOriginal)
+      || (controllerSelected && !fullAccess)
+      || (nativeGoalCommand && first.humanOriginal !== true)
       || (nativeGoalCommand && (typeof first.text !== 'string' || !/^\/goal(?: |$)/.test(first.text.trimEnd())))
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.humanOriginal !== 'boolean'

@@ -27,6 +27,7 @@ pub(in crate::app) struct WorkerController<'a> {
     key: crate::models::SessionKey,
     human: i64,
     local_turn: i64,
+    routed: bool,
 }
 
 #[cfg(unix)]
@@ -234,15 +235,27 @@ pub(in crate::app) async fn execute_worker(
                 namespace: None,
                 arguments: json!({"operation":frame["operation"],"arguments":frame["arguments"]}),
             };
-            let reply = super::dialogue::tool_call(
-                owner.app.clone(),
-                owner.key,
-                owner.human,
-                request,
-                controller_closed.clone(),
-            )
-            .await
-            .context("Native controller result unavailable; inspect retained effects")?;
+            let result = if owner.routed {
+                super::session_requests::tool_call(
+                    owner.app.clone(),
+                    owner.key,
+                    owner.human,
+                    request,
+                    controller_closed.clone(),
+                    Some(owner.local_turn),
+                )
+            } else {
+                super::dialogue::tool_call(
+                    owner.app.clone(),
+                    owner.key,
+                    owner.human,
+                    request,
+                    controller_closed.clone(),
+                )
+            };
+            let reply = result
+                .await
+                .context("Native controller result unavailable; inspect retained effects")?;
             let mut response = json!({"schema":schema,"type":"controller_reply",
                 "inputId":id,"sessionId":session,"callId":next_call,
                 "success":reply.success,"text":reply.text});
@@ -377,6 +390,7 @@ pub(super) async fn run_portable_turn(
                         key: request.session_key,
                         human: input.human,
                         local_turn: local,
+                        routed: false,
                     }),
             },
             |prepared| {
@@ -445,7 +459,20 @@ pub(super) async fn run_routed_portable(
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
-    let direct_original = input.origin.message_id.is_some() && !super::routing::relayed(input);
+    let human_authored = store
+        .interaction_author(&input.id, input.human_id)?
+        .is_none();
+    let direct_original =
+        human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
+    let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
+        .then_some(WorkerController {
+            app,
+            key: input.target,
+            human: input.human_id,
+            local_turn: local,
+            routed: true,
+        });
+
     // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
     // adapters must receive a new session coordinate for that attempt.
     let attempt = uuid::Uuid::new_v4().to_string();
@@ -464,7 +491,7 @@ pub(super) async fn run_routed_portable(
                 && routed_host_access && super::routing::native_claude_goal(&request.prompt),
             routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
             session_instructions:session.session_prompt.as_deref(),
-            text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
+            text:&request.prompt,body:body.clone(),cancel:&cancel,controller,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
             if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?

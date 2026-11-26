@@ -697,6 +697,26 @@ timeout_seconds=5
             self.assertEqual(provider.calls, after_retry)
             self.assertEqual(journey.native_turns, native_turns)
 
+            # The earlier checks had no Codex activity. This next distinct
+            # human input explicitly needs the local general conversation.
+            provider.previous_original = None
+            provider.calls.clear()
+            provider.test_session_request = True
+            journey.allow_local_dependencies = True
+            provider.original = "Ask our general conversation to check the design summary."
+            provider.human_original = str(journey.sequence + 1)
+            journey.admit(provider.original, topic=7)
+            journey.wait(lambda: provider.failure or journey.row(
+                "SELECT count(*) FROM interaction_session_requests") == [(1,)], seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.wait(lambda: provider.failure or len(provider.calls) == 5, seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.wait(lambda: journey.row(
+                "SELECT i.phase FROM interaction_session_requests r "
+                "JOIN interaction_instructions i ON i.id=r.target_instruction "
+                "JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=1") == [("accepted",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
+
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
             answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
             page = journey.read("presentation", "list", "0", "0")["result"]

@@ -71,6 +71,48 @@ fn save_epoch(conn: &Connection, i: &mut Instruction, epoch: &str) -> Result<()>
     Ok(())
 }
 
+pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) -> Result<bool> {
+    let i = instruction_on(conn, id, human)?;
+    let Some(author) = author_on(conn, &i.input_id)? else {
+        return Ok(true);
+    };
+    if author["kind"] == "workflow_step" {
+        return super::workflows::input_allowed_on(conn, &author, &i);
+    }
+    let call = author["local_request"]
+        .as_str()
+        .context("Missing local request provenance")?;
+    let phase: Option<String> = conn
+        .query_row(
+            "SELECT phase FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+            params![call, human],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(matches!(
+        (author["kind"].as_str(), phase.as_deref()),
+        (Some("session_request"), Some("requested")) | (Some("session_result"), Some("returned"))
+    ))
+}
+
+fn session_requests_on(
+    conn: &Connection,
+    caller: SessionKey,
+    human: i64,
+) -> Result<Vec<SessionRequest>> {
+    let mut q=conn.prepare("SELECT doc,phase FROM interaction_session_requests WHERE human_id=?1 AND caller_chat=?2 AND caller_topic=?3 ORDER BY rowid DESC LIMIT 16")?;
+    q.query_map(params![human, caller.chat_id, caller.thread_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?
+    .map(|r| {
+        let (raw, phase) = r?;
+        let mut call: SessionRequest = serde_json::from_str(&raw)?;
+        call.phase = phase;
+        Ok(call)
+    })
+    .collect()
+}
+
 impl Store {
     pub(super) fn init_session_requests(&self) -> Result<()> {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
@@ -90,6 +132,7 @@ impl Store {
     /// The caller's accepted human instruction is the causal grant. One level,
     /// at most four dependencies per original instruction, and no self-addressing.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn interaction_session_request(
         &self,
         caller: SessionKey,
@@ -101,6 +144,26 @@ impl Store {
         target: SessionKey,
         text: &str,
         closed: &tokio_util::sync::CancellationToken,
+    ) -> Result<(SessionRequest, Instruction, bool)> {
+        self.interaction_session_request_scoped(
+            caller, human, native, turn, parent, client, target, text, closed, None, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn interaction_session_request_scoped(
+        &self,
+        caller: SessionKey,
+        human: i64,
+        native: &str,
+        turn: &str,
+        parent: &str,
+        client: &str,
+        target: SessionKey,
+        text: &str,
+        closed: &tokio_util::sync::CancellationToken,
+        portable_local: Option<i64>,
+        config: Option<&crate::interaction::InteractionConfig>,
     ) -> Result<(SessionRequest, Instruction, bool)> {
         if caller == target
             || text.trim().is_empty()
@@ -116,14 +179,27 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let p = instruction_on(&tx, parent, human)?;
-        let caller_owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id JOIN turns t ON t.session_id=s.id WHERE s.id=?1 AND s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4 AND u.allowed=1 AND s.codex_thread_id=?5 AND t.id=?6 AND t.native_thread_id=?5 AND t.status='running')",params![p.target_session,caller.chat_id,caller.thread_id,human,native,p.local_turn],|r|r.get(0))?;
+        let caller_owned = if let Some(local) = portable_local {
+            super::routed_portable::controller_parent_on(
+                &tx,
+                &p,
+                caller,
+                human,
+                native,
+                turn,
+                local,
+                &self.instance_id,
+            )?
+        } else {
+            p.phase == crate::interaction::TransportPhase::Accepted
+                && p.native_turn.as_deref() == Some(turn)
+                && tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id JOIN turns t ON t.session_id=s.id WHERE s.id=?1 AND s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4 AND u.allowed=1 AND s.codex_thread_id=?5 AND t.id=?6 AND t.native_thread_id=?5 AND t.status='running')",params![p.target_session,caller.chat_id,caller.thread_id,human,native,p.local_turn],|r|r.get(0))?
+        };
         let withdrawn:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_session_withdrawals WHERE parent_instruction=?)",[parent],|r|r.get(0))?;
         if !caller_owned
             || withdrawn
             || p.target != caller
-            || p.phase != crate::interaction::TransportPhase::Accepted
             || p.native_thread.as_deref() != Some(native)
-            || p.native_turn.as_deref() != Some(turn)
             || author_on(&tx, &p.input_id)?.is_some()
         {
             return Err(anyhow!(
@@ -187,12 +263,16 @@ impl Store {
         if existing.is_none() && count >= 4 {
             return Err(anyhow!("Human parent dependency budget exhausted"));
         }
-        let (mut i, fresh) = super::interaction::admit_on(
+        let (mut i, fresh) = super::interaction::admit_selected_on(
             &tx,
             &source,
             target,
             RequestRelation::New,
             &self.instance_id,
+            None,
+            config
+                .and_then(|cfg| cfg.portable_route(target))
+                .map(|(engine, worker)| (engine, &worker.transport.source)),
         )?;
         if let Some((raw, phase)) = existing {
             let mut call: SessionRequest = serde_json::from_str(&raw)?;
@@ -259,43 +339,38 @@ impl Store {
         if !owned {
             return Err(anyhow!("Local caller binding changed"));
         }
-        let mut q=conn.prepare("SELECT doc,phase FROM interaction_session_requests WHERE human_id=?1 AND caller_chat=?2 AND caller_topic=?3 ORDER BY rowid DESC LIMIT 16")?;
-        q.query_map(params![human, caller.chat_id, caller.thread_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .map(|r| {
-            let (raw, phase) = r?;
-            let mut call: SessionRequest = serde_json::from_str(&raw)?;
-            call.phase = phase;
-            Ok(call)
-        })
-        .collect()
+        session_requests_on(&conn, caller, human)
+    }
+
+    pub(crate) fn routed_portable_session_requests(
+        &self,
+        caller: SessionKey,
+        human: i64,
+        native: &str,
+        parent: &str,
+        local: i64,
+    ) -> Result<Vec<SessionRequest>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = instruction_on(&conn, parent, human)?;
+        anyhow::ensure!(
+            super::routed_portable::controller_parent_on(
+                &conn,
+                &input,
+                caller,
+                human,
+                native,
+                parent,
+                local,
+                &self.instance_id
+            )?,
+            "Portable caller binding changed"
+        );
+        session_requests_on(&conn, caller, human)
     }
 
     pub fn interaction_session_input_allowed(&self, id: &str, human: i64) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let i = instruction_on(&conn, id, human)?;
-        let Some(author) = author_on(&conn, &i.input_id)? else {
-            return Ok(true);
-        };
-        if author["kind"] == "workflow_step" {
-            return super::workflows::input_allowed_on(&conn, &author, &i);
-        }
-        let call = author["local_request"]
-            .as_str()
-            .context("Missing local request provenance")?;
-        let phase: Option<String> = conn
-            .query_row(
-                "SELECT phase FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
-                params![call, human],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(matches!(
-            (author["kind"].as_str(), phase.as_deref()),
-            (Some("session_request"), Some("requested"))
-                | (Some("session_result"), Some("returned"))
-        ))
+        session_input_allowed_on(&conn, id, human)
     }
 
     /// Withdraw future dependency continuations synchronously with scoped controls.
@@ -344,7 +419,7 @@ impl Store {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for delivery in deliveries {
-            if let Some(i) = self.session_return(&delivery, human, Some(closed))? {
+            if let Some(i) = self.session_return(&delivery, human, Some(closed), None)? {
                 return Ok(Some(i));
             }
         }
@@ -353,12 +428,22 @@ impl Store {
 
     /// A current worker-declared completed canonical result can become one
     /// attributed context input to the original logical caller, never human speech.
+    #[cfg(test)]
     pub fn interaction_session_return(
         &self,
         delivery: &str,
         human: i64,
     ) -> Result<Option<Instruction>> {
-        self.session_return(delivery, human, None)
+        self.session_return(delivery, human, None, None)
+    }
+
+    pub(crate) fn interaction_session_return_scoped(
+        &self,
+        delivery: &str,
+        human: i64,
+        config: &crate::interaction::InteractionConfig,
+    ) -> Result<Option<Instruction>> {
+        self.session_return(delivery, human, None, Some(config))
     }
 
     fn session_return(
@@ -366,6 +451,7 @@ impl Store {
         delivery: &str,
         human: i64,
         closed: Option<&tokio_util::sync::CancellationToken>,
+        config: Option<&crate::interaction::InteractionConfig>,
     ) -> Result<Option<Instruction>> {
         if closed.is_some_and(|c| c.is_cancelled()) {
             return Err(anyhow!("Explicit local return request closed"));
@@ -391,7 +477,14 @@ impl Store {
             [parent.local_turn],
             |r| r.get(0),
         )?;
-        if !viable || parent.phase != crate::interaction::TransportPhase::Accepted {
+        let exposes_portable = parent.phase == crate::interaction::TransportPhase::Submitting
+            && parent
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness.is_portable());
+        if !viable
+            || (parent.phase != crate::interaction::TransportPhase::Accepted && !exposes_portable)
+        {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
@@ -413,12 +506,16 @@ impl Store {
             origin: parent.origin.clone(),
             text,
         };
-        let (mut i, fresh) = super::interaction::admit_on(
+        let (mut i, fresh) = super::interaction::admit_selected_on(
             &tx,
             &source,
             call.caller,
             RequestRelation::Context(parent.requests),
             &self.instance_id,
+            None,
+            config
+                .and_then(|cfg| cfg.portable_route(call.caller))
+                .map(|(engine, worker)| (engine, &worker.transport.source)),
         )?;
         if !fresh {
             return Err(anyhow!("Unattributed local result source"));

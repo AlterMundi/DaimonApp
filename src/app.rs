@@ -120,6 +120,7 @@ struct AppShared {
     voice_shutdown: CancellationToken,
     session_defaults: SessionDefaults,
     limits_cache: Mutex<Option<CachedLimitsSnapshot>>,
+    claude_runtime_cache: Mutex<execution_status::ClaudeRuntimeCache>,
     history_page_cache: Mutex<HistoryPageCache>,
     pending_approvals: Mutex<HashMap<String, PendingApproval>>,
     pending_questions: Mutex<HashMap<String, questions::PendingDialogue>>,
@@ -487,6 +488,7 @@ impl App {
                 voice_shutdown: CancellationToken::new(),
                 session_defaults,
                 limits_cache: Mutex::new(None),
+                claude_runtime_cache: Mutex::new(execution_status::ClaudeRuntimeCache::default()),
                 history_page_cache: Mutex::new(HistoryPageCache::default()),
                 pending_approvals: Mutex::new(HashMap::new()),
                 pending_questions: Mutex::new(HashMap::new()),
@@ -1482,14 +1484,10 @@ impl App {
                         .await?;
                     } else {
                         let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
-                        if let Some((engine, _)) = self
-                            .shared
-                            .config
-                            .interaction
-                            .as_ref()
-                            .and_then(|profile| profile.portable_route(session_key))
+                        if let Some(profile) = self.shared.config.interaction.as_ref()
+                            && let Some((engine, _)) = profile.portable_route(session_key)
                         {
-                            let (running, queued) = self.shared.store.routed_portable_status(
+                            let (started, queued) = self.shared.store.routed_portable_status(
                                 session.id,
                                 user.tg_user_id,
                                 engine.name(),
@@ -1499,17 +1497,35 @@ impl App {
                                 crate::interaction::ForegroundEngine::Antigravity => "Antigravity",
                                 crate::interaction::ForegroundEngine::Goose => "Goose",
                             };
-                            let activity = if running {
+                            let activity = if started.is_some() {
                                 "working on a message"
                             } else {
                                 "idle"
                             };
-                            self.send_status(
-                                message.chat.id,
-                                message.message_thread_id,
-                                &format!("{harness} is {activity}. Messages waiting: {queued}."),
-                            )
-                            .await?;
+                            let mut text =
+                                format!("{harness} is {activity}. Messages waiting: {queued}.");
+                            if let Some(started) = started
+                                .as_deref()
+                                .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                            {
+                                let age =
+                                    (chrono::Utc::now().timestamp() - started.timestamp()).max(0);
+                                text.push_str(&format!(" Elapsed: {}m {}s.", age / 60, age % 60));
+                            }
+                            let runtime =
+                                execution_status::portable_runtime(&self.shared, profile, engine)
+                                    .await;
+                            if let Some(model) = runtime["model"].as_str() {
+                                text.push_str(&format!("\nModel: {model}"));
+                                if let Some(effort) = runtime["effort"].as_str() {
+                                    text.push_str(&format!(" · {effort}"));
+                                }
+                            }
+                            if let Some(weekly) = runtime["weekly_available_percent"].as_f64() {
+                                text.push_str(&format!("\n{weekly:.0}% weekly left"));
+                            }
+                            self.send_status(message.chat.id, message.message_thread_id, &text)
+                                .await?;
                             return Ok(());
                         }
                         let uncertain = self

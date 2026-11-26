@@ -857,9 +857,19 @@ window.Conversation = (() => {
       if(!runtimeSummary)return;
       const runtime=workspace?.runtime?.();
       const harness={codex:"Codex",claude:"Claude Code",antigravity:"Antigravity",goose:"Goose"}[runtime?.harness];
-      const model={opus:"Opus",sonnet:"Sonnet",haiku:"Haiku"}[runtime?.model]??runtime?.model;
+      const claudeModel=runtime?.harness==="claude"
+        ? /^claude-(opus|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(runtime.model)
+        : null;
+      const modelNames={opus:"Opus",sonnet:"Sonnet",haiku:"Haiku"};
+      const model=claudeModel
+        ? `${modelNames[claudeModel[1]]} ${[claudeModel[2],claudeModel[3]].filter(Boolean).join(".")}`
+        : modelNames[runtime?.model]??runtime?.model;
       const quota=runtime?.weekly_available_percent;
-      const weekly=Number.isFinite(quota)&&quota>=0&&quota<=100?`${Math.round(quota)}% weekly left`:undefined;
+      const seconds=Math.floor(runtime?.weekly_resets_at-Date.now()/1000);
+      const days=Math.floor(seconds/86400), hours=Math.floor(seconds/3600)%24;
+      const reset=seconds>0?(days>0?`${days}d${hours}h`:hours>0?`${hours}h`:`${Math.ceil(seconds/60)}m`):"";
+      const weekly=Number.isFinite(quota)&&quota>=0&&quota<=100
+        ? [`${Math.round(quota)}%`,reset].filter(Boolean).join(" "):undefined;
       const text=harness?[harness,model,runtime.effort,weekly].filter(Boolean).join(" · "):"";
       runtimeSummary.hidden=!text;
       runtimeSummary.textContent=text;
