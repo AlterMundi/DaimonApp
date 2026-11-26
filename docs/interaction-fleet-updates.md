@@ -28,6 +28,12 @@ selected worker commands. A worker update uses this existing Gateway selection.
 TeleDaimon can stay on its current qualified transport release when its Gateway
 interface and profile are compatible.
 
+Stage the adapter from the same source revision as the binary, including the
+shared files imported from its parent directory. Qualify the packaged worker
+from its release directory, and record its module digests with the binary.
+Reuse the existing service selector with its exact predecessor available for
+rollback. Avoid accumulating one service override per release.
+
 Run `daimon-gateway --preflight CONFIG` on the staged binary and the exact
 candidate profile as the receiving service user. This validates the Gateway
 configuration and reads the selected Reports record from the existing journal
