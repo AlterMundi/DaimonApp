@@ -2,7 +2,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -290,6 +291,12 @@ async function main() {
       env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
       if (profile.hostToolDirectory) env.PATH += `:${profile.hostToolDirectory}`;
     }
+    let sharedDmkWriter;
+    if (sharedDmk && hostTools.includes('Bash') && profile.hostToolDirectory) {
+      const command = join(profile.hostToolDirectory, 'dmk');
+      const executable = await access(command, constants.X_OK).then(() => true, () => false);
+      if (executable) sharedDmkWriter = command;
+    }
     const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, sessionInstructions);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
@@ -359,7 +366,7 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools, controller,
+        sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, hostTools, controller,
         fullAccess, routedHuman, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {

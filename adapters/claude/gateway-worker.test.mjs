@@ -82,7 +82,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const paired = ownerDefault || request.message.content === 'Synthetic private tool grant.';
                 assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
                 assert.equal(options.systemPrompt.append.includes(
-                  'The paired human wrote the current user message in Interaction.'), paired);
+                  'The paired human wrote the current user message.'), paired);
                 assert.equal(options.systemPrompt.append.includes(
                   'The Claude subscription account is a service credential and does not identify the sender.'), paired);
                 assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
