@@ -1242,7 +1242,11 @@ window.Conversation = (() => {
             card.value.voice={...card.value.voice,...value.voice};
           }
         }
-        if (claudeFailure(value.phase) && card.value.phase !== "matrix_replied") {
+        if (value.phase === "matrix_replied" && typeof value.claude_reply?.text === "string" &&
+            card.value.phase !== "matrix_replied") {
+          card.value.phase = value.phase;
+          card.value.claude_reply = value.claude_reply;
+        } else if (claudeFailure(value.phase) && card.value.phase !== "matrix_replied") {
           card.value.phase = value.phase;
         }
         if(value.routing && (!card.value.routing || (value.routing.phase==="accepted" && card.value.routing.instruction===value.routing.instruction))){
