@@ -102,6 +102,7 @@ async def run(profile, reader):
         tools.add("dmk_read_selected")
     gate = ProviderGate(profile["model"], profile["providerPort"], tools, first["text"])
     committed = False
+    refusal = "antigravity_preflight_refused"
 
     try:
         async with stdio_client(node) as (receive, send), ClientSession(receive, send) as broker:
@@ -179,6 +180,16 @@ async def run(profile, reader):
                                 await asyncio.sleep(.02)
                         require(agent.conversation_id == first["sessionId"])
                         require(json.loads(await observe("daimon_status")) == profile["body"])
+                        try:
+                            async with asyncio.timeout(1):
+                                _, endpoint = await asyncio.open_connection(
+                                    "127.0.0.1", profile["providerPort"]
+                                )
+                                endpoint.close()
+                                await endpoint.wait_closed()
+                        except (OSError, TimeoutError):
+                            refusal = "antigravity_provider_unavailable"
+                            raise
                         emit(ids, type="prepare_submission", nativeSessionId=agent.conversation_id)
                         decision = await frame(reader)
                         require(decision == {**ids, "type": "submission_decision", "committed": True})
@@ -204,7 +215,7 @@ async def run(profile, reader):
         if committed:
             outcome = {"phase": "uncertain", "sessionId": first["sessionId"]}
         else:
-            outcome = {"phase": "not_submitted", "reason": "antigravity_preflight_refused"}
+            outcome = {"phase": "not_submitted", "reason": refusal}
         emit(ids, type="outcome", outcome=outcome)
 
 
