@@ -256,12 +256,67 @@ mod tests {
         assert!(execution.matches(crate::execution::Harness::Claude, native));
         assert!(!execution.matches(crate::execution::Harness::Codex, native));
         assert!(store.controller_execution(claude, key, 101).is_err());
+        let target = SessionKey::new(100, Some(8));
+        let worker = store.ensure_session(target, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(target, "worker-native")
+            .unwrap();
+        let mut source = store
+            .interaction_portable_entry_source(key, 100, claude)
+            .unwrap();
+        source.target_sessions = vec![worker.id];
+        let plan = [(target, RequestRelation::New)];
+        let closed = tokio_util::sync::CancellationToken::new();
+        let admit = |source| {
+            store.interaction_admit_entry_execution_plan(
+                key,
+                100,
+                crate::store::EntryExecution::Portable(claude),
+                source,
+                &plan,
+                &closed,
+            )
+        };
+        let mut foreign = source.clone();
+        foreign.event_id = uuid::Uuid::new_v4().to_string();
+        assert!(admit(&foreign).is_err());
+        let (instruction, fresh) = admit(&source).unwrap().remove(0);
+        assert!(fresh);
+        let (retained, fresh) = admit(&source).unwrap().remove(0);
+        assert_eq!(retained.id, instruction.id);
+        assert!(!fresh);
+
+        let worker_turn = store
+            .record_turn_started(
+                worker.id,
+                &TurnRequest {
+                    session_key: target,
+                    ..request
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(worker_turn, "worker-native")
+            .unwrap();
+        let routed = Some((instruction.id.as_str(), 100));
+        store
+            .validate_codex_submission(worker_turn, true, routed)
+            .unwrap();
         store
             .finish_portable_turn(&input, claude, None, false)
             .unwrap();
         assert_eq!(latest()[0].phase, "claude_unconfirmed");
         assert!(store.controller_execution(claude, key, 100).is_err());
         store.set_session_codex_thread(key, "replacement").unwrap();
+        store
+            .validate_codex_submission(worker_turn, true, None)
+            .unwrap();
+        assert!(
+            store
+                .validate_codex_submission(worker_turn, true, routed)
+                .is_err()
+        );
+        assert!(admit(&source).is_err());
         assert!(
             latest()
                 .iter()

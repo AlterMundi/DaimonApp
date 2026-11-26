@@ -1097,6 +1097,7 @@ pub(super) async fn process_turn(
                                 }
                                 if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
                                 let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
+
                                 #[cfg(unix)]
                                 if allowance.is_some() && let Some((config,source))=super::native_account::configured(&shared)? {
                                     let native=shared.store.controller_native_turn(turn_id,session_key,requester_user_id)?;
@@ -1113,11 +1114,9 @@ pub(super) async fn process_turn(
                                     let host_restrictions=owner.host_restrictions.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
                                     *held=Some(owner);
-                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                     return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions});
                                     }
                                 }
-                                shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                 Ok(match allowance {
                                     Some(allowance)=>match shared.config.interaction.as_ref()
                                         .and_then(|profile|profile.matrix_transport.as_ref())
@@ -1134,6 +1133,17 @@ pub(super) async fn process_turn(
                                     return Ok(CodexEventOutcome::ProviderUsageRecorded(owner.record_usage(usage).await?));
                                 }
                                 Ok(CodexEventOutcome::ProviderUsageRecorded(false))
+                            }
+                            CodexEvent::NativeTurnReleasing => {
+                                let routed=interaction.as_deref().map(|id|(id,requester_user_id));
+                                let validation=shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed);
+                                if validation.is_err() && let Some((id,human))=routed {
+                                    // This event runs before the first possible native write.
+                                    shared.store.native_collection_rejected(turn_id)?;
+                                    shared.store.interaction_transport(id,human,turn_id,crate::interaction::TransportPhase::Rejected,None)?;
+                                }
+                                validation?;
+                                Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeProviderAttemptReservation(request) => {
                                 #[cfg(unix)]
@@ -1950,6 +1960,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeGoalIdle
             | CodexEvent::NativeTurnStarted(_)
             | CodexEvent::NativeTurnSubmitting
+            | CodexEvent::NativeTurnReleasing
             | CodexEvent::NativeProviderAttemptReservation(_)
             | CodexEvent::NativeExternalInputSubmitting
             | CodexEvent::NativeProviderAttemptUsage(_)

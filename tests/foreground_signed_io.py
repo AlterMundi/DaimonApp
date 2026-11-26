@@ -25,6 +25,7 @@ import uuid
 import antigravity_foreground_io as foreground
 from claude_provider_fixture import ANSWER, REVOKED_ANSWER, ClaudeProvider
 from conversation_input_control_io import Inputs
+from conversation_routing_io import CanonicalRouting
 
 
 def matrix_fixture():
@@ -110,7 +111,7 @@ exec {shlex.quote(executable)} "$@"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
 
-def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False):
+def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False, mixed=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
@@ -175,8 +176,16 @@ operator.main()
             if engine != "claude":
                 memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"], engine)
                 initial_database = database.read_bytes()
-            journey = Inputs(gateway)
+            journey = CanonicalRouting(gateway) if mixed else Inputs(gateway)
             self.addCleanup(journey.close)
+            if mixed:
+                journey.start()
+                journey.admit("Fixture seed for the owned Codex worker", topic=7)
+                journey.wait(lambda: journey.has("Initial goal turn delivered.", 7))
+                journey.idle()
+                journey.stop()
+                journey.config.write_text(journey.config.read_text() + journey.target_config)
+                journey.routing = True
             if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 gateway_config = re.sub(r'^(bot_token_file|api_base)=.*\n', '', journey.config.read_text(),
                                         flags=re.MULTILINE)
@@ -186,7 +195,8 @@ operator.main()
                     'api_base="http://127.0.0.1:1"\n',
                 )
                 journey.config.write_text(gateway_config)
-                (journey.root / "codex").write_text("#!/bin/sh\nexit 7\n")
+                if not mixed:
+                    (journey.root / "codex").write_text("#!/bin/sh\nexit 7\n")
             profile = root / "worker.json"
             state = root / "native-state"
             state.mkdir(mode=0o700)
@@ -231,6 +241,8 @@ operator.main()
                 provider.body = body
                 provider.paired_human = direct
                 provider.controller = direct
+                provider.mixed = mixed
+                provider.mixed_worker_reply = "Codex worker fixture result from the original request."
                 if engine == "claude":
                     provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
@@ -459,6 +471,25 @@ timeout_seconds=5
             provider.current = request["id"]
             submit(request, fresh=True)
             self.assertIn(ANSWER, readback(request))
+            if mixed:
+                self.assertEqual(provider.calls, [request["id"]] * 5)
+                self.assertEqual(len(journey.worker_packets["native-topic-7"]), 1)
+                instruction, phase, doc = journey.instructions(7)[0]
+                self.assertIn(phase, ("accepted", "completed"))
+                self.assertEqual(json.loads(doc)["text"], request["text"])
+                source = journey.row(
+                    "SELECT s.event_id,s.human_id,s.channel FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?",
+                    (instruction,),
+                )
+                self.assertEqual(source, [(request["id"], 100, "conversation")])
+                self.assertEqual(journey.row(
+                    "SELECT r.native_thread,r.body FROM interaction_results r "
+                    "JOIN turns t ON t.id=r.local_turn WHERE t.execution_harness='codex'"
+                ), [("native-topic-7", provider.mixed_worker_reply)])
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+                self.assertFalse(return_attempts)
+                return
             self.assertEqual(provider.calls, [request["id"]] * 4)
             provider.previous_session = journey.row(
                 "SELECT t.native_thread_id FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
@@ -695,10 +726,11 @@ if __name__ == "__main__":
         raise SystemExit("Supply the DMK scripts directory for Antigravity and Goose.")
     interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
     direct = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION_DIRECT") == "1"
+    mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
     if interaction or direct:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
         sys.path.insert(0, str(foreground.ROOT))
     dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
-                            interaction=interaction, direct=direct))
+                            interaction=interaction, direct=direct, mixed=mixed))

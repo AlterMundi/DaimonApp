@@ -703,9 +703,17 @@ impl Store {
         human: i64,
     ) -> Result<crate::interaction::SourceInput> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let raw:String=conn.query_row("SELECT s.doc FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|r.get(0))?;
-        Ok(serde_json::from_str(&raw)?)
+        source_on(&conn, id, human)
     }
+}
+
+pub(super) fn source_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+) -> Result<crate::interaction::SourceInput> {
+    let raw:String=conn.query_row("SELECT s.doc FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|r.get(0))?;
+    Ok(serde_json::from_str(&raw)?)
 }
 
 #[cfg(test)]

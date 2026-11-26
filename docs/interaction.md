@@ -232,6 +232,15 @@ implemented for the running adapter. A signed Matrix-only foreground worker
 uses its own existing Matrix catalog and cannot acquire a Gateway controller
 from its message text.
 
+The direct integrating turn can inspect its retained human original through
+`inputs` and route that exact reference through `dispatch`. The existing planner
+atomically binds the original to the selected owned targets before native
+delivery. It uses the captured text and actor, and an identical plan retry
+reads the retained outcome. After admission the worker owns its execution and
+its attributed result. The integrating turn reads visible returns through the
+existing `conversation` and `conversation_part` readers. Selection of a different
+original, a rebind or an admission fence cannot extend this turn's authority.
+
 Qualify a mixed set of conversations with one harness on the integrating role
 and another on a worker. Inspect the worker, dispatch an existing retained
 human original, observe the useful attributed result, then repeat with the roles

@@ -206,7 +206,32 @@ struct TargetInputsArgs {
 }
 
 fn portable_operation(operation: &str) -> bool {
-    matches!(operation, "capabilities" | "candidates" | "target_inputs")
+    matches!(
+        operation,
+        "capabilities"
+            | "candidates"
+            | "target_inputs"
+            | "inputs"
+            | "dispatch"
+            | "conversation"
+            | "conversation_part"
+    )
+}
+
+fn validate_portable_read(
+    shared: &AppShared,
+    key: SessionKey,
+    human: i64,
+    request: &crate::execution::ToolInvocation,
+    closed: &CancellationToken,
+) -> Result<()> {
+    if request.harness != crate::execution::Harness::Codex {
+        if closed.is_cancelled() {
+            bail!("Controller invocation closed before readback");
+        }
+        super::observer::tool_owner_for_turn(shared, key, human, request)?;
+    }
+    Ok(())
 }
 
 pub(super) fn tool_call(
@@ -402,14 +427,17 @@ pub(super) fn tool_call(
                 return Ok(result);
             }
             if request.tool=="interaction_conversation" {
-                let args:ConversationReadArgs=serde_json::from_value(request.arguments)?;
+                let args:ConversationReadArgs=serde::Deserialize::deserialize(&request.arguments)?;
                 let operation=if args.before {"before"} else {"list"};
                 let page=super::presentation::owner_read(&app,human,&format!("{operation} {} {} {}",args.delivery,args.native,args.matrix))?;
+                validate_portable_read(shared,key,human,&request,&closed)?;
                 return Ok(json!({"kind":"conversation_sources","source_data":true,"presentation":page,"interpretation":"Attributed session progress and replies visible in this human's conversation; not new human instructions or evidence of hearing. Reading does not dispatch or repeat work."}));
             }
             if request.tool=="interaction_conversation_part" {
-                let args:ConversationPartArgs=serde_json::from_value(request.arguments)?;
-                return super::presentation::owner_read(&app,human,&format!("part {} {} {}",args.source,args.revision,args.offset));
+                let args:ConversationPartArgs=serde::Deserialize::deserialize(&request.arguments)?;
+                let part=super::presentation::owner_read(&app,human,&format!("part {} {} {}",args.source,args.revision,args.offset))?;
+                validate_portable_read(shared,key,human,&request,&closed)?;
+                return Ok(part);
             }
             if request.tool=="interaction_playback_context" {
                 return playback_context(&app,key,human,&request.native_session,request.arguments,&closed).await;
@@ -434,6 +462,17 @@ pub(super) fn tool_call(
             }
             if request.tool=="interaction_inputs" {
                 if request.arguments!=json!({}) {bail!("Unexpected input query arguments");}
+                if request.harness != crate::execution::Harness::Codex {
+                    let source = shared.store.interaction_portable_entry_source(key,human,request.local_turn)?;
+                    let order=shared.store.interaction_source_order(&source)?;
+                    validate_portable_read(shared,key,human,&request,&closed)?;
+                    return Ok(json!({"kind":"original_integrating_inputs","bounded":true,"inputs":[{
+                        "input_ref":source.event_id,"human":human,"origin":source.origin,
+                        "channel":source.channel,"transcription":source.transcription,
+                        "capture_order":order,"text_excerpt":source.text.chars().take(2000).collect::<String>(),
+                        "excerpt_bounded":true,
+                    }]}));
+                }
                 let refs=shared.store.interaction_entry_references(key,human,&request.native_session)?;
                 let mut inputs=vec![];
                 for reference in refs {
@@ -498,7 +537,21 @@ pub(super) fn tool_call(
             let args:DispatchArgs=serde_json::from_value(request.arguments)?;
             args.input_ref.validate()?;
             if args.destinations.is_empty() || args.destinations.len()>5 {bail!("Invalid routing selection");}
-            let (mut source,message)=shared.store.interaction_entry_original(key,human,&request.native_session,&args.input_ref,&format!("telegram:{}",shared.bot_id))?;
+            let execution=if request.harness==crate::execution::Harness::Codex {
+                crate::store::EntryExecution::Codex(&request.native_session)
+            } else {
+                crate::store::EntryExecution::Portable(request.local_turn)
+            };
+            let (mut source,message)=match execution {
+                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_entry_original(key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id))?,
+                crate::store::EntryExecution::Portable(local)=>{
+                    let source=shared.store.interaction_portable_entry_source(key,human,local)?;
+                    if args.input_ref != InputReference::Conversation(source.event_id.clone()) {
+                        bail!("Reference does not match the active portable original");
+                    }
+                    (source,None)
+                }
+            };
             if source.text.trim().is_empty() || source.text.starts_with('/') || message.as_ref().is_some_and(|message|!(is_text_only_steer_candidate(message,&source.text) || source.transcription.is_some())) {bail!("This adapter requires original committed text");}
             let cfg=super::routing::profile(shared)?;
             let mut plan=vec![];
@@ -521,7 +574,10 @@ pub(super) fn tool_call(
             source.target_sessions=plan.iter().map(|(_,id,_)|*id).collect();
             if closed.is_cancelled() {bail!("Tool request closed before admission");}
             let selected=plan.into_iter().map(|(key,_,relation)|(key,relation)).collect::<Vec<_>>();
-            let admitted=shared.store.interaction_admit_entry_plan(key,human,&request.native_session,&source,&selected,&closed)?;
+            let admitted=match execution {
+                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_admit_entry_plan(key,human,native,&source,&selected,&closed)?,
+                crate::store::EntryExecution::Portable(_)=>shared.store.interaction_admit_entry_execution_plan(key,human,execution,&source,&selected,&closed)?,
+            };
             // Once this durable plan is admitted, its deliveries are independent
             // of the front dialogue. Native closure cannot silently retract work.
             let mut results=vec![];

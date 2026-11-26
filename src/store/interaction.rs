@@ -78,6 +78,17 @@ pub(super) fn admit_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
+    admit_selected_on(tx, source, target, relation, instance, None)
+}
+
+pub(super) fn admit_selected_on(
+    tx: &Connection,
+    source: &crate::interaction::SourceInput,
+    target: SessionKey,
+    relation: crate::interaction::RequestRelation,
+    instance: &str,
+    portable: Option<&super::ConversationInput>,
+) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
         tx,
@@ -173,7 +184,13 @@ pub(super) fn admit_on(
     let mut source_epoch = None;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
-        super::conversation_inputs::eligible_on(tx, &original)?;
+        if portable.is_some_and(|input| {
+            input.portable.is_some() && input.id == original.id && input.human == original.human
+        }) {
+            super::conversation_inputs::eligible_dispatched_source_on(tx, &original, instance)?;
+        } else {
+            super::conversation_inputs::eligible_on(tx, &original)?;
+        }
         source_epoch = Some(original.epoch.clone());
         if source.update_id.is_some()
             || source.transcription

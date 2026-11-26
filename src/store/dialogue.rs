@@ -133,24 +133,7 @@ pub(super) fn original_owned_on(
             {
                 bail!("Original conversation input is not linked to this native entry");
             }
-            Ok((
-                SourceInput {
-                    tribu_source: input.tribu_source.clone(),
-                    transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
-                    channel: "conversation".into(),
-                    event_id: id.clone(),
-                    update_id: None,
-                    human_id: human,
-                    target_sessions: vec![],
-                    origin: ReturnRoute {
-                        chat_id: key.chat_id,
-                        thread_id: key.thread_id,
-                        message_id: None,
-                    },
-                    text: input.text,
-                },
-                None,
-            ))
+            Ok((conversation_source(&input), None))
         }
     }
 }
@@ -179,6 +162,54 @@ pub(super) fn original_order_on(conn: &Connection, source: &SourceInput) -> Resu
         .optional()?)
 }
 
+fn conversation_source(input: &super::ConversationInput) -> SourceInput {
+    SourceInput {
+        tribu_source: input.tribu_source.clone(),
+        transcription: input
+            .voice
+            .as_ref()
+            .and_then(|voice| voice.transcription.clone()),
+        channel: "conversation".into(),
+        event_id: input.id.clone(),
+        update_id: None,
+        human_id: input.human,
+        target_sessions: vec![],
+        origin: ReturnRoute {
+            chat_id: input.entry.chat_id,
+            thread_id: input.entry.thread_id,
+            message_id: None,
+        },
+        text: input.text.clone(),
+    }
+}
+
+fn require_portable_reference(source: &SourceInput, reference: &InputReference) -> Result<()> {
+    if source_reference(source).as_ref() != Some(reference) {
+        bail!("Reference does not match the selected active portable original");
+    }
+    Ok(())
+}
+
+pub(super) fn dispatched_source_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+    writer: &str,
+) -> Result<bool> {
+    let source = super::routing::source_on(conn, id, human)?;
+    if source.channel != "conversation" {
+        return Ok(true);
+    }
+    let input = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
+    Ok(super::conversation_inputs::eligible_dispatched_source_on(conn, &input, writer).is_ok())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EntryExecution<'a> {
+    Codex(&'a str),
+    Portable(i64),
+}
+
 impl Store {
     /// Return only inputs actually linked to this owned native integrating entry.
     /// Retired generations and uncertain inputs cannot become automatic dispatch.
@@ -204,6 +235,24 @@ impl Store {
     ) -> Result<(SourceInput, Option<crate::telegram::Message>)> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         original_on(&conn, key, human, native, reference, channel, false)
+    }
+
+    pub(crate) fn interaction_portable_entry_source(
+        &self,
+        key: SessionKey,
+        human: i64,
+        local: i64,
+    ) -> Result<SourceInput> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = super::conversation_inputs::portable_controller_input_on(
+            &conn,
+            local,
+            key,
+            human,
+            &self.instance_id,
+        )?;
+        super::matrix::unclaimed_on(&conn, human, "conversation", &input.id, None)?;
+        Ok(conversation_source(&input))
     }
 
     pub fn interaction_entry_references(
@@ -234,13 +283,8 @@ impl Store {
     }
 
     pub fn interaction_original_allowed(&self, id: &str, human: i64) -> Result<bool> {
-        let source = self.interaction_source(id, human)?;
-        if source.channel != "conversation" {
-            return Ok(true);
-        }
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        Ok(super::conversation_inputs::eligible_on(&conn, &input).is_ok())
+        dispatched_source_on(&conn, id, human, &self.instance_id)
     }
 
     pub fn interaction_visual(
@@ -254,7 +298,11 @@ impl Store {
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        super::conversation_inputs::eligible_on(&conn, &input)?;
+        super::conversation_inputs::eligible_dispatched_source_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )?;
         Ok(input.visual)
     }
 
@@ -269,7 +317,11 @@ impl Store {
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        super::conversation_inputs::eligible_on(&conn, &input)?;
+        super::conversation_inputs::eligible_dispatched_source_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )?;
         Ok(input.files)
     }
 
@@ -315,14 +367,49 @@ impl Store {
         plan: &[(SessionKey, crate::interaction::RequestRelation)],
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<(crate::interaction::Instruction, bool)>> {
+        self.interaction_admit_entry_execution_plan(
+            key,
+            human,
+            EntryExecution::Codex(native),
+            source,
+            plan,
+            closed,
+        )
+    }
+
+    pub(crate) fn interaction_admit_entry_execution_plan(
+        &self,
+        key: SessionKey,
+        human: i64,
+        execution: EntryExecution<'_>,
+        source: &SourceInput,
+        plan: &[(SessionKey, crate::interaction::RequestRelation)],
+        closed: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<(crate::interaction::Instruction, bool)>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let reference = source
             .update_id
             .map(InputReference::Telegram)
             .unwrap_or_else(|| InputReference::Conversation(source.event_id.clone()));
-        let (mut original, _) =
-            original_on(&tx, key, human, native, &reference, &source.channel, false)?;
+        let (mut original, portable) = match execution {
+            EntryExecution::Codex(native) => (
+                original_on(&tx, key, human, native, &reference, &source.channel, false)?.0,
+                None,
+            ),
+            EntryExecution::Portable(local) => {
+                let input = super::conversation_inputs::portable_controller_input_on(
+                    &tx,
+                    local,
+                    key,
+                    human,
+                    &self.instance_id,
+                )?;
+                let original = conversation_source(&input);
+                require_portable_reference(&original, &reference)?;
+                (original, Some(input))
+            }
+        };
         original.target_sessions = source.target_sessions.clone();
         if original != *source
             || plan.len() != source.target_sessions.len()
@@ -338,12 +425,13 @@ impl Store {
         }
         let mut admitted = vec![];
         for (target, relation) in plan {
-            admitted.push(super::interaction::admit_on(
+            admitted.push(super::interaction::admit_selected_on(
                 &tx,
                 source,
                 *target,
                 relation.clone(),
                 &self.instance_id,
+                portable.as_ref(),
             )?);
         }
         if closed.is_cancelled() {

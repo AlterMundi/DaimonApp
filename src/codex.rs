@@ -249,6 +249,7 @@ pub enum CodexEvent {
     /// Atomic idle admission confirmed capacity contention without submission.
     NativeInputDeferred,
     NativeTurnSubmitting,
+    NativeTurnReleasing,
     /// Host accounting only, never a model tool or human question. The selected
     /// owner must reserve the exact attempt durably before returning true.
     NativeProviderAttemptReservation(NativeProviderAttemptReservation),
@@ -1801,6 +1802,15 @@ where
         if !matches!(on_event(CodexEvent::NativeTurnSubmitting).await?, CodexEventOutcome::None) {
             bail!("Reserved inference requires bounded idle admission; no conditional continuation submitted");
         }
+        let release = on_event(CodexEvent::NativeTurnReleasing).await;
+        if release.is_err() || cancel.is_cancelled() {
+            steer_rx.close();
+            let mut not_written = VecDeque::new();
+            while let Ok(steer)=steer_rx.try_recv() { not_written.push_back(steer); }
+            reject_outstanding_steers(not_written,HashMap::new());
+            release?;
+            return Err(anyhow::Error::new(NativeInputNotSubmitted));
+        }
         initial_write_possible = true;
         let (active, turn) = goals::conditional_continuation(&mut process, &thread_id, activation.conditional.as_ref().expect("selected conditional activation"), params, None).await?;
         goal_active = active;
@@ -1980,12 +1990,20 @@ where
             }
         }
     }
-    if cancel.is_cancelled() {
+    // Preparation and queued steers may await I/O. Check the root only
+    // after those awaits and before the first possible native write.
+    let release = if adopted_turn.is_none() && !cancel.is_cancelled() {
+        on_event(CodexEvent::NativeTurnReleasing).await.map(|_| ())
+    } else {
+        Ok(())
+    };
+    if release.is_err() || cancel.is_cancelled() {
         if adopted_turn.is_none() {
             steer_rx.close();
             queued_steers.extend(initial_steers);
             while let Ok(steer)=steer_rx.try_recv() { queued_steers.push_back(steer); }
             reject_outstanding_steers(queued_steers,HashMap::new());
+            release?;
             return Err(anyhow::Error::new(NativeInputNotSubmitted));
         }
         bail!("cancelled before native collection");
@@ -3067,7 +3085,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeTurnReleasing|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -4953,6 +4971,8 @@ mod tests {
                 move |event| {
                     let mut events = events.lock().unwrap();
                     match event {
+                        CodexEvent::NativeExternalInputSubmitting => events.push("prepare steer"),
+                        CodexEvent::NativeTurnReleasing => events.push("release root"),
                         CodexEvent::NativeSteerAccepted { client_id, turn_id } => {
                             assert_eq!(client_id, "prepared-correction");
                             assert_eq!(turn_id, "prepared-turn");
@@ -4967,7 +4987,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(summary.assistant_text, "Corrected answer");
-        assert_eq!(*observed.lock().unwrap(), vec!["accepted", "output"]);
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec!["prepare steer", "release root", "accepted", "output"]
+        );
         assert_eq!(
             received.await.unwrap().unwrap(),
             Some("prepared-turn".into())

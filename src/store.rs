@@ -22,6 +22,7 @@ mod conversation_requests;
 pub use conversation_requests::ConversationRequest;
 mod creation;
 mod dialogue;
+pub(crate) use dialogue::EntryExecution;
 mod goal_alerts;
 mod goal_controls;
 mod scoped_maintenance;

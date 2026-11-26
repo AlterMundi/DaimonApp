@@ -84,9 +84,11 @@ impl Store {
         &self,
         local: i64,
         selected_session: bool,
+        routed: Option<(&str, i64)>,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let valid: bool = conn.query_row(
+        let tx = conn.unchecked_transaction()?;
+        let valid: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
              JOIN conversation_entry_generations g ON g.session_id=t.session_id
              WHERE t.id=?1 AND t.status='running' AND t.completed_at IS NULL
@@ -97,6 +99,13 @@ impl Store {
             |row| row.get(0),
         )?;
         anyhow::ensure!(valid, "Codex native submission binding changed");
+        if let Some((id, human)) = routed {
+            anyhow::ensure!(
+                super::dialogue::dispatched_source_on(&tx, id, human, &self.instance_id)?,
+                "Routed original retired before Codex submission"
+            );
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -144,13 +153,16 @@ impl Store {
                 "Controller execution or native binding changed"
             );
         } else {
-            binding.harness = super::conversation_inputs::portable_controller_on(
+            binding.harness = super::conversation_inputs::portable_controller_input_on(
                 &tx,
                 local,
                 key,
                 human,
                 &self.instance_id,
-            )?;
+            )?
+            .portable
+            .context("Portable selection unavailable")?
+            .harness;
             anyhow::ensure!(
                 binding.harness.name() == harness,
                 "Controller harness changed"
@@ -228,7 +240,7 @@ mod tests {
         assert!(store.controller_execution(turn, key, 100).is_err());
         assert!(store.native_collection_submitting(turn, None).is_err());
         assert!(store.bind_codex_turn(turn, "first").is_err());
-        assert!(store.validate_codex_submission(turn, true).is_err());
+        assert!(store.validate_codex_submission(turn, true, None).is_err());
         assert!(store.native_collection_next().unwrap().is_none());
         assert!(
             store
@@ -268,9 +280,15 @@ mod tests {
         store
             .record_turn_native_thread(successor, "new-native")
             .unwrap();
-        assert!(store.validate_codex_submission(successor, true).is_err());
+        assert!(
+            store
+                .validate_codex_submission(successor, true, None)
+                .is_err()
+        );
         store.bind_codex_turn(successor, "new-native").unwrap();
-        store.validate_codex_submission(successor, true).unwrap();
+        store
+            .validate_codex_submission(successor, true, None)
+            .unwrap();
         let current = store.controller_execution(successor, key, 100).unwrap();
         assert_ne!(current.revision, reset.revision);
         assert!(current.matches(Harness::Codex, "new-native"));

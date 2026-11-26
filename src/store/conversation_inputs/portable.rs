@@ -94,8 +94,13 @@ pub(super) fn current_on(conn: &Connection, input: &ConversationInput) -> Result
             == target.binding)
 }
 
-fn admitted_on(conn: &Connection, input: &ConversationInput, writer: &str) -> Result<bool> {
-    Ok(current_on(conn, input)?
+pub(in crate::store) fn admitted_on(
+    conn: &Connection,
+    input: &ConversationInput,
+    writer: &str,
+) -> Result<bool> {
+    Ok(!input.retired
+        && current_on(conn, input)?
         && crate::store::stopping::admission_epoch_on(conn, input.entry)? == input.epoch
         && !crate::store::stopping::fenced_on(conn, input.entry)?
         && !crate::store::maintenance_writer_held_on(conn, input.entry)?
@@ -106,18 +111,23 @@ fn admitted_on(conn: &Connection, input: &ConversationInput, writer: &str) -> Re
         )?)
 }
 
-pub(in crate::store) fn portable_controller_on(
+pub(in crate::store) fn portable_controller_input_on(
     conn: &Connection,
     local: i64,
     key: SessionKey,
     human: i64,
     writer: &str,
-) -> Result<Harness> {
+) -> Result<ConversationInput> {
     let id: String = conn
         .query_row(
-            "SELECT id FROM conversation_inputs WHERE local_turn=?1 AND human_id=?2
-         AND instance_id=?3 AND phase='sending' AND retired=0
-         AND json_type(doc,'$.portable')='object'",
+            "SELECT c.id FROM conversation_inputs c
+             JOIN turns t ON t.id=c.local_turn AND t.session_id=c.session_id AND t.from_user_id=c.human_id
+             JOIN conversation_entry_generations g ON g.session_id=t.session_id
+             WHERE t.id=?1 AND c.human_id=?2 AND c.instance_id=?3
+               AND c.phase='sending' AND c.retired=0 AND t.status='running'
+               AND t.completed_at IS NULL AND t.execution_generation=g.generation
+               AND t.native_thread_id IS NOT NULL
+               AND t.execution_harness=json_extract(c.doc,'$.portable.harness')",
             params![local, human, writer],
             |row| row.get(0),
         )
@@ -128,10 +138,7 @@ pub(in crate::store) fn portable_controller_on(
         input.entry == key && admitted_on(conn, &input, writer)?,
         "Controller original or admission changed"
     );
-    Ok(input
-        .portable
-        .context("Portable selection unavailable")?
-        .harness)
+    Ok(input)
 }
 
 pub(super) fn recover_retired_writer(conn: &Connection, writer: &str) -> Result<()> {

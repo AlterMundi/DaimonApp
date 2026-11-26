@@ -75,6 +75,18 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && printf 'Native shell %s.' 'readback marker'"},
                      "Native shell readback marker."),
                 ]
+            if getattr(self.server, "mixed", False):
+                marker = self.server.mixed_worker_reply
+                destination = {"selector": "Alpha", "relation": "new", "requests": []}
+                dispatch = {"operation": "dispatch", "arguments": {
+                    "input_ref": self.server.current, "destinations": [destination],
+                }}
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
+                    (CONTROLLER, dispatch, '"new_admission":true'),
+                    (CONTROLLER, dispatch, '"new_admission":false'),
+                    (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
+                ]
             assert self.server.original in json.dumps(data["messages"])
             submission = self.admitted()
             assert submission["native_session_id"]
@@ -125,7 +137,21 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 if prior:
                     entry = next(item for item in result if item["tool_use_id"] == f"toolu_fixture_{prior-1}")
                     assert entry.get("is_error") is not True
-                    assert steps[prior - 1][2] in json.dumps(data["messages"])
+                    payload = json.dumps(entry["content"], ensure_ascii=False) if isinstance(
+                        entry["content"], (dict, list)) else entry["content"]
+                    expected_result = steps[prior - 1][2]
+                    if getattr(self.server, "mixed", False) and prior in (2, 3):
+                        if isinstance(entry["content"], list):
+                            payload = "".join(item.get("text", "") for item in entry["content"])
+                        assert expected_result in payload
+                        if prior == 2:
+                            self.server.journey.wait(lambda: self.server.journey.instructions(7)
+                                and self.server.journey.instructions(7)[0][1] == "accepted")
+                            self.server.journey.answer_worker(7, self.server.mixed_worker_reply)
+                            self.server.journey.wait(lambda: self.server.journey.row(
+                                "SELECT count(*) FROM interaction_results") == [(1,)])
+                    else:
+                        assert expected_result in payload
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:

@@ -3,7 +3,7 @@
 mod portable;
 use super::*;
 use anyhow::bail;
-pub(super) use portable::portable_controller_on;
+pub(super) use portable::portable_controller_input_on;
 use serde::{Deserialize, Serialize};
 
 /// Untrusted client media progress attached to one original, never hearing proof.
@@ -520,6 +520,27 @@ pub(super) fn eligible_binding_on(conn: &Connection, input: &ConversationInput) 
     {
         bail!("Original conversation input binding or admission generation retired");
     }
+    validate_source_attachments(conn, input)
+}
+
+/// An already admitted worker instruction carries its own immutable routing
+/// receipt. Its direct portable source still has to belong to the live owner,
+/// generation and admission epoch, even after the integrating turn settles.
+pub(super) fn eligible_dispatched_source_on(
+    conn: &Connection,
+    input: &ConversationInput,
+    writer: &str,
+) -> Result<()> {
+    if input.portable.is_none() {
+        return eligible_on(conn, input);
+    }
+    if !portable::admitted_on(conn, input, writer)? {
+        bail!("Portable source binding or admission generation retired");
+    }
+    validate_source_attachments(conn, input)
+}
+
+fn validate_source_attachments(conn: &Connection, input: &ConversationInput) -> Result<()> {
     crate::files::attachments(
         std::path::Path::new(conn.path().context("File storage unavailable")?),
         &input.files,
