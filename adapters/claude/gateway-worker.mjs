@@ -1,16 +1,36 @@
 // One foreground turn on a Gateway-owned pair of pipes.
-import { execFile } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-import { createMatrixStatusBroker } from './matrix-broker.mjs';
-import { runClaudeTurn } from './turn.mjs';
+import { bodyMatches, createMatrixStatusBroker } from './matrix-broker.mjs';
+import { runClaudeTurn, SKILL_NAMESPACE } from './turn.mjs';
 
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 
-const VERSION = 'daimon-gateway.claude-turn/v1';
+const VERSION = 'daimon-gateway.claude-turn/v2';
+const HOST_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'];
 const exec = promisify(execFile);
+
+function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal) {
+  const selector = profile.sharedDmk;
+  return createHash('sha256')
+    .update(JSON.stringify([
+      profile.home, profile.cwd, profile.subscriptionEmail ?? null,
+      profile.configurationDirectory ?? null, profile.apiKeyFile ?? null,
+      selector?.command ?? null, selector?.bodyRef ?? null,
+      profile.sharedSkillsDirectory ?? null, skills,
+      foundation?.revision ?? null,
+      hostTools, humanOriginal ? 'bypassPermissions' : false,
+    ]))
+    .update(bytes)
+    .digest('hex');
+}
 
 async function ownerProfile(path) {
   const value = JSON.parse(await privateBytes(path, 16 * 1024));
@@ -18,15 +38,30 @@ async function ownerProfile(path) {
   const authFields = subscription ? ['subscriptionEmail'] : ['configurationDirectory', 'apiKeyFile'];
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
+  const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
+  const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
+  const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
+  const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
+  const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
+  const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
+      ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
+      || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
+        || !isAbsolute(value.sharedSkillsDirectory)))
+      || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
+        || value.hostTools.length !== new Set(value.hostTools).size
+        || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
-      || !Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0
+      || (displayName.length > 0 && (typeof value.displayName !== 'string'
+        || value.displayName !== value.displayName.trim()
+        || !/^[\p{L}\p{M}\p{N} .@·_-]{1,80}$/u.test(value.displayName)))
+      || (budget.length > 0 && (!Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0))
       || ![value.cliVersion, value.model, ...Object.values(value.body)]
         .every(item => typeof item === 'string' && item.length > 0 && item.length <= 240)
       || !Array.isArray(value.matrixStatusCommand)
@@ -36,6 +71,130 @@ async function ownerProfile(path) {
     throw new Error('Invalid owner profile');
   }
   return value;
+}
+
+async function sharedDmkBinding(profile) {
+  if (!Object.hasOwn(profile, 'sharedDmk')) return undefined;
+  if (!closed(profile.sharedDmk, ['command', 'bindingFile', 'bodyRef'])) {
+    throw new Error('Invalid shared DMK selection');
+  }
+  const { command, bindingFile, bodyRef } = profile.sharedDmk;
+  if (!Array.isArray(command) || command.length < 2 || command.length > 8
+      || !command.every(value => typeof value === 'string' && value.length > 0 && value.length <= 4096)
+      || !isAbsolute(command[0]) || typeof bindingFile !== 'string' || !isAbsolute(bindingFile)
+      || typeof bodyRef !== 'string' || bodyRef.length < 1 || bodyRef.length > 240) {
+    throw new Error('Invalid shared DMK selection');
+  }
+  const bytes = await privateBytes(bindingFile, 16 * 1024);
+  const binding = JSON.parse(bytes);
+  if (binding?.schema !== 'hmk.deep-recall.binding/v1'
+      || binding.being_ref !== profile.body.beingRef || binding.body_ref !== bodyRef) {
+    throw new Error('Shared DMK differs from selected body or being');
+  }
+  return bytes;
+}
+
+async function sharedDmkServer(profile, bytes, directory) {
+  const { command } = profile.sharedDmk;
+  const snapshot = join(directory, 'binding.json');
+  await writeFile(snapshot, bytes, { mode: 0o600, flag: 'wx' });
+  return nativeStdio(profile.home, [...command, '--binding', snapshot]);
+}
+
+function nativeStdio(home, command) {
+  return { type: 'stdio', command: '/usr/bin/env',
+    args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${home}`, ...command], alwaysLoad: true };
+}
+
+async function matrixFoundation(profile) {
+  if (!Object.hasOwn(profile, 'matrixFoundation')) return undefined;
+  const selection = profile.matrixFoundation;
+  if (!closed(selection, ['command', 'tools'])) throw new Error('Invalid Matrix Foundation selection');
+  const { command, tools } = selection;
+  if (!Array.isArray(command) || command.length > 32
+      || !command.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 8192)
+      || typeof command[0] !== 'string' || !isAbsolute(command[0])
+      || !Array.isArray(tools) || !tools.length || tools.length > 64
+      || !tools.includes('daimon_status')
+      || new Set(tools).size !== tools.length
+      || !tools.every(name => typeof name === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(name))) {
+    throw new Error('Invalid Matrix Foundation command or catalog');
+  }
+  const rootAt = command.indexOf('--runtime-root');
+  const root = command[rootAt + 1];
+  if (rootAt < 1 || command.lastIndexOf('--runtime-root') !== rootAt || !root || !isAbsolute(root)) {
+    throw new Error('Matrix Foundation runtime root required');
+  }
+  const bytes = await privateBytes(join(root, 'client.json'), 16 * 1024);
+  const { schema, expected_server, capability } = JSON.parse(bytes);
+  const now = Date.now();
+  if (schema !== 'dm.local.client-config/v3'
+      || expected_server?.embodiment_id !== profile.body.embodimentId
+      || expected_server?.incarnation_id !== profile.body.incarnationId
+      || capability?.status !== 'active'
+      || !Number.isSafeInteger(capability.not_before_ms) || capability.not_before_ms > now
+      || !Number.isSafeInteger(capability.not_after_ms) || capability.not_after_ms <= now) {
+    throw new Error('Matrix Foundation grant differs from the selected live body');
+  }
+  const revision = createHash('sha256').update(JSON.stringify([command, [...tools].sort()])).update(bytes).digest('hex');
+  return { server: nativeStdio(profile.home, command), tools, revision };
+}
+
+async function probeFoundation(server, body, cwd, signal) {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
+  const child = spawn(server.command, server.args, { cwd, signal: deadline, stdio: ['pipe', 'pipe', 'ignore'] });
+  const exited = once(child, 'close').catch(() => undefined);
+  const input = frames(child.stdout);
+  const send = request => writeFrame(child.stdin, { jsonrpc: '2.0', ...request }, deadline);
+  child.stdin.on('error', () => child.kill());
+  try {
+    await send({ id: 1, method: 'initialize', params: {
+      protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'daimon-gateway', version: '2' },
+    } });
+    const { value: initialized } = await input.next();
+    if (initialized?.id !== 1 || initialized.result?.protocolVersion !== '2025-06-18') return false;
+    await send({ method: 'notifications/initialized' });
+    await send({ id: 2, method: 'tools/call', params: { name: 'daimon_status', arguments: {} } });
+    const { value: observed } = await input.next();
+    const status = observed?.result;
+    return observed?.id === 2 && status?.isError === false && status.structuredContent?.ok === true
+      && bodyMatches(status.structuredContent.result, body);
+  } finally {
+    child.stdin.end();
+    child.kill();
+    await exited;
+  }
+}
+
+async function sharedSkillInventory(root) {
+  if (!root) return { names: [], revision: null };
+  const names = [];
+  const revision = createHash('sha256');
+  for (const name of (await readdir(root)).sort()) {
+    if (name.startsWith('.')) continue;
+    const file = join(root, name, 'SKILL.md');
+    const entry = await stat(file).catch(error => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw error;
+    });
+    if (!entry?.isFile()) continue;
+    const path = await realpath(file);
+    const digest = createHash('sha256').update(await readFile(path)).digest('hex');
+    revision.update(JSON.stringify([name, path, digest]));
+    names.push(`${SKILL_NAMESPACE}:${name}`);
+  }
+  if (!names.length) throw new Error('Selected shared skills directory is empty');
+  return { names, revision: revision.digest('hex') };
+}
+
+async function sharedSkillPlugin(root, names, directory) {
+  const path = join(directory, 'shared-skills');
+  const manifest = join(path, '.claude-plugin');
+  await mkdir(manifest, { recursive: true });
+  await writeFile(join(manifest, 'plugin.json'), JSON.stringify({ name: SKILL_NAMESPACE, version: '1.0.0' }),
+    { mode: 0o600, flag: 'wx' });
+  await symlink(root, join(path, 'skills'), 'dir');
+  return { path, names };
 }
 
 async function providerEnvironment(profile, signal) {
@@ -68,13 +227,20 @@ async function main() {
   const timeout = setTimeout(() => stop.abort(), 125_000);
   stop.signal.addEventListener('abort', () => process.stdin.destroy(), { once: true });
   const input = frames(process.stdin);
+  let scratch;
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body'])
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body'])
       || first.schema !== VERSION || first.type !== 'start'
-      || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
-      || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
+      || typeof first.humanOriginal !== 'boolean'
+      || ![first.inputId, first.sessionId, first.freshNativeSessionId]
+        .every(value => typeof value === 'string' && UUID.test(value))
+      || first.freshNativeSessionId === first.sessionId
+      || (first.resume !== null && (!closed(first.resume, ['sessionId', 'scope'])
+        || typeof first.resume.sessionId !== 'string' || !UUID.test(first.resume.sessionId)
+        || first.resume.sessionId === first.freshNativeSessionId
+        || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
       || typeof first.text !== 'string' || !first.text.trim()
       || Buffer.byteLength(first.text) > 16 * 1024
       || !closed(first.body, Object.keys(profile.body))
@@ -94,37 +260,67 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
+    const [binding, skills, foundation] = await Promise.all([
+      sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory), matrixFoundation(profile),
+    ]);
+    if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
+    const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
+    const sharedSkills = skills.names.length
+      ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
+    const hostTools = first.humanOriginal ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
+    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, first.humanOriginal);
+    const resume = first.resume?.scope === scope;
+    const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
+    async function scopeStillActive() {
+      const current = await ownerProfile(path);
+      if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
+      const [bytes, inventory, currentFoundation] = await Promise.all([
+        sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
+      ]);
+      const currentTools = first.humanOriginal ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
+      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, first.humanOriginal) === scope
+        && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
+    }
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
       createSdkMcpServer, tool, signal: stop.signal,
     });
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: first.sessionId, text: first.text },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
-        persistSession: true, maxTurns: 2,
-        maxBudgetUsd: profile.maxBudgetUsd, env,
+        displayName: profile.displayName,
+        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
+        fullAccess: first.humanOriginal,
+        persistSession: true,
+        ...(profile.maxBudgetUsd === undefined ? {} : {
+          maxBudgetUsd: profile.maxBudgetUsd,
+          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
+        }),
+        env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
       },
       async beforeSubmit(inputId, sessionId) {
-        if (inputId !== first.inputId || sessionId !== first.sessionId) return false;
+        if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;
+        if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
-          nativeSessionId: sessionId }, stop.signal);
+          nativeSessionId: sessionId, sessionScope: scope }, stop.signal);
         const decision = (await input.next()).value;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
-          || decision.inputId !== inputId || decision.sessionId !== sessionId
+          || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
         // A closed owner pipe or a second command cancels this attempt.
         void input.next().then(() => stop.abort(), () => stop.abort());
-        return true;
+        return scopeStillActive();
       },
     });
     await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);
   } finally {
     clearTimeout(timeout);
     process.stdin.destroy();
+    if (scratch) await rm(scratch, { recursive: true, force: true });
   }
 }
 

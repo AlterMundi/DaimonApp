@@ -31,6 +31,71 @@ owner-owned profile selects the absolute SDK entry, Claude binary, working
 directory, home, Matrix observation command, CLI version, model and body. Use the
 Claude Code model alias `opus` to follow its current Opus selection. The
 optional `effort` is passed to the Agent SDK as a session option.
+Set optional `displayName` to the owner-selected human-readable name for the
+verified Matrix body. The native system prompt identifies the harness and this
+display name. Device status and body coordinates still come from the authenticated
+Matrix broker. The prompt does not grant memory, tools or skills.
+
+`sharedDmk` selects the existing being-level DMK reader for normal private
+Claude turns. Set `command` to the installed DMK stdio reader invocation
+without `--binding`, `bindingFile` to the owner-local binding for this Claude
+body, and `bodyRef` to that binding's body reference. The binding may point to
+the same authorized DMK pools used by the Codex body. The worker checks the
+being and body in the owner-provisioned binding and opens those exact bytes
+for the native connector. It requires both DMK recall names in the effective
+tool catalog before releasing the original. Claude's own
+automatic memory and dreaming are disabled for this route.
+The worker submits signed text literally. The CLI does not expand file
+mentions or dispatch slash commands from Matrix originals.
+
+`sharedSkillsDirectory` selects the same owner-managed skills directory used
+by the other embodiment. The worker exposes its current skill files through
+a local Claude plugin with the `compaii-shared` namespace. No skill files are
+copied and no user or project settings are imported. Before submission, the
+SDK's loaded shared skill names must match the selected directory. Claude
+loads a skill through its native `Skill` tool. A changed skill catalog or
+changed `SKILL.md` revision starts a fresh native session for the next
+original, keeping the Interaction conversation and its signed history.
+
+`matrixFoundation` takes the qualified Matrix Foundation stdio `command` and
+the exact permitted `tools` list. Use the owner launcher for the Claude
+body's existing runtime root and owner-local request directory. The worker
+checks the protected client descriptor's embodiment, incarnation and
+authority window, then checks the actual SDK catalog and verifies
+`daimon_status` through that same capability before submission. Matrix
+decides each subsequent call under its signed grant. An owner change to
+access that also retires earlier disclosed context should rotate the
+Foundation capability, which starts a fresh Claude session. The stdio wrapper
+clears inherited provider credential environment variables.
+
+For private turns authenticated as the paired human, portable harnesses use
+their native full-access mode without per-tool approvals. Claude's Agent SDK
+uses `permissionMode: 'bypassPermissions'` with
+`allowDangerouslySkipPermissions: true` and Bash sandboxing disabled. The
+default native tool catalog is Bash, Read, Write, Edit, Glob, Grep and
+NotebookEdit. Use `hostTools` to select a subset explicitly.
+
+Gateway includes the authenticated-original marker only after checking the
+retained private Interaction input against the signed Matrix original. Companion
+credentials and manual Matrix owner runs retain their existing MCP and skill
+catalog. Upgrade the dashboard producer, Gateway and worker together. Changes
+to the permission mode or native tool selection start a fresh Claude session.
+Tool effects use the process owner's existing OS permissions. Bash uses Claude
+Code's subprocess credential-environment scrub.
+
+To try experimental Code Mode in the interactive terminal, use the same
+permission mode and disable the Bash sandbox:
+
+```bash
+CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1 claude --model opus --effort medium \
+  --permission-mode bypassPermissions --settings '{"sandbox":{"enabled":false}}'
+```
+
+The interactive CLI handles Code Mode activation. Code Mode uses the same
+permission configuration for its tool calls. This headless Agent SDK worker does
+not activate it. See [Claude Code permissions](https://code.claude.com/docs/en/permissions)
+and [Code Mode](https://code.claude.com/docs/en/code-mode).
+
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
@@ -49,22 +114,58 @@ Select one authentication mode in the owner profile:
 Source content cannot select these settings. See
 [Claude plan usage with the Agent SDK](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
-Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
-worker permits up to two agent turns for the one read tool and reply. The SDK
-estimate can overrun its limit, so applicable provider-side limits still control
-spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
+Leave `maxBudgetUsd` unset for ordinary use. Gateway then passes neither an
+SDK dollar estimate ceiling nor a maximum number of SDK turns. The provider's
+quota and the existing Gateway worker deadline still apply. An operator may
+set `maxBudgetUsd` for a bounded qualification profile. That profile also caps
+SDK turns at two for status-only runs and six for runs with extra tools. The SDK
+estimate can overrun the configured ceiling.
+
+For Foundation catalogs of ten or more tools, native ToolSearch loads Foundation
+schemas on demand. The full signed MCP inventory is still checked before
+Gateway authorizes submission. The identity check and shared DMK stay available
+on the first model call.
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
+The current private Interaction route uses the existing signed CompAII sending
+body to transport the original. Interaction retains the paired human as the
+author of the original. For authenticated paired-human turns, Gateway's
+verified original marker tells Claude to preserve that attribution. Matrix
+receipts identify their actual transport signer.
+
+On ITACA use a 30-second Matrix transport deadline for the private foreground
+origin and return. Native same-being fanout can finish a separate sibling's
+visibility attempt after the selected recipient has already acknowledged
+delivery. A shorter outer deadline can lose the selected receipt. Keep a
+timed-out original under its existing identity and inspect the native receipts
+before taking any recovery action.
+
 The UTF-8 newline-delimited protocol uses schema
-`daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
+`daimon-gateway.claude-turn/v2`. Every frame carries the same `inputId` and
 `sessionId`. Gateway sends `start` with the retained `text` and independently
 observed Matrix `body`. The worker requires that body to match its private
 profile. After the identity and catalog checks, the worker emits
-`prepare_submission` with the native session identity. Gateway records that
-binding and exposure together in the existing journal before returning
-`submission_decision` with `committed: true`. Claude uses the allocated UUID
-as its native session ID. Status presents both identities, including retained
-exposures after a process restart.
+`prepare_submission` with the native session identity and current DMK
+authorization scope. Gateway records both and the exposure together in the
+existing journal before returning `submission_decision` with
+`committed: true`. Each `start` provides a fresh native UUID independent of the
+turn's correlation UUID. For a private Interaction conversation, Gateway can
+also offer the previous native UUID and scope. It selects that candidate
+only when the last exposed turn in the same
+conversation and Matrix thread returned a signed reply that Interaction
+retained, with the same receiving body and manifest. The worker resumes only
+when the current DMK authority matches the scope recorded for that UUID.
+Changing or revoking the binding uses the fresh UUID for the new original.
+A previous exposure with an
+uncertain result starts a separate native session for the next new original.
+The same applies if Claude reports that the selected native session is missing
+before submission. A new original sent before the previous reply has been
+retained in Interaction starts its own session.
+Manual owner runs and existing unbound transcripts stay isolated. Deploy
+the Gateway and Claude worker from the same revision. Rollback restores
+both together with the earlier compatible owner profile. The distinct
+native UUID bars a previous Gateway from resuming a scoped transcript.
+Status presents both identities, including retained exposures after a restart.
 An absent, rejected or mismatched decision prevents prompt submission. The
 only terminal frame is `outcome`. A missing outcome after a recorded exposure
 keeps the attempt uncertain. A closed owner pipe cancels a running attempt.
@@ -162,6 +263,19 @@ that directs the native CLI only to the loopback Anthropic fixture. It checks
 the actual provider-facing catalog and one Matrix status read, the durable
 exposure decision, the signed return and the sender's original thread. The
 reply remains available after restarting Gateway without another provider call.
+Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
+a new original after restarting Gateway. The loopback provider checks for the
+first turn's prompt and reply in the resumed native session, and Interaction
+reads back the new signed reply.
+Set `CLAUDE_TEST_DMK_SCRIPTS` and, if needed, `CLAUDE_TEST_DMK_PYTHON` to run
+that fixture with the native DMK stdio recall server over a disposable pool.
+Set `FOREGROUND_TEST_SHARED_SKILLS=1` to make the native harness invoke a
+fixture skill and verify the provider receives its instructions before the
+signed reply.
+Set `FOREGROUND_TEST_FOUNDATION=1` to exercise a disposable Foundation
+stdio tool in the same native turn.
+Set `FOREGROUND_TEST_HOST_TOOLS=1` to run a native Read and a harmless Bash
+command on an authenticated Interaction input.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with

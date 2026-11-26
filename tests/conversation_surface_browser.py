@@ -77,6 +77,9 @@ try:
         if(route.startsWith('interaction/inputs/')){
           const receipt=fixtureInputs.find(input=>route.endsWith(input.id));
           if(!receipt)throw Error('No fixture receipt');
+          if(window.fixtureHoldInputStatus){
+            return await new Promise(resolve=>window.fixtureReleaseInputStatus=resolve);
+          }
           return window.fixtureWrongEntry?{...receipt,entry_binding:[100,{chat_id:100,thread_id:9},28,'wrong-native']}:receipt;
         }
         const items=route.startsWith('interaction?')?['integrator_answer','worker_result','matrix_visibility'].map((kind,index)=>({
@@ -127,15 +130,28 @@ try:
     retained=other.evaluate('fixtureInputs[0]')
     assert retained['target']=='claude' and retained['text']=='Private Claude fixture original'
     assert not ({'files','reply','playback','visual'} & set(retained))
-    other.evaluate('''()=>{
-      fixtureInputs[0].phase='matrix_replied';
-      fixtureInputs[0].claude_reply={text:'Private Claude fixture reply',message_id:crypto.randomUUID()};
-      return fixtureUI.refresh(true);
-    }''')
     card=other.locator(f'[data-input-id="{retained["id"]}"]')
+    other.evaluate("fixtureInputs[0].phase='claude_unconfirmed'; fixtureUI.refresh(true)")
+    status=card.get_by_text('Claude Code received the message. A reply could not be confirmed.')
+    status.wait_for()
+    other.evaluate('window.fixtureHoldInputStatus=true')
+    card.get_by_role('button',name='Check status').click()
+    other.wait_for_function('typeof window.fixtureReleaseInputStatus==="function"')
+    other.evaluate("fixtureInputs[0].phase='matrix_received'; fixtureUI.refresh(true)")
+    # The actual return can be observed by an earlier-started status request
+    # after a later history snapshot has already refreshed the pending card.
+    assert status.is_visible()
+    other.evaluate("""()=>{
+      window.fixtureHoldInputStatus=false;
+      window.fixtureReleaseInputStatus({...fixtureInputs[0],phase:'matrix_replied',
+        claude_reply:{text:'Private Claude fixture reply',message_id:crypto.randomUUID()}});
+    }""")
     reply=other.locator(f'[data-claude-reply-to="{retained["id"]}"]')
-    reply.get_by_text('Private Claude fixture reply',exact=True).wait_for()
+    reply.get_by_text('Private Claude fixture reply',exact=True).wait_for(timeout=5000)
     assert reply.get_by_text('Claude Code',exact=True).is_visible()
+    other.evaluate('fixtureUI.refresh(true)')
+    assert not status.is_visible()
+    assert reply.count()==1
     assert card.get_by_text('You',exact=True).is_visible()
     assert card.get_by_text('Private Claude fixture reply',exact=True).count()==0
     assert card.evaluate('(element)=>element.nextElementSibling.dataset.claudeReplyTo')==retained['id']

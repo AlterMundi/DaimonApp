@@ -91,8 +91,32 @@ impl Request {
 pub(crate) struct WeAttempt {
     pub id: String,
     pub session_id: String,
+    pub resume: Option<ClaudeContinuation>,
+    pub human_original: bool,
     entry_session: i64,
     original: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClaudeContinuation {
+    pub session_id: String,
+    pub scope: String,
+}
+
+pub(crate) fn valid_claude_scope(scope: &str) -> bool {
+    scope.len() == 64
+        && scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn owns_writer(tx: &Connection, instance: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?1)",
+        [instance],
+        |row| row.get(0),
+    )?)
 }
 
 fn load(
@@ -140,6 +164,7 @@ fn view(request: &Request, mut phase: WePhase, mut result: Value, instance: &str
         .unwrap_or(ForegroundEngine::Claude.name());
     let native_session_id = result.as_object_mut().and_then(|outcome| {
         outcome.remove("text");
+        outcome.remove("native_session_scope");
         outcome.remove("native_session_id")
     });
     if matches!(
@@ -206,8 +231,14 @@ impl Store {
         );
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        anyhow::ensure!(
+            owns_writer(&tx, &self.instance_id)?,
+            "Foreground Matrix writer is no longer owned"
+        );
         use crate::store::{presentation, stopping};
         let (session, _) = presentation::entry_on(&tx, owner, entry)?;
+        let mut claude_input = None;
+        let mut human_original = false;
         if let Some(input) = input {
             use crate::interaction::MatrixDestination::Body;
             let retained = crate::store::conversation_inputs::read_on(&tx, &input.id, owner)?;
@@ -235,6 +266,10 @@ impl Store {
                     && retained.text == original.text,
                 "Private Matrix work differs from the retained human original"
             );
+            if engine == ForegroundEngine::Claude {
+                claude_input = Some(retained.id);
+                human_original = retained.private_matrix_host_access;
+            }
         }
         if selected_on(&tx, owner, "/we", &original.event_id, None)?.is_some() {
             return Ok(None);
@@ -250,10 +285,63 @@ impl Store {
             count < MAX_REQUESTS && busy == 0,
             "Foreground Matrix destination is at capacity"
         );
+        let entry_generation = presentation::entry_binding(&tx, owner, entry, session)?;
+        let prior_session = if claude_input.is_some() {
+            let previous: Option<(String, String, String, bool)> = tx
+                .query_row(
+                    "SELECT request.doc, request.phase, request.submission, COALESCE(
+                        input.phase='matrix_replied'
+                        AND json_extract(input.doc,'$.private_matrix_reply.event_id')
+                          =json_extract(request.submission,'$.delivery.message_id'), 0)
+                    FROM interaction_matrix_requests AS request
+                    LEFT JOIN conversation_inputs AS input ON input.id=request.claude_input
+                        AND input.human_id=request.human_id AND input.session_id=request.entry_session
+                    WHERE request.human_id=?1 AND request.entry_session=?2 AND request.source_channel='/we'
+                      AND json_extract(request.submission,'$.engine') IS NULL
+                      AND json_extract(request.doc,'$.entry_generation')=?3
+                      AND json_extract(request.doc,'$.original.author')=?4
+                      AND json_extract(request.doc,'$.original.thread_id')=?5
+                      AND (request.phase NOT IN ('starting','rejected')
+                        OR (request.phase='rejected'
+                          AND json_extract(request.submission,'$.reason')='claude_resume_session_missing'))
+                    ORDER BY request.rowid DESC LIMIT 1",
+                    params![
+                        owner,
+                        session,
+                        entry_generation,
+                        original.author,
+                        original.thread_id
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()?;
+            if let Some((doc, phase, result, read_back)) = previous {
+                let prior: Request = serde_json::from_str(&doc)?;
+                let result: Value = serde_json::from_str(&result)?;
+                // An exposed turn without confirmed readback, including a
+                // row from an older writer, breaks continuity for this lane.
+                let native = result["native_session_id"].as_str().unwrap_or_default();
+                let scope = result["native_session_scope"].as_str().unwrap_or_default();
+                (phase == "delivered"
+                    && read_back
+                    && prior.source == source
+                    && prior.body == body
+                    && canonical_uuid(native)
+                    && valid_claude_scope(scope))
+                .then(|| ClaudeContinuation {
+                    session_id: native.into(),
+                    scope: scope.into(),
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let request = Request {
             id: Uuid::now_v7().to_string(),
             instance: self.instance_id.clone(),
-            entry_generation: presentation::entry_binding(&tx, owner, entry, session)?,
+            entry_generation,
             epoch: stopping::admission_epoch_on(&tx, entry)?,
             session_id: Uuid::new_v4().to_string(),
             source,
@@ -265,15 +353,18 @@ impl Store {
             "Foreground Matrix admission is fenced"
         );
         tx.execute(
-            "INSERT INTO interaction_matrix_requests(id,human_id,entry_session,source_channel,source_event,doc,phase,created_at,submission)
-             VALUES(?1,?2,?3,'/we',?4,?5,'starting',?6,?7)",
+            "INSERT INTO interaction_matrix_requests(id,human_id,entry_session,source_channel,source_event,doc,phase,created_at,submission,claude_input)
+             VALUES(?1,?2,?3,'/we',?4,?5,'starting',?6,?7,?8)",
             params![request.id, owner, session, request.original.event_id, serde_json::to_string(&request)?, now_string(),
-                (engine != ForegroundEngine::Claude).then(|| json!({"engine":engine.name()}).to_string())],
+                (engine != ForegroundEngine::Claude).then(|| json!({"engine":engine.name()}).to_string()),
+                claude_input],
         )?;
         tx.commit()?;
         Ok(Some(WeAttempt {
             id: request.id,
             session_id: request.session_id,
+            resume: prior_session,
+            human_original,
             entry_session: session,
             original: request.original.event_id,
         }))
@@ -322,7 +413,10 @@ impl Store {
             let Ok((bound, _)) = crate::store::presentation::entry_on(&tx, owner, entry) else {
                 return Ok(false);
             };
-            if bound != session || !request.current(&tx, owner, entry, session)? {
+            if bound != session
+                || !owns_writer(&tx, &self.instance_id)?
+                || !request.current(&tx, owner, entry, session)?
+            {
                 return Ok(false);
             }
         }
@@ -335,7 +429,15 @@ impl Store {
                         && !id.chars().any(|c| c.is_whitespace() || c.is_control())
                 })
                 .context("Bounded native session identity required before provider exposure")?;
-            json!({"native_session_id":native_session})
+            let mut prepared = json!({"native_session_id":native_session});
+            if let Some(scope) = outcome.get("native_session_scope") {
+                let scope = scope
+                    .as_str()
+                    .filter(|value| valid_claude_scope(value))
+                    .context("Invalid Claude session authorization scope")?;
+                prepared["native_session_scope"] = json!(scope);
+            }
+            prepared
         } else if previous == Returning {
             // Retain the selected send UUID and model result alongside readback.
             json!({"send_id":retained["send_id"],"text":retained["text"],"delivery":outcome})
@@ -343,7 +445,7 @@ impl Store {
             outcome
         };
         let mut outcome = outcome;
-        for field in ["native_session_id", "engine"] {
+        for field in ["native_session_id", "native_session_scope", "engine"] {
             if let Some(bound) = retained.get(field) {
                 outcome
                     .as_object_mut()

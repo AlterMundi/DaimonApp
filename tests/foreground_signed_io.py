@@ -15,13 +15,14 @@ import shlex
 import socketserver
 import subprocess
 import sys
+import time
 from threading import Thread
 from types import SimpleNamespace
 import unittest
 import uuid
 
 import antigravity_foreground_io as foreground
-from claude_provider_fixture import ANSWER, ClaudeProvider
+from claude_provider_fixture import ANSWER, REVOKED_ANSWER, ClaudeProvider
 from conversation_input_control_io import Inputs
 
 
@@ -86,7 +87,7 @@ exec {shlex.quote(executable)} "$@"
         config.update(sdk=os.environ["CLAUDE_TEST_SDK_PATH"], binary=str(wrapper), cwd=str(root),
                       home=str(state), configurationDirectory=str(state), apiKeyFile=str(key),
                       cliVersion=os.environ.get("CLAUDE_TEST_CLI_VERSION", "2.1.325"),
-                      maxBudgetUsd=0.1)
+                      maxBudgetUsd=0.1, displayName="Fixture CompAII · claude@fixture", hostTools=[])
         worker = os.environ.get("CLAUDE_TEST_WORKER_PATH", str(
             foreground.ROOT / "adapters/claude/gateway-worker.mjs"
         ))
@@ -112,6 +113,8 @@ def qualify(engine, gateway, executable, scripts, *, interaction=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
+        deliver_followup = interaction
+
         def _host_command(self, root, socket, service, capabilities):
             import daimon_matrix
             from daimon_matrix.client import CLIENT_CONFIG_SCHEMA_V3
@@ -207,6 +210,8 @@ operator.main()
                 provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
+                if engine == "claude":
+                    provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
                 provider.current = original["message_id"]
                 provider.original = "Material for the selected turn"
@@ -218,6 +223,85 @@ operator.main()
                 if memory:
                     config["selectedMemory"] = memory
                 command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
+                if interaction and scripts:
+                    python = os.environ.get("CLAUDE_TEST_DMK_PYTHON", sys.executable)
+                    selected, _ = selected_memory(root, python, scripts, being, provider.current, engine)
+                    config["sharedDmk"] = {
+                        "command": selected["command"][:-2],
+                        "bindingFile": selected["command"][-1],
+                        "bodyRef": selected["bodyRef"],
+                    }
+                    provider.dmk_marker = foreground.MARKER
+                    provider.dmk_record = {"action": "read", "pool": selected["pool"],
+                                           "record_uid": selected["recordUid"],
+                                           "expected_revision": selected["revision"]}
+                    provider.worker_profile = profile
+                if interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1":
+                    shared = root / "shared-agent-skills"
+                    skill = shared / "fixture-skill"
+                    skill.mkdir(parents=True)
+                    provider.skill_name = "compaii-shared:fixture-skill"
+                    provider.skill_marker = "Readback from the shared skill directory."
+                    provider.skill_file = skill / "SKILL.md"
+                    provider.skill_file.write_text(
+                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n---\n"
+                        + provider.skill_marker
+                    )
+                    config["sharedSkillsDirectory"] = str(shared)
+                if interaction and os.environ.get("FOREGROUND_TEST_FOUNDATION") == "1":
+                    foundation = root / "foundation"
+                    foundation.mkdir(mode=0o700)
+                    binding = foundation / "client.json"
+                    binding.touch(mode=0o600)
+                    now = int(time.time() * 1000)
+                    binding.write_text(json.dumps({
+                        "schema": "dm.local.client-config/v3",
+                        "expected_server": {"embodiment_id": body, "incarnation_id": origin["incarnation_id"]},
+                        "capability": {"status": "active", "not_before_ms": now-1000, "not_after_ms": now+120000},
+                    }))
+                    server = foundation / "mcp.mjs"
+                    provider.foundation_revocation = foundation / "revoked"
+                    status = {
+                        "schema": "dm.runtime.status/v1", "integrity": "ok", "being_ref": being,
+                        "manifest_hash": config["body"]["manifestHash"],
+                        "local_origin": {"embodiment_id": body, "incarnation_id": origin["incarnation_id"]},
+                    }
+                    extra_tools = [f"fixture_extra_{n}" for n in range(10)] if os.environ.get(
+                        "FOREGROUND_TEST_DEFERRED_TOOLS"
+                    ) == "1" else []
+                    tool_names = ["fixture_read", "daimon_status", *extra_tools]
+                    provider.deferred_foundation = extra_tools
+                    server.write_text("const status = " + json.dumps(status) + ";\n"
+                                      + "const toolNames = " + json.dumps(tool_names) + ";\n" + """
+import { createInterface } from 'node:readline';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const revoked = fileURLToPath(new URL('revoked', import.meta.url));
+for await (const line of createInterface({ input: process.stdin })) {
+  const {id, method, params} = JSON.parse(line);
+  if (id === undefined) continue;
+  const result = {
+    'initialize': { protocolVersion: params?.protocolVersion, capabilities: {tools:{}},
+      serverInfo: {name:'foundation-fixture', version:'1'} },
+    'tools/list': { tools: toolNames.map(name => ({
+       name, description:'Read a synthetic status', inputSchema: {type:'object',properties:{}} })) },
+    'tools/call': params?.name === 'daimon_status'
+      ? { isError:existsSync(revoked), content:[], structuredContent:{ok:!existsSync(revoked),result:status} }
+      : { content: [{type:'text',text:'Fixture Foundation readback.'}] },
+  }[method];
+  console.log(JSON.stringify({jsonrpc:'2.0', id, result}));
+}
+""")
+                    config["matrixFoundation"] = {
+                        "command": ["/usr/bin/node",str(server),"--runtime-root",str(foundation)],
+                        "tools": tool_names,
+                    }
+                    provider.foundation_marker = "Fixture Foundation readback."
+                if interaction and os.environ.get("FOREGROUND_TEST_HOST_TOOLS") == "1":
+                    provider.host_file = root / "host-tools-fixture.txt"
+                    provider.host_file.write_text("Native file readback marker.")
+                    provider.host_tools = ["Read", "Bash"]
+                    config["hostTools"] = provider.host_tools
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -345,6 +429,9 @@ timeout_seconds=5
                 provider.human_original = str(uuid.uuid4())
                 request = {"binding":page["binding"], "id":provider.human_original,
                            "text":provider.original, "target":"claude"}
+                forged = client.post("/api/interaction/inputs",
+                    json={**request, "private_host_access": True}, headers=headers)
+                self.assertEqual(forged.status_code, 400)
                 submitted = client.post("/api/interaction/inputs", json=request, headers=headers)
                 self.assertEqual(submitted.status_code, 200, submitted.text)
                 journey.wait(lambda: bool(provider.failure) or journey.row(
@@ -359,7 +446,10 @@ timeout_seconds=5
                               if row["event_id"] == result["message_id"])
                 self.assertEqual(signed["origin"]["embodiment_id"], receiver)
                 self.assertEqual(signed["payload"]["body"]["text"], result["text"])
-                self.assertEqual(provider.calls, [provider.current] * 2)
+                first_calls = (2 + hasattr(provider, "skill_name") + hasattr(provider, "foundation_marker")
+                               + bool(getattr(provider, "deferred_foundation", []))
+                               + len(getattr(provider, "host_tools", [])))
+                self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
                 self.assertEqual(journey.telegram_methods, [])
                 self.assertEqual(journey.rpc, [])
@@ -368,8 +458,99 @@ timeout_seconds=5
                 journey.wait_control_socket(journey.socket)
                 self.assertEqual(client.post("/api/interaction/inputs", json=request, headers=headers)
                                  .json()["claude_reply"], result)
-                self.assertEqual(provider.calls, [provider.current] * 2)
+                self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
+                first_event = provider.current
+                provider.previous_session = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_id') FROM interaction_matrix_requests WHERE source_event=?",
+                    (first_event,),
+                )[0][0]
+                provider.previous_original = provider.original
+                provider.original = "What did we discuss in the first turn?"
+                provider.human_original = str(uuid.uuid4())
+                followup = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=followup, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (followup["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+followup["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertIn("I retained the first turn.", status["claude_reply"]["text"])
+                self.assertNotEqual(provider.current, first_event)
+                self.assertEqual(provider.calls, [first_event] * first_calls + [provider.current])
+                self.assertEqual(len(return_attempts), 2)
+                self.assertEqual(journey.telegram_methods, [])
+                self.assertEqual(journey.rpc, [])
+                if not hasattr(provider, "dmk_record"):
+                    return
+                provider.previous_scope = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_scope') FROM interaction_matrix_requests WHERE source_event=?",
+                    (provider.current,),
+                )[0][0]
+                # Revoke the provider's direct DMK route without changing
+                # the receiving Matrix body or the Interaction conversation.
+                worker = json.loads(provider.worker_profile.read_text())
+                del worker["sharedDmk"]
+                provider.worker_profile.write_text(json.dumps(worker))
+                del provider.dmk_record
+                provider.dmk_revoked = True
+                provider.human_original = str(uuid.uuid4())
+                provider.original = "What can you see after the access change?"
+                revoked = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=revoked, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (revoked["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+revoked["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertEqual(status["claude_reply"]["text"], REVOKED_ANSWER)
+                self.assertEqual(len(return_attempts), 3)
+                if not hasattr(provider, "skill_file"):
+                    return
+                provider.previous_session = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_id') FROM interaction_matrix_requests WHERE source_event=?",
+                    (provider.current,),
+                )[0][0]
+                provider.dmk_revoked = False
+                provider.old_skill_marker = provider.skill_marker
+                provider.skill_marker = "Updated shared skill instructions."
+                provider.skill_file.write_text(
+                    provider.skill_file.read_text().replace(provider.old_skill_marker, provider.skill_marker)
+                )
+                provider.human_original = str(uuid.uuid4())
+                provider.original = "Load the latest shared skill instructions."
+                updated = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=updated, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (updated["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+updated["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertEqual(status["claude_reply"]["text"], provider.skill_marker)
+                self.assertEqual(len(return_attempts), 4)
+                if hasattr(provider, "foundation_revocation"):
+                    provider.foundation_revocation.touch()
+                    previous_calls = list(provider.calls)
+                    denied = {**request, "id": str(uuid.uuid4()), "text": "Probe a revoked Foundation capability."}
+                    provider.human_original = denied["id"]
+                    submitted = client.post("/api/interaction/inputs", json=denied, headers=headers)
+                    self.assertEqual(submitted.status_code, 200, submitted.text)
+                    journey.wait(lambda: journey.row(
+                        "SELECT phase FROM interaction_matrix_requests WHERE source_event=("
+                        "SELECT json_extract(doc,'$.private_matrix_origin.message_id') "
+                        "FROM conversation_inputs WHERE id=?) AND phase='rejected'", (denied["id"],)
+                    ) == [("rejected",)], seconds=20)
+                    status = client.get("/api/interaction/inputs/"+denied["id"], headers=headers).json()
+                    self.assertEqual(status["phase"], "claude_rejected")
+                    self.assertNotIn("claude_reply", status)
+                    self.assertEqual(provider.calls, previous_calls)
+                    self.assertEqual(len(return_attempts), 4)
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1
@@ -385,5 +566,7 @@ if __name__ == "__main__":
     if interaction:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
         sys.path.insert(0, str(foreground.ROOT))
-    raise SystemExit(qualify(engine, gateway, executable, Path(sys.argv[4]) if engine != "claude" else None,
+    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
+    scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
+    raise SystemExit(qualify(engine, gateway, executable, scripts,
                             interaction=interaction))

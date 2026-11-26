@@ -32,14 +32,22 @@ test('submission is recorded before input and loss leaves the same request uncer
     type: 'result', subtype: 'success', is_error: false,
     session_id: input.sessionId, result: 'Synthetic body status.',
   };
+  const budgetExhausted = { ...success, subtype: 'error_max_budget_usd', is_error: true };
   for (const result of [
     success, undefined, { ...success, session_id: undefined }, { ...success, is_error: undefined },
+    budgetExhausted, { ...budgetExhausted, session_id: undefined },
   ]) {
     const events = [];
+    const resume = result === success;
     const outcome = await runClaudeTurn(options({
+      input: { ...input, resume },
       beforeSubmit: (id, sessionId) => { events.push(['record', id, sessionId]); return true; },
-      query: ({ prompt }) => ({
-        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+      query: ({ prompt, options: nativeOptions }) => ({
+        async initializationResult() {
+          assert.equal(nativeOptions.resume, resume ? input.sessionId : undefined);
+          assert.equal(nativeOptions.sessionId, resume ? undefined : input.sessionId);
+          return { claude_code_version: 'fixture-version' };
+        },
         async mcpServerStatus() { return connected; },
         async *[Symbol.asyncIterator]() {
           for await (const request of prompt) {
@@ -54,6 +62,8 @@ test('submission is recorded before input and loss leaves the same request uncer
     assert.deepEqual(events, [['record', input.id, input.sessionId], ['input', input.text]]);
     assert.equal(outcome.phase, result === success ? 'completed' : 'uncertain');
     assert.equal(outcome.sessionId, input.sessionId);
+    if (result === budgetExhausted) assert.equal(outcome.reason, 'claude_budget_exhausted');
+    else assert.notEqual(outcome.reason, 'claude_budget_exhausted');
   }
 });
 
@@ -85,6 +95,7 @@ test('pinned Agent SDK observes the effective MCP catalog without releasing a pr
         ['exact', false, true, 'gateway_submission_not_recorded'],
         ['extra', true, true, 'claude_catalog_mismatch'],
         ['changed', false, false, 'matrix_identity_changed'],
+        ['missing resume', false, true, 'claude_resume_session_missing'],
       ]) {
         const directory = join(root, name);
         await mkdir(directory, { mode: 0o700 });
@@ -101,6 +112,7 @@ test('pinned Agent SDK observes the effective MCP catalog without releasing a pr
         });
         const outcome = await runClaudeTurn(options({
           query,
+          input: { ...input, resume: name === 'missing resume' },
           broker: { server, readStatus: async () => {
             readCount += 1;
             return liveOnSecondRead || readCount === 1 ? status : null;

@@ -245,7 +245,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                     raise HTTPException(401, 'Companion access is unavailable; operator enrollment required')
                 if not companion_permitted(request.method, request.url.path, grant['scope'], grant.get('artifact_access', False), coordination_access=grant.get('coordination_access', False), coordination_control_access=grant.get('coordination_control_access', False), workspace_access=grant.get('workspace_access', False)):
                     raise HTTPException(403, 'Companion access is limited to the integrating conversation')
-                return {**grant, 'native_decision_access': False}
+                return {**grant, 'native_decision_access': False, '_companion_credential': True}
             # A restricted WebView may omit cookies. Never downgrade an invalid
             # explicit credential to a different ambient cookie session.
             if len(headers) != 1 or not (match := re.fullmatch(
@@ -851,7 +851,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = await request.json()
             from starlette.concurrency import run_in_threadpool
             require_pin_grant(session,body.get('reply') if isinstance(body,dict) else None)
-            result = await run_in_threadpool(provider.conversation_input_submit, body)
+            if isinstance(body, dict) and body.get('target') == 'claude':
+                result = await run_in_threadpool(
+                    provider.conversation_input_submit, body,
+                    private_host_access=not dict(session).get('_companion_credential', False))
+            else:
+                result = await run_in_threadpool(provider.conversation_input_submit, body)
         except VisualSelectionInvalid:
             return JSONResponse({'detail':'Select the captured image again. This attempt did not submit a message.','code':'visual_reselection','submission_attempted':False},status_code=400)
         except (ValueError, UnicodeError):

@@ -28,6 +28,6 @@ export function createMatrixStatusBroker({ command, expectedBody, createSdkMcpSe
     } catch {
       return { isError: true, content: [{ type: 'text', text: 'Matrix body unavailable.' }] };
     }
-  });
+  }, { alwaysLoad: true });
   return { readStatus, server: createSdkMcpServer({ name: 'matrix-status', tools: [read] }) };
 }

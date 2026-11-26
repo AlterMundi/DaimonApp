@@ -1,7 +1,7 @@
 //! An explicitly selected sibling original through the existing Gateway owner socket.
 use super::*;
 use crate::interaction::{ForegroundConfig, ForegroundEngine, InteractionConfig};
-use crate::store::{MatrixAuthor, WeOriginal, WePhase, WeSelection};
+use crate::store::{MatrixAuthor, WeAttempt, WeOriginal, WePhase, WeSelection, valid_claude_scope};
 
 pub(super) async fn owner(
     app: &App,
@@ -85,9 +85,9 @@ pub(super) async fn run_selected(
     let execution = tokio::select! {
         biased;
         _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
-        result = execute_worker(config, engine, &id, &attempt.session_id, &text, body, |native_session| {
+        result = execute_worker(config, engine, &id, &attempt, &text, body, |prepared| {
             exposed = store.we_transition(human, entry, &attempt,
-                WePhase::Starting, WePhase::ProviderExposed, json!({"native_session_id":native_session}))?;
+                WePhase::Starting, WePhase::ProviderExposed, prepared)?;
             Ok(exposed)
         }) => result,
     };
@@ -149,14 +149,22 @@ pub(super) async fn run_selected(
                 )?;
             }
         }
-        (true, _) => {
+        (true, outcome) => {
+            let budget_exhausted = outcome.is_ok_and(|value| {
+                value["phase"] == "uncertain" && value["reason"] == "claude_budget_exhausted"
+            });
+            let reason = if budget_exhausted {
+                "claude_budget_exhausted"
+            } else {
+                "native_result_unconfirmed"
+            };
             store.we_transition(
                 human,
                 entry,
                 &attempt,
                 WePhase::ProviderExposed,
                 WePhase::ProviderUncertain,
-                json!({"reason":"native_result_unconfirmed"}),
+                json!({"reason":reason}),
             )?;
         }
     }
@@ -226,10 +234,10 @@ async fn execute_worker(
     config: &ForegroundConfig,
     engine: ForegroundEngine,
     id: &str,
-    session: &str,
+    attempt: &WeAttempt,
     text: &str,
     body: Value,
-    commit: impl FnOnce(&str) -> Result<bool>,
+    commit: impl FnOnce(Value) -> Result<bool>,
 ) -> Result<Value> {
     use std::{os::unix::process::CommandExt, process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -263,10 +271,12 @@ async fn execute_worker(
         Ok(decoded)
     }
     let schema = match engine {
-        ForegroundEngine::Claude => "daimon-gateway.claude-turn/v1",
+        ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
+    let session = &attempt.session_id;
+    let fresh_native = uuid::Uuid::new_v4().to_string();
     let mut command = Command::new(&config.worker_command[0]);
     command
         .args(&config.worker_command[1..])
@@ -287,24 +297,34 @@ async fn execute_worker(
                 .context("Missing native worker output")?,
         )
         .take(528_385);
-        send(
-            &mut input,
-            json!({"schema":schema,"type":"start","inputId":id,
-            "sessionId":session,"text":text,"body":body}),
-        )
-        .await?;
+        let mut start = json!({"schema":schema,"type":"start","inputId":id,
+            "sessionId":session,"text":text,"body":body});
+        if engine == ForegroundEngine::Claude {
+            start["freshNativeSessionId"] = json!(fresh_native);
+            start["resume"] = json!(attempt.resume);
+            start["humanOriginal"] = json!(attempt.human_original);
+        }
+        send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
         if frame["type"] == "prepare_submission" {
             let observed = frame.get("nativeSessionId");
             let selected = match engine {
-                ForegroundEngine::Claude
-                    if observed.is_none_or(|id| id.as_str() == Some(session)) =>
-                {
-                    session
-                }
                 ForegroundEngine::Claude => {
-                    bail!("Claude preparation returned another native session")
+                    let scope = frame["sessionScope"]
+                        .as_str()
+                        .filter(|value| valid_claude_scope(value))
+                        .context("Claude preparation omitted its authorization scope")?;
+                    let expected = attempt
+                        .resume
+                        .as_ref()
+                        .filter(|prior| prior.scope == scope)
+                        .map_or(fresh_native.as_str(), |prior| prior.session_id.as_str());
+                    anyhow::ensure!(
+                        observed.and_then(Value::as_str) == Some(expected),
+                        "Claude preparation returned another native session"
+                    );
+                    expected
                 }
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
@@ -318,7 +338,11 @@ async fn execute_worker(
                     bail!("Antigravity preparation did not attest the selected native session")
                 }
             };
-            let committed = commit(selected)?;
+            let mut prepared = json!({"native_session_id":selected});
+            if engine == ForegroundEngine::Claude {
+                prepared["native_session_scope"] = frame["sessionScope"].clone();
+            }
+            let committed = commit(prepared)?;
             if committed {
                 native_session = Some(selected.to_owned());
             }
@@ -365,10 +389,10 @@ async fn execute_worker(
     _config: &ForegroundConfig,
     _engine: ForegroundEngine,
     _id: &str,
-    _session: &str,
+    _attempt: &WeAttempt,
     _text: &str,
     _body: Value,
-    _commit: impl FnOnce(&str) -> Result<bool>,
+    _commit: impl FnOnce(Value) -> Result<bool>,
 ) -> Result<Value> {
     bail!("native worker requires Unix process groups")
 }
