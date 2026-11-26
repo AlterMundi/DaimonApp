@@ -467,11 +467,14 @@ impl Store {
         physical: &str,
     ) -> Result<Option<(i64, Option<String>)>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut query=conn.prepare("SELECT DISTINCT t.id FROM interaction_instructions i
+        let mut query=conn.prepare("SELECT DISTINCT t.id, t.execution_harness='codex'
+             AND (t.execution_generation IS NULL OR t.execution_generation=g.generation)
+            FROM interaction_instructions i
             JOIN interaction_sources o ON o.id=i.input_id
             JOIN sessions s ON s.id=i.session_id
             JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') AND t.session_id=s.id
             JOIN users u ON u.tg_user_id=s.creator_user_id
+            JOIN conversation_entry_generations g ON g.session_id=s.id
             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
             AND o.human_id=?3 AND t.from_user_id=?3 AND t.native_thread_id=?4
             AND s.codex_thread_id=?4 AND s.force_fresh_thread=0 AND i.phase='accepted'
@@ -479,15 +482,15 @@ impl Store {
         let ids = query
             .query_map(
                 params![key.chat_id, key.thread_id, human, native, physical],
-                |r| r.get::<_, i64>(0),
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        if ids.len() > 1 {
+        if ids.len() > 1 || ids.iter().any(|(_, current)| !current) {
             return Err(anyhow!(
-                "Native writer has ambiguous retained local executions"
+                "Native writer has stale or ambiguous retained local executions"
             ));
         }
-        let Some(local) = ids.first().copied() else {
+        let Some((local, _)) = ids.first().copied() else {
             return Ok(None);
         };
         let raw: Option<String> = conn

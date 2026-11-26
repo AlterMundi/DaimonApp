@@ -172,6 +172,7 @@ pub(super) async fn command(app: &App, human: i64, raw: &str) -> Result<Value> {
         .clone()
         .context("Native turn has not started")?;
     let request = crate::execution::ToolInvocation {
+        local_turn: lease.local_turn,
         harness: execution.harness,
         native_session: native,
         native_turn: physical,

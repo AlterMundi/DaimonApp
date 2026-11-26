@@ -38,6 +38,7 @@ impl ExecutionBinding {
 /// An adapter supplies these coordinates after correlating its active turn.
 /// Tool arguments cannot choose the harness, native session or native turn.
 pub(crate) struct ToolInvocation {
+    pub local_turn: i64,
     pub harness: Harness,
     pub native_session: String,
     pub native_turn: String,

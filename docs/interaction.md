@@ -182,6 +182,13 @@ applying the existing operation-specific checks. Codex still correlates and
 deduplicates the native call and encodes the result in its own wire format.
 The existing owner-socket controller keeps its compatible response format.
 
+The existing turn record stores its harness and pins the logical generation
+at local admission. The adapter checks the same generation before exposing input. The live controller and Codex collector
+check that affinity even if a later session reuses the same opaque thread ID.
+Legacy turn records without a pinned generation keep their existing exact
+native correlation. Receipt and history reads still identify the original
+turn.
+
 The compatibility reader does not change routing or create a new native
 workspace. Subsequent adapters should feed the same Gateway binding and attempt
 lifecycle. Keep API projections and recovery keyed to the original execution

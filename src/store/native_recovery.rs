@@ -48,8 +48,11 @@ impl Store {
     /// Only explicitly registered new publication lifetimes acquire recovery.
     /// Never backfill an old stream with unknown historical Telegram receipts.
     pub fn native_collection_started(&self, local: i64, physical: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute("INSERT INTO native_collections(local_turn,anchor,first_turn,phase) SELECT t.id,?2,?2,CASE WHEN EXISTS(SELECT 1 FROM direct_topic_turns d WHERE d.local_turn=t.id) THEN 'open' ELSE 'boundary' END FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE t.id=?1 AND t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0 AND u.allowed=1 ON CONFLICT(local_turn) DO UPDATE SET anchor=excluded.anchor,first_turn=excluded.first_turn WHERE native_collections.first_turn=''",params![local,physical])?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        super::execution::pin_codex_turn_on(&tx, local)?;
+        tx.execute("INSERT INTO native_collections(local_turn,anchor,first_turn,phase) SELECT t.id,?2,?2,CASE WHEN EXISTS(SELECT 1 FROM direct_topic_turns d WHERE d.local_turn=t.id) THEN 'open' ELSE 'boundary' END FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE t.id=?1 AND t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0 AND u.allowed=1 ON CONFLICT(local_turn) DO UPDATE SET anchor=excluded.anchor,first_turn=excluded.first_turn WHERE native_collections.first_turn=''",params![local,physical])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -85,10 +88,13 @@ impl Store {
     }
 
     pub fn native_collection_submitting(&self, local: i64, client: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        super::execution::pin_codex_turn_on(&tx, local)?;
         // Routed/browser/other-participant executions are observation boundaries,
         // never new direct observers or implicit projection enrollment.
-        conn.execute("INSERT OR IGNORE INTO native_collections(local_turn,anchor,first_turn,client_id,phase) SELECT t.id,'','',?2,CASE WHEN EXISTS(SELECT 1 FROM direct_topic_turns d WHERE d.local_turn=t.id) THEN 'open' ELSE 'boundary' END FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE t.id=?1 AND t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0 AND u.allowed=1",params![local,client])?;
+        tx.execute("INSERT OR IGNORE INTO native_collections(local_turn,anchor,first_turn,client_id,phase) SELECT t.id,'','',?2,CASE WHEN EXISTS(SELECT 1 FROM direct_topic_turns d WHERE d.local_turn=t.id) THEN 'open' ELSE 'boundary' END FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE t.id=?1 AND t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0 AND u.allowed=1",params![local,client])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -110,7 +116,8 @@ impl Store {
     pub fn native_collection_next(&self) -> Result<Option<NativeCollection>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let row=tx.query_row("SELECT n.local_turn,t.from_user_id,s.chat_id,s.thread_id,t.native_thread_id,n.anchor,(SELECT NULLIF(later.first_turn,'') FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),n.client_id,(SELECT later.client_id FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),(SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.phase='open' AND t.native_thread_id IS NOT NULL AND s.creator_user_id=t.from_user_id AND u.allowed=1 AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0 ORDER BY n.checked_at,n.local_turn LIMIT 1",[],|r|Ok(NativeCollection{local:r.get(0)?,human:r.get(1)?,key:SessionKey::new(r.get(2)?,Some(r.get(3)?)),native:r.get(4)?,anchor:r.get(5)?,stop_before:r.get(6)?,client_id:r.get(7)?,stop_client:r.get(8)?,next_local:r.get(9)?})).optional()?;
+        let row=tx.query_row("SELECT n.local_turn,t.from_user_id,s.chat_id,s.thread_id,t.native_thread_id,n.anchor,(SELECT NULLIF(later.first_turn,'') FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),n.client_id,(SELECT later.client_id FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),(SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.phase='open' AND t.native_thread_id IS NOT NULL AND t.execution_harness='codex' AND (
+        t.execution_generation IS NULL OR t.execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=t.session_id)) AND s.creator_user_id=t.from_user_id AND u.allowed=1 AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0 ORDER BY n.checked_at,n.local_turn LIMIT 1",[],|r|Ok(NativeCollection{local:r.get(0)?,human:r.get(1)?,key:SessionKey::new(r.get(2)?,Some(r.get(3)?)),native:r.get(4)?,anchor:r.get(5)?,stop_before:r.get(6)?,client_id:r.get(7)?,stop_client:r.get(8)?,next_local:r.get(9)?})).optional()?;
         if let Some(r) = &row {
             tx.execute(
                 "UPDATE native_collections SET checked_at=?2 WHERE local_turn=?1",
@@ -166,7 +173,8 @@ impl Store {
     ) -> Result<Option<Value>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.local_turn=?1 AND n.phase='open' AND n.anchor=?2 AND t.native_thread_id=?3 AND t.from_user_id=?4 AND s.creator_user_id=?4 AND u.allowed=1 AND s.codex_thread_id=?3 AND s.force_fresh_thread=0 AND s.chat_id=?5 AND s.thread_id=?6 AND (SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) IS ?7)",params![selected.local,selected.anchor,selected.native,selected.human,selected.key.chat_id,selected.key.thread_id,selected.next_local],|r|r.get(0))?;
+        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.local_turn=?1 AND n.phase='open' AND n.anchor=?2 AND t.execution_harness='codex' AND (
+        t.execution_generation IS NULL OR t.execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=t.session_id)) AND t.native_thread_id=?3 AND t.from_user_id=?4 AND s.creator_user_id=?4 AND u.allowed=1 AND s.codex_thread_id=?3 AND s.force_fresh_thread=0 AND s.chat_id=?5 AND s.thread_id=?6 AND (SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) IS ?7)",params![selected.local,selected.anchor,selected.native,selected.human,selected.key.chat_id,selected.key.thread_id,selected.next_local],|r|r.get(0))?;
         if !valid {
             bail!("Native recovery owner or observation boundary changed");
         }

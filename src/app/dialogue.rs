@@ -214,10 +214,11 @@ pub(super) fn tool_call(
 ) -> oneshot::Receiver<crate::execution::ToolReply> {
     // The adapter provides the authenticated coordinates. Compare the
     // harness as well as its opaque ID before entering any role's handlers.
-    let current = app.shared.store.execution_binding(key, human);
-    if !current.is_ok_and(|binding| {
-        binding.is_some_and(|binding| binding.matches(request.harness, &request.native_session))
-    }) {
+    let current = app
+        .shared
+        .store
+        .controller_execution(request.local_turn, key, human);
+    if !current.is_ok_and(|binding| binding.matches(request.harness, &request.native_session)) {
         let (send, recv) = oneshot::channel();
         let _ = send.send(crate::execution::ToolReply::new(
             false,

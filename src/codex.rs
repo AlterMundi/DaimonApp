@@ -296,9 +296,10 @@ pub struct DynamicToolRequest {
 }
 
 impl DynamicToolRequest {
-    pub(crate) fn into_gateway(self) -> crate::execution::ToolInvocation {
+    pub(crate) fn into_gateway(self, local_turn: i64) -> crate::execution::ToolInvocation {
         use crate::execution::{Harness, ToolInvocation};
         ToolInvocation {
+            local_turn,
             harness: Harness::Codex,
             native_session: self.thread_id,
             native_turn: self.turn_id,

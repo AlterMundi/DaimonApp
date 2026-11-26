@@ -42,7 +42,64 @@ pub(super) fn binding_on(
         .transpose()
 }
 
+/// Pin the turn to its existing logical generation before native exposure.
+pub(super) fn pin_codex_turn_on(conn: &Connection, local: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE turns SET execution_generation=(
+             SELECT g.generation FROM conversation_entry_generations g WHERE g.session_id=turns.session_id)
+         WHERE id=?1 AND execution_harness='codex'
+           AND EXISTS(SELECT 1 FROM conversation_entry_generations g WHERE g.session_id=turns.session_id
+              AND (turns.execution_generation IS NULL OR turns.execution_generation=g.generation))",
+        [local],
+    )?;
+    anyhow::ensure!(changed == 1, "Native turn execution binding changed");
+    Ok(())
+}
+
 impl Store {
+    /// Adopt Codex's observed native session for this turn. A legitimate
+    /// replacement may advance the generation, but cannot revive an old turn.
+    pub(crate) fn bind_codex_turn(&self, local: i64, native: &str) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let session: i64 = tx.query_row(
+            "SELECT t.session_id FROM turns t JOIN conversation_entry_generations g ON g.session_id=t.session_id
+             WHERE t.id=?1 AND t.native_thread_id=?2 AND t.execution_harness='codex'
+               AND t.status='running' AND t.completed_at IS NULL AND t.execution_generation=g.generation",
+            params![local, native], |row| row.get(0),
+        ).optional()?.context("Codex turn binding changed before native session adoption")?;
+        tx.execute(
+            "UPDATE sessions SET codex_thread_id=?1,force_fresh_thread=0,updated_at=?2 WHERE id=?3",
+            params![native, now_string(), session],
+        )?;
+        tx.execute("UPDATE turns SET execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=?2)
+            WHERE id=?1", params![local, session])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Check immediately before exposure, after the adapter's async admission
+    /// preparation. Explicit isolated reviews retain their own native context.
+    pub(crate) fn validate_codex_submission(
+        &self,
+        local: i64,
+        selected_session: bool,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let valid: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_entry_generations g ON g.session_id=t.session_id
+             WHERE t.id=?1 AND t.status='running' AND t.completed_at IS NULL
+               AND t.execution_harness='codex' AND t.execution_generation=g.generation
+               AND t.native_thread_id IS NOT NULL
+               AND (NOT ?2 OR (t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0)))",
+            params![local, selected_session],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(valid, "Codex native submission binding changed");
+        Ok(())
+    }
+
     pub(crate) fn execution_binding(
         &self,
         key: SessionKey,
@@ -69,10 +126,18 @@ impl Store {
             .execution;
         let native: String = tx
             .query_row(
-                "SELECT native_thread_id FROM turns WHERE id=?1 AND session_id=?2
-                 AND from_user_id=?3 AND status='running' AND completed_at IS NULL
-                 AND native_thread_id IS NOT NULL",
-                params![local, binding.conversation_id, human],
+                "SELECT t.native_thread_id FROM turns t
+                 JOIN conversation_entry_generations g ON g.session_id=t.session_id
+                 WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3
+                   AND t.status='running' AND t.completed_at IS NULL
+                   AND t.execution_harness=?4 AND t.native_thread_id IS NOT NULL
+                   AND (t.execution_generation IS NULL OR t.execution_generation=g.generation)",
+                params![
+                    local,
+                    binding.conversation_id,
+                    human,
+                    binding.harness.name()
+                ],
                 |row| row.get(0),
             )
             .optional()?
@@ -102,26 +167,35 @@ mod tests {
         assert_eq!(initial.conversation_id, owned.id);
         assert_eq!(initial.native_session, None);
         assert!(store.execution_binding(key, 101).unwrap().is_none());
-        let turn = store
-            .record_turn_started(
-                owned.id,
-                &TurnRequest {
-                    session_key: key,
-                    from_user_id: 100,
-                    prompt: "Original".into(),
-                    runtime_instructions: None,
-                    attachments: vec![],
-                    review_mode: None,
-                    override_search_mode: None,
-                },
-            )
-            .unwrap();
+        let request = TurnRequest {
+            session_key: key,
+            from_user_id: 100,
+            prompt: "Original".into(),
+            runtime_instructions: None,
+            attachments: vec![],
+            review_mode: None,
+            override_search_mode: None,
+        };
+        let turn = store.record_turn_started(owned.id, &request).unwrap();
 
         store.set_session_codex_thread(key, "first").unwrap();
         assert!(store.controller_execution(turn, key, 100).is_err());
         store.record_turn_native_thread(turn, "first").unwrap();
         let active = store.controller_execution(turn, key, 100).unwrap();
         assert_eq!(active.conversation_id, initial.conversation_id);
+        store.native_collection_submitting(turn, None).unwrap();
+        // Exercise the collector's active recovery query on this same stamp.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE native_collections SET phase='open' WHERE local_turn=?1",
+                [turn],
+            )
+            .unwrap();
+        let recovering = store.native_collection_next().unwrap().unwrap();
+        assert_eq!(recovering.local, turn);
         assert_eq!(active.revision, initial.revision);
         assert!(active.matches(Harness::Codex, "first"));
         assert!(!active.matches(Harness::Claude, "first"));
@@ -139,6 +213,23 @@ mod tests {
         assert_eq!(replaced.conversation_id, initial.conversation_id);
         assert_ne!(replaced.revision, initial.revision);
         assert!(store.controller_execution(turn, key, 100).is_err());
+        store.set_session_codex_thread(key, "first").unwrap();
+        assert!(store.controller_execution(turn, key, 100).is_err());
+        assert!(store.native_collection_submitting(turn, None).is_err());
+        assert!(store.bind_codex_turn(turn, "first").is_err());
+        assert!(store.validate_codex_submission(turn, true).is_err());
+        assert!(store.native_collection_next().unwrap().is_none());
+        assert!(
+            store
+                .native_collection_observed(&recovering, &[], false)
+                .is_err()
+        );
+        assert!(
+            store
+                .record_collector_attachment(turn, key, 100, "first", "physical")
+                .is_err()
+        );
+        store.set_session_codex_thread(key, "second").unwrap();
         // Old databases and defensive recovery can retain an opaque native
         // ID during reset. Preserve that evidence without granting it control.
         store
@@ -161,6 +252,17 @@ mod tests {
         drop(store);
         let store = Store::open(file.path(), &[100, 101], &defaults).unwrap();
         assert_eq!(store.execution_binding(key, 100).unwrap().unwrap(), reset);
+
+        let successor = store.record_turn_started(owned.id, &request).unwrap();
+        store
+            .record_turn_native_thread(successor, "new-native")
+            .unwrap();
+        assert!(store.validate_codex_submission(successor, true).is_err());
+        store.bind_codex_turn(successor, "new-native").unwrap();
+        store.validate_codex_submission(successor, true).unwrap();
+        let current = store.controller_execution(successor, key, 100).unwrap();
+        assert_ne!(current.revision, reset.revision);
+        assert!(current.matches(Harness::Codex, "new-native"));
 
         store.upsert_user(100, UserRole::Admin, false).unwrap();
         assert!(store.execution_binding(key, 100).unwrap().is_none());
