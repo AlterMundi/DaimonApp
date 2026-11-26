@@ -305,7 +305,8 @@ pub(in crate::app) async fn execute_worker(
                             && outcome["sessionId"].as_str() == native_session.as_deref()
                             && native_session.is_some()
                             && outcome["limit"].is_object()
-                            && outcome["workObserved"].is_boolean(),
+                            && outcome["workObserved"].is_boolean()
+                            && outcome["terminalObserved"].is_boolean(),
                     Some("not_submitted") => true,
                     _ => false,
                 },
@@ -427,14 +428,7 @@ pub(super) async fn run_portable_turn(
     }
     .await
     .ok();
-    let reply = outcome
-        .as_ref()
-        .filter(|value| value["phase"] == "completed")
-        .and_then(|value| value["text"].as_str());
-    let resume_unavailable = outcome.as_ref().is_some_and(|value| {
-        value["phase"] == "not_submitted" && value["reason"] == "claude_resume_session_missing"
-    });
-    store.finish_portable_turn(input, local, reply, resume_unavailable)
+    store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))
 }
 
 pub(super) async fn run_routed_portable(

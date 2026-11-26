@@ -623,7 +623,7 @@ timeout_seconds=5
             journey.wait(lambda: journey.has("Forwarded messages aren't supported here.", 7))
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
                                          (str(forwarded),)), [(0,)])
-            for caption in ("  Please inspect this photo.  ", ""):
+            for caption in ("  Please inspect this photo.  ", "", "/inspect@otherbot once you see the photo"):
                 provider.original = caption or "Gateway attached these files"
                 provider.attachment = {"caption": caption, "base64": base64.b64encode(image).decode()}
                 with journey.lock:
@@ -643,7 +643,7 @@ timeout_seconds=5
                 expected = hashlib.sha256(image).hexdigest()
                 self.assertEqual(source["telegram_files"][0]["sha256"], expected)
                 self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), image)
-            self.assertEqual(len(set(provider.exposures)), 2)
+            self.assertEqual(len(set(provider.exposures)), 3)
 
         def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")

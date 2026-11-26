@@ -433,7 +433,8 @@ impl Store {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
                 _ if outcome["phase"] == "not_submitted"
-                    || (limit.is_some() && outcome["workObserved"].as_bool() == Some(false)) =>
+                    || (limit.is_some()
+                        && crate::interaction::SubscriptionLimit::refused_before_work(outcome)) =>
                 {
                     Phase::Rejected
                 }

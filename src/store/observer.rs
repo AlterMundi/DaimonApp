@@ -304,7 +304,7 @@ mod tests {
             .validate_codex_submission(worker_turn, true, routed)
             .unwrap();
         store
-            .finish_portable_turn(&input, claude, None, false)
+            .finish_portable_turn(&input, claude, &serde_json::Value::Null)
             .unwrap();
         assert_eq!(latest()[0].phase, "claude_unconfirmed");
         assert!(store.controller_execution(claude, key, 100).is_err());

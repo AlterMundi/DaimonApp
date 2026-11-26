@@ -99,7 +99,7 @@ test('only an explicitly selected human goal uses the native command mode', asyn
 
 test('subscription refusal is retained without mistaking it for an unobserved result', async () => {
   const resetsAt = 1795719000;
-  for (const workObserved of [false, true]) {
+  for (const [workObserved, terminalObserved] of [[false, true], [true, true], [false, false]]) {
     const outcome = await runClaudeTurn(options({
       beforeSubmit: () => true,
       query: ({ prompt }) => ({
@@ -113,14 +113,14 @@ test('subscription refusal is retained without mistaking it for an unobserved re
               rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt } };
             yield { type: 'assistant', session_id, parent_tool_use_id: null, error: 'rate_limit',
               message: { model: '<synthetic>', content: [{ type: 'text', text: 'Untrusted raw provider content' }] } };
-            yield { type: 'result', session_id, subtype: 'error_during_execution', is_error: true };
+            if (terminalObserved) yield { type: 'result', session_id, subtype: 'error_during_execution', is_error: true };
           }
         },
         close() {},
       }),
     }));
     assert.deepEqual(outcome, {
-      phase: 'subscription_limited', sessionId: input.sessionId, workObserved,
+      phase: 'subscription_limited', sessionId: input.sessionId, workObserved, terminalObserved,
       limit: { window: 'five_hour', resets_at: resetsAt },
     });
   }
