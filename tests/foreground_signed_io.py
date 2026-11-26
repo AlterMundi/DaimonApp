@@ -12,6 +12,7 @@ import os
 import re
 from pathlib import Path
 import shlex
+import signal
 import socketserver
 import sqlite3
 import subprocess
@@ -111,7 +112,8 @@ exec {shlex.quote(executable)} "$@"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
 
-def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False, mixed=False, inverse=False):
+def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False, mixed=False,
+            inverse=False, telegram_topic=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
@@ -185,12 +187,21 @@ operator.main()
                     journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
                     journey.idle()
                 journey.stop()
+                if telegram_topic:
+                    with sqlite3.connect(journey.root / "state.sqlite") as db:
+                        db.execute("UPDATE sessions SET session_prompt=? WHERE thread_id=7",
+                                   ("Keep the selected design instructions.",))
                 targets = journey.target_config
                 if inverse:
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
-            if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+            if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+                if telegram_topic:
+                    adapter_config = journey.root / "telegram-adapter.toml"
+                    adapter_config.write_text(journey.config.read_text().replace(
+                        "[telegram]\n", "[telegram]\nexternal_polling=true\n", 1
+                    ))
                 gateway_config = re.sub(r'^(bot_token_file|api_base)=.*\n', '', journey.config.read_text(),
                                         flags=re.MULTILINE)
                 gateway_config = gateway_config.replace(
@@ -226,7 +237,10 @@ operator.main()
                         )[0]
                         assert phase == "submitting"
                         assert self.server.original in prompt
-                        assert '"original_human_author":100' in prompt
+                        if telegram_topic:
+                            assert prompt == self.server.original
+                        else:
+                            assert '"original_human_author":100' in prompt
                         self.server.current = ident
                         self.server.exposures.append(ident)
                         if getattr(self.server, "hold", None):
@@ -279,9 +293,13 @@ operator.main()
                 provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
-                provider.paired_human = direct and not inverse
+                provider.paired_human = telegram_topic or (direct and not inverse)
+                if telegram_topic:
+                    provider.session_instructions = "Keep the selected design instructions."
                 provider.controller = direct and not inverse
-                provider.inverse_paired = inverse and engine == "claude" and os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
+                provider.inverse_paired = inverse and engine == "claude" and (
+                    telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
+                )
                 provider.mixed = mixed
                 provider.mixed_worker_reply = "Codex worker fixture result from the original request."
                 if engine == "claude":
@@ -412,6 +430,19 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if telegram_topic:
+                        adapter = subprocess.Popen(
+                            [gateway, "--tele-daimon-poll", str(adapter_config)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                        )
+                        try:
+                            self._telegram_topic_exchange(journey, provider, return_attempts, profile)
+                        finally:
+                            if adapter.poll() is None:
+                                adapter.send_signal(signal.SIGINT)
+                            _, errors = adapter.communicate(timeout=10)
+                        self.assertEqual(adapter.returncode, 0, errors)
+                        return
                     if inverse:
                         self._inverse_exchange(journey, provider, return_attempts, profile)
                         if memory:
@@ -502,6 +533,89 @@ timeout_seconds=5
             self.addCleanup(worker.join)
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
+
+        def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
+            codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
+            native_turns = journey.native_turns
+            forwarded = journey.admit("/stop all", topic=7, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.has("Forwarded messages and attachments", 7))
+            journey.command("/retry 1", "Use /interrupt", topic=7)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
+                                         (str(forwarded),)), [(0,)])
+            self.assertEqual(journey.native_turns, native_turns)
+
+            selected = "  This text was written directly in the selected topic.  "
+            with journey.lock:
+                provider.original = selected
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(selected, topic=7)
+            self.assertEqual(str(update), provider.human_original)
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            self.assertIsNone(provider.failure)
+            delivered = [(message, payload) for message, payload in journey.messages if ANSWER in message["text"]]
+            self.assertEqual(len(delivered), 1)
+            message, payload = delivered[0]
+            self.assertEqual(payload["reply_parameters"]["message_id"], update)
+            self.assertNotIn("Worker instruction coverage was not reported", message["text"])
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.prompt FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(update),)), [("accepted", "claude", "completed", selected)])
+            self.assertEqual(journey.row("SELECT status FROM incoming_updates WHERE update_id=?", (update,)),
+                             [("handled",)])
+            self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"), codex)
+            self.assertEqual(journey.native_turns, native_turns)
+            self.assertEqual(len(set(provider.exposures)), 1)
+            calls = list(provider.calls)
+            provider.previous_original = selected
+            provider.previous_session = journey.row(
+                "SELECT native_thread_id FROM turns WHERE execution_harness='claude'"
+            )[0][0]
+            original = json.loads(journey.row("SELECT payload_json FROM incoming_updates WHERE update_id=?",
+                                              (update,))[0][0])
+            duplicate_polled = Event()
+            journey.before_poll_reply = lambda updates: (
+                duplicate_polled.set() if any(event["update_id"] == update for event in updates) else None
+            )
+            with journey.lock:
+                journey.updates.append(original)
+            self.assertTrue(duplicate_polled.wait(5))
+            journey.command("/retry 1", "Use /interrupt", topic=7)
+            self.assertEqual(provider.calls, calls)
+            self.assertEqual(journey.native_turns, native_turns)
+            self.assertEqual(return_attempts, [])
+
+            selected_profile = profile.read_text()
+            unavailable_profile = json.loads(selected_profile)
+            unavailable_profile["cliVersion"] = "0.0.0"
+            profile.write_text(json.dumps(unavailable_profile))
+            provider.original = "A fresh topic original for the known-unsent recovery check."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            def retained():
+                return journey.row(
+                    "SELECT i.id,i.phase FROM interaction_instructions i JOIN interaction_sources s "
+                    "ON s.id=i.input_id WHERE s.event_id=?", (str(update),))
+            journey.wait(lambda: retained() and retained()[0][1] == "retained_unsent")
+            instruction, _ = retained()[0]
+            self.assertEqual(provider.calls, calls)
+            profile.write_text(selected_profile)
+            command = "/interaction retry " + instruction
+            journey.admit(command, topic=1, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.has("That saved input could not be recovered", 1))
+            self.assertEqual(retained(), [(instruction, "retained_unsent")])
+            self.assertEqual(provider.calls, calls)
+            journey.admit(command, topic=7)
+            journey.wait(lambda: provider.failure or retained() == [(instruction, "accepted")], seconds=30)
+            self.assertIsNone(provider.failure)
+            self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
+            self.assertEqual(journey.native_turns, native_turns)
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
             answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
@@ -941,13 +1055,16 @@ if __name__ == "__main__":
     interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
     direct = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION_DIRECT") == "1"
     mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
-    inverse = os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
+    telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
+    inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
     if inverse and engine == "claude":
         direct = True
-    if interaction or direct or inverse:
+    if (interaction or direct or inverse) and not telegram_topic:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
+    if interaction or direct or inverse:
         sys.path.insert(0, str(foreground.ROOT))
     dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
-                            interaction=interaction, direct=direct, mixed=mixed, inverse=inverse))
+                            interaction=interaction, direct=direct, mixed=mixed, inverse=inverse,
+                            telegram_topic=telegram_topic))

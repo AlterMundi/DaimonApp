@@ -18,7 +18,7 @@ const VERSION = 'daimon-gateway.claude-turn/v2';
 const HOST_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'];
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal) {
+function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal, sessionInstructions) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
@@ -29,6 +29,7 @@ function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal)
       foundation?.revision ?? null,
       hostTools, humanOriginal ? 'bypassPermissions' : false,
       ...(hostTools.includes('Bash') && profile.hostToolDirectory ? [profile.hostToolDirectory] : []),
+      ...(sessionInstructions ? [{ sessionInstructions }] : []),
     ]))
     .update(bytes)
     .digest('hex');
@@ -237,11 +238,13 @@ async function main() {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
+    const sessionInstructions = first?.sessionInstructions;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
     const fullAccess = first?.humanOriginal === true || routedHostAccess;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
-      ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : [])])
+      ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
+      ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
       || (routedHostAccess && !routedHuman)
       || (routedHuman && (first.humanOriginal || controllerSelected))
       || (controllerSelected && first.humanOriginal !== true)
@@ -256,6 +259,8 @@ async function main() {
         || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
       || typeof first.text !== 'string' || !first.text.trim()
       || Buffer.byteLength(first.text) > 16 * 1024
+      || (sessionInstructions !== undefined && (typeof sessionInstructions !== 'string'
+        || Buffer.byteLength(sessionInstructions) > 16 * 1024))
       || !closed(first.body, Object.keys(profile.body))
       || !Object.keys(profile.body).every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid foreground start');
@@ -285,7 +290,7 @@ async function main() {
       env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
       if (profile.hostToolDirectory) env.PATH += `:${profile.hostToolDirectory}`;
     }
-    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess);
+    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, sessionInstructions);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
     async function scopeStillActive() {
@@ -295,7 +300,7 @@ async function main() {
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
       ]);
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
-      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess) === scope
+      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, sessionInstructions) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -355,7 +360,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools, controller,
-        fullAccess, routedHuman,
+        fullAccess, routedHuman, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,

@@ -506,6 +506,18 @@ different destination. Only deliberate top-level selectors route: quoted code,
 quoted hashtags and incidental mentions remain ordinary content. An explicit
 selector overrides inherited reply focus.
 
+For an existing work topic, set `harness = "claude"` on its target and enable
+the configured direct Claude worker. The topic keeps its logical session and
+retained Codex history. New messages use Claude's native session and the
+topic's saved session instructions. Both TeleDaimon and Gateway must carry the authored-text observation
+from the Bot API poll. Only direct text from the configured paired human
+starts a portable turn through that topic. Forwarded text and attachments stay
+in the ingress journal without opening a model turn. An older adapter cannot
+assert authored text. Use `/interaction retry <instruction>` as the paired
+human to recover an exact known-unsent instruction. The general Codex
+`/retry <turn>` does not replay portable work. Existing Stop controls and
+`/interrupt` remain scoped to their selected operations.
+
 ## Durable request state
 
 `interaction_sources` retains immutable source identity, original text, selected
@@ -589,7 +601,10 @@ no content-string deduplication or work replay repairs earlier copies.
 The native worker is explicitly told that an interaction controller is relaying
 an authenticated human input. The packet keeps controller guidance separate from
 the human-authored content and carries original author and source-message
-provenance. Direct work-topic input bypasses the routing adapter entirely. Relay does not impersonate a direct human
+provenance. Ordinary Codex work-topic input bypasses the routing adapter. An
+explicitly selected portable work topic uses the same canonical instruction
+and outbox, with the direct Telegram original and its original reply route.
+Relay does not impersonate a direct human
 intervention, and future integrator interpretations must remain separately
 attributed. Canonical worker answers also retain their own authorship.
 

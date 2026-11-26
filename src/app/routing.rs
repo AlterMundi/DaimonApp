@@ -213,6 +213,80 @@ fn route(message: &Message) -> ReturnRoute {
     }
 }
 
+pub(super) fn portable_topic(
+    shared: &AppShared,
+    key: SessionKey,
+) -> Option<(
+    crate::interaction::ForegroundEngine,
+    &crate::interaction::ForegroundConfig,
+)> {
+    let profile = shared.config.interaction.as_ref()?;
+    profile.portable_route(key)
+}
+
+pub(super) async fn handle_portable_topic(
+    app: &App,
+    message: &Message,
+    human: i64,
+    key: SessionKey,
+    direct_human_text: bool,
+    selected: (
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    ),
+) -> Result<()> {
+    if app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .map(|profile| profile.human_id)
+        != Some(human)
+    {
+        return Ok(());
+    }
+    let origin = route(message);
+    let Some(text) = message
+        .text
+        .as_deref()
+        .filter(|text| direct_human_text && text.len() <= 16 * 1024)
+    else {
+        notice(app.shared.clone(), origin, "Send a text message directly in this topic. Forwarded messages and attachments aren't supported here yet.".into());
+        return Ok(());
+    };
+    if text.trim_start().starts_with('/') {
+        notice(app.shared.clone(), origin, "Use /interrupt to stop the current turn or /interaction to inspect or recover a saved input.".into());
+        return Ok(());
+    }
+    let update = HUMAN_UPDATE_ID
+        .try_with(|id| *id)
+        .context("Topic message lacks its retained Telegram update")?;
+    let session = app
+        .shared
+        .store
+        .get_session(key)?
+        .context("Selected topic session is missing")?;
+    let source = SourceInput {
+        tribu_source: None,
+        transcription: None,
+        channel: format!("telegram:{}", app.shared.bot_id),
+        event_id: update.to_string(),
+        update_id: Some(update),
+        human_id: human,
+        target_sessions: vec![session.id],
+        origin,
+        text: text.to_owned(),
+    };
+    let (instruction, fresh) = app
+        .shared
+        .store
+        .interaction_admit_portable_topic(&source, key, selected)?;
+    if fresh {
+        dispatch(app, &instruction.id, human).await?;
+    }
+    Ok(())
+}
+
 pub(super) fn label(shared: &AppShared, key: SessionKey) -> String {
     let cfg = profile(shared).ok();
     let fallback = format!("t{}", key.thread_id);
@@ -553,7 +627,11 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                 return Ok(true);
             }
             if *verb == "retry" {
-                if app.shared.store.interaction_recover(id, human)? {
+                if app
+                    .shared
+                    .store
+                    .interaction_recover(id, human, Some(update))?
+                {
                     dispatch(app, id, human).await?;
                     notice(
                         app.shared.clone(),
@@ -564,7 +642,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                     notice(
                         app.shared.clone(),
                         origin,
-                        "That input is not known-unsent; it was not replayed.".into(),
+                        "That saved input could not be recovered from this message.".into(),
                     );
                 }
                 return Ok(true);
@@ -1228,13 +1306,22 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = super::nexus::input_prompt(
-        shared,
-        source.update_id,
-        i.target,
-        i.human_id,
-        &packet(shared, i, None)?,
-    )?;
+    let prompt = if source.update_id.is_some()
+        && !relayed(i)
+        && i.target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness.is_portable())
+    {
+        i.text.clone()
+    } else {
+        super::nexus::input_prompt(
+            shared,
+            source.update_id,
+            i.target,
+            i.human_id,
+            &packet(shared, i, None)?,
+        )?
+    };
     let epoch = i
         .admission_epoch
         .clone()
@@ -1819,7 +1906,15 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
         } else {
             "\nWorker instruction coverage was not reported."
         };
-        let body = format!("#{}{}\n\n{}", name, qualification, d.body);
+        let direct_portable = d.origin.message_id.is_some()
+            && d.origin.chat_id == d.target.chat_id
+            && d.origin.thread_id == d.target.thread_id
+            && portable_topic(&shared, d.target).is_some();
+        let body = if direct_portable {
+            d.body.as_str().to_owned()
+        } else {
+            format!("#{}{}\n\n{}", name, qualification, d.body)
+        };
         let mut last = None;
         let mut complete = true;
         for (index, part) in split_text(&body, 3000).into_iter().enumerate() {

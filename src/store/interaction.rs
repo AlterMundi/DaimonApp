@@ -216,11 +216,14 @@ pub(super) fn admit_selected_on(
             bail!("Canonical routing source does not match its original");
         }
     }
-    if route.is_some() {
+    if route.is_some() && source.channel != "conversation" {
+        source_epoch = Some(
+            super::routed_portable::telegram_original_epoch(tx, source, target)?
+                .context("Portable Telegram source does not match its retained original")?,
+        );
+    } else if route.is_some() {
         anyhow::ensure!(
-            source.channel == "conversation"
-                && source.tribu_source.is_none()
-                && source.update_id.is_none(),
+            source.tribu_source.is_none() && source.update_id.is_none(),
             "The routed portable worker requires a local retained conversation original"
         );
     }
@@ -539,6 +542,7 @@ pub(super) fn recover_on(
     human: i64,
     instance: &str,
     paired: bool,
+    telegram_update: Option<i64>,
 ) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
@@ -549,14 +553,45 @@ pub(super) fn recover_on(
     if !target_execution_allowed_on(conn, &instruction)? {
         return Ok(false);
     }
-    if !paired
-        && instruction
-            .target_execution
-            .as_ref()
-            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+    let mut epoch = None;
+    if instruction
+        .target_execution
+        .as_ref()
+        .is_some_and(|binding| binding.harness.is_portable())
     {
         let source = super::routing::source_on(conn, id, human)?;
-        if source.channel == "conversation"
+        if source.update_id.is_some() {
+            let command: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
+                 WHERE update_id=?1 AND instance_id=?2 AND status='processing'
+                 AND json_extract(payload_json,'$.direct_human_text')=1
+                 AND json_extract(payload_json,'$.message.from.id')=?3",
+                    params![telegram_update, instance, human],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if !command
+                .as_deref()
+                .is_some_and(|command| command.split_whitespace().eq(["/interaction", "retry", id]))
+            {
+                return Ok(false);
+            }
+            epoch =
+                super::routed_portable::telegram_original_epoch(conn, &source, instruction.target)?;
+            if epoch.as_deref()
+                != Some(super::stopping::admission_epoch_on(conn, instruction.target)?.as_str())
+                || super::stopping::fenced_on(conn, instruction.target)?
+                || super::maintenance_writer_held_on(conn, instruction.target)?
+            {
+                return Ok(false);
+            }
+        } else if !paired
+            && instruction
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            && source.channel == "conversation"
             && super::conversation_inputs::read_on(conn, &source.event_id, human)?.paired_actor
         {
             bail!("Only the paired human can requeue this retained original");
@@ -565,7 +600,7 @@ pub(super) fn recover_on(
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
     instruction.native_turn = None;
-    instruction.admission_epoch = None;
+    instruction.admission_epoch = epoch;
     conn.execute(
         "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
         params![id, serde_json::to_string(&instruction)?, instance],
@@ -686,6 +721,43 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let result = admit_on(&tx, source, target, relation, &self.instance_id)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub(crate) fn interaction_admit_portable_topic(
+        &self,
+        source: &crate::interaction::SourceInput,
+        target: SessionKey,
+        route: (
+            crate::interaction::ForegroundEngine,
+            &crate::interaction::MatrixDestination,
+        ),
+    ) -> Result<(crate::interaction::Instruction, bool)> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let result = admit_selected_on(
+            &tx,
+            source,
+            target,
+            crate::interaction::RequestRelation::New,
+            &self.instance_id,
+            None,
+            Some(route),
+        )?;
+        if result.1 {
+            // Once the canonical instruction exists, Telegram dispatch has
+            // finished. A restart must consult the instruction's own phase.
+            let update = source.update_id.context("Missing Telegram original")?;
+            anyhow::ensure!(
+                tx.execute(
+                    "UPDATE incoming_updates SET status='handled',updated_at=?2
+                     WHERE update_id=?1 AND instance_id=?3 AND status='processing'",
+                    params![update, now_string(), self.instance_id],
+                )? == 1,
+                "Portable topic no longer owns this Telegram dispatch"
+            );
+        }
         tx.commit()?;
         Ok(result)
     }
@@ -863,10 +935,15 @@ impl Store {
         Ok(true)
     }
 
-    pub fn interaction_recover(&self, id: &str, human: i64) -> Result<bool> {
+    pub fn interaction_recover(
+        &self,
+        id: &str,
+        human: i64,
+        telegram_update: Option<i64>,
+    ) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let changed = recover_on(&tx, id, human, &self.instance_id, false)?;
+        let changed = recover_on(&tx, id, human, &self.instance_id, false, telegram_update)?;
         tx.commit()?;
         Ok(changed)
     }
@@ -1234,9 +1311,9 @@ mod tests {
                 .phase,
             P::Uncertain
         );
-        assert!(!store.interaction_recover(&unknown.id, 100).unwrap());
-        assert!(store.interaction_recover(&unsent.id, 100).unwrap());
-        assert!(!store.interaction_recover(&unsent.id, 100).unwrap());
+        assert!(!store.interaction_recover(&unknown.id, 100, None).unwrap());
+        assert!(store.interaction_recover(&unsent.id, 100, None).unwrap());
+        assert!(!store.interaction_recover(&unsent.id, 100, None).unwrap());
         let accepted = store
             .interaction_transport(
                 &unknown.id,

@@ -1151,7 +1151,7 @@ mod tests {
                 .as_deref(),
             Some("original")
         );
-        assert!(s.interaction_recover(&i.id, 100).unwrap());
+        assert!(s.interaction_recover(&i.id, 100, None).unwrap());
         s.interaction_bind_epoch(&i.id, 100, "later").unwrap();
         assert_eq!(
             s.interaction_instruction(&i.id, 100)
