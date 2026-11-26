@@ -2288,8 +2288,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(notice.contains("Native execution and delivery are unconfirmed."));
-        assert!(notice.contains("Check the original outcome before retrying."));
+        assert!(notice.contains("Native execution and delivery remain unconfirmed"));
+        assert!(notice.contains("inspect the original before retrying"));
     }
 
     #[test]
