@@ -3,6 +3,7 @@
 mod portable;
 use super::*;
 use anyhow::bail;
+pub(super) use portable::portable_controller_on;
 use serde::{Deserialize, Serialize};
 
 /// Untrusted client media progress attached to one original, never hearing proof.

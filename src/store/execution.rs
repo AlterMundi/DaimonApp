@@ -121,31 +121,42 @@ impl Store {
     ) -> Result<ExecutionBinding> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let binding = binding_on(&tx, key, human)?
+        let mut binding = binding_on(&tx, key, human)?
             .context("Controller conversation is no longer owned")?
             .execution;
-        let native: String = tx
+        let (harness, native): (String, String) = tx
             .query_row(
-                "SELECT t.native_thread_id FROM turns t
+                "SELECT t.execution_harness,t.native_thread_id FROM turns t
                  JOIN conversation_entry_generations g ON g.session_id=t.session_id
                  WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3
                    AND t.status='running' AND t.completed_at IS NULL
-                   AND t.execution_harness=?4 AND t.native_thread_id IS NOT NULL
-                   AND (t.execution_generation IS NULL OR t.execution_generation=g.generation)",
-                params![
-                    local,
-                    binding.conversation_id,
-                    human,
-                    binding.harness.name()
-                ],
-                |row| row.get(0),
+                   AND t.native_thread_id IS NOT NULL
+                   AND (t.execution_generation=g.generation
+                     OR (t.execution_harness='codex' AND t.execution_generation IS NULL))",
+                params![local, binding.conversation_id, human],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
             .context("Controller turn is no longer running")?;
-        anyhow::ensure!(
-            binding.matches(Harness::Codex, &native),
-            "Controller execution or native binding changed"
-        );
+        if harness == Harness::Codex.name() {
+            anyhow::ensure!(
+                binding.matches(Harness::Codex, &native),
+                "Controller execution or native binding changed"
+            );
+        } else {
+            binding.harness = super::conversation_inputs::portable_controller_on(
+                &tx,
+                local,
+                key,
+                human,
+                &self.instance_id,
+            )?;
+            anyhow::ensure!(
+                binding.harness.name() == harness,
+                "Controller harness changed"
+            );
+            binding.native_session = Some(native);
+        }
         tx.commit()?;
         Ok(binding)
     }

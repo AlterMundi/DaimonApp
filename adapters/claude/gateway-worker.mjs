@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -231,7 +232,10 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body'])
+    const controllerSelected = first?.controller === true;
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
+      ...(controllerSelected ? ['controller'] : [])])
+      || (controllerSelected && first.humanOriginal !== true)
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.humanOriginal !== 'boolean'
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
@@ -285,6 +289,51 @@ async function main() {
       command: profile.matrixStatusCommand, expectedBody,
       createSdkMcpServer, tool, signal: stop.signal,
     });
+    const pending = new Map();
+    let nextCall = 0;
+    let committed = false;
+    async function receiveControllerReplies() {
+      try {
+        for await (const reply of input) {
+          if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'callId', 'success', 'text'])
+            || reply.schema !== VERSION || reply.type !== 'controller_reply'
+            || reply.inputId !== first.inputId || reply.sessionId !== first.sessionId
+            || typeof reply.success !== 'boolean' || typeof reply.text !== 'string'
+            || !pending.has(reply.callId)) throw new Error('Invalid controller reply');
+          const resolve = pending.get(reply.callId);
+          pending.delete(reply.callId);
+          resolve({ isError: !reply.success, content: [{ type: 'text', text: reply.text }] });
+        }
+      } finally {
+        stop.abort();
+        for (const resolve of pending.values()) {
+          resolve({ isError: true, content: [{ type: 'text', text: 'Controller result unconfirmed. Inspect retained state.' }] });
+        }
+        pending.clear();
+      }
+    }
+    let controller;
+    if (controllerSelected) {
+      const { z } = createRequire(profile.sdk)('zod');
+      const controllerTool = tool('interaction_controller',
+        'Call the shared Gateway conversation controller. Call capabilities with empty arguments to inspect the available operations.',
+        { operation: z.string().min(1).max(64), arguments: z.record(z.string(), z.unknown()) },
+        async ({ operation, arguments: args }) => {
+          if (!committed || stop.signal.aborted || Buffer.byteLength(JSON.stringify(args)) > 15600) {
+            return { isError: true, content: [{ type: 'text', text: 'Controller call is unavailable for this turn or arguments.' }] };
+          }
+          const callId = ++nextCall;
+          const response = new Promise(resolve => { pending.set(callId, resolve); });
+          try {
+            await writeFrame(process.stdout, { ...correlation, type: 'controller_call', nativeSessionId,
+              callId, operation, arguments: args }, stop.signal);
+          } catch {
+            process.stdin.destroy();
+          }
+          return response;
+        }, { alwaysLoad: true });
+      controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
+    }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
@@ -292,12 +341,12 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
+        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools, controller,
         fullAccess: first.humanOriginal,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,
-          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
+          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length || controller ? 6 : 2,
         }),
         env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
       },
@@ -311,9 +360,10 @@ async function main() {
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
-        // A closed owner pipe or a second command cancels this attempt.
-        void input.next().then(() => stop.abort(), () => stop.abort());
-        return scopeStillActive();
+        // After exposure only exact outstanding replies may arrive on this pipe.
+        void receiveControllerReplies().catch(() => stop.abort());
+        committed = await scopeStillActive();
+        return committed;
       },
     });
     await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);

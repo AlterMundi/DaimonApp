@@ -625,18 +625,39 @@ pub(super) fn tool_owner(
     Ok(())
 }
 
+pub(super) fn tool_owner_for_turn(
+    shared: &AppShared,
+    key: SessionKey,
+    human: i64,
+    request: &crate::execution::ToolInvocation,
+) -> Result<()> {
+    let cfg = routing::profile(shared)?;
+    if cfg.entry() != key || cfg.human_id != human {
+        bail!("Tool is outside the integrating conversation");
+    }
+    let execution = shared
+        .store
+        .controller_execution(request.local_turn, key, human)?;
+    if !execution.matches(request.harness, &request.native_session) {
+        bail!("Controller execution changed");
+    }
+    Ok(())
+}
+
 pub(super) fn tool_call(
     shared: Arc<AppShared>,
     key: SessionKey,
     human: i64,
     request: crate::execution::ToolInvocation,
+    closed: tokio_util::sync::CancellationToken,
 ) -> oneshot::Receiver<crate::execution::ToolReply> {
     let (send, recv) = oneshot::channel();
     tokio::spawn(async move {
         let result: Result<String> = async {
-            tool_owner(&shared,key,human,&request.native_session)?;
+            if closed.is_cancelled() {bail!("Observer invocation closed");}
+            tool_owner_for_turn(&shared,key,human,&request)?;
             if request.tool!="interaction_candidates" || request.namespace.is_some() || request.arguments.to_string().len()>4096 {bail!("Unsupported integrating tool");}
-            let args: CandidateToolArgs = serde_json::from_value(request.arguments)?;
+            let args: CandidateToolArgs = serde::Deserialize::deserialize(&request.arguments)?;
             let cfg=routing::profile(&shared)?;
             if args.selectors.len()>5 {bail!("Too many selected candidates");}
             let mut selected = vec![];
@@ -688,7 +709,8 @@ pub(super) fn tool_call(
                 _ => bail!("Use inventory, inspect or refresh with one to five selectors; support requires one selector"),
             };
             // The entry may have been rebound or revoked while source reads ran.
-            tool_owner(&shared,key,human,&request.native_session)?;
+            if closed.is_cancelled() {bail!("Observer invocation closed");}
+            tool_owner_for_turn(&shared,key,human,&request)?;
             Ok(text)
         }.await;
         let result = match result {

@@ -106,6 +106,34 @@ fn admitted_on(conn: &Connection, input: &ConversationInput, writer: &str) -> Re
         )?)
 }
 
+pub(in crate::store) fn portable_controller_on(
+    conn: &Connection,
+    local: i64,
+    key: SessionKey,
+    human: i64,
+    writer: &str,
+) -> Result<Harness> {
+    let id: String = conn
+        .query_row(
+            "SELECT id FROM conversation_inputs WHERE local_turn=?1 AND human_id=?2
+         AND instance_id=?3 AND phase='sending' AND retired=0
+         AND json_type(doc,'$.portable')='object'",
+            params![local, human, writer],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("Controller original is unavailable for this attempt")?;
+    let input = read_on(conn, &id, human)?;
+    anyhow::ensure!(
+        input.entry == key && admitted_on(conn, &input, writer)?,
+        "Controller original or admission changed"
+    );
+    Ok(input
+        .portable
+        .context("Portable selection unavailable")?
+        .harness)
+}
+
 pub(super) fn recover_retired_writer(conn: &Connection, writer: &str) -> Result<()> {
     conn.execute(
         "UPDATE turns SET status='failed',completed_at=?2

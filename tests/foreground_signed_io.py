@@ -230,6 +230,7 @@ operator.main()
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
                 provider.paired_human = direct
+                provider.controller = direct
                 if engine == "claude":
                     provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
@@ -458,7 +459,7 @@ timeout_seconds=5
             provider.current = request["id"]
             submit(request, fresh=True)
             self.assertIn(ANSWER, readback(request))
-            self.assertEqual(provider.calls, [request["id"]] * 2)
+            self.assertEqual(provider.calls, [request["id"]] * 4)
             provider.previous_session = journey.row(
                 "SELECT t.native_thread_id FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
                 "WHERE c.id=? AND t.execution_harness='claude' AND t.status='completed'",
@@ -468,7 +469,7 @@ timeout_seconds=5
             journey.start()
             journey.wait_control_socket(journey.socket)
             self.assertEqual(submit(request, fresh=False)["phase"], "claude_replied")
-            self.assertEqual(provider.calls, [request["id"]] * 2)
+            self.assertEqual(provider.calls, [request["id"]] * 4)
             # Simulate first Codex initialization of this logical conversation.
             # This uses the real generation triggers and performs no native work.
             with sqlite3.connect(journey.root / "state.sqlite") as db:
@@ -504,7 +505,7 @@ timeout_seconds=5
                 "SELECT t.assistant_text FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
                 "WHERE c.id=? AND t.execution_harness='claude' AND t.status='completed'",(followup["id"],)
             ), [(provider.followup_answer,)])
-            self.assertEqual(provider.calls, [request["id"], request["id"], followup["id"]])
+            self.assertEqual(provider.calls, [request["id"]] * 4 + [followup["id"]])
             provider.original = "Fixture input whose provider result will remain unconfirmed."
             interrupted = dict(request, id=str(uuid.uuid4()), text=provider.original)
             provider.current = interrupted["id"]

@@ -88,6 +88,7 @@ pub(super) async fn run_selected(
             text: &text,
             body,
             cancel: &app.shared.shutdown,
+            controller: None,
         },
         |prepared| {
             if app.shared.shutdown.is_cancelled() {

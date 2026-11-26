@@ -5,6 +5,7 @@ import json
 
 
 TOOL = "mcp__matrix__daimon_status"
+CONTROLLER = "mcp__gateway__interaction_controller"
 DMK = ["mcp__hmk__dmk_recall", "mcp__hmk__hmk_recall"]
 FOUNDATION = "mcp__matrix_foundation__fixture_read"
 ANSWER = "The selected Matrix body reported integrity ok."
@@ -43,6 +44,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             foundation_tools += [f"mcp__matrix_foundation__{name}" for name in extra_foundation]
             host_tools = getattr(self.server, "host_tools", [])
             expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools + host_tools
+            controller = getattr(self.server, "controller", False)
+            if controller:
+                expected.append(CONTROLLER)
             by_name = {tool["name"]: tool for tool in data["tools"]}
             if extra_foundation:
                 expected = [name for name in expected if name not in foundation_tools]
@@ -53,6 +57,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert all(not by_name[name].get("defer_loading") for name in (DMK if memory else []))
             assert sorted(by_name) == sorted(expected), sorted(by_name)
             steps = [(DMK[0], memory, self.server.dmk_marker) if memory else (TOOL, {}, self.server.body)]
+            if controller:
+                steps.append((CONTROLLER, {"operation": "capabilities", "arguments": {}},
+                              "telecodex.interaction-controller/v1"))
+                steps.append((CONTROLLER, {"operation": "candidates",
+                                           "arguments": {"mode": "inventory", "selectors": []}},
+                              "observer_candidate_inventory"))
             if skill:
                 steps.append(("Skill", {"skill": skill}, self.server.skill_marker))
             if foundation:

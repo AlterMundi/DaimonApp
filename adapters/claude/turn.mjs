@@ -104,6 +104,10 @@ export async function runClaudeTurn({
       expected.push({ name: 'matrix_foundation', source: 'dynamic', tools: profile.matrixFoundation.tools });
       mcpServers.matrix_foundation = profile.matrixFoundation.server;
     }
+    if (profile.controller) {
+      expected.push({ name: 'gateway', source: 'sdk', tools: ['interaction_controller'] });
+      mcpServers.gateway = profile.controller;
+    }
     const sharedSkills = profile.sharedSkills;
     const hostTools = profile.hostTools ?? [];
     const foundationSearch = (profile.matrixFoundation?.tools.length ?? 0) >= TOOL_SEARCH_MIN_CATALOG;

@@ -214,6 +214,7 @@ mod tests {
                 .unwrap()
         );
         let claude = store.begin_portable_turn(&input, &request).unwrap();
+        assert!(store.controller_execution(claude, key, 100).is_err());
         let latest = || {
             store
                 .interaction_observation(key, 100)
@@ -250,10 +251,16 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(latest()[0].phase, "sending");
+        let execution = store.controller_execution(claude, key, 100).unwrap();
+        let native = prepared["native_session_id"].as_str().unwrap();
+        assert!(execution.matches(crate::execution::Harness::Claude, native));
+        assert!(!execution.matches(crate::execution::Harness::Codex, native));
+        assert!(store.controller_execution(claude, key, 101).is_err());
         store
             .finish_portable_turn(&input, claude, None, false)
             .unwrap();
         assert_eq!(latest()[0].phase, "claude_unconfirmed");
+        assert!(store.controller_execution(claude, key, 100).is_err());
         store.set_session_codex_thread(key, "replacement").unwrap();
         assert!(
             latest()

@@ -1,6 +1,9 @@
 //! Native worker protocol shared by the Gateway's foreground entrypoints.
-use crate::interaction::ForegroundEngine;
 use crate::store::{ClaudeContinuation, valid_claude_scope};
+use crate::{
+    execution::{Harness, ToolInvocation},
+    interaction::ForegroundEngine,
+};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -12,6 +15,14 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub text: &'a str,
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
+    pub controller: Option<WorkerController<'a>>,
+}
+
+pub(in crate::app) struct WorkerController<'a> {
+    app: &'a super::App,
+    key: crate::models::SessionKey,
+    human: i64,
+    local_turn: i64,
 }
 
 #[cfg(unix)]
@@ -50,7 +61,7 @@ pub(in crate::app) async fn execute_worker(
         session: &str,
     ) -> Result<Value> {
         let mut frame = Vec::new();
-        let length = output.read_until(b'\n', &mut frame).await?;
+        let length = output.take(528_385).read_until(b'\n', &mut frame).await?;
         anyhow::ensure!(
             length > 0 && frame.last() == Some(&b'\n'),
             "Unconfirmed native worker frame"
@@ -77,6 +88,7 @@ pub(in crate::app) async fn execute_worker(
         text,
         body,
         cancel,
+        controller,
     } = turn;
     anyhow::ensure!(
         !cancel.is_cancelled(),
@@ -94,6 +106,8 @@ pub(in crate::app) async fn execute_worker(
     child_command.as_std_mut().process_group(0);
     let mut child = child_command.spawn().context("native worker unavailable")?;
     let group = OwnedProcessGroup(child.id().context("Missing native worker process")?);
+    let controller_closed = cancel.child_token();
+    let lease = controller_closed.clone().drop_guard();
     let exchange = tokio::time::timeout(Duration::from_secs(130), async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
         let mut output = BufReader::new(
@@ -101,14 +115,16 @@ pub(in crate::app) async fn execute_worker(
                 .stdout
                 .take()
                 .context("Missing native worker output")?,
-        )
-        .take(528_385);
+        );
         let mut start = json!({"schema":schema,"type":"start","inputId":id,
             "sessionId":session,"text":text,"body":body});
         if engine == ForegroundEngine::Claude {
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume);
             start["humanOriginal"] = json!(human_original);
+            if controller.is_some() {
+                start["controller"] = json!(true);
+            }
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
@@ -160,6 +176,58 @@ pub(in crate::app) async fn execute_worker(
             .await?;
             frame = receive(&mut output, schema, id, session).await?;
         }
+        let mut next_call = 1;
+        while frame["type"] == "controller_call" {
+            let owner = controller
+                .as_ref()
+                .context("Worker has no controller access")?;
+            let native = native_session
+                .as_ref()
+                .context("Worker has no recorded execution")?;
+            anyhow::ensure!(
+                frame.as_object().is_some_and(|object| object.len() == 8)
+                    && frame["nativeSessionId"] == *native
+                    && frame["callId"].as_u64() == Some(next_call)
+                    && frame["operation"]
+                        .as_str()
+                        .is_some_and(|name| name.len() <= 64)
+                    && frame["arguments"].is_object()
+                    && frame["arguments"].to_string().len() <= 15600,
+                "Invalid native controller call"
+            );
+            let request = ToolInvocation {
+                local_turn: owner.local_turn,
+                harness: Harness::Claude,
+                native_session: native.clone(),
+                native_turn: id.to_owned(),
+                tool: "interaction_controller".into(),
+                namespace: None,
+                arguments: json!({"operation":frame["operation"],"arguments":frame["arguments"]}),
+            };
+            let reply = super::dialogue::tool_call(
+                owner.app.clone(),
+                owner.key,
+                owner.human,
+                request,
+                controller_closed.clone(),
+            )
+            .await
+            .context("Native controller result unavailable; inspect retained effects")?;
+            let mut response = json!({"schema":schema,"type":"controller_reply",
+                "inputId":id,"sessionId":session,"callId":next_call,
+                "success":reply.success,"text":reply.text});
+            // Bound the encoded line, including escaped text, to the reader's
+            // frame limit. Do not convert a retained result into a turn abort.
+            if serde_json::to_vec(&response)?.len() > 128 * 1024 {
+                response["success"] = json!(false);
+                response["text"] = json!(
+                    "Controller result exceeds the worker frame. Inspect a smaller selection."
+                );
+            }
+            send(&mut input, response).await?;
+            next_call += 1;
+            frame = receive(&mut output, schema, id, session).await?;
+        }
         let outcome = frame["outcome"].take();
         anyhow::ensure!(
             frame["type"] == "outcome"
@@ -189,6 +257,7 @@ pub(in crate::app) async fn execute_worker(
         _ = cancel.cancelled() => Err(anyhow::anyhow!("Native worker cancelled")),
         result = exchange => result.context("native worker deadline").and_then(|outcome| outcome),
     };
+    drop(lease);
     drop(group);
     let _ = child.wait().await;
     result
@@ -261,6 +330,13 @@ pub(super) async fn run_portable_turn(
                 text: &input.text,
                 body: body.clone(),
                 cancel: &cancel,
+                controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
+                    .then_some(WorkerController {
+                        app,
+                        key: request.session_key,
+                        human: input.human,
+                        local_turn: local,
+                    }),
             },
             |prepared| {
                 if cancel.is_cancelled() {

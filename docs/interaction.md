@@ -221,6 +221,17 @@ generation and attempt phase. This evidence comes from the same snapshot as
 the rest of the card. It does not start an observer job, query a provider, or
 turn retained activity into a native goal or liveness claim.
 
+For a direct Claude turn in the configured integrating conversation, the
+native SDK catalog includes the shared `interaction_controller` tool. Install
+the selected Claude Agent SDK with its declared Zod 4 peer beside the SDK
+module. The worker broker uses the existing private turn pipes. Gateway exposes
+the tool for the selected role and verifies the original durable exposure,
+owner, harness, generation and native session before applying its common
+controller handlers. Start with `capabilities` to see the operations actually
+implemented for the running adapter. A signed Matrix-only foreground worker
+uses its own existing Matrix catalog and cannot acquire a Gateway controller
+from its message text.
+
 Qualify a mixed set of conversations with one harness on the integrating role
 and another on a worker. Inspect the worker, dispatch an existing retained
 human original, observe the useful attributed result, then repeat with the roles
