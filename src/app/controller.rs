@@ -158,20 +158,23 @@ pub(super) async fn command(app: &App, human: i64, raw: &str) -> Result<Value> {
     if human != lease.human || lease.closed.is_cancelled() {
         bail!("Live controller access closed");
     }
-    let native = app
+    let execution = app
         .shared
         .store
-        .controller_native_turn(lease.local_turn, lease.key, human)?;
+        .controller_execution(lease.local_turn, lease.key, human)?;
+    let native = execution
+        .native_session
+        .context("Controller execution has no native session")?;
     let physical = lease
         .physical
         .lock()
         .expect("physical turn poisoned")
         .clone()
         .context("Native turn has not started")?;
-    let request = crate::codex::DynamicToolRequest {
-        thread_id: native,
-        turn_id: physical,
-        call_id: Uuid::now_v7().to_string(),
+    let request = crate::execution::ToolInvocation {
+        harness: execution.harness,
+        native_session: native,
+        native_turn: physical,
         tool: "interaction_controller".into(),
         namespace: None,
         arguments: json!({"operation":call.operation,"arguments":call.arguments}),
@@ -183,4 +186,5 @@ pub(super) async fn command(app: &App, human: i64, raw: &str) -> Result<Value> {
         .await
         .context("Controller outcome unavailable; inspect retained state before recovery")?
         .context("Controller response closed")
+        .map(crate::codex::encode_tool_reply)
 }

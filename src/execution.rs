@@ -34,3 +34,26 @@ impl ExecutionBinding {
         self.harness == harness && self.native_session.as_deref() == Some(native_session)
     }
 }
+
+/// An adapter supplies these coordinates after correlating its active turn.
+/// Tool arguments cannot choose the harness, native session or native turn.
+pub(crate) struct ToolInvocation {
+    pub harness: Harness,
+    pub native_session: String,
+    pub native_turn: String,
+    pub tool: String,
+    pub namespace: Option<String>,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub(crate) struct ToolReply {
+    pub success: bool,
+    pub text: String,
+}
+
+impl ToolReply {
+    pub(crate) fn new(success: bool, text: String) -> Self {
+        Self { success, text }
+    }
+}

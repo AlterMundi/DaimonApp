@@ -513,7 +513,7 @@ pub(super) async fn live_task_tool(
     app: &App,
     key: SessionKey,
     human: i64,
-    request: &crate::codex::DynamicToolRequest,
+    request: &crate::execution::ToolInvocation,
     operation: &str,
     args: serde_json::Value,
     closed: &CancellationToken,
@@ -542,8 +542,8 @@ pub(super) async fn live_task_tool(
         key,
         human,
         local,
-        native: &request.thread_id,
-        physical: &request.turn_id,
+        native: &request.native_session,
+        physical: &request.native_turn,
         integrator,
     };
     match operation {
@@ -557,7 +557,7 @@ pub(super) async fn live_task_tool(
                 key,
                 human,
                 local,
-                &request.thread_id,
+                &request.native_session,
                 &serde_json::to_vec(&args)?,
                 Some((&actor, closed)),
             )

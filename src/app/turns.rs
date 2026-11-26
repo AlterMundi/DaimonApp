@@ -1177,7 +1177,7 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::DynamicToolRequest {request,closed} => {
-                                Ok(CodexEventOutcome::DynamicTool(super::dialogue::tool_call(routing_app.clone(),session_key,requester_user_id,request,closed)))
+                                Ok(CodexEventOutcome::DynamicTool(super::dialogue::tool_call(routing_app.clone(),session_key,requester_user_id,request.into_gateway(),closed)))
                             }
                             CodexEvent::UserInputRequest {
                                 id,

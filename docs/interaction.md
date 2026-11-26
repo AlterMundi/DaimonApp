@@ -175,6 +175,13 @@ session and generation records. The Observer and live controller check the
 same ownership and binding. An old thread retained while a conversation is
 reset remains historical evidence without conferring execution authority.
 
+Controller handlers receive a Gateway tool invocation, with the harness,
+native session and native turn supplied by the receiving adapter. A tool's
+arguments cannot replace those coordinates. Match the owned execution before
+applying the existing operation-specific checks. Codex still correlates and
+deduplicates the native call and encodes the result in its own wire format.
+The existing owner-socket controller keeps its compatible response format.
+
 The compatibility reader does not change routing or create a new native
 workspace. Subsequent adapters should feed the same Gateway binding and attempt
 lifecycle. Keep API projections and recovery keyed to the original execution
