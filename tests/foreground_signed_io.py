@@ -102,13 +102,8 @@ exec {shlex.quote(executable)} "$@"
     extensions = {name: {"name": name, "type": "platform", "enabled": False}
                   for name in ("developer", "extensionmanager", "summon", "tom", "todo", "summarize")}
     (home / "config.yaml").write_text(json.dumps({"extensions": extensions}))
-    wrapper = root / "goose-loopback"
-    wrapper.write_text(f"""#!/bin/sh
-export OPENAI_HOST=http://127.0.0.1:{port}
-exec {shlex.quote(executable)} "$@"
-""")
-    wrapper.chmod(0o700)
-    config.update(binary=str(wrapper), cwd=str(root), provider="openai", providerKeyFile=str(key))
+    config.update(binary=executable, cwd=str(root), provider="openai", providerKeyFile=str(key),
+                  providerPort=port)
     worker = foreground.ROOT / "adapters/acp/gateway-worker.mjs"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
