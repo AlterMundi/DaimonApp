@@ -23,7 +23,10 @@ fn entry_inputs_query(
     committed: bool,
     preparing_local: Option<i64>,
 ) -> Result<Vec<crate::telegram::Update>> {
-    let mut query=conn.prepare("SELECT i.payload_json FROM incoming_updates i JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id JOIN bot_state captured ON captured.key='stop_input_epoch:'||i.update_id LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND t.from_user_id=?3 AND s.codex_thread_id=?4 AND (t.native_thread_id=?4 OR (t.id=?7 AND t.native_thread_id IS NULL AND t.status='running')) AND (i.status IN ('started','settled','steering') OR (?6=1 AND i.status='undetermined' AND EXISTS(SELECT 1 FROM interaction_creations c WHERE c.human_id=?3 AND c.entry_chat=?1 AND c.entry_topic=?2 AND c.input_update=i.update_id))) AND json_extract(i.payload_json,'$.message.from.id')=?3 AND json_extract(i.payload_json,'$.message.chat.id')=?1 AND json_extract(i.payload_json,'$.message.message_thread_id')=?2 AND (json_type(i.payload_json,'$.message.text')='text' OR EXISTS(SELECT 1 FROM interaction_voice_inputs v WHERE v.update_id=i.update_id AND v.human_id=?3 AND v.phase='committed')) AND captured.value=COALESCE(current.value,'initial') AND (?5 IS NULL OR i.update_id=?5) ORDER BY i.update_id DESC LIMIT 12")?;
+    let mut query=conn.prepare("SELECT i.payload_json FROM incoming_updates i JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id JOIN bot_state captured ON captured.key='stop_input_epoch:'||i.update_id LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND t.from_user_id=?3 AND s.codex_thread_id=?4 AND (t.native_thread_id=?4 OR (t.id=?7 AND t.native_thread_id IS NULL AND t.status='running')) AND (i.status IN ('started','settled','steering') OR (i.status='undetermined' AND EXISTS(
+        SELECT 1 FROM native_input_receipts n WHERE n.update_id=i.update_id
+        AND n.native_thread=?4 AND n.native_turn!=''))
+        OR (?6=1 AND i.status='undetermined' AND EXISTS(SELECT 1 FROM interaction_creations c WHERE c.human_id=?3 AND c.entry_chat=?1 AND c.entry_topic=?2 AND c.input_update=i.update_id))) AND json_extract(i.payload_json,'$.message.from.id')=?3 AND json_extract(i.payload_json,'$.message.chat.id')=?1 AND json_extract(i.payload_json,'$.message.message_thread_id')=?2 AND (json_type(i.payload_json,'$.message.text')='text' OR EXISTS(SELECT 1 FROM interaction_voice_inputs v WHERE v.update_id=i.update_id AND v.human_id=?3 AND v.phase='committed')) AND captured.value=COALESCE(current.value,'initial') AND (?5 IS NULL OR i.update_id=?5) ORDER BY i.update_id DESC LIMIT 12")?;
     let rows = query.query_map(
         params![
             key.chat_id,
@@ -578,7 +581,7 @@ mod tests {
                 .unwrap();
             targets.push((key, s.id));
         }
-        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"The exact original human input"}})).unwrap();
+        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"direct_human_text":true,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"The exact original human input"}})).unwrap();
         store.admit_update(&update).unwrap();
         store.begin_update(20).unwrap();
         store.mark_update_queued(20).unwrap();
@@ -623,7 +626,7 @@ mod tests {
         let mut source = SourceInput {
             tribu_source: None,
             transcription: None,
-            channel: "telegram:fixture".into(),
+            channel: "telegram:123".into(),
             event_id: "20".into(),
             update_id: Some(20),
             human_id: 100,
@@ -635,6 +638,70 @@ mod tests {
             },
             text: "The exact original human input".into(),
         };
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE incoming_updates SET status='undetermined' WHERE update_id=20",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO bot_state(key,value) VALUES('telegram_identity','{\"id\":123}')",
+                [],
+            )
+            .unwrap();
+            let routed_epoch = || {
+                super::super::routed_portable::telegram_original_epoch(&conn, &source, targets[0].0)
+                    .unwrap()
+            };
+            assert!(
+                routed_epoch().is_none(),
+                "An uncertain original has no routing authority"
+            );
+            conn.execute(
+                "INSERT INTO native_input_receipts VALUES(20,'wrong-thread','native-turn','now')",
+                [],
+            )
+            .unwrap();
+            assert!(
+                routed_epoch().is_none(),
+                "A receipt from another thread is insufficient"
+            );
+            conn.execute(
+                "UPDATE native_input_receipts SET native_thread='entry-native' WHERE update_id=20",
+                [],
+            )
+            .unwrap();
+            assert!(
+                routed_epoch().is_some(),
+                "An accepted original can be routed after restart"
+            );
+            let (target, target_id) = targets[0];
+            let mut selected = source.clone();
+            selected.target_sessions = vec![target_id];
+            let body = crate::interaction::MatrixDestination::Body {
+                being_ref: "fixture-being".into(),
+                embodiment_id: "fixture-claude".into(),
+            };
+            let tx = conn.unchecked_transaction().unwrap();
+            let (instruction, fresh) = super::super::interaction::admit_selected_on(
+                &tx,
+                &selected,
+                target,
+                RequestRelation::New,
+                &store.instance_id,
+                None,
+                Some((crate::interaction::ForegroundEngine::Claude, &body)),
+            )
+            .unwrap();
+            assert!(fresh);
+            assert_eq!(instruction.origin, selected.origin);
+            assert_eq!(
+                instruction.target_execution.unwrap().harness,
+                crate::execution::Harness::Claude
+            );
+            tx.rollback().unwrap();
+        }
         let invalid = [
             (targets[0].0, RequestRelation::New),
             (

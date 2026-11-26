@@ -592,7 +592,7 @@ timeout_seconds=5
                 "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
             })
             journey.wait(lambda: journey.has("Forwarded messages and attachments", 7))
-            journey.command("/retry 1", "Use /interrupt", topic=7)
+            journey.command("/retry 1", "to stop the current turn", topic=7)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
                                          (str(forwarded),)), [(0,)])
             self.assertEqual(journey.native_turns, native_turns)
@@ -608,6 +608,10 @@ timeout_seconds=5
                 provider.human_original = str(journey.sequence + 1)
             update = journey.admit(selected, topic=7)
             self.assertEqual(str(update), provider.human_original)
+            journey.wait(lambda: journey.row(
+                "SELECT count(*) FROM turns WHERE execution_harness='claude' AND status='running'"
+            ) == [(1,)])
+            journey.command("/status", "Claude Code is working on a message.", topic=7)
             journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
             launcher.write_text(startup)
             self.assertIsNone(provider.failure)

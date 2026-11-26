@@ -779,9 +779,9 @@ impl App {
                     routing::handle(self, &message, from.id, text).await?;
                     return Ok(());
                 }
-                if normalize_command(text, self.shared.bot_username().as_deref())
-                    .is_some_and(|(command, _)| matches!(command.as_str(), "/interrupt" | "/stop"))
-                {
+                if normalize_command(text, self.shared.bot_username().as_deref()).is_some_and(
+                    |(command, _)| matches!(command.as_str(), "/status" | "/interrupt" | "/stop"),
+                ) {
                     self.dispatch_command_text(&user, &message, text).await?;
                     return Ok(());
                 }
@@ -1481,6 +1481,36 @@ impl App {
                         .await?;
                     } else {
                         let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
+                        if let Some((engine, _)) = self
+                            .shared
+                            .config
+                            .interaction
+                            .as_ref()
+                            .and_then(|profile| profile.portable_route(session_key))
+                        {
+                            let (running, queued) = self.shared.store.routed_portable_status(
+                                session.id,
+                                user.tg_user_id,
+                                engine.name(),
+                            )?;
+                            let harness = match engine {
+                                crate::interaction::ForegroundEngine::Claude => "Claude Code",
+                                crate::interaction::ForegroundEngine::Antigravity => "Antigravity",
+                                crate::interaction::ForegroundEngine::Goose => "Goose",
+                            };
+                            let activity = if running {
+                                "working on a message"
+                            } else {
+                                "idle"
+                            };
+                            self.send_status(
+                                message.chat.id,
+                                message.message_thread_id,
+                                &format!("{harness} is {activity}. Messages waiting: {queued}."),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
                         let uncertain = self
                             .shared
                             .store
