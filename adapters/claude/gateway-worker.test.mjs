@@ -127,7 +127,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
-        'companion-after-human', 'companion-resume', 'owner-default',
+        'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       let restrictedScope;
       let hostScope;
@@ -160,12 +160,17 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = decision === 'companion-after-human' ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
-          const expectedSession = decision === 'companion-resume' ? priorSessionId : nativeSessionId;
+          const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
+          const hasAlternate = decision === 'companion-selected-resume';
+          const expectedSession = hasAlternate ? alternateId
+            : decision === 'companion-resume' ? priorSessionId : nativeSessionId;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
-            resume, humanOriginal, text, body }) + '\n');
+            resume, humanOriginal, text, body,
+            ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
+          }) + '\n');
           const first = JSON.parse((await lines.next()).value);
           if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
             assert.deepEqual(first, { ...correlation, type: 'outcome',
@@ -192,7 +197,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'owner-default'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }

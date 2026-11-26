@@ -315,7 +315,13 @@ async function main() {
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
     const fullAccess = first?.humanOriginal === true || routedHostAccess;
+    const alternates = Object.hasOwn(first ?? {}, 'resumeAlternates') ? first.resumeAlternates : [];
+    const validResume = prior => closed(prior, ['sessionId', 'scope'])
+      && typeof prior.sessionId === 'string' && UUID.test(prior.sessionId)
+      && prior.sessionId !== first.freshNativeSessionId
+      && typeof prior.scope === 'string' && /^[a-f0-9]{64}$/.test(prior.scope);
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
+      ...(Object.hasOwn(first ?? {}, 'resumeAlternates') ? ['resumeAlternates'] : []),
       ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(attachments === undefined ? [] : ['attachments']),
@@ -330,10 +336,8 @@ async function main() {
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
         .every(value => typeof value === 'string' && UUID.test(value))
       || first.freshNativeSessionId === first.sessionId
-      || (first.resume !== null && (!closed(first.resume, ['sessionId', 'scope'])
-        || typeof first.resume.sessionId !== 'string' || !UUID.test(first.resume.sessionId)
-        || first.resume.sessionId === first.freshNativeSessionId
-        || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
+      || (first.resume !== null && !validResume(first.resume))
+      || !Array.isArray(alternates) || alternates.length > 7 || !alternates.every(validResume)
       || (attachments !== undefined && (first.humanOriginal !== true || nativeGoalCommand
         || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
         || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
@@ -383,8 +387,9 @@ async function main() {
       if (executable) sharedDmkWriter = command;
     }
     const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, sessionInstructions);
-    const resume = first.resume?.scope === scope;
-    const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
+    const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
+    const resume = previous !== undefined;
+    const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;

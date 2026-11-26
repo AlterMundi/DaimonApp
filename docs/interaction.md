@@ -253,6 +253,15 @@ its attributed result. The integrating turn reads visible returns through the
 existing `conversation` and `conversation_part` readers. Selection of a different
 original, a rebind or an admission fence cannot extend this turn's authority.
 
+Routed Claude turns keep separate continuation candidates for their effective
+authorization scopes. A turn resumes only the candidate that matches its
+current scope and authenticated being, embodiment and incarnation. A change
+to the signed roster alone preserves that incarnation's native history. A
+known quota rejection before work leaves the last completed candidate usable.
+An uncertain turn or a missing resume target protects the affected history
+from implicit replay. Session-authored dependencies use the parent admission
+epoch and remain attributed when routed into a portable topic.
+
 An owner can set the harness on an explicit target to Claude, Goose or
 Antigravity and enable direct routing on that harness's configured foreground
 worker. Gateway retains the harness and signed body on the target instruction

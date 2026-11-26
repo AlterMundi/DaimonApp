@@ -93,6 +93,59 @@ pub(super) fn admit_selected_on(
         &crate::interaction::MatrixDestination,
     )>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
+    admit_selected_with_origin_on(
+        tx, source, target, relation, instance, portable, route, None,
+    )
+}
+
+pub(super) fn admit_local_session_on(
+    tx: &Connection,
+    source: &crate::interaction::SourceInput,
+    target: SessionKey,
+    relation: crate::interaction::RequestRelation,
+    instance: &str,
+    route: Option<(
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    )>,
+    parent_epoch: &str,
+) -> Result<(crate::interaction::Instruction, bool)> {
+    anyhow::ensure!(
+        matches!(
+            source.channel.as_str(),
+            "local-session" | "local-session-result"
+        ) && source.update_id.is_none()
+            && source.tribu_source.is_none()
+            && source.transcription.is_none()
+            && source.telegram_files.is_empty(),
+        "Invalid attributed local session source"
+    );
+    admit_selected_with_origin_on(
+        tx,
+        source,
+        target,
+        relation,
+        instance,
+        None,
+        route,
+        Some(parent_epoch),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_selected_with_origin_on(
+    tx: &Connection,
+    source: &crate::interaction::SourceInput,
+    target: SessionKey,
+    relation: crate::interaction::RequestRelation,
+    instance: &str,
+    portable: Option<&super::ConversationInput>,
+    route: Option<(
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    )>,
+    parent_epoch: Option<&str>,
+) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
         tx,
@@ -190,7 +243,7 @@ pub(super) fn admit_selected_on(
             bail!("Voice input does not match committed interpretation");
         }
     }
-    let mut source_epoch = None;
+    let mut source_epoch = parent_epoch.map(str::to_owned);
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
         if route.is_some() {
@@ -221,7 +274,7 @@ pub(super) fn admit_selected_on(
             bail!("Canonical routing source does not match its original");
         }
     }
-    if route.is_some() && source.channel != "conversation" {
+    if route.is_some() && source.channel != "conversation" && parent_epoch.is_none() {
         source_epoch = Some(
             super::routed_portable::telegram_original_epoch(tx, source, target)?
                 .context("Portable Telegram source does not match its retained original")?,

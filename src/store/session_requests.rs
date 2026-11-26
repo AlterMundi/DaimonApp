@@ -221,7 +221,16 @@ impl Store {
         if current_epoch(&tx, human)? != epoch || closed.is_cancelled() {
             return Err(anyhow!("Parent admission retired or closed"));
         }
-        let target_id:i64=tx.query_row("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND s.codex_thread_id IS NOT NULL",params![target.chat_id,target.thread_id,human],|r|r.get(0))?;
+        let route = config
+            .and_then(|cfg| cfg.portable_route(target))
+            .map(|(engine, worker)| (engine, &worker.transport.source));
+        let target_id: i64 = tx.query_row(
+            "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
+             AND (?4 OR s.codex_thread_id IS NOT NULL)",
+            params![target.chat_id, target.thread_id, human, route.is_some()],
+            |r| r.get(0),
+        )?;
         let raw: String = tx.query_row(
             "SELECT doc FROM interaction_sources WHERE id=?",
             [&p.input_id],
@@ -264,16 +273,14 @@ impl Store {
         if existing.is_none() && count >= 4 {
             return Err(anyhow!("Human parent dependency budget exhausted"));
         }
-        let (mut i, fresh) = super::interaction::admit_selected_on(
+        let (mut i, fresh) = super::interaction::admit_local_session_on(
             &tx,
             &source,
             target,
             RequestRelation::New,
             &self.instance_id,
-            None,
-            config
-                .and_then(|cfg| cfg.portable_route(target))
-                .map(|(engine, worker)| (engine, &worker.transport.source)),
+            route,
+            epoch,
         )?;
         if let Some((raw, phase)) = existing {
             let mut call: SessionRequest = serde_json::from_str(&raw)?;
@@ -508,16 +515,16 @@ impl Store {
             origin: parent.origin.clone(),
             text,
         };
-        let (mut i, fresh) = super::interaction::admit_selected_on(
+        let (mut i, fresh) = super::interaction::admit_local_session_on(
             &tx,
             &source,
             call.caller,
             RequestRelation::Context(parent.requests),
             &self.instance_id,
-            None,
             config
                 .and_then(|cfg| cfg.portable_route(call.caller))
                 .map(|(engine, worker)| (engine, &worker.transport.source)),
+            &call.epoch,
         )?;
         if !fresh {
             return Err(anyhow!("Unattributed local result source"));
@@ -632,6 +639,75 @@ mod tests {
         .unwrap()
         .remove(0)
     }
+    #[test]
+    fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let caller = setup(&store, 7);
+        let target = store
+            .ensure_session(
+                SessionKey::new(100, Some(8)),
+                100,
+                &super::super::tests::defaults(),
+            )
+            .unwrap();
+        let instruction = parent(&store, &caller);
+        let profile: crate::interaction::InteractionConfig = serde_json::from_value(json!({
+            "human_id":100,"chat_id":100,"topic_id":7,
+            "targets":[{"topic_id":8,"name":"Design","harness":"claude"}],
+            "claude_foreground":{"interaction_direct":true,"worker_command":["/fixture/claude"],
+                "transport":{"command":["/fixture/matrix"],"timeout_seconds":5,
+                    "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
+        }))
+        .unwrap();
+        let (_, delivered, fresh) = store
+            .interaction_session_request_scoped(
+                caller.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &instruction.id,
+                "context",
+                target.key,
+                "A scoped context handoff",
+                &Default::default(),
+                None,
+                Some(&profile),
+            )
+            .unwrap();
+        assert!(fresh);
+        assert_eq!(
+            delivered.target_execution.as_ref().unwrap().harness,
+            crate::execution::Harness::Claude
+        );
+        assert_eq!(delivered.admission_epoch.as_deref(), Some("initial"));
+        assert_eq!(
+            store
+                .interaction_author(&delivered.id, 100)
+                .unwrap()
+                .unwrap()["kind"],
+            "session_request"
+        );
+        let (_, host_access) = store
+            .begin_routed_portable(
+                &delivered,
+                &TurnRequest {
+                    session_key: target.key,
+                    from_user_id: 100,
+                    prompt: delivered.text.clone(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        assert!(
+            !host_access,
+            "Context delivery must keep session authorship and scoped tools"
+        );
+    }
+
     #[test]
     fn local_dependency_is_attributed_idempotent_bounded_and_returns_to_logical_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();

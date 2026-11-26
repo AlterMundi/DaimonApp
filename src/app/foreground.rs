@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 pub(in crate::app) struct WorkerTurn<'a> {
     pub id: &'a str,
     pub session: &'a str,
-    pub resume: Option<&'a ClaudeContinuation>,
+    pub resume: &'a [ClaudeContinuation],
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
@@ -157,7 +157,10 @@ pub(in crate::app) async fn execute_worker(
                 start["sessionInstructions"] = json!(instructions);
             }
             start["freshNativeSessionId"] = json!(fresh_native);
-            start["resume"] = json!(resume);
+            start["resume"] = json!(resume.first());
+            if resume.len() > 1 {
+                start["resumeAlternates"] = json!(&resume[1..]);
+            }
             start["humanOriginal"] = json!(human_original);
             if native_goal_command {
                 start["nativeGoalCommand"] = json!(true);
@@ -184,7 +187,8 @@ pub(in crate::app) async fn execute_worker(
                         .filter(|value| valid_claude_scope(value))
                         .context("Claude preparation omitted its authorization scope")?;
                     let expected = resume
-                        .filter(|prior| prior.scope == scope)
+                        .iter()
+                        .find(|prior| prior.scope == scope)
                         .map_or(fresh_native.as_str(), |prior| prior.session_id.as_str());
                     anyhow::ensure!(
                         observed.and_then(Value::as_str) == Some(expected),
@@ -397,7 +401,7 @@ pub(super) async fn run_portable_turn(
             WorkerTurn {
                 id: &input.id,
                 session: &input.id,
-                resume: resume.as_ref(),
+                resume: resume.as_slice(),
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && super::routing::native_claude_goal(&input.text),
@@ -500,10 +504,10 @@ pub(super) async fn run_routed_portable(
             result = super::matrix::authenticate_foreground_body(&config.transport,&source) => result,
         }?;
         let resume = if engine==ForegroundEngine::Claude {
-            store.routed_claude_continuation(local,&body)?
-        } else {None};
+            store.routed_claude_continuations(local,&body)?
+        } else {Vec::new()};
         execute_worker(&config.worker_command,engine,WorkerTurn{
-            id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:direct_original,
+            id:&input.id,session:&attempt,resume:&resume,human_original:direct_original,
             native_goal_command:engine==ForegroundEngine::Claude && direct_original
                 && routed_host_access && request.attachments.is_empty()
                 && super::routing::native_claude_goal(&request.prompt),
