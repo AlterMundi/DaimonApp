@@ -196,6 +196,38 @@ when a new harness is selected for future work. Follow the
 [first-class harness contract](https://github.com/AlterMundi/daimon-matrix/issues/497#issuecomment-7182907326)
 for common dispatch, Observer and controller acceptance.
 
+### First-class harnesses in one Gateway
+
+The integrating role belongs to an owned Gateway conversation. Future turns
+select a receiving harness independently for each conversation. The Gateway
+retains each attempt against its original harness and conversation generation.
+A harness change for future turns leaves historical originals, native sessions,
+results, uncertain effects and goal accounting attributable to their source.
+Interaction and TeleDaimon are alternative ingress surfaces. Explicit Matrix
+messaging retains its own signed identity and receipts. A direct human turn
+carries the authenticated human actor to the selected adapter.
+
+| Area | Remaining Codex assumption | Shared contract |
+| --- | --- | --- |
+| Dispatch and routing | The current Codex native slot is stored on the session. Direct Claude admission has a specific route and the delegated-target writer expects a Codex thread. | Resolve a logical destination, pin its harness and generation before exposing the original, then use the selected adapter through the existing Gateway journal and worker. |
+| Controller | The entry role is configured by conversation, but tool authorization and several original/result readers still require the entry's Codex thread. | Gateway authorizes the exact running turn and logical role. Every adapter transports the same controller operations, including authorized dispatch and goal controls, with the same original, scope and receipt checks. |
+| Observer | Semantic refresh, source inspection and native goal status currently read the Codex native adapter. | Inventory and inspection read the same owner-scoped Gateway journal across harnesses. Native collectors contribute attributed evidence from their bound executions, with capability and freshness reported per source. |
+| Lifecycle and goals | Several goal and live-status controls assume a Codex app-server turn and native goal API. | Preserve exact cancellation and recovery receipts. Supply equivalent continuation and control where qualified, including an explicit capability state when a native action is unavailable. Keep the existing goal accounting and original ownership across harness choices. |
+| Identity, memory and resources | The Claude worker can mount selected resources, while Codex receives its operating context through its existing installation. | Resolve the signed body, approved shared DMK, skills, configuration and resource grants for each execution. Exercise actual reads and authorized writes through each receiving harness. The authenticated human identity comes from Gateway ingress, independently of the provider account. |
+
+The existing portfolio inventory and inspection expose the latest retained
+Gateway attempt per harness in each enrolled, owned conversation, with its
+generation and attempt phase. This evidence comes from the same snapshot as
+the rest of the card. It does not start an observer job, query a provider, or
+turn retained activity into a native goal or liveness claim.
+
+Qualify a mixed set of conversations with one harness on the integrating role
+and another on a worker. Inspect the worker, dispatch an existing retained
+human original, observe the useful attributed result, then repeat with the roles
+on different harnesses. Include authorization, cancellation and restart. A
+private Matrix exchange or a working provider reply establishes its own
+acceptance and leaves those mixed-harness checks open.
+
 ### Qualify a private Matrix foreground route
 
 Select a signed sibling body and the approved model account in the existing

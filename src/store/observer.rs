@@ -9,8 +9,18 @@ pub struct ObservedDelivery {
     pub item_id: String,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct ObservedExecution {
+    harness: String,
+    local_turn: i64,
+    phase: String,
+    turn_at: String,
+    current_generation: Option<bool>,
+}
+
 pub struct SessionObservation {
     pub sampled_at: String,
+    pub(crate) latest_executions: Vec<ObservedExecution>,
     pub session_id: i64,
     pub(crate) execution: crate::execution::ExecutionBinding,
     pub native_thread: Option<String>,
@@ -100,10 +110,42 @@ impl Store {
         } else {
             None
         };
+        // A native session may not exist yet. Read the Gateway attempts in
+        // the same snapshot without fetching any harness-native history.
+        let latest_executions = {
+            let mut query = tx.prepare(
+                "SELECT t.execution_harness,t.id,COALESCE(c.phase,t.status),
+                        COALESCE(t.completed_at,t.started_at),
+                        t.execution_generation=g.generation
+                 FROM turns t
+                 JOIN conversation_entry_generations g ON g.session_id=t.session_id
+                 LEFT JOIN conversation_inputs c ON c.local_turn=t.id
+                   AND c.session_id=t.session_id AND c.human_id=t.from_user_id
+                   AND json_type(c.doc,'$.portable')='object'
+                 WHERE t.id IN (
+                     SELECT MAX(id) FROM turns
+                     WHERE session_id=?1 AND from_user_id=?2
+                     GROUP BY execution_harness
+                 )
+                 ORDER BY t.id DESC",
+            )?;
+            query
+                .query_map(params![session_id, human], |row| {
+                    Ok(ObservedExecution {
+                        harness: row.get(0)?,
+                        local_turn: row.get(1)?,
+                        phase: row.get(2)?,
+                        turn_at: row.get(3)?,
+                        current_generation: row.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
         let sampled_at = now_string();
         tx.commit()?;
         Ok(Some(SessionObservation {
             sampled_at,
+            latest_executions,
             session_id,
             execution,
             native_thread,
@@ -124,6 +166,102 @@ mod tests {
     use super::*;
     use crate::interaction::{RequestRelation, ReturnRoute, SourceInput};
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn observation_retains_both_harnesses_and_portable_uncertainty() {
+        let file = NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100, 101], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let session = store.ensure_session(key, 100, &defaults).unwrap();
+        store.set_session_codex_thread(key, "codex-native").unwrap();
+        let request = TurnRequest {
+            session_key: key,
+            from_user_id: 100,
+            prompt: "Work".into(),
+            runtime_instructions: None,
+            attachments: vec![],
+            review_mode: None,
+            override_search_mode: None,
+        };
+        let codex = store.record_turn_started(session.id, &request).unwrap();
+        store
+            .record_turn_native_thread(codex, "codex-native")
+            .unwrap();
+        store
+            .record_turn_finished(codex, "completed", Some("Done"))
+            .unwrap();
+
+        let binding = store.execution_binding(key, 100).unwrap().unwrap().revision;
+        let id = uuid::Uuid::new_v4().to_string();
+        let (input, fresh) = store
+            .capture_portable_turn(
+                100,
+                key,
+                &binding,
+                &id,
+                &request.prompt,
+                &crate::interaction::MatrixDestination::Body {
+                    being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+                    embodiment_id: format!("embodiment:{}", uuid::Uuid::new_v4()),
+                },
+            )
+            .unwrap();
+        assert!(fresh && store.queue_portable_turn(&input).unwrap());
+        assert!(
+            store
+                .conversation_input_claim_queue_start(100, &id)
+                .unwrap()
+        );
+        let claude = store.begin_portable_turn(&input, &request).unwrap();
+        let latest = || {
+            store
+                .interaction_observation(key, 100)
+                .unwrap()
+                .unwrap()
+                .latest_executions
+        };
+        let preparing = latest();
+        assert_eq!(preparing.len(), 2);
+        assert_eq!(
+            (
+                preparing[0].harness.as_str(),
+                preparing[0].local_turn,
+                preparing[0].phase.as_str()
+            ),
+            ("claude", claude, "queued")
+        );
+        assert_eq!(
+            (preparing[1].harness.as_str(), preparing[1].local_turn),
+            ("codex", codex)
+        );
+        assert!(
+            preparing
+                .iter()
+                .all(|attempt| attempt.current_generation == Some(true))
+        );
+        let prepared = serde_json::json!({
+            "native_session_id": uuid::Uuid::new_v4(),
+            "native_session_scope": "a".repeat(64),
+        });
+        assert!(
+            store
+                .expose_portable_turn(&input, claude, &serde_json::json!({}), &prepared)
+                .unwrap()
+        );
+        assert_eq!(latest()[0].phase, "sending");
+        store
+            .finish_portable_turn(&input, claude, None, false)
+            .unwrap();
+        assert_eq!(latest()[0].phase, "claude_unconfirmed");
+        store.set_session_codex_thread(key, "replacement").unwrap();
+        assert!(
+            latest()
+                .iter()
+                .all(|attempt| attempt.current_generation == Some(false))
+        );
+        assert!(store.interaction_observation(key, 101).unwrap().is_none());
+    }
 
     #[test]
     fn observation_is_read_only_scoped_and_preserves_incomplete_source_evidence() {

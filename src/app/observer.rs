@@ -523,13 +523,14 @@ fn portfolio_evidence(o: crate::store::SessionObservation, detailed: bool) -> se
         vec![]
     };
     serde_json::json!({"sampled_at":o.sampled_at,"native":o.native_thread,"execution":o.execution,
+        "latest_executions":o.latest_executions,
         "semantic":semantic,"pending_human_items":o.pending.pending_total,
         "actionable_human_items":o.pending.actionable_total,"human_items":pending,
         "human_items_bounded":detailed && o.pending.actionable_total>8,
         "presentation_gaps":o.presentation_gaps,"input_cut":o.input_cut,
         "last_local_turn":o.local_turn.map(|(id,state,at)|serde_json::json!({"id":id,"state":state,"at":at})),
         "last_native_item":o.native_item.map(|(turn,item,at)|serde_json::json!({"turn":turn,"item":item,"observed_at":at})),
-        "activity_scope":"Receiver-retained activity only; old or missing activity is not native idle. Source-check expiry requires reconciliation, not necessarily another synthesis."})
+        "activity_scope":"Latest Gateway attempt per harness, observed in the same owned conversation snapshot. Native goal and semantic evidence below describe their own source binding; an old generation, missing evidence or unconfirmed return does not establish native idle."})
 }
 
 async fn portfolio_inspection(
