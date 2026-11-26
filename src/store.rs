@@ -173,6 +173,41 @@ impl From<&CodexConfig> for SessionDefaults {
 }
 
 impl Store {
+    /// Check the selected Reports reader without bootstrapping a journal writer.
+    pub(crate) fn preflight_receiving(config: &crate::config::Config) -> Result<bool> {
+        let Some(interaction) = &config.interaction else {
+            return Ok(false);
+        };
+        if !config.db_path.try_exists()? {
+            return Ok(false);
+        }
+        let conn = Connection::open_with_flags(
+            &config.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .context("Could not open the receiving journal read-only")?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let session = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3",
+                params![
+                    interaction.chat_id,
+                    interaction.topic_id,
+                    interaction.human_id
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(session) = session else {
+            return Ok(false);
+        };
+        Ok(
+            heartbeat::producer::load(&conn, interaction.human_id, session)
+                .context("Candidate cannot read the selected Reports record")?
+                .is_some(),
+        )
+    }
+
     #[cfg(test)]
     pub fn open(db_path: &Path, admin_ids: &[i64], defaults: &SessionDefaults) -> Result<Self> {
         Self::open_with_external_bot(db_path, admin_ids, defaults, None)
