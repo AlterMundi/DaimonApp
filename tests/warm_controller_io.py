@@ -131,12 +131,6 @@ def qualify(binary,pack=False):
         forged=j.root/'forged-access.json';value=json.loads(worker.read_text());value['token']='0'*64
         forged.write_text(json.dumps(value));forged.chmod(0o600)
         j.cli(forged,'capabilities',ok=False)
-        # A changed logical/native binding closes access even while the turn is live.
-        with __import__('sqlite3').connect(j.root/'state.sqlite') as db:
-            db.execute("UPDATE sessions SET codex_thread_id='changed-test-binding' WHERE thread_id=7")
-        j.cli(worker,'capabilities',ok=False)
-        with __import__('sqlite3').connect(j.root/'state.sqlite') as db:
-            db.execute("UPDATE sessions SET codex_thread_id='native-topic-7' WHERE thread_id=7")
         stale=j.root/'expired-access.json';shutil.copyfile(worker,stale);stale.chmod(0o600)
         j.answer(8,'The selected helper evidence.')
         j.wait(lambda:len(j.instructions(7))==2 and j.instructions(7)[1][1]=='accepted')
@@ -149,6 +143,14 @@ def qualify(binary,pack=False):
         sources=j.cli(entry,'conversation')['presentation']['items']
         assert any(s.get('companion_hint')==worker_pose for s in sources),sources
         thread='native-topic-9';turn=j.runs[thread]
+        # Rebinding retires the running controller generation even if the
+        # same physical thread is later selected again.
+        with __import__('sqlite3').connect(j.root/'state.sqlite') as db:
+            db.execute("UPDATE sessions SET codex_thread_id='changed-test-binding' WHERE thread_id=1")
+        j.cli(entry,'capabilities',ok=False)
+        with __import__('sqlite3').connect(j.root/'state.sqlite') as db:
+            db.execute("UPDATE sessions SET codex_thread_id=? WHERE thread_id=1",(thread,))
+        j.cli(entry,'capabilities',ok=False)
         j.broadcast(thread,'item/completed',{'turnId':turn,'item':{'id':'warm-entry-final','type':'agentMessage','phase':'final_answer','text':'The work returned.'}})
         j.broadcast(thread,'turn/completed',{'turn':{'id':turn,'status':'completed'}})
         j.idle();j.wait(lambda:not entry.exists())
