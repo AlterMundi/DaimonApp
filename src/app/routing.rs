@@ -667,6 +667,11 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                 let previous: Vec<(SessionKey, Vec<String>)> =
                     serde_json::from_value(pending["inherited"].clone())?;
                 let target = matches[0];
+                anyhow::ensure!(
+                    cfg.portable_route(target).is_none(),
+                    "Use Conversation to route to this portable worker"
+                );
+
                 let record = app
                     .shared
                     .store
@@ -791,6 +796,14 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
         }
         return Ok(false);
     }
+    if cfg.portable_route(target).is_some() {
+        notice(
+            app.shared.clone(),
+            origin,
+            "Use Conversation to send to this worker.".into(),
+        );
+        return Ok(true);
+    }
     if body.is_empty() {
         let shared = app.shared.clone();
         let name = label(&shared, target);
@@ -895,6 +908,10 @@ async fn admit_message(
     text: &str,
     relation: RequestRelation,
 ) -> Result<()> {
+    anyhow::ensure!(
+        profile(&app.shared)?.portable_route(target).is_none(),
+        "Use Conversation to route to this portable worker"
+    );
     let session = app
         .shared
         .store
@@ -1065,7 +1082,7 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
                 && !i
                     .target_execution
                     .as_ref()
-                    .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+                    .is_some_and(|binding| binding.harness.is_portable())
             {
                 Some(Some(active.clone()))
             } else {
@@ -1099,12 +1116,12 @@ pub(super) fn dispatch_admission_allowed(
     let current = shared.store.stop_admission_epoch(i.target)?;
     let cfg = profile(shared)?;
     let configured = cfg
-        .claude_route(i.target)
-        .map(|route| &route.transport.source);
+        .portable_route(i.target)
+        .map(|(engine, route)| (engine.harness(), &route.transport.source));
     let selected = i
         .target_execution
         .as_ref()
-        .and_then(|binding| binding.body.as_ref());
+        .and_then(|binding| binding.body.as_ref().map(|body| (binding.harness, body)));
     if configured != selected
         || (!local_started && !shared.store.interaction_target_execution_allowed(i)?)
         || !shared

@@ -371,7 +371,7 @@ pub(super) async fn run_portable_turn(
     store.finish_portable_turn(input, local, reply, resume_unavailable)
 }
 
-pub(super) async fn run_routed_claude(
+pub(super) async fn run_routed_portable(
     app: &super::App,
     request: &crate::models::TurnRequest,
     input: &crate::interaction::Instruction,
@@ -380,18 +380,23 @@ pub(super) async fn run_routed_claude(
     use crate::{interaction::MatrixDestination, store::MatrixAuthor};
     anyhow::ensure!(
         request.attachments.is_empty(),
-        "Claude routed worker does not yet receive attachments"
+        "Routed portable worker does not yet receive attachments"
     );
     let cfg = super::routing::profile(&app.shared)?;
-    let body = input
+    let selected = input
         .target_execution
         .as_ref()
-        .and_then(|binding| binding.body.as_ref())
-        .context("Routed Claude body is missing")?;
-    let config = cfg
-        .claude_route(input.target)
-        .filter(|config| &config.transport.source == body)
-        .context("Routed Claude body changed")?;
+        .context("Routed portable selection is missing")?;
+    let body = selected
+        .body
+        .as_ref()
+        .context("Routed portable body is missing")?;
+    let (engine, config) = cfg
+        .portable_route(input.target)
+        .filter(|(engine, config)| {
+            engine.harness() == selected.harness && &config.transport.source == body
+        })
+        .context("Routed portable body or harness changed")?;
     let MatrixDestination::Body {
         being_ref,
         embodiment_id,
@@ -406,23 +411,28 @@ pub(super) async fn run_routed_claude(
     let store = &app.shared.store;
     let cancel = app.shared.shutdown.child_token();
     *slot.lock().expect("cancel mutex poisoned") = Some(cancel.clone());
-    let (local, routed_host_access) = store.begin_routed_claude(input, request)?;
+    let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
+    // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
+    // adapters must receive a new session coordinate for that attempt.
+    let attempt = uuid::Uuid::new_v4().to_string();
     let outcome = async {
         let (_,body) = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
             result = super::matrix::authenticate_foreground_body(&config.transport,&source) => result,
         }?;
-        let resume = store.routed_claude_continuation(local,&body)?;
-        execute_worker(&config.worker_command,ForegroundEngine::Claude,WorkerTurn{
-            id:&input.id,session:&input.id,resume:resume.as_ref(),human_original:false,
+        let resume = if engine==ForegroundEngine::Claude {
+            store.routed_claude_continuation(local,&body)?
+        } else {None};
+        execute_worker(&config.worker_command,engine,WorkerTurn{
+            id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:false,
             routed_human:true,routed_host_access,text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
-            store.expose_routed_claude(input,local,&body,&prepared)
+            store.expose_routed_portable(input,local,&body,&prepared)
         }).await
     }.await.unwrap_or(Value::Null);
-    let deliveries = store.finish_routed_claude(input, local, &outcome)?;
+    let deliveries = store.finish_routed_portable(input, local, &outcome)?;
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

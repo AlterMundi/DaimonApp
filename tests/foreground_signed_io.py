@@ -187,7 +187,7 @@ operator.main()
                 journey.stop()
                 targets = journey.target_config
                 if inverse:
-                    targets = targets.replace('name="Alpha"', 'name="Alpha"\nharness="claude"')
+                    targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
             if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
@@ -250,8 +250,25 @@ operator.main()
                             raise AssertionError("The bounded fixture never released this provider call")
                     return {"native_session_id":session, "native_session_scope":scope}
 
-            handler = DirectProvider if direct else InteractionProvider if interaction else (
-                ClaudeProvider if engine == "claude" else foreground.Provider)
+            class RoutedProvider(foreground.Provider):
+                def admitted(self):
+                    ident, phase, native, prompt = self.server.journey.row(
+                        "SELECT i.id,i.phase,t.native_thread_id,t.prompt "
+                        "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                        "WHERE s.event_id=? AND t.execution_harness=? AND t.status='running'",
+                        (self.server.human_original, self.server.engine),
+                    )[0]
+                    assert phase == "submitting" and native
+                    assert self.server.original in prompt
+                    assert '"original_human_author":100' in prompt
+                    self.server.current = ident
+                    self.server.exposures.append(ident)
+
+            if engine == "claude":
+                handler = DirectProvider if direct else InteractionProvider if interaction else ClaudeProvider
+            else:
+                handler = RoutedProvider if inverse else foreground.Provider
             with ThreadingHTTPServer(("127.0.0.1", 0), handler) as provider:
                 provider.journey = journey
                 provider.calls = []
@@ -264,7 +281,7 @@ operator.main()
                 provider.body = body
                 provider.paired_human = direct and not inverse
                 provider.controller = direct and not inverse
-                provider.inverse_paired = inverse and os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
+                provider.inverse_paired = inverse and engine == "claude" and os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
                 provider.mixed = mixed
                 provider.mixed_worker_reply = "Codex worker fixture result from the original request."
                 if engine == "claude":
@@ -359,7 +376,7 @@ for await (const line of createInterface({ input: process.stdin })) {
                     provider.host_file.write_text("Native file readback marker.")
                     provider.host_tools = ["Read", "Bash"]
                     config["hostTools"] = provider.host_tools
-                if inverse:
+                if inverse and engine == "claude":
                     provider.host_file = root / "host-tools-fixture.txt"
                     provider.host_file.write_text("Native file readback marker.")
                     provider.host_tools = ["Read", "Bash"] if provider.inverse_paired else []
@@ -377,7 +394,7 @@ timeout_seconds=5
                 journey.config.write_text(journey.config.read_text() + f"""
 [interaction.{engine}_foreground]
 worker_command={json.dumps(command)}
-interaction_direct={str(direct).lower()}
+interaction_direct={str(direct or inverse).lower()}
 [interaction.{engine}_foreground.transport]
 command={json.dumps(host)}
 source={{kind="body", being_ref="{being}", embodiment_id="{body}"}}
@@ -390,6 +407,8 @@ timeout_seconds=5
                     journey.wait_control_socket(journey.socket)
                     if inverse:
                         self._inverse_exchange(journey, provider, return_attempts, profile)
+                        if memory:
+                            self.assertEqual(database.read_bytes(), initial_database)
                         return
                     if direct:
                         self._direct_exchange(journey, provider, return_attempts)
@@ -478,6 +497,7 @@ timeout_seconds=5
             return self._host_command(directory, socket, sender, capabilities)
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
+            answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
             page = journey.read("presentation", "list", "0", "0")["result"]
             previous_codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
             provider.original = "Please send this exact fixture work to Alpha."
@@ -494,7 +514,18 @@ timeout_seconds=5
                 self.assertEqual(retained, [(1 if provider.inverse_paired else None,)])
                 return body
 
+            def select_memory_for(body):
+                if engine == "claude":
+                    return
+                target_id = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0][0]
+                source_id = uuid.uuid5(uuid.NAMESPACE_URL, "telecodex:interaction:conversation:" + body["id"])
+                instruction_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{target_id}")
+                contents = json.loads(profile.read_bytes())
+                contents["selectedMemory"]["inputId"] = str(instruction_id)
+                profile.write_text(json.dumps(contents))
+
             original = submit_original(provider.original)
+            select_memory_for(original)
             provider.human_original = original["id"]
             journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
                                              (original["id"],)) == [("accepted",)])
@@ -518,15 +549,17 @@ timeout_seconds=5
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
             rows = journey.row("SELECT r.body,t.execution_harness FROM interaction_results r "
                                "JOIN turns t ON t.id=r.local_turn")
-            self.assertEqual(rows, [(ANSWER, "claude")])
+            self.assertEqual(rows, [(answer, engine)])
+            self.assertEqual(journey.row("SELECT native_turn FROM interaction_results"),
+                             [(f"gateway:{engine}:{instruction}",)])
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_deliveries"), [(1,)])
             presentation = journey.call("route-inverse-result", "conversation", {})
-            self.assertIn(ANSWER, json.dumps(presentation))
+            self.assertIn(answer, json.dumps(presentation))
             result = next(row for row in presentation["presentation"]["items"]
-                          if row["kind"] == "worker_result" and ANSWER in row["preview"])
+                          if row["kind"] == "worker_result" and answer in row["preview"])
             part = journey.call("route-inverse-result-part", "conversation_part",
                                 {"source":result["id"],"revision":result["revision"]})
-            self.assertIn(ANSWER, json.dumps(part))
+            self.assertIn(answer, json.dumps(part))
             self.assertTrue(part["native_binding_current"])
             self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
                              previous_codex)
@@ -534,6 +567,25 @@ timeout_seconds=5
             self.assertTrue(any(row["instruction"] == instruction for row in history))
 
             extra_turns = 0
+            extra_results = 0
+            if engine != "claude":
+                provider.original = "#Alpha Read the explicitly selected fixture memory."
+                explicit = {"id":str(uuid.uuid4()),"binding":page["binding"],"text":provider.original}
+                provider.human_original = explicit["id"]
+                select_memory_for(explicit)
+                response = journey.read("input", "submit", json.dumps(explicit))["result"]
+                self.assertTrue(response["new_input"])
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT count(*) FROM interaction_results") == [(2,)])
+                self.assertIsNone(provider.failure)
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,json_extract(i.doc,'$.target_execution.harness') "
+                    "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                    "WHERE s.event_id=?", (explicit["id"],)), [("accepted",engine)])
+                self.assertEqual(journey.row(
+                    "SELECT COUNT(DISTINCT native_thread_id) FROM turns "
+                    "WHERE execution_harness=? AND status='completed'", (engine,)), [(2,)])
+                extra_turns, extra_results = 1, 1
             if provider.inverse_paired:
                 original_profile = profile.read_bytes()
                 profile_doc = json.loads(original_profile)
@@ -564,11 +616,16 @@ timeout_seconds=5
 
             provider.original = "Keep this routed fixture attempt if the Gateway stops."
             lost = submit_original(provider.original)
+            select_memory_for(lost)
             provider.human_original = lost["id"]
             journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
                                              (lost["id"],)) == [("accepted",)])
             provider.hold = Event()
             provider.exposed = Event()
+            if engine != "claude":
+                provider.mode = "held"
+                provider.arrived = provider.exposed
+                provider.release = provider.hold
             try:
                 submitted = journey.call("route-inverse-interrupt", "dispatch", {
                     **selection, "input_ref":lost["id"],
@@ -591,8 +648,8 @@ timeout_seconds=5
                 "JOIN sessions s ON s.id=t.session_id WHERE i.id=?", (submitted,),
             ), [("uncertain", "failed", 0)])
             self.assertEqual(provider.exposures.count(submitted), 1)
-            self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness='claude'"), [(2 + extra_turns,)])
-            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1,)])
+            self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness=?", (engine,)), [(2 + extra_turns,)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1 + extra_results,)])
 
 
         def _direct_exchange(self, journey, provider, return_attempts):
@@ -877,8 +934,10 @@ if __name__ == "__main__":
     interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
     direct = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION_DIRECT") == "1"
     mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
-    inverse = direct and os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
-    if interaction or direct:
+    inverse = os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
+    if inverse and engine == "claude":
+        direct = True
+    if interaction or direct or inverse:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
         sys.path.insert(0, str(foreground.ROOT))
     dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None

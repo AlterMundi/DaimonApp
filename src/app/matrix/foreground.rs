@@ -36,12 +36,9 @@ pub(super) async fn run_selected(
     if let Some(existing) = store.we_status(human, entry, &selected.event_id)? {
         return Ok(existing);
     }
-    let config = match engine {
-        ForegroundEngine::Claude => cfg.claude_foreground.as_ref(),
-        ForegroundEngine::Goose => cfg.goose_foreground.as_ref(),
-        ForegroundEngine::Antigravity => cfg.antigravity_foreground.as_ref(),
-    }
-    .context("Selected native foreground route is unavailable")?;
+    let config = cfg
+        .foreground(engine)
+        .context("Selected native foreground route is unavailable")?;
     let MatrixDestination::Body {
         being_ref,
         embodiment_id,

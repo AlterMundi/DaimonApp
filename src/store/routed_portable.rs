@@ -25,7 +25,7 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
     Ok(input
         .target_execution
         .as_ref()
-        .is_some_and(|binding| binding.harness == Harness::Claude)
+        .is_some_and(|binding| binding.harness.is_portable())
         && super::interaction::target_execution_allowed_on(conn, input)?
         && super::dialogue::dispatched_source_on(conn, &input.id, input.human_id, writer)?
         && input.admission_epoch.as_deref()
@@ -42,19 +42,19 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
 pub(super) fn recover_on(conn: &Connection, writer: &str) -> Result<()> {
     conn.execute(
         "UPDATE turns SET status='failed',completed_at=?2 WHERE status='running'
-        AND execution_harness='claude' AND id IN (SELECT json_extract(doc,'$.local_turn')
+        AND execution_harness<>'codex' AND id IN (SELECT json_extract(doc,'$.local_turn')
         FROM interaction_instructions WHERE instance_id<>?1 AND phase IN ('queued','submitting','cancelled'))",
         params![writer, now_string()],
     )?;
     conn.execute("UPDATE sessions SET busy=0 WHERE busy=1 AND id IN (
         SELECT i.session_id FROM interaction_instructions i JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
-        WHERE i.instance_id<>?1 AND i.phase IN ('queued','submitting','cancelled') AND t.execution_harness='claude')
+        WHERE i.instance_id<>?1 AND i.phase IN ('queued','submitting','cancelled') AND t.execution_harness<>'codex')
         AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id AND status='running')",[writer])?;
     Ok(())
 }
 
 impl Store {
-    pub(crate) fn begin_routed_claude(
+    pub(crate) fn begin_routed_portable(
         &self,
         input: &Instruction,
         request: &TurnRequest,
@@ -76,9 +76,14 @@ impl Store {
             super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
+        let harness = current
+            .target_execution
+            .as_ref()
+            .context("Routed harness is missing")?
+            .harness;
         tx.execute(
-            "UPDATE turns SET execution_harness='claude' WHERE id=?1",
-            [local],
+            "UPDATE turns SET execution_harness=?2 WHERE id=?1",
+            params![local, harness.name()],
         )?;
         super::interaction::transport_on(
             &tx,
@@ -124,21 +129,42 @@ impl Store {
             .then_some(ClaudeContinuation { session_id, scope }))
     }
 
-    pub(crate) fn expose_routed_claude(
+    pub(crate) fn expose_routed_portable(
         &self,
         input: &Instruction,
         local: i64,
         body: &Value,
         prepared: &Value,
     ) -> Result<bool> {
+        let harness = input
+            .target_execution
+            .as_ref()
+            .context("Routed harness is missing")?
+            .harness;
         let native = prepared["native_session_id"]
             .as_str()
-            .filter(|v| Uuid::parse_str(v).is_ok_and(|id| id.to_string() == *v))
-            .context("Routed native session missing")?;
-        let scope = prepared["native_session_scope"]
-            .as_str()
-            .filter(|v| valid_claude_scope(v))
-            .context("Routed native session scope missing")?;
+            .filter(|id| match harness {
+                Harness::Claude | Harness::Antigravity => {
+                    Uuid::parse_str(id).is_ok_and(|v| v.to_string() == *id)
+                }
+                Harness::Goose => {
+                    !id.is_empty()
+                        && id.len() <= 256
+                        && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+                }
+                Harness::Codex => false,
+            })
+            .context("Routed native session missing or invalid")?;
+        let scope = if harness == Harness::Claude {
+            Some(
+                prepared["native_session_scope"]
+                    .as_str()
+                    .filter(|v| valid_claude_scope(v))
+                    .context("Routed native session scope missing")?,
+            )
+        } else {
+            None
+        };
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = super::interaction::instruction_on(&tx, &input.id, input.human_id)?
@@ -150,9 +176,9 @@ impl Store {
             return Ok(false);
         }
         let changed = tx.execute("UPDATE turns SET native_thread_id=?1,execution_native_scope=?2,execution_body=?3
-            WHERE id=?4 AND status='running' AND execution_harness='claude' AND native_thread_id IS NULL
+            WHERE id=?4 AND status='running' AND execution_harness=?5 AND native_thread_id IS NULL
             AND execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=turns.session_id)",
-            params![native,scope,body.to_string(),local])?;
+            params![native,scope,body.to_string(),local,harness.name()])?;
         if changed != 1 {
             return Ok(false);
         }
@@ -168,7 +194,7 @@ impl Store {
         Ok(true)
     }
 
-    pub(crate) fn finish_routed_claude(
+    pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
         local: i64,
@@ -201,15 +227,21 @@ impl Store {
                 .native_thread
                 .as_deref()
                 .context("Routed native writer missing")?;
-            // The SDK received this exact original UUID as its user message.
-            // Use it as the observed turn anchor for this discrete SDK exchange.
+            // Portable adapters bound a discrete exchange, not a Codex turn.
+            // Reserve a Gateway turn anchor qualified by the selected harness.
+            let harness = current
+                .target_execution
+                .as_ref()
+                .context("Routed harness is missing")?
+                .harness;
+            let anchor = format!("gateway:{}:{}", harness.name(), input.id);
             super::interaction::transport_on(
                 &tx,
                 &input.id,
                 input.human_id,
                 local,
                 Phase::Accepted,
-                Some(&input.id),
+                Some(&anchor),
             )?;
             deliveries = super::routing::result_on(
                 &tx,
@@ -218,7 +250,7 @@ impl Store {
                 input.human_id,
                 local,
                 native,
-                &input.id,
+                &anchor,
                 "final",
                 text,
                 true,

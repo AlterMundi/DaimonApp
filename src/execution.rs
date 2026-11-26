@@ -11,6 +11,10 @@ pub(crate) enum Harness {
 }
 
 impl Harness {
+    pub(crate) const fn is_portable(self) -> bool {
+        !matches!(self, Self::Codex)
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Codex => "codex",

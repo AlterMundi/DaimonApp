@@ -38,7 +38,7 @@ pub(super) fn record_native_message_on(
              (native_thread,native_turn,item_id,local_turn,phase,text,observed_at,presentation_input)
              VALUES(?1,?2,?3,?4,?5,?6,?7,(SELECT p.source_input FROM conversation_returns p
                JOIN conversation_inputs c ON c.id=p.source_input AND c.human_id=p.human_id
-               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0))",
+               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0 AND t.execution_harness='codex'))",
         params![thread, turn, item, local_turn, phase, text, now_string(),internal_only],
     )? == 1;
     if inserted {
@@ -88,7 +88,10 @@ pub(super) fn admit_selected_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
-    claude_body: Option<&crate::interaction::MatrixDestination>,
+    route: Option<(
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    )>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
@@ -185,6 +188,12 @@ pub(super) fn admit_selected_on(
     let mut source_epoch = None;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
+        if route.is_some() {
+            anyhow::ensure!(
+                original.files.is_empty() && original.visual.is_none(),
+                "The routed portable worker requires a text original"
+            );
+        }
         if portable.is_some_and(|input| {
             input.portable.is_some() && input.id == original.id && input.human == original.human
         }) {
@@ -207,12 +216,12 @@ pub(super) fn admit_selected_on(
             bail!("Canonical routing source does not match its original");
         }
     }
-    if claude_body.is_some() {
+    if route.is_some() {
         anyhow::ensure!(
             source.channel == "conversation"
                 && source.tribu_source.is_none()
                 && source.update_id.is_none(),
-            "The routed Claude worker requires a local retained conversation original"
+            "The routed portable worker requires a local retained conversation original"
         );
     }
     let id = Uuid::new_v5(
@@ -229,7 +238,7 @@ pub(super) fn admit_selected_on(
         "SELECT s.id,s.codex_thread_id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
          WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
          AND (?4 OR s.codex_thread_id IS NOT NULL OR s.force_fresh_thread=1)",
-        params![target.chat_id,target.thread_id,source.human_id,claude_body.is_some()], |r| Ok((r.get(0)?,r.get(1)?)),
+        params![target.chat_id,target.thread_id,source.human_id,route.is_some()], |r| Ok((r.get(0)?,r.get(1)?)),
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
@@ -266,8 +275,8 @@ pub(super) fn admit_selected_on(
     if target_execution.conversation_id != session {
         bail!("Interaction target selection changed");
     }
-    if let Some(body) = claude_body {
-        target_execution.harness = crate::execution::Harness::Claude;
+    if let Some((engine, body)) = route {
+        target_execution.harness = engine.harness();
         target_execution.body = Some(body.clone());
         target_execution.native_session = None;
     }
@@ -324,7 +333,7 @@ pub(super) fn admit_selected_on(
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
         local_turn: None,
-        native_thread: if claude_body.is_none() { native } else { None },
+        native_thread: if route.is_none() { native } else { None },
         native_turn: None,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
@@ -463,7 +472,7 @@ fn target_execution_matches_on(
             current.conversation_id == selected.conversation_id
                 && current.revision == selected.revision
                 && (current.harness == selected.harness
-                    || (selected.harness == crate::execution::Harness::Claude
+                    || (selected.harness.is_portable()
                         && selected.body.is_some()
                         && native.is_none()))
                 && selected

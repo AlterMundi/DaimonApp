@@ -437,8 +437,8 @@ impl Store {
                 &self.instance_id,
                 portable.as_ref(),
                 config
-                    .and_then(|cfg| cfg.claude_route(*target))
-                    .map(|route| &route.transport.source),
+                    .and_then(|cfg| cfg.portable_route(*target))
+                    .map(|(engine, route)| (engine, &route.transport.source)),
             )?);
         }
         if closed.is_cancelled() {
@@ -530,7 +530,7 @@ impl Store {
             .map(|binding| binding.execution.revision.as_str());
         let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND ((COALESCE(json_extract(i.doc,'$.target_execution.harness'),'codex')='codex'
           AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL))
-          OR (json_extract(i.doc,'$.target_execution.harness')='claude'
+          OR (json_extract(i.doc,'$.target_execution.harness') IN ('claude','goose','antigravity')
           AND json_extract(i.doc,'$.target_execution.revision')=?5))
           AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
         let rows = query.query_map(

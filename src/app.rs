@@ -2936,9 +2936,7 @@ impl App {
                                 .flatten()
                         })
                         .and_then(|input| input.target_execution)
-                        .is_some_and(|binding| {
-                            binding.harness == crate::execution::Harness::Claude
-                        });
+                        .is_some_and(|binding| binding.harness.is_portable());
                 if let Some(id) = conversation_input_id.as_deref() {
                     let _slot = steer.lock().expect("steer mutex poisoned");
                     match shared

@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 // Worker progress is visible only through the return selection retained when
 // this native item was first observed. Later direct input never widens its scope.
-const NATIVE_VISIBILITY: &str = "t.from_user_id=?3 AND s.creator_user_id=?3 AND
+const NATIVE_VISIBILITY: &str = "t.execution_harness='codex' AND t.from_user_id=?3 AND s.creator_user_id=?3 AND
     ((t.session_id=?2 AND m.native_thread=?4 AND (m.phase IN ('commentary','final_answer') OR m.phase IS NULL))
       OR (EXISTS(SELECT 1 FROM conversation_inputs c
           WHERE c.id=m.presentation_input AND c.human_id=?3 AND c.session_id=?2
@@ -872,13 +872,13 @@ pub(super) fn source_on(
     } else if let Some(id) = id.strip_prefix("delivery:") {
         let row:Option<(String,String,Option<String>,String,bool,String)>=conn.query_row(
             "SELECT d.doc,d.phase,
-             CASE WHEN t.execution_harness='claude' THEN (
+             CASE WHEN t.execution_harness<>'codex' THEN (
                SELECT p.native_thread_id FROM turns p WHERE p.session_id=s.id AND p.from_user_id=?2
                AND p.execution_harness=t.execution_harness AND p.execution_generation=g.generation
                AND p.native_thread_id IS NOT NULL ORDER BY p.id DESC LIMIT 1
              ) ELSE s.codex_thread_id END,
              o.native_thread,
-             CASE WHEN t.execution_harness='claude' THEN COALESCE(t.execution_generation<>g.generation,1)
+             CASE WHEN t.execution_harness<>'codex' THEN COALESCE(t.execution_generation<>g.generation,1)
                ELSE s.force_fresh_thread END,
              d.result_id FROM interaction_public_deliveries d
              JOIN interaction_requests r ON r.id=d.request_id JOIN interaction_sources x ON x.id=r.input_id

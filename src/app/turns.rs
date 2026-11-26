@@ -89,9 +89,9 @@ pub(super) async fn process_turn(
         if instruction
             .target_execution
             .as_ref()
-            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            .is_some_and(|binding| binding.harness.is_portable())
         {
-            return super::foreground::run_routed_claude(
+            return super::foreground::run_routed_portable(
                 &app,
                 &queued.request,
                 &instruction,

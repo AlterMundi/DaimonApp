@@ -253,22 +253,29 @@ its attributed result. The integrating turn reads visible returns through the
 existing `conversation` and `conversation_part` readers. Selection of a different
 original, a rebind or an admission fence cannot extend this turn's authority.
 
-An owner can select `harness = "claude"` on an explicit
-`[[interaction.targets]]` entry with the configured direct Claude worker.
-Gateway retains that body's selection on the target instruction and uses the
-existing queue and native worker. This routed entry accepts retained local
-conversation text. The receiver uses its signed body and configured MCP
-catalog. The Gateway retains paired web authentication on the original at
-capture. A routed worker can use the configured host tools if that original
-has the retained paired authority. A Companion original and earlier originals
-without recorded actor authority retain the scoped catalog, including on
-retry. A fresh retry of known-unsent paired work requires paired
-authentication. The paired submit and retry commands run on the local owner
-socket. Workers use their assigned catalog without an integrating controller.
-Deploy the Gateway that supports ordinary `submit-human` before updating the
-dashboard writer that uses it. Existing Codex threads remain separate from the routed
-Claude sessions. If the configured body changes, the original instruction
-stays retained against its prior destination.
+An owner can set the harness on an explicit target to Claude, Goose or
+Antigravity and enable direct routing on that harness's configured foreground
+worker. Gateway retains the harness and signed body on the target instruction
+and uses the existing queue and result journal. The direct routed entry
+accepts retained local conversation text.
+The configured Claude worker can use host tools when the original retains
+paired web authentication from capture. A Companion original and earlier
+originals without recorded actor authority retain the scoped catalog,
+including on retry. A fresh retry of known-unsent paired Claude work requires
+paired authentication. The paired submit and retry commands run on the local
+owner socket. Workers use their assigned catalog without an integrating
+controller.
+
+The Goose and Antigravity proof profiles expose signed status and the
+owner-selected DMK read. Their observed adapters open a fresh native session
+for each admitted attempt. Gateway retains conversation and attempt history.
+Claude additionally supports resuming its prior native session under the same
+body and catalog scope. Existing Codex threads remain distinct from portable
+native sessions. Changing a target's configured harness or body leaves prior
+instructions attached to their recorded destination.
+
+Deploy the Gateway that supports ordinary paired submit and retry before
+updating the dashboard writer that uses those commands.
 
 Gateway records exposure before releasing the SDK prompt. The observed
 native result, acceptance, and canonical return reservations commit

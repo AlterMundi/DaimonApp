@@ -114,14 +114,27 @@ pub(crate) enum ForegroundEngine {
 }
 
 impl ForegroundEngine {
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) const fn for_harness(harness: crate::execution::Harness) -> Option<Self> {
+        use crate::execution::Harness;
+        match harness {
+            Harness::Codex => None,
+            Harness::Claude => Some(Self::Claude),
+            Harness::Goose => Some(Self::Goose),
+            Harness::Antigravity => Some(Self::Antigravity),
+        }
+    }
+
+    pub(crate) const fn harness(self) -> crate::execution::Harness {
         use crate::execution::Harness;
         match self {
             Self::Claude => Harness::Claude,
             Self::Goose => Harness::Goose,
             Self::Antigravity => Harness::Antigravity,
         }
-        .name()
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.harness().name()
     }
 }
 
@@ -372,11 +385,9 @@ impl InteractionConfig {
         if [&self.goose_foreground, &self.antigravity_foreground]
             .into_iter()
             .flatten()
-            .any(|foreground| {
-                foreground.interaction_origin.is_some() || foreground.interaction_direct
-            })
+            .any(|foreground| foreground.interaction_origin.is_some())
         {
-            bail!("Interaction foreground selection is only supported for Claude");
+            bail!("A signed Interaction origin is only supported for Claude");
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
@@ -409,17 +420,14 @@ impl InteractionConfig {
             }
         }
         for target in &self.targets {
-            match target.harness {
-                Some(crate::execution::Harness::Claude) => {
-                    if self
-                        .claude_route(SessionKey::new(self.chat_id, Some(target.topic_id)))
-                        .is_none()
-                    {
-                        bail!("The Claude route requires a configured direct worker");
-                    }
-                }
-                None | Some(crate::execution::Harness::Codex) => {}
-                _ => bail!("The configured routed harness has no direct worker"),
+            if target
+                .harness
+                .is_some_and(crate::execution::Harness::is_portable)
+                && self
+                    .portable_route(SessionKey::new(self.chat_id, Some(target.topic_id)))
+                    .is_none()
+            {
+                bail!("The routed harness requires its configured direct worker");
             }
         }
         if self.matrix_targets.len() > 16 {
@@ -448,15 +456,31 @@ impl InteractionConfig {
         Ok(())
     }
 
-    pub(crate) fn claude_route(&self, key: SessionKey) -> Option<&ForegroundConfig> {
-        (key.chat_id == self.chat_id
-            && self.targets.iter().any(|target| {
-                target.topic_id == key.thread_id
-                    && target.harness == Some(crate::execution::Harness::Claude)
-            }))
-        .then_some(self.claude_foreground.as_ref())
-        .flatten()
-        .filter(|config| config.interaction_direct)
+    pub(crate) fn foreground(&self, engine: ForegroundEngine) -> Option<&ForegroundConfig> {
+        match engine {
+            ForegroundEngine::Claude => self.claude_foreground.as_ref(),
+            ForegroundEngine::Goose => self.goose_foreground.as_ref(),
+            ForegroundEngine::Antigravity => self.antigravity_foreground.as_ref(),
+        }
+    }
+
+    pub(crate) fn portable_route(
+        &self,
+        key: SessionKey,
+    ) -> Option<(ForegroundEngine, &ForegroundConfig)> {
+        if key.chat_id != self.chat_id {
+            return None;
+        }
+        let harness = self
+            .targets
+            .iter()
+            .find(|target| target.topic_id == key.thread_id)?
+            .harness?;
+        let engine = ForegroundEngine::for_harness(harness)?;
+        let config = self
+            .foreground(engine)
+            .filter(|config| config.interaction_direct)?;
+        Some((engine, config))
     }
 
     pub fn target(&self, topic: i64) -> Option<SessionKey> {

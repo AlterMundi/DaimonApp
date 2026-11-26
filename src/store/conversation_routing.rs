@@ -235,7 +235,7 @@ fn selected_destination_on(
     let (mut reference, focus, label) = destination_on(conn, human, entry, id)?;
     if let Some(row) = message {
         let selected: (String,String,String,Option<String>,String)=conn.query_row(
-            "SELECT m.native_thread,m.native_turn,m.item_id,m.phase,m.text FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.rowid=?1 AND t.session_id=?2 AND m.native_thread=?3 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final')",
+            "SELECT m.native_thread,m.native_turn,m.item_id,m.phase,m.text FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.rowid=?1 AND t.session_id=?2 AND t.execution_harness='codex' AND m.native_thread=?3 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final')",
             params![row,id,focus.native],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
         reference.source = format!("session:{id}/{row}");
         reference.revision = format!(
@@ -430,10 +430,10 @@ impl Store {
                 continue;
             };
             let latest: Option<i64>=conn.query_row(
-                "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final') ORDER BY m.rowid DESC LIMIT 1",
+                "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final') ORDER BY m.rowid DESC LIMIT 1",
                 params![id,focus.native],|r|r.get(0)).optional()?;
             let result_available: bool=conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('final_answer','final'))",
+                "SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('final_answer','final'))",
                 params![id,focus.native],|r|r.get(0))?;
             let latest_reply = latest
                 .map(|row| {
@@ -447,7 +447,7 @@ impl Store {
             );
         }
         let entry_latest: Option<i64>=conn.query_row(
-            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 ORDER BY m.rowid DESC LIMIT 1",
+            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 ORDER BY m.rowid DESC LIMIT 1",
             params![session,native],|r|r.get(0)).optional()?;
         let entry_latest_reply=entry_latest.map(|row|super::presentation::source_on(&conn,human,entry,&format!("native:{row}")))
             .transpose()?.flatten().map(|source|json!({"source":source["id"],"revision":source["revision"],"context_only":true}));
@@ -773,8 +773,18 @@ impl Store {
         let relation = inherited
             .map(|f| RequestRelation::Amends(f.requests.clone()))
             .unwrap_or(RequestRelation::New);
-        let (instruction, fresh) =
-            super::interaction::admit_on(&tx, &source, target, relation, &self.instance_id)?;
+        let route = profile
+            .portable_route(target)
+            .map(|(engine, config)| (engine, &config.transport.source));
+        let (instruction, fresh) = super::interaction::admit_selected_on(
+            &tx,
+            &source,
+            target,
+            relation,
+            &self.instance_id,
+            None,
+            route,
+        )?;
         input.phase = "routed".into();
         input.routing = Some(ConversationRouting {
             target,
