@@ -76,7 +76,17 @@ function boot(){
  const count=b.sent.length;b.ui.status({id:id(),phase:'accepted',text:'unrelated private history'});assert.equal(b.sent.length,count);
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text',files:Array(8).fill({size:1})}));
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'audio',files:[{size:40*1024*1024}]}));
- const timeout=b.ui.prepare({id:id(),binding,modality:'text'});b.timers.at(-1).fn();await assert.rejects(timeout);assert.equal(b.sent.at(-1).message.type,'prepare','Timeout never sends another request');
+ for(const way of ['timeout','error']){
+  const original=id(),files=[{size:7}],work=b.ui.prepare({id:original,binding,modality:'text',files});
+  const request=b.sent.at(-1).message;
+  if(way==='timeout')b.timers.at(-1).fn();else b.receive({...request,type:'error'});
+  assert.equal(await work,files,'An optional context failure retains the original files');
+  assert.equal(b.ui.contextUnavailable({id:original,binding}),true);
+  assert.equal(b.sent.at(-1).message.type,'discard','Only optional source cleanup is requested');
+  const observed=b.sent.length;
+  b.receive({...request,type:'prepared',file:{file_id:id(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:5}});
+  assert.equal(b.sent.length,observed,'The late source cannot be attached or replayed');
+ }
  const cancelledId=id(),cancelled=b.ui.prepare({id:cancelledId,binding,modality:'audio'});const cancelRequest=b.sent.at(-1).message;
  b.ui.discard({id:cancelledId,binding,reason:'capture-cancelled'});await assert.rejects(cancelled);assert.equal(b.sent.at(-1).message.type,'discard');assert.equal(b.sent.at(-1).message.id,cancelledId);
  const afterDiscard=b.sent.length;b.ui.discard({id:cancelledId,binding,reason:'capture-cancelled'});b.receive({...cancelRequest,type:'prepared',file:{file_id:id(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:5}});assert.equal(b.sent.length,afterDiscard);

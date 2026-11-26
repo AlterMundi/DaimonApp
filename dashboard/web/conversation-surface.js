@@ -14,6 +14,13 @@ window.ConversationSurface=(()=>{
     function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
+    function omitContext(){
+      const old=pending;pending=undefined;clearTimeout(old.timer);
+      old.record.contextUnavailable=true;
+      // The host discard is source-only. It cannot cancel a Conversation original.
+      send('discard',{id:old.id,reason:'preparation-failed'});
+      old.resolve(null);
+    }
     function receive(event){
       const d=event.data;
       let size;try{size=JSON.stringify(d)?.length;}catch{return;}
@@ -27,7 +34,7 @@ window.ConversationSurface=(()=>{
         return;
       }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
-      if(d.type==='error'){const old=pending;pending=undefined;clearTimeout(old.timer);old.reject(Error('World context could not be prepared. Your draft is kept.'));return;}
+      if(d.type==='error'){omitContext();return;}
       if(d.type!=='prepared')return;
       const f=d.file;
       if(!f||Object.keys(f).sort().join(',')!=='file_id,mime,name,sha256,size'||!uuid(f.file_id)
@@ -44,14 +51,15 @@ window.ConversationSurface=(()=>{
       if(count>7||total>40*1024*1024-65536)throw Error('Leave room for the world context: at most seven files and 40 MiB total.');
       const request=crypto.randomUUID();
       if(tracked.has(id))throw Error('This original already has a context preparation. Keep its saved status.');
-      tracked.set(id,{binding:selected,actor,attempted:false,discarded:false});
+      const record={binding:selected,actor,attempted:false,discarded:false};
+      tracked.set(id,record);
       while(tracked.size>128)tracked.delete(tracked.keys().next().value);
       const file=await new Promise((resolve,reject)=>{
-        pending={id,request,resolve,reject,timer:setTimeout(()=>{if(pending?.request===request){pending=undefined;reject(Error('World context was not confirmed. Your draft is kept; nothing was sent.'));}},30000)};
+        pending={id,request,record,resolve,reject,timer:setTimeout(()=>{if(pending?.request===request)omitContext();},3000)};
         send('prepare',{id,request,modality,capacity:{files:8-count,bytes:40*1024*1024-total,context_bytes:65536}});
       });
       if(selected!==binding||!connected)throw Error('World connection changed. Your draft is kept.');
-      return [...files,file];
+      return file?[...files,file]:files;
     }
     function playback(value){
       if(!connected||!avatarPlayback)return;
@@ -83,7 +91,7 @@ window.ConversationSurface=(()=>{
     function attempt(value){const record=current(value);if(record)record.attempted=true;}
     function discard(value){
       const record=current(value);
-      if(!record||record.attempted||record.discarded||!['capture-cancelled','preparation-failed'].includes(value.reason))return;
+      if(!record||record.attempted||record.discarded||record.contextUnavailable||!['capture-cancelled','preparation-failed'].includes(value.reason))return;
       record.discarded=true;
       send('discard',{id:value.id,reason:value.reason});
       if(pending?.id===value.id){const old=pending;pending=undefined;clearTimeout(old.timer);old.reject(Error('Recording cancelled. Your draft is kept.'));}
@@ -91,7 +99,7 @@ window.ConversationSurface=(()=>{
     function status(value,busy){if(current(value)&&!current(value).discarded)send('status',{id:value.id,phase:typeof value.phase==='string'?value.phase.slice(0,64):'unconfirmed',busy:busy===undefined?!['accepted','queued','completed','routed','foreground','matrix_requested'].includes(value.phase):!!busy});}
     window.addEventListener('pagehide',()=>{cancel();closed=true;window.removeEventListener('message',receive);});
     window.addEventListener('pageshow',event=>{if(event.persisted&&closed){closed=false;window.addEventListener('message',receive);ready();}});
-    return {identity,bind,prepare,status,attempt,discard,playback,microphoneSink,silenceMicrophone:()=>microphone(0),disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
+    return {identity,bind,prepare,status,attempt,discard,contextUnavailable:value=>current(value)?.contextUnavailable===true,playback,microphoneSink,silenceMicrophone:()=>microphone(0),disconnect:()=>{cancel();actor=undefined;binding=undefined;},reservedFiles:1,reservedBytes:65536};
   }
 
   // The same authenticated Conversation origin owns both copies. The parent
