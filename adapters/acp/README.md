@@ -59,6 +59,12 @@ and a workspace suitable for the approved provider. The configured status comman
 read the same authenticated body before submission and for each status tool
 call. The MCP server returns only the verified binding fields.
 
+For an owner-managed local OpenAI-compatible endpoint, set `providerPort` in
+the private profile. Goose uses only `127.0.0.1` on that port. After confirming
+the effective catalog and body, the worker checks the listener before asking
+Gateway to release the original. A closed listener is a known unsent turn.
+The connection check sends no original or HTTP request.
+
 For an explicitly approved memory read, set optional `selectedMemory` to
 `command` (the absolute DMK reader command with its existing owner-local
 `--binding` argument), `inputId` (the original event UUID), `pool`,

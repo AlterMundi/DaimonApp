@@ -55,6 +55,12 @@ async function runWorker(t, profile, text, beforeDecision) {
     inputId, sessionId: '00000000-0000-4000-8000-000000000002' };
   await writeFrame(child.stdin, { ...same, type: 'start', text, body });
   const first = (await messages.next()).value;
+  if (beforeDecision === null) {
+    assert.deepEqual(first, { ...same, type: 'outcome', outcome: first.outcome });
+    child.stdin.end();
+    assert.deepEqual(await finished, [0, null]);
+    return { outcome: first.outcome };
+  }
   assert.equal(first.type, 'prepare_submission', JSON.stringify(first));
   assert.notEqual(first.nativeSessionId, same.sessionId);
   const { nativeSessionId, ...correlation } = first;
@@ -96,6 +102,15 @@ raise SystemExit(2)
   }), { mode: 0o600 });
   const { outcome } = await runWorker(t, profile, 'Synthetic fixture only', () => false);
   assert.deepEqual(outcome, { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' });
+  const endpoint = createServer(() => assert.fail('Provider received HTTP during admission'));
+  endpoint.listen(0, '127.0.0.1');
+  await once(endpoint, 'listening');
+  const providerPort = endpoint.address().port;
+  await new Promise((resolve, reject) => endpoint.close(error => error ? reject(error) : resolve()));
+  const offline = { ...JSON.parse(await readFile(profile, 'utf8')), providerPort };
+  await writeFile(profile, JSON.stringify(offline));
+  const refused = await runWorker(t, profile, 'Synthetic fixture with no listener', null);
+  assert.deepEqual(refused.outcome, { phase: 'not_submitted', reason: 'goose_provider_unavailable' });
   await assert.rejects(readFile(marker), { code: 'ENOENT' });
 });
 

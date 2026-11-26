@@ -1,4 +1,6 @@
+import { once } from 'node:events';
 import { lstat } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -128,10 +130,13 @@ async function main(path) {
       'binary', 'cwd', 'stateRoot', 'provider', 'model', 'providerKeyFile', 'matrixStatusCommand', 'body',
     ];
     if (profile && Object.hasOwn(profile, 'selectedMemory')) fields.push('selectedMemory');
+    if (profile && Object.hasOwn(profile, 'providerPort')) fields.push('providerPort');
     if (!closed(profile, fields) || !validBinding(profile)
         || ![profile.binary, profile.cwd, profile.stateRoot, profile.providerKeyFile]
           .every(item => typeof item === 'string' && isAbsolute(item))
         || !['openai', 'anthropic'].includes(profile.provider)
+        || (fields.includes('providerPort') && (profile.provider !== 'openai'
+          || !Number.isInteger(profile.providerPort) || profile.providerPort < 1 || profile.providerPort > 65535))
         || typeof profile.model !== 'string' || !profile.model || profile.model.length > 128) {
       throw new Error('Invalid Goose owner profile');
     }
@@ -157,8 +162,10 @@ async function main(path) {
       GOOSE_PROVIDER: profile.provider, GOOSE_MODEL: profile.model, GOOSE_MAX_TURNS: '2',
       [profile.provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY']: key,
     };
+    if (profile.providerPort) env.OPENAI_HOST = `http://127.0.0.1:${profile.providerPort}`;
     const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
     const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand, selectedMemory };
+    let providerUnavailable = false;
     const outcome = await runGooseTurn({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       mcpServers: [{ name: 'matrix', command: process.execPath,
@@ -168,6 +175,20 @@ async function main(path) {
       toolNames: ['matrix__' + STATUS, ...(selectedMemory ? ['matrix__' + MEMORY] : [])], text: first.text,
       async beforeSubmit(nativeSessionId) {
         await observe(binding, stop.signal);
+        if (profile.providerPort) {
+          const socket = createConnection({ host: '127.0.0.1', port: profile.providerPort });
+          try {
+            await once(socket, 'connect', {
+              signal: AbortSignal.any([stop.signal, AbortSignal.timeout(1000)]),
+            });
+          } catch {
+            stop.signal.throwIfAborted();
+            providerUnavailable = true;
+            return false;
+          } finally {
+            socket.destroy();
+          }
+        }
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId }, stop.signal);
         const decision = (await pipe.next()).value;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
@@ -178,6 +199,9 @@ async function main(path) {
         return true;
       },
     });
+    if (providerUnavailable && outcome.phase === 'not_submitted') {
+      outcome.reason = 'goose_provider_unavailable';
+    }
     await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);
   } finally {
     clearTimeout(deadline);
