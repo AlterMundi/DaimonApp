@@ -175,6 +175,18 @@ session and generation records. The Observer and live controller check the
 same ownership and binding. An old thread retained while a conversation is
 reset remains historical evidence without conferring execution authority.
 
+Routed instructions retain their selected destination execution in the same
+journal as the original plan. A retry observes that exact plan. A queued
+instruction cannot follow a replaced native session or changed generation,
+even when a replacement later reuses the same opaque native ID. A first native
+session can materialize in the same generation. The local turn checks the
+selection when it is created, and established Codex turns keep their normal
+generation checks through native release. Historical instructions without this
+selection retain their existing transport behavior. If a rollout needs to restore a writer
+that predates target affinity, keep the upgraded instruction writer until
+unresolved pinned routes have settled or been retained outside the dispatch
+queue. The older writer cannot enforce the pinned destination.
+
 Controller handlers receive a Gateway tool invocation, with the harness,
 native session and native turn supplied by the receiving adapter. A tool's
 arguments cannot replace those coordinates. Match the owned execution before

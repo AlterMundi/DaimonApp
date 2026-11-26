@@ -21,7 +21,7 @@ impl Harness {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ExecutionBinding {
     pub conversation_id: i64,
     pub revision: String,

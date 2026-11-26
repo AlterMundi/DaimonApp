@@ -626,6 +626,8 @@ pub struct Instruction {
     pub human_id: i64,
     pub target_session: i64,
     pub target: SessionKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target_execution: Option<crate::execution::ExecutionBinding>,
     pub sequence: i64,
     pub relation: RequestRelation,
     pub requests: Vec<String>,

@@ -1083,10 +1083,19 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
 }
 
 pub(super) fn dispatch_allowed(shared: &Arc<AppShared>, i: &Instruction) -> Result<bool> {
+    dispatch_admission_allowed(shared, i, false)
+}
+
+pub(super) fn dispatch_admission_allowed(
+    shared: &Arc<AppShared>,
+    i: &Instruction,
+    local_started: bool,
+) -> Result<bool> {
     let current = shared.store.stop_admission_epoch(i.target)?;
-    if !shared
-        .store
-        .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
+    if (!local_started && !shared.store.interaction_target_execution_allowed(i)?)
+        || !shared
+            .store
+            .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
         || i.admission_epoch.as_deref() != Some(current.as_str())
         || !shared
             .store
@@ -1348,12 +1357,15 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 let epoch = i.admission_epoch.clone();
                 let target = i.target;
                 let human = i.human_id;
+                let selected = i.clone();
+                let active_local = active.turn_id;
                 let update = source.update_id;
                 let input_id = i.id.clone();
                 crate::codex::SteerInputAdmission::Async(Arc::new(move || {
                     let shared = shared.clone();
                     let epoch = epoch.clone();
                     let input_id = input_id.clone();
+                    let selected = selected.clone();
                     Box::pin(async move {
                         if shared.store.heartbeat_workflow_delegation(human, target, &input_id)? {
                             bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
@@ -1379,6 +1391,13 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             bail!("Routed admission retired or held before native submission");
                         }
                         super::nexus::validate_input_target(&shared, update, target, human)?;
+                        anyhow::ensure!(
+                            shared.store.interaction_target_execution_allowed(&selected)?,
+                            "Routed target execution changed before native steering"
+                        );
+                        if selected.target_execution.is_some() {
+                            shared.store.validate_codex_submission(active_local, true, None)?;
+                        }
                         Ok(())
                     })
                 }))

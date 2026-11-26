@@ -79,6 +79,12 @@ fn record_turn_started_on(
     request: &TurnRequest,
     root: Option<&str>,
 ) -> Result<i64> {
+    if let Some(id) = root {
+        anyhow::ensure!(
+            interaction::queued_root_allowed_on(conn, id, request, session)?,
+            "Selected routed execution changed before the local turn was started"
+        );
+    }
     conn.execute("INSERT INTO turns(session_id,from_user_id,prompt,review_json,status,started_at,completed_at,assistant_text,execution_generation)
         VALUES(?1,?2,?3,?4,'running',?5,NULL,NULL,(SELECT generation FROM conversation_entry_generations WHERE session_id=?1))",params![session,request.from_user_id,request.prompt,serde_json::to_string(&request.review_mode)?,now_string()])?;
     let id = conn.last_insert_rowid();
@@ -1237,7 +1243,11 @@ impl Store {
 
     #[cfg(test)]
     pub fn record_turn_started(&self, session_id: i64, request: &TurnRequest) -> Result<i64> {
-        self.record_turn_started_mode(session_id, request, None)
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let id = record_turn_started_on(&tx, session_id, request, None)?;
+        tx.commit()?;
+        Ok(id)
     }
     /// Restore local collection only after observing the selected native writer.
     /// This changes no goal, ingress acceptance or immutable instruction binding.
@@ -1282,6 +1292,10 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let id = record_turn_started_on(&tx, session_id, request, root)?;
+        tx.execute(
+            "UPDATE sessions SET busy=1,updated_at=?2 WHERE id=?1",
+            params![session_id, now_string()],
+        )?;
         tx.commit()?;
         Ok(id)
     }

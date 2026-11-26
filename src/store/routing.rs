@@ -753,6 +753,118 @@ mod tests {
         .unwrap()
         .0
     }
+    #[test]
+    fn a_routed_original_keeps_its_admitted_target_execution() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let target = target(&store, 7);
+        let original = admit(&store, &target, 11, R::New);
+        let request = TurnRequest {
+            session_key: target.key,
+            from_user_id: 100,
+            prompt: original.text.clone(),
+            runtime_instructions: None,
+            attachments: vec![],
+            review_mode: None,
+            override_search_mode: None,
+        };
+        let selected = original.target_execution.as_ref().unwrap();
+        assert_eq!(selected.native_session.as_deref(), Some("native-7"));
+        assert!(
+            store
+                .interaction_target_execution_allowed(&original)
+                .unwrap()
+        );
+
+        store
+            .set_session_codex_thread(target.key, "new-writer")
+            .unwrap();
+        store
+            .set_session_codex_thread(target.key, "native-7")
+            .unwrap();
+        let retried = admit(&store, &target, 11, R::New);
+        assert_eq!(retried.id, original.id);
+        assert_eq!(retried.target_execution.as_ref(), Some(selected));
+        assert!(
+            !store
+                .interaction_target_execution_allowed(&retried)
+                .unwrap()
+        );
+        assert!(
+            store
+                .record_turn_started_mode(target.id, &request, Some(&original.id))
+                .is_err()
+        );
+
+        assert!(!store.get_session(target.key).unwrap().unwrap().busy);
+
+        let later = admit(&store, &target, 12, R::New);
+        assert!(store.interaction_target_execution_allowed(&later).unwrap());
+        store
+            .record_turn_started_mode(target.id, &request, Some(&later.id))
+            .unwrap();
+    }
+
+    #[test]
+    fn queued_targets_can_materialize_the_first_writer_in_the_same_generation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(8));
+        let target = store.ensure_session(key, 100, &defaults).unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET force_fresh_thread=1 WHERE id=?1",
+                [target.id],
+            )
+            .unwrap();
+        let first = admit(&store, &target, 13, R::New);
+        let second = admit(&store, &target, 14, R::New);
+        assert!(
+            first
+                .target_execution
+                .as_ref()
+                .unwrap()
+                .native_session
+                .is_none()
+        );
+        store.set_session_codex_thread(key, "first-native").unwrap();
+        assert!(store.interaction_target_execution_allowed(&first).unwrap());
+        assert!(store.interaction_target_execution_allowed(&second).unwrap());
+        let local = store
+            .record_turn_started_mode(
+                target.id,
+                &TurnRequest {
+                    session_key: key,
+                    from_user_id: 100,
+                    prompt: second.text.clone(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+                Some(&second.id),
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "wrong-native")
+            .unwrap();
+        assert!(store.bind_codex_turn(local, "wrong-native").is_err());
+        assert_eq!(
+            store
+                .get_session(key)
+                .unwrap()
+                .unwrap()
+                .codex_thread_id
+                .as_deref(),
+            Some("first-native")
+        );
+    }
+
     fn accept(s: &Store, target: &SessionRecord, i: &Instruction) -> i64 {
         let local = s
             .record_turn_started(

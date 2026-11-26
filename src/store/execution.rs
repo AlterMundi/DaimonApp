@@ -68,6 +68,10 @@ impl Store {
                AND t.status='running' AND t.completed_at IS NULL AND t.execution_generation=g.generation",
             params![local, native], |row| row.get(0),
         ).optional()?.context("Codex turn binding changed before native session adoption")?;
+        anyhow::ensure!(
+            super::interaction::routed_native_allowed_on(&tx, local, native)?,
+            "Native writer differs from the selected routed execution"
+        );
         tx.execute(
             "UPDATE sessions SET codex_thread_id=?1,force_fresh_thread=0,updated_at=?2 WHERE id=?3",
             params![native, now_string(), session],

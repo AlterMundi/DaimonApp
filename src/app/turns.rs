@@ -288,7 +288,6 @@ pub(super) async fn process_turn(
     if bounded.is_some() {
         shared.store.tribu_check_thread(&session)?;
     }
-    shared.store.set_session_busy(session.key, true)?;
     let retained_execution =
         if let Some(g) = queued.goal.as_ref().filter(|g| g.attach_turn.is_some()) {
             shared.store.interaction_attachment_execution(
@@ -320,7 +319,10 @@ pub(super) async fn process_turn(
         .transpose()?
         .flatten();
     let turn_id = match retained_execution {
-        Some((local, _)) => local,
+        Some((local, _)) => {
+            shared.store.set_session_busy(session.key, true)?;
+            local
+        }
         None => shared.store.record_turn_started_mode(
             session.id,
             &queued.request,
@@ -899,11 +901,11 @@ pub(super) async fn process_turn(
                                 super::nexus::thread(&shared,turn_id,&thread_id)?;
                                 if let Some(id)=admission.as_deref() {shared.store.tribu_native_thread(session_key,id,&thread_id)?;}
                                 shared.store.record_turn_native_thread(turn_id, &thread_id)?;
-                                if let Some(id)=interaction.as_deref() {shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;}
                                 if preserve_thread_binding && attach_native.is_none() {
                                     if conversation_input.is_none() && !voice_bound && !initial_bound {
                                         shared.store.bind_codex_turn(turn_id, &thread_id)?;
                                     }
+                                    if let Some(id)=interaction.as_deref() {shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;}
                                     if super::rename::sync_native_title(&shared, session_key).await.is_err() {
                                         let _ = send_markdown_message(
                                             &super::presentation::turn_telegram(&shared, Some(turn_id)),
@@ -913,6 +915,9 @@ pub(super) async fn process_turn(
                                             None,
                                         ).await;
                                     }
+                                }
+                                if (!preserve_thread_binding || attach_native.is_some()) && let Some(id)=interaction.as_deref() {
+                                    shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;
                                 }
                                 if !routed {
                                     if let Some(tx)=&presentation_tx {retain_presentation_gap(&shared,turn_id,tx.try_send(CodexEvent::ThreadStarted(thread_id)).is_err())?;}
@@ -1079,7 +1084,7 @@ pub(super) async fn process_turn(
                                 if let Some(native)=attach_native.as_deref() {shared.store.validate_owned_binding(session_key,requester_user_id,native)?;}
                                 if let Some(id)=interaction.as_deref() {
                                     let instruction=shared.store.interaction_instruction(id,requester_user_id)?.context("Interaction input missing before submission")?;
-                                    if !super::routing::dispatch_allowed(&shared,&instruction)? {bail!("Interaction admission retired before native submission; input retained");}
+                                    if !super::routing::dispatch_admission_allowed(&shared,&instruction,true)? {bail!("Interaction admission retired before native submission; input retained");}
                                     let source=shared.store.interaction_source(id,requester_user_id)?;
                                     if let Some(external)=source.tribu_source.as_ref(){super::tribu::validate_integrated_source(&shared,external).await?;}
                                     super::nexus::validate_input_target(&shared,source.update_id,session_key,requester_user_id)?;

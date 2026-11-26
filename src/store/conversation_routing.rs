@@ -481,6 +481,7 @@ impl Store {
         for route in rows {
             if !super::stopping::fenced_on(&conn, route.target)?
                 && !super::maintenance_writer_held_on(&conn, route.target)?
+                && super::interaction::target_execution_allowed_on(&conn, &route)?
             {
                 available.push(route);
             }

@@ -224,16 +224,6 @@ pub(super) fn admit_selected_on(
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
-    if source.origin.message_id.is_none()
-        && let Some(native) = native.as_deref()
-    {
-        super::conversation_inputs::select_return_on(
-            tx,
-            source.human_id,
-            native,
-            &source.event_id,
-        )?;
-    }
     if !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
@@ -260,6 +250,22 @@ pub(super) fn admit_selected_on(
         .optional()?;
     if old_source.as_ref().is_some_and(|old| old != &raw_source) {
         return Err(anyhow!("Interaction source identity is immutable"));
+    }
+    let target_execution = super::execution::binding_on(tx, target, source.human_id)?
+        .context("Interaction target execution is unavailable")?
+        .execution;
+    if target_execution.conversation_id != session {
+        bail!("Interaction target selection changed");
+    }
+    if source.origin.message_id.is_none()
+        && let Some(native) = target_execution.native_session.as_deref()
+    {
+        super::conversation_inputs::select_return_on(
+            tx,
+            source.human_id,
+            native,
+            &source.event_id,
+        )?;
     }
     let instruction_id =
         Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("{id}:{session}").as_bytes()).to_string();
@@ -295,6 +301,7 @@ pub(super) fn admit_selected_on(
         human_id: source.human_id,
         target_session: session,
         target,
+        target_execution: Some(target_execution),
         sequence,
         relation,
         requests,
@@ -328,6 +335,85 @@ pub(super) fn admit_selected_on(
     Ok((instruction, true))
 }
 
+pub(super) fn target_execution_allowed_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+) -> Result<bool> {
+    target_execution_matches_on(conn, input, None)
+}
+
+fn target_execution_matches_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+    native: Option<&str>,
+) -> Result<bool> {
+    let Some(selected) = input.target_execution.as_ref() else {
+        return Ok(true);
+    };
+    Ok(
+        super::execution::binding_on(conn, input.target, input.human_id)?.is_some_and(|current| {
+            let current = current.execution;
+            current.conversation_id == selected.conversation_id
+                && current.revision == selected.revision
+                && current.harness == selected.harness
+                && selected
+                    .native_session
+                    .as_ref()
+                    .is_none_or(|id| current.native_session.as_ref() == Some(id))
+                && native.is_none_or(|observed| {
+                    current
+                        .native_session
+                        .as_deref()
+                        .is_none_or(|id| id == observed)
+                })
+        }),
+    )
+}
+
+pub(super) fn routed_native_allowed_on(
+    conn: &Connection,
+    local: i64,
+    native: &str,
+) -> Result<bool> {
+    let root: Option<String> = conn
+        .query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("execution_root:{local}")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = root else {
+        return Ok(true);
+    };
+    let Some(id) = serde_json::from_str::<Option<String>>(&raw)? else {
+        return Ok(true);
+    };
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_instructions WHERE id=?1 AND phase='queued'",
+        [&id],
+        |row| row.get(0),
+    )?;
+    target_execution_matches_on(conn, &serde_json::from_str(&raw)?, Some(native))
+}
+
+pub(super) fn queued_root_allowed_on(
+    conn: &Connection,
+    id: &str,
+    request: &TurnRequest,
+    session: i64,
+) -> Result<bool> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
+         WHERE i.id=?1 AND i.session_id=?2 AND i.phase='queued' AND s.human_id=?3",
+        params![id, session, request.from_user_id], |row| row.get(0),
+    ).optional()?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let input: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+    Ok(input.target == request.session_key && target_execution_allowed_on(conn, &input)?)
+}
+
 pub(super) fn recover_on(conn: &Connection, id: &str, human: i64, instance: &str) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
@@ -335,6 +421,9 @@ pub(super) fn recover_on(conn: &Connection, id: &str, human: i64, instance: &str
         return Ok(false);
     };
     let mut instruction: Instruction = serde_json::from_str(&doc)?;
+    if !target_execution_allowed_on(conn, &instruction)? {
+        return Ok(false);
+    }
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
     instruction.native_turn = None;
@@ -457,6 +546,14 @@ impl Store {
         let result = admit_on(&tx, source, target, relation, &self.instance_id)?;
         tx.commit()?;
         Ok(result)
+    }
+
+    pub(crate) fn interaction_target_execution_allowed(
+        &self,
+        input: &crate::interaction::Instruction,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        target_execution_allowed_on(&conn, input)
     }
 
     pub fn interaction_instruction(
