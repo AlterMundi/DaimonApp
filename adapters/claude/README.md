@@ -31,6 +31,10 @@ owner-owned profile selects the absolute SDK entry, Claude binary, working
 directory, home, Matrix observation command, CLI version, model and body. Use the
 Claude Code model alias `opus` to follow its current Opus selection. The
 optional `effort` is passed to the Agent SDK as a session option.
+Set optional `displayName` to the owner-selected human-readable name for the
+verified Matrix body. The native system prompt identifies the harness and this
+display name. Device status and body coordinates still come from the authenticated
+Matrix broker. The prompt does not grant memory, tools or skills.
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact

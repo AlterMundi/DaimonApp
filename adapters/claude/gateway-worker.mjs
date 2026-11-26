@@ -18,14 +18,18 @@ async function ownerProfile(path) {
   const authFields = subscription ? ['subscriptionEmail'] : ['configurationDirectory', 'apiKeyFile'];
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
+  const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+      'cliVersion', 'model', ...effort, ...displayName, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
+      || (displayName.length > 0 && (typeof value.displayName !== 'string'
+        || value.displayName !== value.displayName.trim()
+        || !/^[\p{L}\p{M}\p{N} .@·_-]{1,80}$/u.test(value.displayName)))
       || !Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0
       || ![value.cliVersion, value.model, ...Object.values(value.body)]
         .every(item => typeof item === 'string' && item.length > 0 && item.length <= 240)
@@ -106,6 +110,7 @@ async function main() {
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
+        displayName: profile.displayName,
         persistSession: true, maxTurns: 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },

@@ -83,6 +83,17 @@ export async function runClaudeTurn({
         env: profile.env, model: profile.model,
         ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
         ...(profile.effort ? { effort: profile.effort } : {}),
+        systemPrompt: {
+          type: 'preset', preset: 'claude_code', snapshot: false,
+          append: [
+            profile.displayName
+              ? `Your owner-configured display name for this Matrix body is "${profile.displayName}".`
+              : 'You are speaking as the selected Matrix body in this conversation.',
+            'Claude Code is your harness, run through the Claude Agent SDK and Daimon Gateway.',
+            'Use daimon_status when asked for signed body coordinates or current integrity.',
+            'Describe only the conversation history and tools actually available to you. A Matrix body identity by itself does not provide shared memories or skills.',
+          ].join(' '),
+        },
         maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
         settingSources: [], strictMcpConfig: true, tools: [], allowedTools,
         mcpServers: { [SERVER]: broker.server }, permissionMode: 'dontAsk',

@@ -55,6 +55,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
           assert.equal(options.maxTurns, 2);
           assert.equal(options.maxBudgetUsd, 0.10);
+          assert.equal(options.systemPrompt.snapshot, false);
+          assert.match(options.systemPrompt.append, /CompAII fixture · claude@itaca/);
+          assert.ok(!options.systemPrompt.append.includes(${JSON.stringify(subscriptionEmail)}));
           return {
             async initializationResult() {
               return { claude_code_version: 'fixture-version', account: {
@@ -88,7 +91,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       };
       const profile = {
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
-        cliVersion: 'fixture-version', model: 'fixture-model',
+        cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,

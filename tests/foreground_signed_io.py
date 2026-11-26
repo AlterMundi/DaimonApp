@@ -86,7 +86,7 @@ exec {shlex.quote(executable)} "$@"
         config.update(sdk=os.environ["CLAUDE_TEST_SDK_PATH"], binary=str(wrapper), cwd=str(root),
                       home=str(state), configurationDirectory=str(state), apiKeyFile=str(key),
                       cliVersion=os.environ.get("CLAUDE_TEST_CLI_VERSION", "2.1.325"),
-                      maxBudgetUsd=0.1)
+                      maxBudgetUsd=0.1, displayName="Fixture CompAII · claude@fixture")
         worker = os.environ.get("CLAUDE_TEST_WORKER_PATH", str(
             foreground.ROOT / "adapters/claude/gateway-worker.mjs"
         ))
@@ -209,6 +209,8 @@ operator.main()
                 provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
+                if engine == "claude":
+                    provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
                 provider.current = original["message_id"]
                 provider.original = "Material for the selected turn"

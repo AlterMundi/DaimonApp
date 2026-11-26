@@ -18,6 +18,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             length = int(self.headers["Content-Length"])
             assert 0 < length < 262_144
             data = json.loads(self.rfile.read(length))
+            system = json.dumps(data["system"], ensure_ascii=False)
+            assert self.server.display_name in system
+            assert "Claude Code is your harness" in system
             assert [tool["name"] for tool in data["tools"]] == [TOOL]
             assert self.server.original in json.dumps(data["messages"])
             phase, submission = self.server.journey.row(
