@@ -756,17 +756,34 @@ window.Conversation = (() => {
         if(!card.claudeBody){
           card.claudeBox=node("article",undefined,"reply claude-message");
           card.claudeBody=node("div",undefined,"reply-text");
-          card.claudeBox.append(node("h3","Claude Code"),card.claudeBody);
+          card.claudeRead=node("button","Read full reply");card.claudeRead.type="button";
+          card.claudeRead.addEventListener("click",async()=>{
+            const owned=inputGeneration,id=card.value.id,message=card.value.claude_reply?.message_id;
+            const valid=()=>owned===inputGeneration && inputs.get(id)===card && card.value.claude_reply?.message_id===message;
+            card.claudeRead.disabled=true;
+            try{
+              card.claudeFull=await copyParts(async offset=>{
+                const part=await api(`interaction/inputs/${encodeURIComponent(id)}/trace/claude-reply?offset=${offset}`);
+                if(part.id!==id || part.source!=="claude-reply")throw Error("Reply changed");
+                return part;
+              },valid);
+              if(valid())renderInputText(card);
+            }catch(error){
+              if(valid()){card.claudeRead.textContent="Retry reading reply";if([401,403].includes(error.status))failed(error);}
+            }finally{card.claudeRead.disabled=false;}
+          });
+          card.claudeBox.append(node("h3","Claude Code"),card.claudeBody,card.claudeRead);
           card.claudeBox.dataset.claudeReplyTo=card.value.id;
         }
-        setReplyText(card.claudeBody,reply.text);
+        setReplyText(card.claudeBody,card.claudeFull??reply.text);
+        card.claudeRead.hidden=card.claudeFull!==undefined || !Number.isSafeInteger(reply.next_offset);
         placeClaudeReply(card);
       }
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
       }else {
         card.check.textContent="Check status";
-        card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered","matrix_replied"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
+        card.check.hidden=readOnly || card.value.read_only===true || ((["accepted","routed","answered"].includes(card.value.phase) || claudeReplied(card.value.phase)) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
       }
     }
     function placeClaudeReply(card){
@@ -914,6 +931,7 @@ window.Conversation = (() => {
       sendState.setAttribute('data-attention',String(attention));
       syncComposerRecovery();
     }
+    const claudeReplied = phase => ["matrix_replied","claude_replied"].includes(phase);
     const claudeFailure = phase => ["claude_rejected","claude_unconfirmed"].includes(phase);
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     function inputNotice(value){
@@ -924,7 +942,7 @@ window.Conversation = (() => {
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
-      : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code received the message. A reply could not be confirmed."})[value.phase]??"Check this message’s status before sending again."
+      : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
           accepted:"Sent to your conversation. Work may continue.", matrix_requested:"Saved for the selected daimon; awaiting its authorized execution and reply.",
@@ -1242,11 +1260,11 @@ window.Conversation = (() => {
             card.value.voice={...card.value.voice,...value.voice};
           }
         }
-        if (value.phase === "matrix_replied" && typeof value.claude_reply?.text === "string" &&
-            card.value.phase !== "matrix_replied") {
+        if (claudeReplied(value.phase) && typeof value.claude_reply?.text === "string" &&
+            !claudeReplied(card.value.phase)) {
           card.value.phase = value.phase;
           card.value.claude_reply = value.claude_reply;
-        } else if (claudeFailure(value.phase) && card.value.phase !== "matrix_replied") {
+        } else if (claudeFailure(value.phase) && !claudeReplied(card.value.phase)) {
           card.value.phase = value.phase;
         }
         if(value.routing && (!card.value.routing || (value.routing.phase==="accepted" && card.value.routing.instruction===value.routing.instruction))){
@@ -1267,9 +1285,9 @@ window.Conversation = (() => {
         renderRoute(card);graph?.input(card.value);inputActivity();return card;
       }
       // Native acceptance and retirement cannot be undone by a late snapshot.
-      if (["answered","matrix_requested","retained_unsent","matrix_replied"].includes(card.value.phase) ||
+      if (["answered","matrix_requested","retained_unsent"].includes(card.value.phase) || claudeReplied(card.value.phase) ||
           (card.value.phase==="accepted" && !["answered","matrix_requested"].includes(value.phase))) value = {...value,phase:card.value.phase};
-      if (claudeFailure(card.value.phase) && ["retained","sending","matrix_received"].includes(value.phase)) {
+      if (claudeFailure(card.value.phase) && ["retained","sending","matrix_received","claude_preparing","claude_running"].includes(value.phase)) {
         value = {...value,phase:card.value.phase};
       }
       if(card.value.routing) {

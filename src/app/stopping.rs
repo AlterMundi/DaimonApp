@@ -364,6 +364,11 @@ async fn stop_target(
 ) -> Result<()> {
     app.shared.store.stop_binding(op.human, t)?;
     let Some(native) = t.native.clone() else {
+        if app.stop_session(t.key).await {
+            t.was_busy = true;
+            t.phase = "stop_requested".into();
+            return Ok(());
+        }
         if app.shared.store.get_session(t.key)?.is_some_and(|s| s.busy) {
             bail!("Native startup is still being resolved; fence retained");
         }

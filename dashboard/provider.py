@@ -648,9 +648,10 @@ class Provider:
         return self.presentation(f'input telegram-list {before} {direction}')
 
     def conversation_trace_text(self, ident, source, offset):
-        if type(offset) is not int or not 0 <= offset <= 32768:
+        max_offset = 65536 if source == 'claude-reply' else 32768
+        if type(offset) is not int or not 0 <= offset <= max_offset:
             raise ValueError('Invalid trace text offset')
-        selected = 'original' if source == 'original' else self.input_id(source)
+        selected = source if source in ('original', 'claude-reply') else self.input_id(source)
         return self.presentation(f'input trace-text {self.trace_id(ident)} {selected} {offset}')
 
     @classmethod

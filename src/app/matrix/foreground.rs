@@ -1,7 +1,8 @@
 //! An explicitly selected sibling original through the existing Gateway owner socket.
 use super::*;
-use crate::interaction::{ForegroundConfig, ForegroundEngine, InteractionConfig};
-use crate::store::{MatrixAuthor, WeAttempt, WeOriginal, WePhase, WeSelection, valid_claude_scope};
+use crate::app::foreground::{WorkerTurn, execute_worker};
+use crate::interaction::{ForegroundEngine, InteractionConfig};
+use crate::store::{MatrixAuthor, WeOriginal, WePhase, WeSelection};
 
 pub(super) async fn owner(
     app: &App,
@@ -56,13 +57,7 @@ pub(super) async fn run_selected(
         !app.shared.shutdown.is_cancelled(),
         "Gateway is shutting down"
     );
-    let observed = host_command_mode(
-        &config.transport,
-        &json!({"source":source}),
-        Some("--body-status"),
-    )
-    .await?;
-    let body = worker_body(&source, &observed)?;
+    let (observed, body) = authenticate_foreground_body(&config.transport, &source).await?;
     let mut host = json!({"source":source,"body":observed,"original":selected});
     let original: WeOriginal = serde_json::from_value(
         host_command_mode(&config.transport, &host, Some("--we-read")).await?,
@@ -82,15 +77,34 @@ pub(super) async fn run_selected(
             .context("Retained original unavailable");
     };
     let mut exposed = false;
-    let execution = tokio::select! {
-        biased;
-        _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
-        result = execute_worker(config, engine, &id, &attempt, &text, body, |prepared| {
-            exposed = store.we_transition(human, entry, &attempt,
-                WePhase::Starting, WePhase::ProviderExposed, prepared)?;
+    let execution = execute_worker(
+        &config.worker_command,
+        engine,
+        WorkerTurn {
+            id: &id,
+            session: &attempt.session_id,
+            resume: attempt.resume.as_ref(),
+            human_original: attempt.human_original,
+            text: &text,
+            body,
+            cancel: &app.shared.shutdown,
+        },
+        |prepared| {
+            if app.shared.shutdown.is_cancelled() {
+                return Ok(false);
+            }
+            exposed = store.we_transition(
+                human,
+                entry,
+                &attempt,
+                WePhase::Starting,
+                WePhase::ProviderExposed,
+                prepared,
+            )?;
             Ok(exposed)
-        }) => result,
-    };
+        },
+    )
+    .await;
     match (exposed, execution) {
         (false, outcome) => {
             let known = outcome
@@ -173,6 +187,16 @@ pub(super) async fn run_selected(
         .context("Retained original unavailable")
 }
 
+pub(in crate::app) async fn authenticate_foreground_body(
+    transport: &MatrixTransportConfig,
+    source: &MatrixAuthor,
+) -> Result<(Value, Value)> {
+    let observed =
+        host_command_mode(transport, &json!({"source":source}), Some("--body-status")).await?;
+    let body = worker_body(source, &observed)?;
+    Ok((observed, body))
+}
+
 fn worker_body(source: &MatrixAuthor, status: &Value) -> Result<Value> {
     let observed = &status["local_origin"];
     anyhow::ensure!(
@@ -227,172 +251,4 @@ fn settle_return(outcome: Option<Value>, send_id: &str, thread: &str) -> (WePhas
         }
     }
     (WePhase::ReturnUncertain, result)
-}
-
-#[cfg(unix)]
-async fn execute_worker(
-    config: &ForegroundConfig,
-    engine: ForegroundEngine,
-    id: &str,
-    attempt: &WeAttempt,
-    text: &str,
-    body: Value,
-    commit: impl FnOnce(Value) -> Result<bool>,
-) -> Result<Value> {
-    use std::{os::unix::process::CommandExt, process::Stdio, time::Duration};
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::process::Command;
-
-    async fn send(input: &mut tokio::process::ChildStdin, value: Value) -> Result<()> {
-        let mut raw = serde_json::to_vec(&value)?;
-        raw.push(b'\n');
-        input.write_all(&raw).await?;
-        Ok(())
-    }
-    async fn receive(
-        output: &mut (impl AsyncBufReadExt + Unpin),
-        schema: &str,
-        id: &str,
-        session: &str,
-    ) -> Result<Value> {
-        let mut frame = Vec::new();
-        let length = output.read_until(b'\n', &mut frame).await?;
-        anyhow::ensure!(
-            length > 0 && frame.last() == Some(&b'\n'),
-            "Unconfirmed native worker frame"
-        );
-        let decoded: Value = serde_json::from_slice(&frame)?;
-        anyhow::ensure!(
-            decoded["schema"] == schema
-                && decoded["inputId"] == id
-                && decoded["sessionId"] == session,
-            "native worker frame differs from the selected attempt"
-        );
-        Ok(decoded)
-    }
-    let schema = match engine {
-        ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
-        ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
-        ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
-    };
-    let session = &attempt.session_id;
-    let fresh_native = uuid::Uuid::new_v4().to_string();
-    let mut command = Command::new(&config.worker_command[0]);
-    command
-        .args(&config.worker_command[1..])
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    command.as_std_mut().process_group(0);
-    let mut child = command.spawn().context("native worker unavailable")?;
-    let group = OwnedMatrixCommand(child.id().context("Missing native worker process")?);
-    let result = tokio::time::timeout(Duration::from_secs(130), async {
-        let mut input = child.stdin.take().context("Missing native worker input")?;
-        let mut output = BufReader::new(
-            child
-                .stdout
-                .take()
-                .context("Missing native worker output")?,
-        )
-        .take(528_385);
-        let mut start = json!({"schema":schema,"type":"start","inputId":id,
-            "sessionId":session,"text":text,"body":body});
-        if engine == ForegroundEngine::Claude {
-            start["freshNativeSessionId"] = json!(fresh_native);
-            start["resume"] = json!(attempt.resume);
-            start["humanOriginal"] = json!(attempt.human_original);
-        }
-        send(&mut input, start).await?;
-        let mut frame = receive(&mut output, schema, id, session).await?;
-        let mut native_session = None;
-        if frame["type"] == "prepare_submission" {
-            let observed = frame.get("nativeSessionId");
-            let selected = match engine {
-                ForegroundEngine::Claude => {
-                    let scope = frame["sessionScope"]
-                        .as_str()
-                        .filter(|value| valid_claude_scope(value))
-                        .context("Claude preparation omitted its authorization scope")?;
-                    let expected = attempt
-                        .resume
-                        .as_ref()
-                        .filter(|prior| prior.scope == scope)
-                        .map_or(fresh_native.as_str(), |prior| prior.session_id.as_str());
-                    anyhow::ensure!(
-                        observed.and_then(Value::as_str) == Some(expected),
-                        "Claude preparation returned another native session"
-                    );
-                    expected
-                }
-                ForegroundEngine::Goose => observed
-                    .and_then(Value::as_str)
-                    .context("Goose preparation omitted its native session")?,
-                ForegroundEngine::Antigravity
-                    if observed.and_then(Value::as_str) == Some(session) =>
-                {
-                    session
-                }
-                ForegroundEngine::Antigravity => {
-                    bail!("Antigravity preparation did not attest the selected native session")
-                }
-            };
-            let mut prepared = json!({"native_session_id":selected});
-            if engine == ForegroundEngine::Claude {
-                prepared["native_session_scope"] = frame["sessionScope"].clone();
-            }
-            let committed = commit(prepared)?;
-            if committed {
-                native_session = Some(selected.to_owned());
-            }
-            send(
-                &mut input,
-                json!({"schema":schema,"type":"submission_decision",
-                "inputId":id,"sessionId":session,"committed":committed}),
-            )
-            .await?;
-            frame = receive(&mut output, schema, id, session).await?;
-        }
-        let outcome = frame["outcome"].take();
-        anyhow::ensure!(
-            frame["type"] == "outcome"
-                && match outcome["phase"].as_str() {
-                    Some("completed") =>
-                        outcome["sessionId"].as_str() == native_session.as_deref()
-                            && native_session.is_some()
-                            && outcome["text"]
-                                .as_str()
-                                .is_some_and(|text| !text.trim().is_empty() && text.len() <= 65536),
-                    Some("uncertain") =>
-                        outcome["sessionId"].as_str() == native_session.as_deref()
-                            && native_session.is_some(),
-                    Some("not_submitted") => true,
-                    _ => false,
-                },
-            "Unconfirmed native worker outcome"
-        );
-        anyhow::ensure!(
-            child.wait().await?.success(),
-            "native worker exited without a verified outcome"
-        );
-        Ok(outcome)
-    })
-    .await;
-    drop(group);
-    let _ = child.wait().await;
-    result.context("native worker deadline")?
-}
-
-#[cfg(not(unix))]
-async fn execute_worker(
-    _config: &ForegroundConfig,
-    _engine: ForegroundEngine,
-    _id: &str,
-    _attempt: &WeAttempt,
-    _text: &str,
-    _body: Value,
-    _commit: impl FnOnce(Value) -> Result<bool>,
-) -> Result<Value> {
-    bail!("native worker requires Unix process groups")
 }

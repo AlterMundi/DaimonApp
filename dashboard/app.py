@@ -672,6 +672,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             except (ProviderUnavailable,OSError,ValueError):
                 files={'state':'unavailable'}
         await authorize_async(request)
+        if result.pop('claude_requires_paired_actor', False) and dict(session).get('_companion_credential', False):
+            result['can_select_claude'] = False
         return {**result, 'csrf':session['csrf'],
                 'can_decide_requests':dict(session).get('scope') is None or dict(session).get('native_decision_access') is True,
                 'presentation_profile':dict(session).get('presentation_profile', companions.default_profile),

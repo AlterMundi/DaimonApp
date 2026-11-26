@@ -99,6 +99,8 @@ pub struct MatrixTransportConfig {
 pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+    #[serde(default)]
+    pub interaction_direct: bool,
     /// Owner-fixed sending body and command for explicitly selected Interaction text.
     pub interaction_origin: Option<MatrixTransportConfig>,
 }
@@ -369,7 +371,9 @@ impl InteractionConfig {
         if [&self.goose_foreground, &self.antigravity_foreground]
             .into_iter()
             .flatten()
-            .any(|foreground| foreground.interaction_origin.is_some())
+            .any(|foreground| {
+                foreground.interaction_origin.is_some() || foreground.interaction_direct
+            })
         {
             bail!("Interaction foreground selection is only supported for Claude");
         }

@@ -83,6 +83,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
                 assert.equal(options.systemPrompt.append.includes(
                   'The paired human wrote the current user message in Interaction.'), paired);
+                assert.equal(options.systemPrompt.append.includes(
+                  'The Claude subscription account is a service credential and does not identify the sender.'), paired);
                 assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
                 assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
                 const expectedTools = ownerDefault

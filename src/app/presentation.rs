@@ -207,7 +207,13 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
         result["can_select_claude"] = json!(
             cfg.claude_foreground
                 .as_ref()
-                .is_some_and(|foreground| foreground.interaction_origin.is_some())
+                .is_some_and(|foreground| foreground.interaction_origin.is_some()
+                    || foreground.interaction_direct)
+        );
+        result["claude_requires_paired_actor"] = json!(
+            cfg.claude_foreground
+                .as_ref()
+                .is_some_and(|foreground| foreground.interaction_direct)
         );
         let targets = cfg
             .targets

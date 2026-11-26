@@ -29,6 +29,7 @@ mod conversation_inputs;
 mod conversation_requests;
 mod creation;
 mod dialogue;
+mod foreground;
 mod forum;
 mod goal_controls;
 mod goal_recovery;
@@ -2914,6 +2915,15 @@ impl App {
                 let nexus_id = turn.nexus.clone();
                 let merge_id = turn.merge.clone();
                 let conversation_input_id = turn.conversation_input.clone();
+                let portable = conversation_input_id
+                    .as_deref()
+                    .and_then(|id| {
+                        shared
+                            .store
+                            .conversation_input_read(requester, target, id)
+                            .ok()
+                    })
+                    .is_some_and(|input| input.portable.is_some());
                 if let Some(id) = conversation_input_id.as_deref() {
                     let _slot = steer.lock().expect("steer mutex poisoned");
                     match shared
@@ -3017,9 +3027,10 @@ impl App {
                 // A context return may have started a distinct physical turn
                 // just as this collector completed. Attach that exact writer
                 // now; waiting for maintenance would leave its tools unanswered.
-                if native_recovery::attach_foreground(&app, requester, target)
-                    .await
-                    .is_err()
+                if !portable
+                    && native_recovery::attach_foreground(&app, requester, target)
+                        .await
+                        .is_err()
                 {
                     tracing::warn!("Exact foreground collector remains pending; no input replayed");
                 }

@@ -127,7 +127,22 @@ Gateway authorizes submission. The identity check and shared DMK stay available
 on the first model call.
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
-The current private Interaction route uses the existing signed CompAII sending
+With `interaction_direct = true` in `[interaction.claude_foreground]`,
+paired-human Interaction originals enter the Gateway session queue and
+outcomes are stored in its canonical turn record. The installed body identity,
+effective tool catalog and OAuth selection are still verified before input
+exposure. Ordinary messages do not use Matrix transport. This setting affects
+the Interaction Claude selection; the explicit signed Matrix route is separate.
+
+Keep the upgraded Gateway binary when rolling back the setting after direct
+turns have been exposed. To restore the signed route, turn off
+`interaction_direct` and retain the existing `interaction_origin` profile.
+The upgraded reader keeps previous direct results and prevents the same native
+transcript from reopening behind a newer uncertain attempt. A pre-upgrade
+binary cannot interpret that evidence; use a fresh logical generation before
+resuming input with it.
+
+The signed Interaction route uses the existing signed CompAII sending
 body to transport the original. Interaction retains the paired human as the
 author of the original. For authenticated paired-human turns, Gateway's
 verified original marker tells Claude to preserve that attribution. Matrix

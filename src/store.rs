@@ -54,7 +54,7 @@ pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
 pub(crate) use matrix::foreground::{
-    WeAttempt, WeOriginal, WePhase, WeSelection, valid_claude_scope,
+    ClaudeContinuation, WeOriginal, WePhase, WeSelection, valid_claude_scope,
 };
 pub(crate) use matrix::inbox::{
     Page as MatrixInboxPage, ReadFailure as MatrixInboxReadFailure,
@@ -1511,6 +1511,8 @@ impl Store {
             "execution_harness",
             "TEXT NOT NULL DEFAULT 'codex'",
         )?;
+        add_column_if_missing(&conn, "turns", "execution_native_scope", "TEXT")?;
+        add_column_if_missing(&conn, "turns", "execution_body", "TEXT")?;
         add_column_if_missing(&conn, "turns", "execution_generation", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;

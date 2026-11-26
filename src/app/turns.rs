@@ -13,6 +13,24 @@ pub(super) async fn process_turn(
     registration: Option<String>,
     prepared_worker_lease: Option<super::attention::WorkerLease>,
 ) -> Result<()> {
+    let conversation = queued
+        .conversation_input
+        .as_deref()
+        .map(|id| {
+            app.shared.store.conversation_input_read(
+                queued.request.from_user_id,
+                queued.request.session_key,
+                id,
+            )
+        })
+        .transpose()?;
+    if let Some(input) = conversation
+        .as_ref()
+        .filter(|input| input.portable.is_some())
+    {
+        return super::foreground::run_portable_turn(&app, &queued.request, input, cancel_slot)
+            .await;
+    }
     let shared = app.shared.clone();
     let recovering = queued
         .goal
@@ -46,21 +64,11 @@ pub(super) async fn process_turn(
         workflow_return_attempt = Some(selected.attempts);
         conversation_native = Some(selected.native);
     }
-    if let Some(id) = queued.conversation_input.as_deref() {
+    if let Some(input) = &conversation {
         shared
             .store
-            .conversation_input_validate(queued.request.from_user_id, id)?;
-        conversation_native = Some(
-            shared
-                .store
-                .conversation_input_read(
-                    queued.request.from_user_id,
-                    queued.request.session_key,
-                    id,
-                )?
-                .native,
-        )
-        .filter(|native| !native.is_empty());
+            .conversation_input_validate(input.human, &input.id)?;
+        conversation_native = Some(input.native.clone()).filter(|native| !native.is_empty());
     }
     shared.store.voice_validate(
         queued.update_id,
