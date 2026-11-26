@@ -1109,7 +1109,11 @@ pub(super) async fn process_turn(
                                     return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions});
                                     }
                                 }
-                                shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
+                                // A collector observes an existing physical turn. Its exact
+                                // attachment is checked by record_collector_attachment.
+                                if attach_native.is_none() {
+                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
+                                }
                                 Ok(match allowance {
                                     Some(allowance)=>match shared.config.interaction.as_ref()
                                         .and_then(|profile|profile.matrix_transport.as_ref())
