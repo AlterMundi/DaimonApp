@@ -547,13 +547,20 @@ timeout_seconds=5
             self.assertEqual(journey.native_turns, native_turns)
 
             selected = "  This text was written directly in the selected topic.  "
+            launcher = Path(json.loads(profile.read_text())["binary"])
+            startup = launcher.read_text()
+            launcher.write_text(startup.replace(
+                "#!/bin/sh\n", '#!/bin/sh\nif [ "$1" != auth ]; then sleep 11; fi\n', 1
+            ))
             with journey.lock:
                 provider.original = selected
                 provider.human_original = str(journey.sequence + 1)
             update = journey.admit(selected, topic=7)
             self.assertEqual(str(update), provider.human_original)
             journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            launcher.write_text(startup)
             self.assertIsNone(provider.failure)
+            self.assertFalse(journey.has("native submission has not started", 7))
             delivered = [(message, payload) for message, payload in journey.messages if ANSWER in message["text"]]
             self.assertEqual(len(delivered), 1)
             message, payload = delivered[0]

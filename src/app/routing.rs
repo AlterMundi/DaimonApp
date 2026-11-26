@@ -91,6 +91,15 @@ pub(super) fn relayed(input: &Instruction) -> bool {
     input.origin.chat_id != input.target.chat_id || input.origin.thread_id != input.target.thread_id
 }
 
+fn direct_portable_topic(input: &Instruction) -> bool {
+    input.origin.message_id.is_some()
+        && !relayed(input)
+        && input
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness.is_portable())
+}
+
 pub(super) fn session_inputs(
     shared: &AppShared,
     key: SessionKey,
@@ -1252,7 +1261,7 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
         return Ok(());
     }
     let action = reserve_run(&app.shared, &i);
-    if !action.as_ref().is_some_and(|active| active.is_some()) {
+    if !direct_portable_topic(&i) && !action.as_ref().is_some_and(|active| active.is_some()) {
         let shared = app.shared.clone();
         let waiting = i.clone();
         tokio::spawn(async move {
@@ -1306,12 +1315,7 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = if source.update_id.is_some()
-        && !relayed(i)
-        && i.target_execution
-            .as_ref()
-            .is_some_and(|binding| binding.harness.is_portable())
-    {
+    let prompt = if source.update_id.is_some() && direct_portable_topic(i) {
         i.text.clone()
     } else {
         super::nexus::input_prompt(
