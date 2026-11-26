@@ -288,7 +288,10 @@ async function main() {
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
     const hostTools = fullAccess ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
     if (hostTools.includes('Bash')) {
-      env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+      // The API-key path needs subprocess credential isolation. The paired
+      // subscription environment contains no provider credential variables.
+      // On Linux the scrub option also confines Bash in a user namespace.
+      if (!profile.subscriptionEmail) env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
       if (profile.hostToolDirectory) env.PATH += `:${profile.hostToolDirectory}`;
     }
     let sharedDmkWriter;

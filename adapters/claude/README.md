@@ -86,6 +86,12 @@ directory contains an executable `dmk` wrapper, the prompt tells paired Bash
 turns about both routes. The owner provisions that wrapper for the same pools
 as the reader. The hint preserves the existing native session scope.
 
+For the verified paired subscription profile, Bash inherits the receiving
+Linux account's host access, including existing sudo policy. The worker
+constructs the subscription environment without provider credential variables.
+API-key profiles retain the separate subprocess isolation to keep their key
+out of Bash. On Linux that isolation also prevents sudo and limits writes.
+
 Gateway includes the authenticated-original marker only after checking the
 retained private Interaction input against the signed Matrix original. Companion
 credentials and manual Matrix owner runs retain their existing MCP and skill
