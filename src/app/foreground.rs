@@ -14,6 +14,7 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub human_original: bool,
     pub routed_human: bool,
     pub routed_host_access: bool,
+    pub session_instructions: Option<&'a str>,
     pub text: &'a str,
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
@@ -89,6 +90,7 @@ pub(in crate::app) async fn execute_worker(
         human_original,
         routed_human,
         routed_host_access,
+        session_instructions,
         text,
         body,
         cancel,
@@ -123,6 +125,9 @@ pub(in crate::app) async fn execute_worker(
         let mut start = json!({"schema":schema,"type":"start","inputId":id,
             "sessionId":session,"text":text,"body":body});
         if engine == ForegroundEngine::Claude {
+            if let Some(instructions) = session_instructions {
+                start["sessionInstructions"] = json!(instructions);
+            }
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume);
             start["humanOriginal"] = json!(human_original);
@@ -339,6 +344,7 @@ pub(super) async fn run_portable_turn(
                 human_original: true,
                 routed_human: false,
                 routed_host_access: false,
+                session_instructions: None,
                 text: &input.text,
                 body: body.clone(),
                 cancel: &cancel,
@@ -411,7 +417,12 @@ pub(super) async fn run_routed_portable(
     let store = &app.shared.store;
     let cancel = app.shared.shutdown.child_token();
     *slot.lock().expect("cancel mutex poisoned") = Some(cancel.clone());
+    let session = store
+        .get_session(request.session_key)?
+        .filter(|session| session.id == input.target_session)
+        .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
+    let direct_original = input.origin.message_id.is_some() && !super::routing::relayed(input);
     // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
     // adapters must receive a new session coordinate for that attempt.
     let attempt = uuid::Uuid::new_v4().to_string();
@@ -425,10 +436,17 @@ pub(super) async fn run_routed_portable(
             store.routed_claude_continuation(local,&body)?
         } else {None};
         execute_worker(&config.worker_command,engine,WorkerTurn{
-            id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:false,
-            routed_human:true,routed_host_access,text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
+            id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:direct_original,
+            routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
+            session_instructions:session.session_prompt.as_deref(),
+            text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
+            if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
+                .is_some_and(|current| current.id == session.id && current.session_prompt == session.session_prompt)
+            {
+                return Ok(false);
+            }
             store.expose_routed_portable(input,local,&body,&prepared)
         }).await
     }.await.unwrap_or(Value::Null);

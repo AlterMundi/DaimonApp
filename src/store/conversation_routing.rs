@@ -513,8 +513,14 @@ impl Store {
         {
             bail!("Selected work session is held");
         }
-        let changed =
-            super::interaction::recover_on(&tx, instruction, human, &self.instance_id, paired)?;
+        let changed = super::interaction::recover_on(
+            &tx,
+            instruction,
+            human,
+            &self.instance_id,
+            paired,
+            None,
+        )?;
         if changed {
             tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(?1,'conversation_route_recovery',?2,?3)",params![human,json!({"original":id,"instruction":instruction,"entry":entry,"target":selected.target,"kind":"explicit_known_unsent_recovery"}).to_string(),now_string()])?;
         }

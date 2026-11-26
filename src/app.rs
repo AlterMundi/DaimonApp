@@ -693,6 +693,7 @@ impl App {
             self.process_callback_query(callback).await?;
             return Ok(());
         }
+        let direct_human_text = update.direct_human_text;
         let Some(message) = update.message else {
             return Ok(());
         };
@@ -775,6 +776,39 @@ impl App {
             .await?
         {
             return Ok(());
+        }
+        if let Some((engine, profile)) = routing::portable_topic(&self.shared, topic_key) {
+            if is_foreign_bot_command(text, self.shared.bot_username().as_deref()) {
+                return Ok(());
+            }
+            if direct_human_text
+                && self
+                    .shared
+                    .config
+                    .interaction
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.human_id == from.id)
+            {
+                if text.starts_with("/interaction") {
+                    routing::handle(self, &message, from.id, text).await?;
+                    return Ok(());
+                }
+                if normalize_command(text, self.shared.bot_username().as_deref())
+                    .is_some_and(|(command, _)| matches!(command.as_str(), "/interrupt" | "/stop"))
+                {
+                    self.dispatch_command_text(&user, &message, text).await?;
+                    return Ok(());
+                }
+            }
+            return routing::handle_portable_topic(
+                self,
+                &message,
+                from.id,
+                topic_key,
+                direct_human_text,
+                (engine, &profile.transport.source),
+            )
+            .await;
         }
         if voice::handle(self, &message, from.id).await? {
             return Ok(());
@@ -3209,17 +3243,7 @@ impl App {
 
 /// Returns whether a Telegram message can safely be appended to an in-flight text turn.
 fn is_text_only_steer_candidate(message: &Message, text: &str) -> bool {
-    !text.is_empty()
-        && message.photo.is_empty()
-        && message.document.is_none()
-        && message.audio.is_none()
-        && message.voice.is_none()
-        && message.video.is_none()
-        && message.sticker.is_none()
-        && message
-            .reply_to_message
-            .as_ref()
-            .is_none_or(|reply| reply.sticker.is_none())
+    !text.is_empty() && message.is_text_only()
 }
 
 pub(crate) async fn shutdown_signal(shutdown: CancellationToken) {

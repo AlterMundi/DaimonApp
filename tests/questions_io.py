@@ -247,7 +247,7 @@ import_desktop_history=false
         if self.temporary is not None:
             self.temporary.cleanup()
 
-    def admit(self, text=None, *, topic=7, user=100, callback=None, reply=None):
+    def admit(self, text=None, *, topic=7, user=100, callback=None, reply=None, message_fields=None):
         with self.lock:
             self.sequence += 1
             sender = {'id': user, 'is_bot': False, 'first_name': 'Fixture'}
@@ -259,6 +259,7 @@ import_desktop_history=false
             else:
                 message = {'message_id': self.sequence, 'message_thread_id': topic,
                            'from': sender, 'chat': {'id': 100, 'type': 'private'}, 'text': text}
+                message.update(message_fields or {})
                 if reply:
                     message['reply_to_message'] = next((dict(m[0]) for m in self.messages if m[0]['message_id']==reply), {'message_id': reply})
                 update = {'update_id': self.sequence, 'message': message}

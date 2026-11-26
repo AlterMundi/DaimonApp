@@ -33,6 +33,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             system = json.dumps(data["system"], ensure_ascii=False)
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
+            if getattr(self.server, "session_instructions", None):
+                assert self.server.session_instructions in system
             if getattr(self.server, "paired_human", False):
                 assert "The Gateway authenticated that sender as the human paired with this daimon." in system
                 assert "The Claude subscription account is a service credential and does not identify the sender." in system

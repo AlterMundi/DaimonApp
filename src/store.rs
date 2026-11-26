@@ -37,8 +37,8 @@ mod heartbeat;
 pub use heartbeat::HeartbeatReportSource;
 pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
 pub use heartbeat::{
-    HeartbeatCommand, HeartbeatInboxSource, HeartbeatLane, HeartbeatProducerContract, HeartbeatPurpose,
-    HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
+    HeartbeatCommand, HeartbeatInboxSource, HeartbeatLane, HeartbeatProducerContract,
+    HeartbeatPurpose, HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
 };
 mod execution;
 mod interaction;
@@ -425,7 +425,19 @@ impl Store {
             .optional()?;
         if let Some(existing) = existing {
             if existing != payload {
-                return Err(anyhow!("telegram update ID content conflict"));
+                // Upgrading the poller can attach an origin observation to
+                // a redelivered update. The original retained proof is immutable.
+                let mut previous: serde_json::Value = serde_json::from_str(&existing)?;
+                let mut incoming: serde_json::Value = serde_json::from_str(&payload)?;
+                previous
+                    .as_object_mut()
+                    .context("Invalid retained Telegram update")?
+                    .remove("direct_human_text");
+                incoming
+                    .as_object_mut()
+                    .context("Invalid Telegram update")?
+                    .remove("direct_human_text");
+                anyhow::ensure!(previous == incoming, "telegram update ID content conflict");
             }
             return Ok(false);
         }
@@ -1360,8 +1372,14 @@ impl Store {
                 "SELECT t.prompt, t.review_json, t.status
                  FROM turns t
                  JOIN sessions s ON s.id = t.session_id
-                 WHERE t.id = ?1 AND s.chat_id = ?2 AND s.thread_id = ?3",
-                params![turn_id, session_key.chat_id, session_key.thread_id],
+                 WHERE t.id = ?1 AND s.chat_id = ?2 AND s.thread_id = ?3
+                   AND t.from_user_id=?4 AND t.execution_harness='codex'",
+                params![
+                    turn_id,
+                    session_key.chat_id,
+                    session_key.thread_id,
+                    from_user_id
+                ],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,

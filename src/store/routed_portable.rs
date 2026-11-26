@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     execution::Harness,
-    interaction::{Delivery, Instruction, TransportPhase as Phase},
+    interaction::{Delivery, Instruction, SourceInput, TransportPhase as Phase},
 };
 use anyhow::bail;
 use serde_json::Value;
@@ -14,12 +14,68 @@ struct PriorExecution {
     body: Option<String>,
 }
 
+pub(super) fn telegram_original_epoch(
+    conn: &Connection,
+    source: &SourceInput,
+    target: SessionKey,
+) -> Result<Option<String>> {
+    let Some(update) = source.update_id else {
+        return Ok(None);
+    };
+    // The selected topic can receive its own original through Telegram.
+    // Cross-topic relays have a separate attribution and permission contract.
+    if source.event_id != update.to_string()
+        || source.tribu_source.is_some()
+        || source.transcription.is_some()
+        || source.origin.chat_id != target.chat_id
+        || source.origin.thread_id != target.thread_id
+        || source.text.len() > 16 * 1024
+    {
+        return Ok(None);
+    }
+    let retained: Option<(String, String)> = conn
+        .query_row(
+            "SELECT i.payload_json, e.value FROM incoming_updates i
+         JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+         JOIN bot_state b ON b.key='telegram_identity'
+         WHERE i.update_id=?1 AND i.status IN ('processing','handled')
+           AND ?2='telegram:'||json_extract(b.value,'$.id')",
+            params![update, source.channel],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((raw, epoch)) = retained else {
+        return Ok(None);
+    };
+    let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+    let matching = original.direct_human_text
+        && original.update_id == update
+        && original.message.is_some_and(|message| {
+            Some(message.message_id) == source.origin.message_id
+                && message.chat.id == target.chat_id
+                && message.message_thread_id == Some(target.thread_id)
+                && message
+                    .from
+                    .as_ref()
+                    .is_some_and(|user| user.id == source.human_id && !user.is_bot)
+                && message.text.as_deref() == Some(source.text.as_str())
+                && message.is_text_only()
+        });
+    Ok(matching.then_some(epoch))
+}
+
 fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bool> {
     let source = super::routing::source_on(conn, &input.id, input.human_id)?;
-    if source.channel != "conversation"
-        || source.tribu_source.is_some()
-        || source.update_id.is_some()
-    {
+    let allowed = if source.channel == "conversation" {
+        source.tribu_source.is_none()
+            && source.update_id.is_none()
+            && super::dialogue::dispatched_source_on(conn, &input.id, input.human_id, writer)?
+    } else {
+        telegram_original_epoch(conn, &source, input.target)?
+            .as_ref()
+            .is_some_and(|epoch| Some(epoch) == input.admission_epoch.as_ref())
+    };
+    if !allowed {
         return Ok(false);
     }
     Ok(input
@@ -27,7 +83,6 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
         .as_ref()
         .is_some_and(|binding| binding.harness.is_portable())
         && super::interaction::target_execution_allowed_on(conn, input)?
-        && super::dialogue::dispatched_source_on(conn, &input.id, input.human_id, writer)?
         && input.admission_epoch.as_deref()
             == Some(super::stopping::admission_epoch_on(conn, input.target)?.as_str())
         && !super::stopping::fenced_on(conn, input.target)?
@@ -72,8 +127,13 @@ impl Store {
             "Routed input retired before native preparation"
         );
         let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
-        let original =
-            super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
+        let paired = if source.channel == "conversation" {
+            super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
+                .paired_actor
+        } else {
+            // current_on verified the exact sender in the owned topic.
+            true
+        };
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
         let harness = current
@@ -98,7 +158,7 @@ impl Store {
             [current.target_session],
         )?;
         tx.commit()?;
-        Ok((local, original.paired_actor))
+        Ok((local, paired))
     }
 
     pub(crate) fn routed_claude_continuation(
