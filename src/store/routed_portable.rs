@@ -22,29 +22,28 @@ pub(super) fn telegram_original_epoch(
     let Some(update) = source.update_id else {
         return Ok(None);
     };
-    // The selected topic can receive its own original through Telegram.
-    // Cross-topic relays have a separate attribution and permission contract.
+    // Match the exact Telegram original. A cross-topic route additionally
+    // requires retained native acceptance in the owned source conversation.
     if source.event_id != update.to_string()
         || source.tribu_source.is_some()
         || source.transcription.is_some()
         || source.origin.chat_id != target.chat_id
-        || source.origin.thread_id != target.thread_id
         || source.text.len() > 16 * 1024
     {
         return Ok(None);
     }
-    let retained: Option<(String, String)> = conn
+    let retained: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT i.payload_json, e.value FROM incoming_updates i
+            "SELECT i.payload_json, e.value, i.status FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          JOIN bot_state b ON b.key='telegram_identity'
-         WHERE i.update_id=?1 AND i.status IN ('processing','handled')
+         WHERE i.update_id=?1
            AND ?2='telegram:'||json_extract(b.value,'$.id')",
             params![update, source.channel],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let Some((raw, epoch)) = retained else {
+    let Some((raw, epoch, status)) = retained else {
         return Ok(None);
     };
     let original: crate::telegram::Update = serde_json::from_str(&raw)?;
@@ -53,7 +52,7 @@ pub(super) fn telegram_original_epoch(
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
                 && message.chat.id == target.chat_id
-                && message.message_thread_id == Some(target.thread_id)
+                && message.message_thread_id == Some(source.origin.thread_id)
                 && message
                     .from
                     .as_ref()
@@ -61,7 +60,28 @@ pub(super) fn telegram_original_epoch(
                 && message.text.as_deref() == Some(source.text.as_str())
                 && message.is_text_only()
         });
-    Ok(matching.then_some(epoch))
+    if !matching {
+        return Ok(None);
+    }
+    if source.origin.thread_id == target.thread_id {
+        return Ok(matches!(status.as_str(), "processing" | "handled").then_some(epoch));
+    }
+    let origin = SessionKey::new(source.origin.chat_id, Some(source.origin.thread_id));
+    let native: Option<String> = conn
+        .query_row(
+            "SELECT codex_thread_id FROM sessions WHERE chat_id=?1 AND thread_id=?2
+             AND creator_user_id=?3 AND force_fresh_thread=0",
+            params![origin.chat_id, origin.thread_id, source.human_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(native) = native else {
+        return Ok(None);
+    };
+    let accepted =
+        super::dialogue::entry_inputs_on(conn, origin, source.human_id, &native, Some(update))?;
+    Ok((!accepted.is_empty()).then_some(epoch))
 }
 
 fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bool> {
@@ -109,6 +129,26 @@ pub(super) fn recover_on(conn: &Connection, writer: &str) -> Result<()> {
 }
 
 impl Store {
+    pub(crate) fn routed_portable_status(
+        &self,
+        session: i64,
+        human: i64,
+        engine: &str,
+    ) -> Result<(bool, i64)> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.from_user_id=?2
+                AND t.execution_harness=?3 AND t.status='running'),
+                (SELECT count(*) FROM interaction_instructions i
+                 WHERE i.session_id=s.id AND i.instance_id=?4 AND i.phase='queued'
+                 AND json_extract(i.doc,'$.target_execution.harness')=?3
+                 AND json_extract(i.doc,'$.local_turn') IS NULL)
+             FROM sessions s WHERE s.id=?1 AND s.creator_user_id=?2",
+            params![session, human, engine, self.instance_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    }
+
     pub(crate) fn begin_routed_portable(
         &self,
         input: &Instruction,

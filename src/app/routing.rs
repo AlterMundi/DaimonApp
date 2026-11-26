@@ -264,7 +264,7 @@ pub(super) async fn handle_portable_topic(
         return Ok(());
     };
     if text.trim_start().starts_with('/') {
-        notice(app.shared.clone(), origin, "Use /interrupt to stop the current turn or /interaction to inspect or recover a saved input.".into());
+        notice(app.shared.clone(), origin, "Use /status to see whether this topic is working, /interrupt to stop the current turn, or /interaction to inspect a saved input.".into());
         return Ok(());
     }
     let update = HUMAN_UPDATE_ID

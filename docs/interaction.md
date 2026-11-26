@@ -266,6 +266,14 @@ paired authentication. The paired submit and retry commands run on the local
 owner socket. Workers use their assigned catalog without an integrating
 controller.
 
+A paired Telegram original from the integrating conversation can also be
+routed to an owned portable topic. Gateway verifies its retained native
+acceptance and existing source identity. Following a Gateway restart, an
+exact native input receipt for the original entry can establish acceptance
+even while its native outcome is unconfirmed. Routing does not resubmit the
+entry turn. Telegram `/status` in an owner-selected portable topic reads
+the worker and waiting-message state from the canonical journal.
+
 The Goose and Antigravity proof profiles expose signed status and the
 owner-selected DMK read. Their observed adapters open a fresh native session
 for each admitted attempt. Gateway retains conversation and attempt history.
