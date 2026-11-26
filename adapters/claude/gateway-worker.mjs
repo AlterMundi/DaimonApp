@@ -234,9 +234,11 @@ async function main() {
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
     const routedHuman = first?.routedHuman === true;
-    const fullAccess = first?.humanOriginal === true;
+    const routedHostAccess = first?.routedHostAccess === true;
+    const fullAccess = first?.humanOriginal === true || routedHostAccess;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
-      ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : [])])
+      ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : [])])
+      || (routedHostAccess && !routedHuman)
       || (routedHuman && (first.humanOriginal || controllerSelected))
       || (controllerSelected && first.humanOriginal !== true)
       || first.schema !== VERSION || first.type !== 'start'

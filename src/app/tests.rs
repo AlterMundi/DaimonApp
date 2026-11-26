@@ -3335,6 +3335,12 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
             assert!(error.to_string().contains("require the local owner socket"));
         }
     }
+    for command in ["input submit-human {}", "input retry-human {}"] {
+        let error = stopping::telegram_command(&app, 100, command, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("require the local owner socket"));
+    }
     let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
         .await
         .unwrap();

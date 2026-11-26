@@ -13,6 +13,7 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub resume: Option<&'a ClaudeContinuation>,
     pub human_original: bool,
     pub routed_human: bool,
+    pub routed_host_access: bool,
     pub text: &'a str,
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
@@ -87,6 +88,7 @@ pub(in crate::app) async fn execute_worker(
         resume,
         human_original,
         routed_human,
+        routed_host_access,
         text,
         body,
         cancel,
@@ -126,6 +128,9 @@ pub(in crate::app) async fn execute_worker(
             start["humanOriginal"] = json!(human_original);
             if routed_human {
                 start["routedHuman"] = json!(true);
+                if routed_host_access {
+                    start["routedHostAccess"] = json!(true);
+                }
             }
             if controller.is_some() {
                 start["controller"] = json!(true);
@@ -333,6 +338,7 @@ pub(super) async fn run_portable_turn(
                 resume: resume.as_ref(),
                 human_original: true,
                 routed_human: false,
+                routed_host_access: false,
                 text: &input.text,
                 body: body.clone(),
                 cancel: &cancel,
@@ -400,7 +406,7 @@ pub(super) async fn run_routed_claude(
     let store = &app.shared.store;
     let cancel = app.shared.shutdown.child_token();
     *slot.lock().expect("cancel mutex poisoned") = Some(cancel.clone());
-    let local = store.begin_routed_claude(input, request)?;
+    let (local, routed_host_access) = store.begin_routed_claude(input, request)?;
     let outcome = async {
         let (_,body) = tokio::select! {
             biased;
@@ -410,7 +416,7 @@ pub(super) async fn run_routed_claude(
         let resume = store.routed_claude_continuation(local,&body)?;
         execute_worker(&config.worker_command,ForegroundEngine::Claude,WorkerTurn{
             id:&input.id,session:&input.id,resume:resume.as_ref(),human_original:false,
-            routed_human:true,text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
+            routed_human:true,routed_host_access,text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
             store.expose_routed_claude(input,local,&body,&prepared)

@@ -95,6 +95,8 @@ pub struct ConversationInput {
     pub(crate) portable: Option<portable::Selection>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) private_matrix_host_access: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) paired_actor: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix_origin: Option<PrivateMatrixOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +138,7 @@ pub struct ConversationInput {
 }
 
 enum SelectedRoute {
+    PairedOriginal,
     Signed(PrivateMatrixSelection, bool),
     Portable(portable::Selection),
 }
@@ -808,9 +811,24 @@ impl Store {
         visual: Option<crate::visual::VisualSelection>,
         playback: Option<ConversationPlayback>,
         files: Vec<crate::files::FileReference>,
+        paired_actor: bool,
     ) -> Result<(ConversationInput, bool)> {
-        self.capture_original(
-            human, entry, binding, id, text, None, true, reply, visual, playback, None, files,
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            reply,
+            visual,
+            playback,
+            None,
+            files,
+            None,
+            None,
+            paired_actor.then_some(SelectedRoute::PairedOriginal),
         )
     }
 
@@ -1379,11 +1397,15 @@ impl Store {
         tribu: Option<(crate::interaction::TribuSource, usize)>,
         portable_route: Option<SelectedRoute>,
     ) -> Result<(ConversationInput, bool)> {
-        let (private_matrix, private_matrix_host_access, portable) = match portable_route {
-            Some(SelectedRoute::Signed(selection, access)) => (Some(selection), access, None),
-            Some(SelectedRoute::Portable(selection)) => (None, false, Some(selection)),
-            None => (None, false, None),
-        };
+        let (private_matrix, private_matrix_host_access, portable, paired_actor) =
+            match portable_route {
+                Some(SelectedRoute::Signed(selection, access)) => {
+                    (Some(selection), access, None, access)
+                }
+                Some(SelectedRoute::Portable(selection)) => (None, false, Some(selection), true),
+                Some(SelectedRoute::PairedOriginal) => (None, false, None, true),
+                None => (None, false, None, false),
+            };
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1523,6 +1545,7 @@ impl Store {
             private_matrix,
             portable,
             private_matrix_host_access,
+            paired_actor,
             private_matrix_origin: None,
             private_matrix_reply: None,
             tribu_source: tribu.map(|(source, _)| source),

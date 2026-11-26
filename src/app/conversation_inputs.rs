@@ -708,7 +708,11 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         }
         return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
     }
-    if let Some(body) = args.strip_prefix("retry ") {
+    if let Some((body, paired)) = args
+        .strip_prefix("retry-human ")
+        .map(|body| (body, true))
+        .or_else(|| args.strip_prefix("retry ").map(|body| (body, false)))
+    {
         let selected: Recover = serde_json::from_str(body)?;
         let _ingress = app.shared.conversation_ingress.lock().await;
         let binding = app
@@ -731,6 +735,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             cfg.entry(),
             &selected.id,
             &selected.instruction,
+            paired,
         )?;
         if changed
             && super::dialogue::dispatch_original(
@@ -904,10 +909,6 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         )
     };
     let request: Submit = serde_json::from_str(raw)?;
-    anyhow::ensure!(
-        !private_host_access || matches!(request.target, Some(InputTarget::Claude)),
-        "Private host access applies only to the selected Claude route"
-    );
     if let Some(InputTarget::Claude) = request.target {
         anyhow::ensure!(
             request.visual.is_none()
@@ -1017,6 +1018,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         request.visual,
         request.playback,
         request.files,
+        private_host_access,
     )?;
     if fresh && input.phase == "retained" {
         if let Err(error) = super::voice::INTERRUPT_TARGETS

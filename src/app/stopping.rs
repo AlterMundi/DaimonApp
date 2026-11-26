@@ -21,6 +21,9 @@ pub(super) async fn telegram_command(
     args: &str,
     nonce: Option<String>,
 ) -> Result<Value> {
+    if args.starts_with("input submit-human ") || args.starts_with("input retry-human ") {
+        bail!("Paired Conversation input controls require the local owner socket");
+    }
     if let Some(selected) = args.strip_prefix("matrix ")
         && matrix::foreground_command(selected).is_some()
     {

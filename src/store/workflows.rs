@@ -969,7 +969,8 @@ impl Store {
                     &tx,
                     &admission.instruction,
                     human,
-                    &self.instance_id
+                    &self.instance_id,
+                    false,
                 )?,
                 "Retained workflow recovery changed"
             );

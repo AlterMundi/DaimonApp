@@ -264,6 +264,7 @@ operator.main()
                 provider.body = body
                 provider.paired_human = direct and not inverse
                 provider.controller = direct and not inverse
+                provider.inverse_paired = inverse and os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
                 provider.mixed = mixed
                 provider.mixed_worker_reply = "Codex worker fixture result from the original request."
                 if engine == "claude":
@@ -358,6 +359,11 @@ for await (const line of createInterface({ input: process.stdin })) {
                     provider.host_file.write_text("Native file readback marker.")
                     provider.host_tools = ["Read", "Bash"]
                     config["hostTools"] = provider.host_tools
+                if inverse:
+                    provider.host_file = root / "host-tools-fixture.txt"
+                    provider.host_file.write_text("Native file readback marker.")
+                    provider.host_tools = ["Read", "Bash"] if provider.inverse_paired else []
+                    config["hostTools"] = ["Read", "Bash"]
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
@@ -383,7 +389,7 @@ timeout_seconds=5
                     journey.start()
                     journey.wait_control_socket(journey.socket)
                     if inverse:
-                        self._inverse_exchange(journey, provider, return_attempts)
+                        self._inverse_exchange(journey, provider, return_attempts, profile)
                         return
                     if direct:
                         self._direct_exchange(journey, provider, return_attempts)
@@ -471,11 +477,24 @@ timeout_seconds=5
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
 
-        def _inverse_exchange(self, journey, provider, return_attempts):
+        def _inverse_exchange(self, journey, provider, return_attempts, profile):
             page = journey.read("presentation", "list", "0", "0")["result"]
             previous_codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
             provider.original = "Please send this exact fixture work to Alpha."
-            original, _ = journey.submit(page["binding"], provider.original)
+            def submit_original(text):
+                body = {"id":str(uuid.uuid4()),"binding":page["binding"],"text":text}
+                command = "submit-human" if provider.inverse_paired else "submit"
+                response = journey.read("input", command, json.dumps(body))["result"]
+                self.assertTrue(response["new_input"])
+                opposite = "submit" if provider.inverse_paired else "submit-human"
+                receipt = journey.read("input", opposite, json.dumps(body))["result"]
+                self.assertFalse(receipt["new_input"])
+                retained = journey.row("SELECT json_extract(doc,'$.paired_actor') FROM conversation_inputs WHERE id=?",
+                                       (body["id"],))
+                self.assertEqual(retained, [(1 if provider.inverse_paired else None,)])
+                return body
+
+            original = submit_original(provider.original)
             provider.human_original = original["id"]
             journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
                                              (original["id"],)) == [("accepted",)])
@@ -493,7 +512,7 @@ timeout_seconds=5
             self.assertIsNone(provider.failure)
             self.assertEqual(journey.row("SELECT phase FROM interaction_instructions WHERE id=?",
                                          (instruction,)), [("accepted",)])
-            self.assertEqual(provider.calls, [instruction] * 2)
+            self.assertEqual(provider.calls, [instruction] * (4 if provider.inverse_paired else 2))
             self.assertFalse(journey.worker_packets)
             self.assertFalse(return_attempts)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
@@ -514,8 +533,37 @@ timeout_seconds=5
             history = journey.call("route-inverse-history", "target_inputs", {"selector":"Alpha"})["inputs"]
             self.assertTrue(any(row["instruction"] == instruction for row in history))
 
+            extra_turns = 0
+            if provider.inverse_paired:
+                original_profile = profile.read_bytes()
+                profile_doc = json.loads(original_profile)
+                profile_doc["body"]["manifestHash"] = "e" * 64
+                profile.write_text(json.dumps(profile_doc))
+                try:
+                    held = submit_original("A paired fixture original with no provider exposure.")
+                    journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                                     (held["id"],)) == [("accepted",)])
+                    saved = journey.call("route-inverse-unsent", "dispatch",
+                                         {**selection, "input_ref":held["id"]})["results"][0]["instruction"]
+
+                    def attempt():
+                        return journey.row("SELECT phase,json_extract(doc,'$.local_turn') "
+                                           "FROM interaction_instructions WHERE id=?", (saved,))[0]
+
+                    journey.wait(lambda: attempt()[0] == "retained_unsent")
+                    first_attempt = attempt()
+                    retry = {"id":held["id"], "binding":page["binding"], "instruction":saved}
+                    journey.read("input", "retry", json.dumps(retry), ok=False)
+                    self.assertEqual(attempt(), first_attempt)
+                    journey.read("input", "retry-human", json.dumps(retry))
+                    journey.wait(lambda: attempt()[0] == "retained_unsent" and attempt() != first_attempt)
+                    self.assertEqual(provider.calls, [instruction] * 4)
+                    extra_turns = 2
+                finally:
+                    profile.write_bytes(original_profile)
+
             provider.original = "Keep this routed fixture attempt if the Gateway stops."
-            lost, _ = journey.submit(page["binding"], provider.original)
+            lost = submit_original(provider.original)
             provider.human_original = lost["id"]
             journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
                                              (lost["id"],)) == [("accepted",)])
@@ -543,7 +591,7 @@ timeout_seconds=5
                 "JOIN sessions s ON s.id=t.session_id WHERE i.id=?", (submitted,),
             ), [("uncertain", "failed", 0)])
             self.assertEqual(provider.exposures.count(submitted), 1)
-            self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness='claude'"), [(2,)])
+            self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness='claude'"), [(2 + extra_turns,)])
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1,)])
 
 

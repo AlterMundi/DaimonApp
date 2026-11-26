@@ -853,12 +853,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             body = await request.json()
             from starlette.concurrency import run_in_threadpool
             require_pin_grant(session,body.get('reply') if isinstance(body,dict) else None)
-            if isinstance(body, dict) and body.get('target') == 'claude':
-                result = await run_in_threadpool(
-                    provider.conversation_input_submit, body,
-                    private_host_access=not dict(session).get('_companion_credential', False))
-            else:
-                result = await run_in_threadpool(provider.conversation_input_submit, body)
+            result = await run_in_threadpool(
+                provider.conversation_input_submit, body,
+                private_host_access=not dict(session).get('_companion_credential', False))
         except VisualSelectionInvalid:
             return JSONResponse({'detail':'Select the captured image again. This attempt did not submit a message.','code':'visual_reselection','submission_attempted':False},status_code=400)
         except (ValueError, UnicodeError):
@@ -892,7 +889,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             body = await request.json()
             from starlette.concurrency import run_in_threadpool
-            result = await run_in_threadpool(provider.conversation_input_retry, ident, body)
+            result = await run_in_threadpool(
+                provider.conversation_input_retry, ident, body,
+                paired=not dict(session).get('_companion_credential', False))
         except (ValueError, UnicodeError):
             raise HTTPException(400, 'Select one saved route that was not sent') from None
         except (ProviderUnavailable, OSError):

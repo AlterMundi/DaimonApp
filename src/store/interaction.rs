@@ -524,7 +524,13 @@ pub(super) fn queued_root_allowed_on(
     Ok(input.target == request.session_key && target_execution_allowed_on(conn, &input)?)
 }
 
-pub(super) fn recover_on(conn: &Connection, id: &str, human: i64, instance: &str) -> Result<bool> {
+pub(super) fn recover_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+    instance: &str,
+    paired: bool,
+) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
     let Some(doc) = doc else {
@@ -533,6 +539,19 @@ pub(super) fn recover_on(conn: &Connection, id: &str, human: i64, instance: &str
     let mut instruction: Instruction = serde_json::from_str(&doc)?;
     if !target_execution_allowed_on(conn, &instruction)? {
         return Ok(false);
+    }
+    if !paired
+        && instruction
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+    {
+        let source = super::routing::source_on(conn, id, human)?;
+        if source.channel == "conversation"
+            && super::conversation_inputs::read_on(conn, &source.event_id, human)?.paired_actor
+        {
+            bail!("Only the paired human can requeue this retained original");
+        }
     }
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
@@ -838,7 +857,7 @@ impl Store {
     pub fn interaction_recover(&self, id: &str, human: i64) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let changed = recover_on(&tx, id, human, &self.instance_id)?;
+        let changed = recover_on(&tx, id, human, &self.instance_id, false)?;
         tx.commit()?;
         Ok(changed)
     }

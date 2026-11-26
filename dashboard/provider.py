@@ -976,8 +976,7 @@ class Provider:
                 or '\0' in body['text'] or len(body['text'].encode('utf-8')) > (16384 if 'target' in body else 32768)):
             raise ValueError('A message must contain text and fit the selected destination')
         # The Rust journal owns idempotency and exact-source checks. No retry.
-        private_authorized = body.get('target') == 'claude' and private_host_access is True
-        prefix = 'input submit-human ' if private_authorized else 'input submit '
+        prefix = 'input submit-human ' if private_host_access is True else 'input submit '
         return self.decorate_input(self.presentation(prefix + json.dumps(body, ensure_ascii=False)))
 
     def check_visual_original(self,value,ident):
@@ -1103,14 +1102,15 @@ class Provider:
             raise ValueError('Select one destination for this original message')
         return self.decorate_input(self.presentation('input route '+json.dumps({**body, 'id':ident})))
 
-    def conversation_input_retry(self, ident, body):
+    def conversation_input_retry(self, ident, body, *, paired=False):
         import re
         self.input_id(ident)
         if (not isinstance(body, dict) or set(body) != {'binding', 'instruction'}
                 or not isinstance(body['binding'], str) or not re.fullmatch('[a-f0-9]{64}', body['binding'])):
             raise ValueError('Select one saved, definitely-unsent route')
         self.input_id(body['instruction'])
-        return self.decorate_input(self.presentation('input retry '+json.dumps({**body, 'id':ident})))
+        prefix = 'input retry-human ' if paired is True else 'input retry '
+        return self.decorate_input(self.presentation(prefix+json.dumps({**body, 'id':ident})))
 
     @staticmethod
     def check_capture_questions(value):

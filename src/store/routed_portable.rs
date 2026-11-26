@@ -58,7 +58,7 @@ impl Store {
         &self,
         input: &Instruction,
         request: &TurnRequest,
-    ) -> Result<i64> {
+    ) -> Result<(i64, bool)> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = super::interaction::instruction_on(&tx, &input.id, input.human_id)?
@@ -71,6 +71,9 @@ impl Store {
                 && current_on(&tx, &current, &self.instance_id)?,
             "Routed input retired before native preparation"
         );
+        let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
+        let original =
+            super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
         tx.execute(
@@ -90,7 +93,7 @@ impl Store {
             [current.target_session],
         )?;
         tx.commit()?;
-        Ok(local)
+        Ok((local, original.paired_actor))
     }
 
     pub(crate) fn routed_claude_continuation(

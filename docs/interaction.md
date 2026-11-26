@@ -258,8 +258,15 @@ An owner can select `harness = "claude"` on an explicit
 Gateway retains that body's selection on the target instruction and uses the
 existing queue and native worker. This routed entry accepts retained local
 conversation text. The receiver uses its signed body and configured MCP
-catalog. Routed provenance stays distinct from direct paired ingress, which
-can grant host tools. Existing Codex threads remain separate from the routed
+catalog. The Gateway retains paired web authentication on the original at
+capture. A routed worker can use the configured host tools if that original
+has the retained paired authority. A Companion original and earlier originals
+without recorded actor authority retain the scoped catalog, including on
+retry. A fresh retry of known-unsent paired work requires paired
+authentication. The paired submit and retry commands run on the local owner
+socket. Workers use their assigned catalog without an integrating controller.
+Deploy the Gateway that supports ordinary `submit-human` before updating the
+dashboard writer that uses it. Existing Codex threads remain separate from the routed
 Claude sessions. If the configured body changes, the original instruction
 stays retained against its prior destination.
 
