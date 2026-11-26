@@ -1012,6 +1012,7 @@ impl Store {
             text.push_str(&format!("\nExisting primary routing, whose owner and original request coverage remain unchanged: {}",primary_view(primary)));
         }
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
@@ -4394,6 +4395,7 @@ mod tests {
         let amendment = s
             .interaction_admit(
                 &SourceInput {
+                    telegram_files: vec![],
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture-correction".into(),

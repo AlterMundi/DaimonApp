@@ -138,6 +138,7 @@ pub(super) async fn run_selected(
             routed_host_access: false,
             session_instructions: None,
             text: &text,
+            attachments: &[],
             body,
             cancel: &cancel,
             controller: None,

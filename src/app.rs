@@ -700,6 +700,7 @@ impl App {
             return Ok(());
         }
         let direct_human_text = update.direct_human_text;
+        let direct_human_attachment = update.direct_human_attachment;
         let Some(message) = update.message else {
             return Ok(());
         };
@@ -811,7 +812,7 @@ impl App {
                 &message,
                 from.id,
                 topic_key,
-                direct_human_text,
+                (direct_human_text, direct_human_attachment),
                 (engine, &profile.transport.source),
             )
             .await;

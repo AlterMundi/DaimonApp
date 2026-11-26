@@ -464,14 +464,16 @@ impl Store {
                 // a redelivered update. The original retained proof is immutable.
                 let mut previous: serde_json::Value = serde_json::from_str(&existing)?;
                 let mut incoming: serde_json::Value = serde_json::from_str(&payload)?;
-                previous
-                    .as_object_mut()
-                    .context("Invalid retained Telegram update")?
-                    .remove("direct_human_text");
-                incoming
-                    .as_object_mut()
-                    .context("Invalid Telegram update")?
-                    .remove("direct_human_text");
+                for field in ["direct_human_text", "direct_human_attachment"] {
+                    previous
+                        .as_object_mut()
+                        .context("Invalid retained Telegram update")?
+                        .remove(field);
+                    incoming
+                        .as_object_mut()
+                        .context("Invalid Telegram update")?
+                        .remove(field);
+                }
                 anyhow::ensure!(previous == incoming, "telegram update ID content conflict");
             }
             return Ok(false);

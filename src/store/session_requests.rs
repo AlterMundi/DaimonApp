@@ -238,6 +238,7 @@ impl Store {
         )
         .to_string();
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
@@ -496,6 +497,7 @@ impl Store {
             d.body.chars().take(16000).collect::<String>()
         );
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "local-session-result".into(),
@@ -586,6 +588,7 @@ mod tests {
         let i = s
             .interaction_admit(
                 &SourceInput {
+                    telegram_files: vec![],
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),

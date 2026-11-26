@@ -91,6 +91,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
             assert self.server.original in json.dumps(data["messages"])
+            attachment = getattr(self.server, "attachment", None)
+            if attachment:
+                assert any(
+                    block.get("type") == "image" and block["source"]["data"] == attachment["base64"]
+                    and block["source"]["media_type"] == "image/png"
+                    for msg in data["messages"] if isinstance(msg["content"], list)
+                    for block in msg["content"]
+                )
             submission = self.admitted()
             assert submission["native_session_id"]
             distinct_request = getattr(self.server, "test_session_request", False)

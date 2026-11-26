@@ -773,6 +773,7 @@ impl Store {
             return Ok(Some(ConversationRouteAction::Interrupt(target)));
         }
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: input.tribu_source.clone(),
             transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
             channel: "conversation".into(),

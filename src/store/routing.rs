@@ -756,6 +756,7 @@ mod tests {
     fn admit(s: &Store, target: &SessionRecord, event: i64, relation: R) -> Instruction {
         s.interaction_admit(
             &SourceInput {
+                telegram_files: vec![],
                 tribu_source: None,
                 transcription: None,
                 channel: "fixture".into(),
@@ -1060,6 +1061,7 @@ mod tests {
             .unwrap();
         s.set_session_codex_thread(entry, "entry-native").unwrap();
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "fixture".into(),
