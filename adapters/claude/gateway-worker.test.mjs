@@ -55,8 +55,13 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             assert.equal(options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
           }
           assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
-          assert.equal(options.maxTurns, options.tools.length ? 6 : 2);
-          assert.equal(options.maxBudgetUsd, 0.10);
+          if (options.env.CLAUDE_CONFIG_DIR) {
+            assert.equal(options.maxTurns, options.tools.length ? 6 : 2);
+            assert.equal(options.maxBudgetUsd, 0.10);
+          } else {
+            assert.equal(Object.hasOwn(options, 'maxTurns'), false);
+            assert.equal(Object.hasOwn(options, 'maxBudgetUsd'), false);
+          }
           assert.equal(options.systemPrompt.snapshot, false);
           assert.match(options.systemPrompt.append, /CompAII fixture · claude@itaca/);
           assert.ok(!options.systemPrompt.append.includes(${JSON.stringify(subscriptionEmail)}));
@@ -110,7 +115,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       };
       await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
 
-      const { apiKeyFile: _keyFile, configurationDirectory: _directory, ...commonProfile } = profile;
+      const {
+        apiKeyFile: _keyFile, configurationDirectory: _directory, maxBudgetUsd: _qualificationBudget,
+        ...commonProfile
+      } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
         'companion-after-human', 'companion-resume', 'owner-default',

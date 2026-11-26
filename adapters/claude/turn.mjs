@@ -138,7 +138,8 @@ export async function runClaudeTurn({
             'Describe only the conversation history and tools actually available to you. A Matrix body identity by itself does not provide shared memories or skills.',
           ].join(' '),
         },
-        maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
+        ...(profile.maxTurns === undefined ? {} : { maxTurns: profile.maxTurns }),
+        ...(profile.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: profile.maxBudgetUsd }),
         settingSources: [],
         settings: {
           autoMemoryEnabled: false, autoDreamEnabled: false,

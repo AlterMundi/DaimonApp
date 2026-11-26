@@ -114,15 +114,17 @@ Select one authentication mode in the owner profile:
 Source content cannot select these settings. See
 [Claude plan usage with the Agent SDK](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
-Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
-worker permits up to two agent turns for the status-only route, or six with
-shared DMK, skills, Foundation or host tools for tool calls and replies. For
-Foundation catalogs of ten or more tools, native ToolSearch loads Foundation
+Leave `maxBudgetUsd` unset for ordinary use. Gateway then passes neither an
+SDK dollar estimate ceiling nor a maximum number of SDK turns. The provider's
+quota and the existing Gateway worker deadline still apply. An operator may
+set `maxBudgetUsd` for a bounded qualification profile. That profile also caps
+SDK turns at two for status-only runs and six for runs with extra tools. The SDK
+estimate can overrun the configured ceiling.
+
+For Foundation catalogs of ten or more tools, native ToolSearch loads Foundation
 schemas on demand. The full signed MCP inventory is still checked before
 Gateway authorizes submission. The identity check and shared DMK stay available
-on the first model call. The SDK estimate can overrun its limit, so applicable
-provider-side limits still control
-spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
+on the first model call.
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
 The UTF-8 newline-delimited protocol uses schema

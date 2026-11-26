@@ -43,9 +43,10 @@ async function ownerProfile(path) {
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
+  const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
       'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
-      'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+      ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
@@ -60,7 +61,7 @@ async function ownerProfile(path) {
       || (displayName.length > 0 && (typeof value.displayName !== 'string'
         || value.displayName !== value.displayName.trim()
         || !/^[\p{L}\p{M}\p{N} .@·_-]{1,80}$/u.test(value.displayName)))
-      || !Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0
+      || (budget.length > 0 && (!Number.isFinite(value.maxBudgetUsd) || value.maxBudgetUsd <= 0))
       || ![value.cliVersion, value.model, ...Object.values(value.body)]
         .every(item => typeof item === 'string' && item.length > 0 && item.length <= 240)
       || !Array.isArray(value.matrixStatusCommand)
@@ -293,8 +294,11 @@ async function main() {
         displayName: profile.displayName,
         sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
         fullAccess: first.humanOriginal,
-        persistSession: true, maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
-        maxBudgetUsd: profile.maxBudgetUsd,
+        persistSession: true,
+        ...(profile.maxBudgetUsd === undefined ? {} : {
+          maxBudgetUsd: profile.maxBudgetUsd,
+          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
+        }),
         env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
       },
       async beforeSubmit(inputId, sessionId) {
