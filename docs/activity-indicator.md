@@ -21,7 +21,14 @@ conversation clean; reasoning and changing tool identities do not reset the
 silence grace. Completed final answers still retire the indicator unless actual
 pending work remains.
 
-The line also shows the available weekly allowance from native
+For a topic routed to Claude Code, Antigravity or Goose, the observer reads
+the active owned turn and queue from the Gateway journal. The same card shows
+the harness, whether work is starting or underway, elapsed time and messages
+waiting. The card retires after the turn ends. Portable turns currently
+provide no tool-level activity or weekly quota to this observer. Gateway
+answers an explicit `/status` directly for routed portable topics.
+
+On Codex, the line also shows the available weekly allowance from native
 `account/rateLimits/read`, cached for sixty seconds. The weekly window is
 identified by its seven-day duration; the Codex bucket is preferred when multiple
 buckets are returned. Missing or unavailable quota is shown as `weekly n/a` rather
