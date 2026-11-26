@@ -37,8 +37,13 @@ Parent must compare actor with its own server-verified paired human, not a label
    MUST NOT submit/steer a native original.
 5. Parent replies `prepared`, echoing the exact envelope/request/id and `file`:
    `{file_id,sha256,name,mime,size}`. Only one JSON context file, at most64KiB.
-   Use `error` (plain bounded message) for refusal. There is one30s wait, no
-   automatic repeat after unknown preparation. Preserve retained parent outcomes.
+   Use `error` (plain bounded message) for refusal. An authenticated, unchanged
+   Conversation surface waits at most three seconds for this optional context.
+   On explicit failure or timeout, it discards only the optional source and
+   sends through the original writer with the same ID and user attachments.
+   It shows a separate notice after the canonical message is acknowledged.
+   Late prepared replies cannot attach the discarded source. A lost or changed
+   Conversation binding still keeps the draft and stops the original write.
 6. Child attaches that frozen regular fileRef through existing files/input/voice
    routes. Existing provider/native writers verify stored bytes/hash, grants,
    original identity and binding; browser context is never authority. User files
