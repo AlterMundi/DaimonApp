@@ -72,7 +72,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             if host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
-                    ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && printf 'Native shell %s.' 'readback marker'"},
+                    ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && fixture-shared-command"},
                      "Native shell readback marker."),
                 ]
             if getattr(self.server, "mixed", False):

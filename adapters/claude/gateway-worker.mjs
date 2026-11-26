@@ -28,6 +28,7 @@ function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal)
       profile.sharedSkillsDirectory ?? null, skills,
       foundation?.revision ?? null,
       hostTools, humanOriginal ? 'bypassPermissions' : false,
+      ...(hostTools.includes('Bash') && profile.hostToolDirectory ? [profile.hostToolDirectory] : []),
     ]))
     .update(bytes)
     .digest('hex');
@@ -44,10 +45,11 @@ async function ownerProfile(path) {
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
+  const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
       'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
-      ...budget, 'matrixStatusCommand', 'body'])
+      ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
@@ -56,6 +58,8 @@ async function ownerProfile(path) {
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
+      || (hostToolDirectory.length > 0 && (typeof value.hostToolDirectory !== 'string'
+        || !isAbsolute(value.hostToolDirectory) || /[:\0\r\n]/.test(value.hostToolDirectory)))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
@@ -277,6 +281,10 @@ async function main() {
     const sharedSkills = skills.names.length
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
     const hostTools = fullAccess ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
+    if (hostTools.includes('Bash')) {
+      env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+      if (profile.hostToolDirectory) env.PATH += `:${profile.hostToolDirectory}`;
+    }
     const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
@@ -353,7 +361,7 @@ async function main() {
           maxBudgetUsd: profile.maxBudgetUsd,
           maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length || controller ? 6 : 2,
         }),
-        env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
+        env,
       },
       async beforeSubmit(inputId, sessionId) {
         if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;

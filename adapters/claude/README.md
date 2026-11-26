@@ -73,7 +73,13 @@ their native full-access mode without per-tool approvals. Claude's Agent SDK
 uses `permissionMode: 'bypassPermissions'` with
 `allowDangerouslySkipPermissions: true` and Bash sandboxing disabled. The
 default native tool catalog is Bash, Read, Write, Edit, Glob, Grep and
-NotebookEdit. Use `hostTools` to select a subset explicitly.
+NotebookEdit. Use `hostTools` to select a subset explicitly. Set
+`hostToolDirectory` to the owner-managed directory of shared command wrappers
+to expose commands such as the existing `dmk` writer to authenticated Bash
+turns. It extends the worker's explicit system path and starts a fresh native
+session when the selection changes. Keep the DMK MCP connector as the reader
+and use the same installed DMK wrapper and pool as the other local embodiment
+for native writes.
 
 Gateway includes the authenticated-original marker only after checking the
 retained private Interaction input against the signed Matrix original. Companion

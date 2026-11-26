@@ -381,6 +381,13 @@ for await (const line of createInterface({ input: process.stdin })) {
                     provider.host_file.write_text("Native file readback marker.")
                     provider.host_tools = ["Read", "Bash"] if provider.inverse_paired else []
                     config["hostTools"] = ["Read", "Bash"]
+                if config.get("hostTools") and "Bash" in config["hostTools"]:
+                    host_bin = root / "owner-bin"
+                    host_bin.mkdir()
+                    helper = host_bin / "fixture-shared-command"
+                    helper.write_text("#!/bin/sh\nprintf 'Native shell %s.' 'readback marker'\n")
+                    helper.chmod(0o700)
+                    config["hostToolDirectory"] = str(host_bin)
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
