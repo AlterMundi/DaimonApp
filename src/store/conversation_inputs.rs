@@ -89,6 +89,8 @@ pub struct ConversationInput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix: Option<PrivateMatrixSelection>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) private_matrix_host_access: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix_origin: Option<PrivateMatrixOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -734,6 +736,7 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn conversation_private_matrix_capture(
         &self,
         human: i64,
@@ -743,6 +746,7 @@ impl Store {
         text: &str,
         sender: &crate::interaction::MatrixDestination,
         recipient: &crate::interaction::MatrixDestination,
+        host_access: bool,
     ) -> Result<(ConversationInput, bool)> {
         use crate::interaction::MatrixDestination::Body;
         sender.validate()?;
@@ -777,7 +781,7 @@ impl Store {
             Vec::new(),
             None,
             None,
-            Some(selection),
+            Some((selection, host_access)),
         )
     }
 
@@ -1283,8 +1287,12 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
-        private_matrix: Option<PrivateMatrixSelection>,
+        private_matrix: Option<(PrivateMatrixSelection, bool)>,
     ) -> Result<(ConversationInput, bool)> {
+        let (private_matrix, private_matrix_host_access) = private_matrix
+            .map_or((None, false), |(selection, access)| {
+                (Some(selection), access)
+            });
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1339,6 +1347,7 @@ impl Store {
             if input.entry != entry
                 || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
                 || input.private_matrix != private_matrix
+                || input.private_matrix_host_access != private_matrix_host_access
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -1418,6 +1427,7 @@ impl Store {
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
             private_matrix,
+            private_matrix_host_access,
             private_matrix_origin: None,
             private_matrix_reply: None,
             tribu_source: tribu.map(|(source, _)| source),
@@ -4328,6 +4338,7 @@ mod tests {
                 "Exact input",
                 &sender,
                 &receiver,
+                false,
             )
             .unwrap();
         assert!(fresh);
@@ -4342,6 +4353,21 @@ mod tests {
                     "Exact input",
                     &sender,
                     &body("other"),
+                    false,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_private_matrix_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "Exact input",
+                    &sender,
+                    &receiver,
+                    true,
                 )
                 .is_err()
         );
@@ -4366,6 +4392,7 @@ mod tests {
                 "Exact input",
                 &sender,
                 &receiver,
+                false,
             )
             .unwrap();
         assert!(!fresh);
@@ -4405,6 +4432,7 @@ mod tests {
                     "Synthetic input",
                     &sender,
                     &receiver,
+                    true,
                 )
                 .unwrap();
             let selection = input.private_matrix.as_ref().unwrap();

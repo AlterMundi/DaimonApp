@@ -14,9 +14,10 @@ import { runClaudeTurn, SKILL_NAMESPACE } from './turn.mjs';
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 
 const VERSION = 'daimon-gateway.claude-turn/v2';
+const HOST_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'];
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes, skills, foundation) {
+function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
@@ -25,6 +26,7 @@ function turnScope(profile, bytes, skills, foundation) {
       selector?.command ?? null, selector?.bodyRef ?? null,
       profile.sharedSkillsDirectory ?? null, skills,
       foundation?.revision ?? null,
+      hostTools, humanOriginal,
     ]))
     .update(bytes)
     .digest('hex');
@@ -40,14 +42,18 @@ async function ownerProfile(path) {
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
+  const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation,
+      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
       'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
       || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
         || !isAbsolute(value.sharedSkillsDirectory)))
+      || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
+        || value.hostTools.length !== new Set(value.hostTools).size
+        || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
@@ -224,8 +230,9 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'text', 'body'])
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body'])
       || first.schema !== VERSION || first.type !== 'start'
+      || typeof first.humanOriginal !== 'boolean'
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
         .every(value => typeof value === 'string' && UUID.test(value))
       || first.freshNativeSessionId === first.sessionId
@@ -259,7 +266,8 @@ async function main() {
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
     const sharedSkills = skills.names.length
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
-    const scope = turnScope(profile, binding ?? '', skills.revision, foundation);
+    const hostTools = first.humanOriginal ? [...(profile.hostTools ?? [])].sort() : [];
+    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, first.humanOriginal);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
     async function scopeStillActive() {
@@ -268,7 +276,8 @@ async function main() {
       const [bytes, inventory, currentFoundation] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
       ]);
-      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation) === scope
+      const currentTools = first.humanOriginal ? [...(current.hostTools ?? [])].sort() : [];
+      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, first.humanOriginal) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -282,9 +291,10 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedSkills, matrixFoundation: foundation,
-        persistSession: true, maxTurns: sharedDmk || sharedSkills || foundation ? 6 : 2,
-        maxBudgetUsd: profile.maxBudgetUsd, env,
+        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
+        persistSession: true, maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
+        maxBudgetUsd: profile.maxBudgetUsd,
+        env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
       },
       async beforeSubmit(inputId, sessionId) {
         if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;

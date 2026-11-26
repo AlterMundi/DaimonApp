@@ -92,6 +92,7 @@ pub(crate) struct WeAttempt {
     pub id: String,
     pub session_id: String,
     pub resume: Option<ClaudeContinuation>,
+    pub human_original: bool,
     entry_session: i64,
     original: String,
 }
@@ -237,6 +238,7 @@ impl Store {
         use crate::store::{presentation, stopping};
         let (session, _) = presentation::entry_on(&tx, owner, entry)?;
         let mut claude_input = None;
+        let mut human_original = false;
         if let Some(input) = input {
             use crate::interaction::MatrixDestination::Body;
             let retained = crate::store::conversation_inputs::read_on(&tx, &input.id, owner)?;
@@ -266,6 +268,7 @@ impl Store {
             );
             if engine == ForegroundEngine::Claude {
                 claude_input = Some(retained.id);
+                human_original = retained.private_matrix_host_access;
             }
         }
         if selected_on(&tx, owner, "/we", &original.event_id, None)?.is_some() {
@@ -361,6 +364,7 @@ impl Store {
             id: request.id,
             session_id: request.session_id,
             resume: prior_session,
+            human_original,
             entry_session: session,
             original: request.original.event_id,
         }))

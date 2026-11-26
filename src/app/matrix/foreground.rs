@@ -294,6 +294,7 @@ async fn execute_worker(
         if engine == ForegroundEngine::Claude {
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(attempt.resume);
+            start["humanOriginal"] = json!(attempt.human_original);
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;

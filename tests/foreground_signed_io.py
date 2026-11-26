@@ -291,6 +291,11 @@ for await (const line of createInterface({ input: process.stdin })) {
                         "tools": ["fixture_read", "daimon_status"],
                     }
                     provider.foundation_marker = "Fixture Foundation readback."
+                if interaction and os.environ.get("FOREGROUND_TEST_HOST_TOOLS") == "1":
+                    provider.host_file = root / "host-tools-fixture.txt"
+                    provider.host_file.write_text("Native file readback marker.")
+                    provider.host_tools = ["Read", "Bash"]
+                    config["hostTools"] = provider.host_tools
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -418,6 +423,9 @@ timeout_seconds=5
                 provider.human_original = str(uuid.uuid4())
                 request = {"binding":page["binding"], "id":provider.human_original,
                            "text":provider.original, "target":"claude"}
+                forged = client.post("/api/interaction/inputs",
+                    json={**request, "private_host_access": True}, headers=headers)
+                self.assertEqual(forged.status_code, 400)
                 submitted = client.post("/api/interaction/inputs", json=request, headers=headers)
                 self.assertEqual(submitted.status_code, 200, submitted.text)
                 journey.wait(lambda: bool(provider.failure) or journey.row(
@@ -432,7 +440,8 @@ timeout_seconds=5
                               if row["event_id"] == result["message_id"])
                 self.assertEqual(signed["origin"]["embodiment_id"], receiver)
                 self.assertEqual(signed["payload"]["body"]["text"], result["text"])
-                first_calls = 2 + hasattr(provider, "skill_name") + hasattr(provider, "foundation_marker")
+                first_calls = (2 + hasattr(provider, "skill_name") + hasattr(provider, "foundation_marker")
+                               + len(getattr(provider, "host_tools", [])))
                 self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
                 self.assertEqual(journey.telegram_methods, [])

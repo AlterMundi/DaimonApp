@@ -3264,6 +3264,7 @@ engine = first["schema"].removeprefix("daimon-gateway.").split("-turn/")[0]
 assert engine in ("claude", "goose", "antigravity")
 native = "goose-native-id" if engine == "goose" else first["sessionId"]
 if engine == "claude":
+    assert first["humanOriginal"] is False
     native = first["freshNativeSessionId"]
 preparation = dict(ids, type="prepare_submission", nativeSessionId=native)
 if engine == "claude":

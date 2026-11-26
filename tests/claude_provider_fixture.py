@@ -28,13 +28,20 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             skill = getattr(self.server, "skill_name", None)
             foundation = getattr(self.server, "foundation_marker", None)
             foundation_tools = [FOUNDATION, "mcp__matrix_foundation__daimon_status"] if foundation else []
-            expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools
+            host_tools = getattr(self.server, "host_tools", [])
+            expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools + host_tools
             assert sorted(tool["name"] for tool in data["tools"]) == sorted(expected)
             steps = [(DMK[0], memory, self.server.dmk_marker) if memory else (TOOL, {}, self.server.body)]
             if skill:
                 steps.append(("Skill", {"skill": skill}, self.server.skill_marker))
             if foundation:
                 steps.append((FOUNDATION, {}, foundation))
+            if host_tools:
+                steps += [
+                    ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
+                    ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && printf 'Native shell %s.' 'readback marker'"},
+                     "Native shell readback marker."),
+                ]
             assert self.server.original in json.dumps(data["messages"])
             phase, submission = self.server.journey.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",

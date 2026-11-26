@@ -68,6 +68,18 @@ access that also retires earlier disclosed context should rotate the
 Foundation capability, which starts a fresh Claude session. The stdio wrapper
 clears inherited provider credential environment variables.
 
+`hostTools` optionally selects Claude Code's native `Bash`, `Read`, `Write`,
+`Edit`, `Glob`, `Grep` and `NotebookEdit` tools. The Gateway includes the
+authenticated-original marker only for the dashboard's paired-human session
+and after checking the retained private Interaction input against the signed
+Matrix original. Companion credentials and manual Matrix owner runs get the
+existing MCP and skill catalog without these host tools. Upgrade the dashboard
+producer together with the Gateway and worker for this permission. Changes
+to the native tool selection retire the previous Claude session for
+continuation. Tool effects use the process owner's existing host access.
+Bash uses Claude Code's subprocess credential-environment scrub. This is
+separate from OS permissions on local credential files.
+
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
@@ -88,7 +100,7 @@ Source content cannot select these settings. See
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
 worker permits up to two agent turns for the status-only route, or six with
-shared DMK, skills or Foundation for tool calls and replies. The SDK
+shared DMK, skills, Foundation or host tools for tool calls and replies. The SDK
 estimate can overrun its limit, so applicable provider-side limits still control
 spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
@@ -227,6 +239,8 @@ fixture skill and verify the provider receives its instructions before the
 signed reply.
 Set `FOREGROUND_TEST_FOUNDATION=1` to exercise a disposable Foundation
 stdio tool in the same native turn.
+Set `FOREGROUND_TEST_HOST_TOOLS=1` to run a native Read and a harmless Bash
+command on an authenticated Interaction input.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
