@@ -356,6 +356,7 @@ impl Store {
         Ok(value)
     }
 
+    #[cfg(test)]
     /// Atomically retain the whole routing plan under the original entry owner,
     /// binding and ingress generation before any per-target transport begins.
     pub fn interaction_admit_entry_plan(
@@ -374,9 +375,11 @@ impl Store {
             source,
             plan,
             closed,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn interaction_admit_entry_execution_plan(
         &self,
         key: SessionKey,
@@ -385,6 +388,7 @@ impl Store {
         source: &SourceInput,
         plan: &[(SessionKey, crate::interaction::RequestRelation)],
         closed: &tokio_util::sync::CancellationToken,
+        config: Option<&crate::interaction::InteractionConfig>,
     ) -> Result<Vec<(crate::interaction::Instruction, bool)>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
@@ -432,6 +436,9 @@ impl Store {
                 relation.clone(),
                 &self.instance_id,
                 portable.as_ref(),
+                config
+                    .and_then(|cfg| cfg.claude_route(*target))
+                    .map(|route| &route.transport.source),
             )?);
         }
         if closed.is_cancelled() {
@@ -517,13 +524,22 @@ impl Store {
     ) -> Result<Vec<serde_json::Value>> {
         use serde_json::{Value, json};
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL) AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
+        let binding = super::execution::binding_on(&conn, key, human)?;
+        let revision = binding
+            .as_ref()
+            .map(|binding| binding.execution.revision.as_str());
+        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND ((COALESCE(json_extract(i.doc,'$.target_execution.harness'),'codex')='codex'
+          AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL))
+          OR (json_extract(i.doc,'$.target_execution.harness')='claude'
+          AND json_extract(i.doc,'$.target_execution.revision')=?5))
+          AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
         let rows = query.query_map(
             params![
                 key.chat_id,
                 key.thread_id,
                 human,
-                requests.map(serde_json::to_string).transpose()?
+                requests.map(serde_json::to_string).transpose()?,
+                revision,
             ],
             |r| {
                 Ok((

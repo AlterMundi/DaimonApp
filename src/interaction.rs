@@ -79,6 +79,7 @@ fn artifact_total_limit() -> u64 {
 pub struct Target {
     pub name: String,
     pub topic_id: i64,
+    pub(crate) harness: Option<crate::execution::Harness>,
 }
 
 /// Explicit owner setup for technical sends; never a model-selected command.
@@ -407,6 +408,20 @@ impl InteractionConfig {
                 bail!("Select one bounded owner inbox channel with its existing host transport");
             }
         }
+        for target in &self.targets {
+            match target.harness {
+                Some(crate::execution::Harness::Claude) => {
+                    if self
+                        .claude_route(SessionKey::new(self.chat_id, Some(target.topic_id)))
+                        .is_none()
+                    {
+                        bail!("The Claude route requires a configured direct worker");
+                    }
+                }
+                None | Some(crate::execution::Harness::Codex) => {}
+                _ => bail!("The configured routed harness has no direct worker"),
+            }
+        }
         if self.matrix_targets.len() > 16 {
             bail!("Too many explicitly selected Matrix targets");
         }
@@ -431,6 +446,17 @@ impl InteractionConfig {
         }
         // Duplicate human labels remain resolvable through #t<topic_id>.
         Ok(())
+    }
+
+    pub(crate) fn claude_route(&self, key: SessionKey) -> Option<&ForegroundConfig> {
+        (key.chat_id == self.chat_id
+            && self.targets.iter().any(|target| {
+                target.topic_id == key.thread_id
+                    && target.harness == Some(crate::execution::Harness::Claude)
+            }))
+        .then_some(self.claude_foreground.as_ref())
+        .flatten()
+        .filter(|config| config.interaction_direct)
     }
 
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
@@ -801,10 +827,12 @@ mod tests {
                 Target {
                     name: "Nexus".into(),
                     topic_id: 2,
+                    harness: None,
                 },
                 Target {
                     name: "Nexus".into(),
                     topic_id: 3,
+                    harness: None,
                 },
             ],
         };

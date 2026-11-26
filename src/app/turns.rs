@@ -86,6 +86,19 @@ pub(super) async fn process_turn(
         if !super::routing::dispatch_allowed(&shared, &instruction)? {
             return Ok(());
         }
+        if instruction
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+        {
+            return super::foreground::run_routed_claude(
+                &app,
+                &queued.request,
+                &instruction,
+                cancel_slot,
+            )
+            .await;
+        }
     }
     if shared
         .store

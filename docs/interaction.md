@@ -253,6 +253,22 @@ its attributed result. The integrating turn reads visible returns through the
 existing `conversation` and `conversation_part` readers. Selection of a different
 original, a rebind or an admission fence cannot extend this turn's authority.
 
+An owner can select `harness = "claude"` on an explicit
+`[[interaction.targets]]` entry with the configured direct Claude worker.
+Gateway retains that body's selection on the target instruction and uses the
+existing queue and native worker. This routed entry accepts retained local
+conversation text. The receiver uses its signed body and configured MCP
+catalog. Routed provenance stays distinct from direct paired ingress, which
+can grant host tools. Existing Codex threads remain separate from the routed
+Claude sessions. If the configured body changes, the original instruction
+stays retained against its prior destination.
+
+Gateway records exposure before releasing the SDK prompt. The observed
+native result, acceptance, and canonical return reservations commit
+together. Interrupted preparation stays unsent. A lost outcome after
+exposure remains uncertain across restart and inspection. The conversation
+reader and target history use the retained result and request IDs.
+
 Qualify a mixed set of conversations with one harness on the integrating role
 and another on a worker. Inspect the worker, dispatch an existing retained
 human original, observe the useful attributed result, then repeat with the roles

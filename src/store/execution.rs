@@ -31,6 +31,7 @@ pub(super) fn binding_on(
                 revision,
                 harness: Harness::Codex,
                 native_session: if reset { None } else { native_session.clone() },
+                body: None,
             };
             // Existing Observer history may still contain an old Codex ID
             // after reset. It is evidence, never current execution authority.

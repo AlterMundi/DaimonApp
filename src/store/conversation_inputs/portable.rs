@@ -432,10 +432,13 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
-             JOIN conversation_inputs c ON c.local_turn=t.id AND c.session_id=s.id
              WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
                AND t.from_user_id=?3 AND t.execution_harness<>'codex' AND t.status='running'
-               AND c.instance_id=?4 AND json_type(c.doc,'$.portable')='object')",
+               AND (EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.local_turn=t.id AND c.session_id=s.id
+                         AND c.instance_id=?4 AND json_type(c.doc,'$.portable')='object')
+                 OR EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.session_id=s.id
+                         AND i.instance_id=?4 AND json_extract(i.doc,'$.local_turn')=t.id
+                         AND json_extract(i.doc,'$.target_execution.harness')=t.execution_harness)))",
             params![key.chat_id, key.thread_id, human, self.instance_id],
             |row| row.get(0),
         )?)

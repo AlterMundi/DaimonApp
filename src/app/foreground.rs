@@ -12,6 +12,7 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub session: &'a str,
     pub resume: Option<&'a ClaudeContinuation>,
     pub human_original: bool,
+    pub routed_human: bool,
     pub text: &'a str,
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
@@ -85,6 +86,7 @@ pub(in crate::app) async fn execute_worker(
         session,
         resume,
         human_original,
+        routed_human,
         text,
         body,
         cancel,
@@ -122,6 +124,9 @@ pub(in crate::app) async fn execute_worker(
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume);
             start["humanOriginal"] = json!(human_original);
+            if routed_human {
+                start["routedHuman"] = json!(true);
+            }
             if controller.is_some() {
                 start["controller"] = json!(true);
             }
@@ -327,6 +332,7 @@ pub(super) async fn run_portable_turn(
                 session: &input.id,
                 resume: resume.as_ref(),
                 human_original: true,
+                routed_human: false,
                 text: &input.text,
                 body: body.clone(),
                 cancel: &cancel,
@@ -357,4 +363,60 @@ pub(super) async fn run_portable_turn(
         value["phase"] == "not_submitted" && value["reason"] == "claude_resume_session_missing"
     });
     store.finish_portable_turn(input, local, reply, resume_unavailable)
+}
+
+pub(super) async fn run_routed_claude(
+    app: &super::App,
+    request: &crate::models::TurnRequest,
+    input: &crate::interaction::Instruction,
+    slot: std::sync::Arc<std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+) -> Result<()> {
+    use crate::{interaction::MatrixDestination, store::MatrixAuthor};
+    anyhow::ensure!(
+        request.attachments.is_empty(),
+        "Claude routed worker does not yet receive attachments"
+    );
+    let cfg = super::routing::profile(&app.shared)?;
+    let body = input
+        .target_execution
+        .as_ref()
+        .and_then(|binding| binding.body.as_ref())
+        .context("Routed Claude body is missing")?;
+    let config = cfg
+        .claude_route(input.target)
+        .filter(|config| &config.transport.source == body)
+        .context("Routed Claude body changed")?;
+    let MatrixDestination::Body {
+        being_ref,
+        embodiment_id,
+    } = body
+    else {
+        anyhow::bail!("Routed worker requires an authenticated body");
+    };
+    let source = MatrixAuthor {
+        being_ref: being_ref.clone(),
+        embodiment_id: embodiment_id.clone(),
+    };
+    let store = &app.shared.store;
+    let cancel = app.shared.shutdown.child_token();
+    *slot.lock().expect("cancel mutex poisoned") = Some(cancel.clone());
+    let local = store.begin_routed_claude(input, request)?;
+    let outcome = async {
+        let (_,body) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
+            result = super::matrix::authenticate_foreground_body(&config.transport,&source) => result,
+        }?;
+        let resume = store.routed_claude_continuation(local,&body)?;
+        execute_worker(&config.worker_command,ForegroundEngine::Claude,WorkerTurn{
+            id:&input.id,session:&input.id,resume:resume.as_ref(),human_original:false,
+            routed_human:true,text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
+        },|prepared| {
+            if cancel.is_cancelled() {return Ok(false);}
+            store.expose_routed_claude(input,local,&body,&prepared)
+        }).await
+    }.await.unwrap_or(Value::Null);
+    let deliveries = store.finish_routed_claude(input, local, &outcome)?;
+    super::routing::publish_results(app, input.human_id, deliveries);
+    Ok(())
 }

@@ -85,6 +85,7 @@ pub(super) async fn run_selected(
             session: &attempt.session_id,
             resume: attempt.resume.as_ref(),
             human_original: attempt.human_original,
+            routed_human: false,
             text: &text,
             body,
             cancel: &app.shared.shutdown,

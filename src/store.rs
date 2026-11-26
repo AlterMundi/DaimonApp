@@ -66,6 +66,7 @@ pub(crate) use matrix::publication::{
 };
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
+mod routed_portable;
 mod routing;
 mod session_requests;
 mod workflows;

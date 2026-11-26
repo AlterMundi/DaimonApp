@@ -78,7 +78,7 @@ pub(super) fn admit_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
-    admit_selected_on(tx, source, target, relation, instance, None)
+    admit_selected_on(tx, source, target, relation, instance, None, None)
 }
 
 pub(super) fn admit_selected_on(
@@ -88,6 +88,7 @@ pub(super) fn admit_selected_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
+    claude_body: Option<&crate::interaction::MatrixDestination>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
@@ -206,6 +207,14 @@ pub(super) fn admit_selected_on(
             bail!("Canonical routing source does not match its original");
         }
     }
+    if claude_body.is_some() {
+        anyhow::ensure!(
+            source.channel == "conversation"
+                && source.tribu_source.is_none()
+                && source.update_id.is_none(),
+            "The routed Claude worker requires a local retained conversation original"
+        );
+    }
     let id = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
         format!(
@@ -219,8 +228,8 @@ pub(super) fn admit_selected_on(
     let target_row: Option<(i64, Option<String>)> = tx.query_row(
         "SELECT s.id,s.codex_thread_id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
          WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
-         AND (s.codex_thread_id IS NOT NULL OR s.force_fresh_thread=1)",
-        params![target.chat_id,target.thread_id,source.human_id], |r| Ok((r.get(0)?,r.get(1)?)),
+         AND (?4 OR s.codex_thread_id IS NOT NULL OR s.force_fresh_thread=1)",
+        params![target.chat_id,target.thread_id,source.human_id,claude_body.is_some()], |r| Ok((r.get(0)?,r.get(1)?)),
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
@@ -251,11 +260,16 @@ pub(super) fn admit_selected_on(
     if old_source.as_ref().is_some_and(|old| old != &raw_source) {
         return Err(anyhow!("Interaction source identity is immutable"));
     }
-    let target_execution = super::execution::binding_on(tx, target, source.human_id)?
+    let mut target_execution = super::execution::binding_on(tx, target, source.human_id)?
         .context("Interaction target execution is unavailable")?
         .execution;
     if target_execution.conversation_id != session {
         bail!("Interaction target selection changed");
+    }
+    if let Some(body) = claude_body {
+        target_execution.harness = crate::execution::Harness::Claude;
+        target_execution.body = Some(body.clone());
+        target_execution.native_session = None;
     }
     if source.origin.message_id.is_none()
         && let Some(native) = target_execution.native_session.as_deref()
@@ -310,7 +324,7 @@ pub(super) fn admit_selected_on(
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
         local_turn: None,
-        native_thread: native,
+        native_thread: if claude_body.is_none() { native } else { None },
         native_turn: None,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
@@ -335,6 +349,99 @@ pub(super) fn admit_selected_on(
     Ok((instruction, true))
 }
 
+pub(super) fn transport_on(
+    tx: &Connection,
+    id: &str,
+    human: i64,
+    local_turn: i64,
+    phase: crate::interaction::TransportPhase,
+    native_turn: Option<&str>,
+) -> Result<crate::interaction::Instruction> {
+    use crate::interaction::{Instruction, TransportPhase as P};
+    let (doc,old):(String,String)=tx.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let mut instruction: Instruction = serde_json::from_str(&doc)?;
+    let old = P::try_from(old.as_str())?;
+    let valid = old == phase
+        || matches!(
+            (old, phase),
+            (
+                P::Queued,
+                P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
+            ) | (
+                P::Submitting | P::Steering,
+                P::Accepted | P::Rejected | P::Uncertain
+            ) | (P::Uncertain, P::Accepted | P::Rejected)
+        );
+    if !valid {
+        return Err(anyhow!(
+            "Interaction transport cannot skip admission or replay uncertainty"
+        ));
+    }
+    let binding: Option<(i64, i64, Option<String>)> = tx
+        .query_row(
+            "SELECT session_id,from_user_id,native_thread_id FROM turns WHERE id=?",
+            [local_turn],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (session, owner, native) = binding.context("Interaction execution missing")?;
+    if session != instruction.target_session
+        || owner != human
+        || instruction
+            .local_turn
+            .is_some_and(|previous| previous != local_turn)
+    {
+        return Err(anyhow!("Interaction execution ownership changed"));
+    }
+    if matches!(phase, P::Submitting | P::Steering) {
+        let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.id=?1 AND u.tg_user_id=?2 AND u.allowed=1)",params![session,human],|r|r.get(0))?;
+        if !allowed {
+            return Err(anyhow!("Interaction execution is no longer admitted"));
+        }
+    }
+    if phase == P::Accepted && (native.is_none() || native_turn.is_none_or(str::is_empty)) {
+        return Err(anyhow!(
+            "Native acceptance requires exact thread and turn evidence"
+        ));
+    }
+    if old == P::Accepted
+        && (instruction.native_thread != native
+            || instruction.native_turn.as_deref() != native_turn)
+    {
+        return Err(anyhow!("Accepted interaction execution is immutable"));
+    }
+    instruction.phase = phase;
+    instruction.local_turn = Some(local_turn);
+    if native.is_some() {
+        instruction.native_thread = native;
+    }
+    if let Some(turn) = native_turn {
+        instruction.native_turn = Some(turn.to_owned());
+    }
+    tx.execute(
+        "UPDATE interaction_instructions SET phase=?2,doc=?3 WHERE id=?1",
+        params![id, phase.as_str(), serde_json::to_string(&instruction)?],
+    )?;
+    if phase == P::Accepted {
+        super::topic_publications::accepted_on(tx, &instruction)?;
+    }
+    Ok(instruction)
+}
+
+pub(super) fn instruction_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+) -> Result<Option<crate::interaction::Instruction>> {
+    let raw:Option<(String,String)>=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    raw.map(|(doc, phase)| {
+        let mut instruction: crate::interaction::Instruction = serde_json::from_str(&doc)?;
+        instruction.phase = phase.as_str().try_into()?;
+        Ok(instruction)
+    })
+    .transpose()
+}
+
 pub(super) fn target_execution_allowed_on(
     conn: &Connection,
     input: &crate::interaction::Instruction,
@@ -355,7 +462,10 @@ fn target_execution_matches_on(
             let current = current.execution;
             current.conversation_id == selected.conversation_id
                 && current.revision == selected.revision
-                && current.harness == selected.harness
+                && (current.harness == selected.harness
+                    || (selected.harness == crate::execution::Harness::Claude
+                        && selected.body.is_some()
+                        && native.is_none()))
                 && selected
                     .native_session
                     .as_ref()
@@ -509,9 +619,13 @@ impl Store {
                 migration?;
             }
         }
-        self.conn.lock().expect("store mutex poisoned").execute(
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        super::routed_portable::recover_on(&tx, &self.instance_id)?;
+        tx.execute(
             "UPDATE interaction_instructions SET phase=CASE WHEN phase='queued' THEN 'retained_unsent' ELSE 'uncertain' END WHERE instance_id!=?1 AND phase IN ('queued','submitting','steering')",[&self.instance_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -562,13 +676,7 @@ impl Store {
         human: i64,
     ) -> Result<Option<crate::interaction::Instruction>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let raw:Option<(String,String)>=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        raw.map(|(doc, phase)| {
-            let mut instruction: crate::interaction::Instruction = serde_json::from_str(&doc)?;
-            instruction.phase = phase.as_str().try_into()?;
-            Ok(instruction)
-        })
-        .transpose()
+        instruction_on(&conn, id, human)
     }
 
     /// Reuse an immutable accepted routed execution when its exact physical
@@ -698,76 +806,9 @@ impl Store {
         phase: crate::interaction::TransportPhase,
         native_turn: Option<&str>,
     ) -> Result<crate::interaction::Instruction> {
-        use crate::interaction::{Instruction, TransportPhase as P};
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let (doc,old):(String,String)=tx.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        let mut instruction: Instruction = serde_json::from_str(&doc)?;
-        let old = P::try_from(old.as_str())?;
-        let valid = old == phase
-            || matches!(
-                (old, phase),
-                (
-                    P::Queued,
-                    P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
-                ) | (
-                    P::Submitting | P::Steering,
-                    P::Accepted | P::Rejected | P::Uncertain
-                ) | (P::Uncertain, P::Accepted | P::Rejected)
-            );
-        if !valid {
-            return Err(anyhow!(
-                "Interaction transport cannot skip admission or replay uncertainty"
-            ));
-        }
-        let binding: Option<(i64, i64, Option<String>)> = tx
-            .query_row(
-                "SELECT session_id,from_user_id,native_thread_id FROM turns WHERE id=?",
-                [local_turn],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let (session, owner, native) = binding.context("Interaction execution missing")?;
-        if session != instruction.target_session
-            || owner != human
-            || instruction
-                .local_turn
-                .is_some_and(|previous| previous != local_turn)
-        {
-            return Err(anyhow!("Interaction execution ownership changed"));
-        }
-        if matches!(phase, P::Submitting | P::Steering) {
-            let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.id=?1 AND u.tg_user_id=?2 AND u.allowed=1)",params![session,human],|r|r.get(0))?;
-            if !allowed {
-                return Err(anyhow!("Interaction execution is no longer admitted"));
-            }
-        }
-        if phase == P::Accepted && (native.is_none() || native_turn.is_none_or(str::is_empty)) {
-            return Err(anyhow!(
-                "Native acceptance requires exact thread and turn evidence"
-            ));
-        }
-        if old == P::Accepted
-            && (instruction.native_thread != native
-                || instruction.native_turn.as_deref() != native_turn)
-        {
-            return Err(anyhow!("Accepted interaction execution is immutable"));
-        }
-        instruction.phase = phase;
-        instruction.local_turn = Some(local_turn);
-        if native.is_some() {
-            instruction.native_thread = native;
-        }
-        if let Some(turn) = native_turn {
-            instruction.native_turn = Some(turn.to_owned());
-        }
-        tx.execute(
-            "UPDATE interaction_instructions SET phase=?2,doc=?3 WHERE id=?1",
-            params![id, phase.as_str(), serde_json::to_string(&instruction)?],
-        )?;
-        if phase == P::Accepted {
-            super::topic_publications::accepted_on(&tx, &instruction)?;
-        }
+        let instruction = transport_on(&tx, id, human, local_turn, phase, native_turn)?;
         tx.commit()?;
         Ok(instruction)
     }

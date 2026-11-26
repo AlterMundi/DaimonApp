@@ -27,6 +27,8 @@ pub(crate) struct ExecutionBinding {
     pub revision: String,
     pub harness: Harness,
     pub native_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<crate::interaction::MatrixDestination>,
 }
 
 impl ExecutionBinding {

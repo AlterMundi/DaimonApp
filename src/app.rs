@@ -2924,6 +2924,21 @@ impl App {
                             .ok()
                     })
                     .is_some_and(|input| input.portable.is_some());
+                let portable = portable
+                    || turn
+                        .interaction
+                        .as_deref()
+                        .and_then(|id| {
+                            shared
+                                .store
+                                .interaction_instruction(id, requester)
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|input| input.target_execution)
+                        .is_some_and(|binding| {
+                            binding.harness == crate::execution::Harness::Claude
+                        });
                 if let Some(id) = conversation_input_id.as_deref() {
                     let _slot = steer.lock().expect("steer mutex poisoned");
                     match shared

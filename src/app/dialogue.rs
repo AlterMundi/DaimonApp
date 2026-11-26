@@ -574,10 +574,9 @@ pub(super) fn tool_call(
             source.target_sessions=plan.iter().map(|(_,id,_)|*id).collect();
             if closed.is_cancelled() {bail!("Tool request closed before admission");}
             let selected=plan.into_iter().map(|(key,_,relation)|(key,relation)).collect::<Vec<_>>();
-            let admitted=match execution {
-                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_admit_entry_plan(key,human,native,&source,&selected,&closed)?,
-                crate::store::EntryExecution::Portable(_)=>shared.store.interaction_admit_entry_execution_plan(key,human,execution,&source,&selected,&closed)?,
-            };
+            let admitted=shared.store.interaction_admit_entry_execution_plan(
+                key,human,execution,&source,&selected,&closed,Some(&cfg),
+            )?;
             // Once this durable plan is admitted, its deliveries are independent
             // of the front dialogue. Native closure cannot silently retract work.
             let mut results=vec![];

@@ -871,9 +871,20 @@ pub(super) fn source_on(
         source
     } else if let Some(id) = id.strip_prefix("delivery:") {
         let row:Option<(String,String,Option<String>,String,bool,String)>=conn.query_row(
-            "SELECT d.doc,d.phase,s.codex_thread_id,o.native_thread,s.force_fresh_thread,d.result_id FROM interaction_public_deliveries d
+            "SELECT d.doc,d.phase,
+             CASE WHEN t.execution_harness='claude' THEN (
+               SELECT p.native_thread_id FROM turns p WHERE p.session_id=s.id AND p.from_user_id=?2
+               AND p.execution_harness=t.execution_harness AND p.execution_generation=g.generation
+               AND p.native_thread_id IS NOT NULL ORDER BY p.id DESC LIMIT 1
+             ) ELSE s.codex_thread_id END,
+             o.native_thread,
+             CASE WHEN t.execution_harness='claude' THEN COALESCE(t.execution_generation<>g.generation,1)
+               ELSE s.force_fresh_thread END,
+             d.result_id FROM interaction_public_deliveries d
              JOIN interaction_requests r ON r.id=d.request_id JOIN interaction_sources x ON x.id=r.input_id
              JOIN sessions s ON s.id=r.session_id JOIN interaction_results o ON o.id=d.result_id
+             JOIN turns t ON t.id=o.local_turn AND t.session_id=s.id
+             JOIN conversation_entry_generations g ON g.session_id=s.id
              WHERE d.id=?1 AND d.human_id=?2 AND r.human_id=?2 AND x.human_id=?2 AND s.creator_user_id=?2
              AND json_extract(d.doc,'$.origin.chat_id')=?3 AND json_extract(d.doc,'$.origin.thread_id')=?4",
              params![id,human,entry.chat_id,entry.thread_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;

@@ -1061,7 +1061,12 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
     {
         let mut runs = shared.routing_runs.lock().expect("routing mutex poisoned");
         if let Some(run) = runs.get_mut(&i.target) {
-            if let Some(active) = &run.active {
+            if let Some(active) = &run.active
+                && !i
+                    .target_execution
+                    .as_ref()
+                    .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            {
                 Some(Some(active.clone()))
             } else {
                 run.pending.push(i.id.clone());
@@ -1092,7 +1097,16 @@ pub(super) fn dispatch_admission_allowed(
     local_started: bool,
 ) -> Result<bool> {
     let current = shared.store.stop_admission_epoch(i.target)?;
-    if (!local_started && !shared.store.interaction_target_execution_allowed(i)?)
+    let cfg = profile(shared)?;
+    let configured = cfg
+        .claude_route(i.target)
+        .map(|route| &route.transport.source);
+    let selected = i
+        .target_execution
+        .as_ref()
+        .and_then(|binding| binding.body.as_ref());
+    if configured != selected
+        || (!local_started && !shared.store.interaction_target_execution_allowed(i)?)
         || !shared
             .store
             .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
@@ -1717,6 +1731,16 @@ pub(super) fn result(
     {
         notice(shared.clone(),i.origin,"An answer from earlier work was retained in the native conversation. It does not report addressing your routed input, which remains unresolved.".into());
     }
+    publish_results(&app, human, deliveries);
+    Ok(())
+}
+
+pub(super) fn publish_results(
+    app: &App,
+    human: i64,
+    deliveries: Vec<crate::interaction::Delivery>,
+) {
+    let shared = &app.shared;
     for delivery in deliveries {
         if super::session_requests::returned(app.clone(), &delivery, human).is_err() {
             tracing::warn!("Local dependency return retained without confirmed admission");
@@ -1728,7 +1752,6 @@ pub(super) fn result(
         }
         publish(shared.clone(), delivery, human);
     }
-    Ok(())
 }
 
 fn relevance(d: &crate::interaction::Delivery) -> &'static str {

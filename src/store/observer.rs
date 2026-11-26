@@ -275,6 +275,7 @@ mod tests {
                 source,
                 &plan,
                 &closed,
+                None,
             )
         };
         let mut foreign = source.clone();
