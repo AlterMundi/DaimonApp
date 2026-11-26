@@ -344,32 +344,58 @@ def we_submit(client, *, request_id, thread_id, recipient, content, schema):
     }
     from daimon_matrix.client import ClientError
 
+    # Reserve a bounded read against the same request if the send response
+    # is lost. The read cannot author an event or re-drive the carrier.
+    sending = client
+    if client.deadline_ns is not None:
+        reserve = min(2.0, client.timeout_seconds / 4)
+        sending = replace(client, deadline_ns=client.deadline_ns - int(reserve * 1_000_000_000))
     try:
-        _, response = client.invoke("we.converse", params)
+        _, response = sending.invoke("we.converse", params)
+    except (ClientError, OSError):
+        response = {}
+    result = response.get("result", {}) if response.get("ok") is True else {}
+    if (
+        result.get("schema") == "dm.we.converse-result/v1"
+        and result.get("thread_id") == params["thread_id"]
+        and result.get("addressees") == params["addressees"]
+        and isinstance(result.get("message_hash"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", result["message_hash"])
+        and isinstance(result.get("deliveries"), list)
+    ):
+        outcome.update(
+            message_id=identifier(result["message_id"]),
+            message_hash=result["message_hash"],
+            thread_id=result["thread_id"],
+        )
+        for delivery in result["deliveries"]:
+            if delivery["embodiment_id"] == recipient and delivery["state"] == "delivered":
+                outcome.update(
+                    state="delivered", receipt_event_id=identifier(delivery["receipt_event_id"])
+                )
+                return outcome
+    selection = {"request_id": request_id, "thread_id": params["thread_id"], "recipient_id": recipient}
+    try:
+        _, response = client.invoke("we.conversation.page", {"retained_delivery": selection})
     except (ClientError, OSError):
         return outcome
     result = response.get("result", {}) if response.get("ok") is True else {}
     if (
-        result.get("schema") != "dm.we.converse-result/v1"
-        or result.get("thread_id") != params["thread_id"]
-        or result.get("addressees") != params["addressees"]
-        or not isinstance(result.get("message_hash"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", result["message_hash"])
-        or not isinstance(result.get("deliveries"), list)
+        result.get("schema") == "dm.we.retained-delivery/v1"
+        and result.get("state") == "delivered"
+        and all(result.get(key) == value for key, value in selection.items())
+        and isinstance(result.get("message_hash"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", result["message_hash"])
+        and outcome.get("message_id", result.get("message_id")) == result.get("message_id")
+        and outcome.get("message_hash", result["message_hash"]) == result["message_hash"]
     ):
-        return outcome
-    outcome.update(
-        message_id=identifier(result["message_id"]),
-        message_hash=result["message_hash"],
-        thread_id=result["thread_id"],
-    )
-    # Other signed sibling copies do not prove that the original author heard.
-    for delivery in result["deliveries"]:
-        if delivery["embodiment_id"] == recipient and delivery["state"] == "delivered":
-            outcome.update(
-                state="delivered", receipt_event_id=identifier(delivery["receipt_event_id"])
-            )
-            break
+        outcome.update(
+            state="delivered",
+            thread_id=selection["thread_id"],
+            message_id=identifier(result["message_id"]),
+            message_hash=result["message_hash"],
+            receipt_event_id=identifier(result["receipt_event_id"]),
+        )
     return outcome
 
 
