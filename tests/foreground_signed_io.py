@@ -15,6 +15,7 @@ import shlex
 import socketserver
 import subprocess
 import sys
+import time
 from threading import Thread
 from types import SimpleNamespace
 import unittest
@@ -247,6 +248,49 @@ operator.main()
                         + provider.skill_marker
                     )
                     config["sharedSkillsDirectory"] = str(shared)
+                if interaction and os.environ.get("FOREGROUND_TEST_FOUNDATION") == "1":
+                    foundation = root / "foundation"
+                    foundation.mkdir(mode=0o700)
+                    binding = foundation / "client.json"
+                    binding.touch(mode=0o600)
+                    now = int(time.time() * 1000)
+                    binding.write_text(json.dumps({
+                        "schema": "dm.local.client-config/v3",
+                        "expected_server": {"embodiment_id": body, "incarnation_id": origin["incarnation_id"]},
+                        "capability": {"status": "active", "not_before_ms": now-1000, "not_after_ms": now+120000},
+                    }))
+                    server = foundation / "mcp.mjs"
+                    provider.foundation_revocation = foundation / "revoked"
+                    status = {
+                        "schema": "dm.runtime.status/v1", "integrity": "ok", "being_ref": being,
+                        "manifest_hash": config["body"]["manifestHash"],
+                        "local_origin": {"embodiment_id": body, "incarnation_id": origin["incarnation_id"]},
+                    }
+                    server.write_text("const status = " + json.dumps(status) + ";\n" + """
+import { createInterface } from 'node:readline';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const revoked = fileURLToPath(new URL('revoked', import.meta.url));
+for await (const line of createInterface({ input: process.stdin })) {
+  const {id, method, params} = JSON.parse(line);
+  if (id === undefined) continue;
+  const result = {
+    'initialize': { protocolVersion: params?.protocolVersion, capabilities: {tools:{}},
+      serverInfo: {name:'foundation-fixture', version:'1'} },
+    'tools/list': { tools: ['fixture_read','daimon_status'].map(name => ({
+       name, description:'Read a synthetic status', inputSchema: {type:'object',properties:{}} })) },
+    'tools/call': params?.name === 'daimon_status'
+      ? { isError:existsSync(revoked), content:[], structuredContent:{ok:!existsSync(revoked),result:status} }
+      : { content: [{type:'text',text:'Fixture Foundation readback.'}] },
+  }[method];
+  console.log(JSON.stringify({jsonrpc:'2.0', id, result}));
+}
+""")
+                    config["matrixFoundation"] = {
+                        "command": ["/usr/bin/node",str(server),"--runtime-root",str(foundation)],
+                        "tools": ["fixture_read", "daimon_status"],
+                    }
+                    provider.foundation_marker = "Fixture Foundation readback."
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -388,7 +432,7 @@ timeout_seconds=5
                               if row["event_id"] == result["message_id"])
                 self.assertEqual(signed["origin"]["embodiment_id"], receiver)
                 self.assertEqual(signed["payload"]["body"]["text"], result["text"])
-                first_calls = 3 if hasattr(provider, "skill_name") else 2
+                first_calls = 2 + hasattr(provider, "skill_name") + hasattr(provider, "foundation_marker")
                 self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
                 self.assertEqual(journey.telegram_methods, [])
@@ -474,6 +518,20 @@ timeout_seconds=5
                 self.assertEqual(status["phase"], "matrix_replied")
                 self.assertEqual(status["claude_reply"]["text"], provider.skill_marker)
                 self.assertEqual(len(return_attempts), 4)
+                if hasattr(provider, "foundation_revocation"):
+                    provider.foundation_revocation.touch()
+                    previous_calls = list(provider.calls)
+                    denied = {**request, "id": str(uuid.uuid4()), "text": "Probe a revoked Foundation capability."}
+                    provider.human_original = denied["id"]
+                    submitted = client.post("/api/interaction/inputs", json=denied, headers=headers)
+                    self.assertEqual(submitted.status_code, 200, submitted.text)
+                    journey.wait(lambda: journey.row(
+                        "SELECT phase FROM interaction_matrix_requests WHERE source_event=("
+                        "SELECT json_extract(doc,'$.private_matrix_origin.message_id') "
+                        "FROM conversation_inputs WHERE id=?) AND phase='rejected'", (denied["id"],)
+                    ) == [("rejected",)], seconds=20)
+                    self.assertEqual(provider.calls, previous_calls)
+                    self.assertEqual(len(return_attempts), 4)
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1

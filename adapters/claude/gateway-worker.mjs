@@ -1,13 +1,14 @@
 // One foreground turn on a Gateway-owned pair of pipes.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-import { createMatrixStatusBroker } from './matrix-broker.mjs';
+import { bodyMatches, createMatrixStatusBroker } from './matrix-broker.mjs';
 import { runClaudeTurn, SKILL_NAMESPACE } from './turn.mjs';
 
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
@@ -15,7 +16,7 @@ import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.
 const VERSION = 'daimon-gateway.claude-turn/v2';
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes, skills) {
+function turnScope(profile, bytes, skills, foundation) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
@@ -23,6 +24,7 @@ function turnScope(profile, bytes, skills) {
       profile.configurationDirectory ?? null, profile.apiKeyFile ?? null,
       selector?.command ?? null, selector?.bodyRef ?? null,
       profile.sharedSkillsDirectory ?? null, skills,
+      foundation?.revision ?? null,
     ]))
     .update(bytes)
     .digest('hex');
@@ -37,8 +39,9 @@ async function ownerProfile(path) {
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
+  const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills,
+      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation,
       'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
@@ -88,9 +91,72 @@ async function sharedDmkServer(profile, bytes, directory) {
   const { command } = profile.sharedDmk;
   const snapshot = join(directory, 'binding.json');
   await writeFile(snapshot, bytes, { mode: 0o600, flag: 'wx' });
+  return nativeStdio(profile.home, [...command, '--binding', snapshot]);
+}
+
+function nativeStdio(home, command) {
   return { type: 'stdio', command: '/usr/bin/env',
-    args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${profile.home}`, ...command, '--binding', snapshot],
-    alwaysLoad: true };
+    args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${home}`, ...command], alwaysLoad: true };
+}
+
+async function matrixFoundation(profile) {
+  if (!Object.hasOwn(profile, 'matrixFoundation')) return undefined;
+  const selection = profile.matrixFoundation;
+  if (!closed(selection, ['command', 'tools'])) throw new Error('Invalid Matrix Foundation selection');
+  const { command, tools } = selection;
+  if (!Array.isArray(command) || command.length > 32
+      || !command.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 8192)
+      || typeof command[0] !== 'string' || !isAbsolute(command[0])
+      || !Array.isArray(tools) || !tools.length || tools.length > 64
+      || !tools.includes('daimon_status')
+      || new Set(tools).size !== tools.length
+      || !tools.every(name => typeof name === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(name))) {
+    throw new Error('Invalid Matrix Foundation command or catalog');
+  }
+  const rootAt = command.indexOf('--runtime-root');
+  const root = command[rootAt + 1];
+  if (rootAt < 1 || command.lastIndexOf('--runtime-root') !== rootAt || !root || !isAbsolute(root)) {
+    throw new Error('Matrix Foundation runtime root required');
+  }
+  const bytes = await privateBytes(join(root, 'client.json'), 16 * 1024);
+  const { schema, expected_server, capability } = JSON.parse(bytes);
+  const now = Date.now();
+  if (schema !== 'dm.local.client-config/v3'
+      || expected_server?.embodiment_id !== profile.body.embodimentId
+      || expected_server?.incarnation_id !== profile.body.incarnationId
+      || capability?.status !== 'active'
+      || !Number.isSafeInteger(capability.not_before_ms) || capability.not_before_ms > now
+      || !Number.isSafeInteger(capability.not_after_ms) || capability.not_after_ms <= now) {
+    throw new Error('Matrix Foundation grant differs from the selected live body');
+  }
+  const revision = createHash('sha256').update(JSON.stringify([command, [...tools].sort()])).update(bytes).digest('hex');
+  return { server: nativeStdio(profile.home, command), tools, revision };
+}
+
+async function probeFoundation(server, body, cwd, signal) {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
+  const child = spawn(server.command, server.args, { cwd, signal: deadline, stdio: ['pipe', 'pipe', 'ignore'] });
+  const exited = once(child, 'close').catch(() => undefined);
+  const input = frames(child.stdout);
+  const send = request => writeFrame(child.stdin, { jsonrpc: '2.0', ...request }, deadline);
+  child.stdin.on('error', () => child.kill());
+  try {
+    await send({ id: 1, method: 'initialize', params: {
+      protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'daimon-gateway', version: '2' },
+    } });
+    const { value: initialized } = await input.next();
+    if (initialized?.id !== 1 || initialized.result?.protocolVersion !== '2025-06-18') return false;
+    await send({ method: 'notifications/initialized' });
+    await send({ id: 2, method: 'tools/call', params: { name: 'daimon_status', arguments: {} } });
+    const { value: observed } = await input.next();
+    const status = observed?.result;
+    return observed?.id === 2 && status?.isError === false && status.structuredContent?.ok === true
+      && bodyMatches(status.structuredContent.result, body);
+  } finally {
+    child.stdin.end();
+    child.kill();
+    await exited;
+  }
 }
 
 async function sharedSkillInventory(root) {
@@ -186,23 +252,24 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
-    const [binding, skills] = await Promise.all([
-      sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory),
+    const [binding, skills, foundation] = await Promise.all([
+      sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory), matrixFoundation(profile),
     ]);
     if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
     const sharedSkills = skills.names.length
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
-    const scope = turnScope(profile, binding ?? '', skills.revision);
+    const scope = turnScope(profile, binding ?? '', skills.revision, foundation);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
-      const [bytes, inventory] = await Promise.all([
-        sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory),
+      const [bytes, inventory, currentFoundation] = await Promise.all([
+        sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
       ]);
-      return turnScope(current, bytes ?? '', inventory.revision) === scope;
+      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation) === scope
+        && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
@@ -215,8 +282,8 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedSkills,
-        persistSession: true, maxTurns: sharedDmk || sharedSkills ? 6 : 2,
+        sharedDmk, sharedSkills, matrixFoundation: foundation,
+        persistSession: true, maxTurns: sharedDmk || sharedSkills || foundation ? 6 : 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {

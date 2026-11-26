@@ -1,5 +1,6 @@
 // The foreground Claude adapter consumes one already selected Gateway input.
 // The caller owns the Matrix broker and the canonical request journal.
+import { setTimeout as delay } from 'node:timers/promises';
 import { bodyMatches } from './matrix-broker.mjs';
 
 const SERVER = 'matrix';
@@ -18,6 +19,22 @@ function catalogMatches(status, expected) {
       const names = server.tools.map(tool => tool.name).sort();
       return [...tools].sort().every((tool, index) => tool === names[index]);
     });
+}
+
+async function connectedCatalog(native, expected, signal) {
+  const deadline = performance.now() + 5_000;
+  while (true) {
+    const status = await native.mcpServerStatus();
+    if (!Array.isArray(status) || status.some(server => (
+      !expected.some(item => item.name === server.name && item.source === server.source)
+      || !['connected', 'pending'].includes(server.status)
+    ))) return false;
+    if (status.length === expected.length && status.every(server => server.status === 'connected')) {
+      return catalogMatches(status, expected);
+    }
+    if (performance.now() >= deadline) return false;
+    await delay(100, undefined, { signal });
+  }
 }
 
 /**
@@ -82,6 +99,10 @@ export async function runClaudeTurn({
       expected.push({ name: 'hmk', source: 'dynamic', tools: DMK_TOOLS });
       mcpServers.hmk = profile.sharedDmk;
     }
+    if (profile.matrixFoundation) {
+      expected.push({ name: 'matrix_foundation', source: 'dynamic', tools: profile.matrixFoundation.tools });
+      mcpServers.matrix_foundation = profile.matrixFoundation.server;
+    }
     const allowedTools = expected.flatMap(({ name, tools }) => tools.map(tool => `mcp__${name}__${tool}`));
     const sharedSkills = profile.sharedSkills;
     native = query({
@@ -122,7 +143,7 @@ export async function runClaudeTurn({
         return { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' };
       }
     }
-    if (!catalogMatches(await native.mcpServerStatus(), expected)) {
+    if (!await connectedCatalog(native, expected, abortController.signal)) {
       return { phase: 'not_submitted', reason: 'claude_catalog_mismatch' };
     }
     if (sharedSkills) {

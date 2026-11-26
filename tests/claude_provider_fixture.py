@@ -6,6 +6,7 @@ import json
 
 TOOL = "mcp__matrix__daimon_status"
 DMK = ["mcp__hmk__dmk_recall", "mcp__hmk__hmk_recall"]
+FOUNDATION = "mcp__matrix_foundation__fixture_read"
 ANSWER = "The selected Matrix body reported integrity ok."
 REVOKED_ANSWER = "I can continue without the earlier memory."
 
@@ -25,8 +26,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             assert "Claude Code is your harness" in system
             memory = getattr(self.server, "dmk_record", None)
             skill = getattr(self.server, "skill_name", None)
-            expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else [])
+            foundation = getattr(self.server, "foundation_marker", None)
+            foundation_tools = [FOUNDATION, "mcp__matrix_foundation__daimon_status"] if foundation else []
+            expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools
             assert sorted(tool["name"] for tool in data["tools"]) == sorted(expected)
+            steps = [(DMK[0], memory, self.server.dmk_marker) if memory else (TOOL, {}, self.server.body)]
+            if skill:
+                steps.append(("Skill", {"skill": skill}, self.server.skill_marker))
+            if foundation:
+                steps.append((FOUNDATION, {}, foundation))
             assert self.server.original in json.dumps(data["messages"])
             phase, submission = self.server.journey.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
@@ -65,38 +73,28 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
             elif previous is not None:
-                assert prior == (3 if skill else 2)
+                assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
                 assert ANSWER in json.dumps(data["messages"])
                 assert json.loads(submission)["native_session_id"] == self.server.previous_session
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": "I retained the first turn."}
                 reason = "end_turn"
-            elif prior == 0:
-                assert not result
-                block = {"type": "tool_use", "id": "toolu_fixture", "name": DMK[0] if memory else TOOL, "input": {}}
-                delta = {"type": "input_json_delta", "partial_json": json.dumps(memory or {})}
-                reason = "tool_use"
-            elif prior == 1:
-                assert prior == 1 and len(result) == 1
-                assert result[0]["tool_use_id"] == "toolu_fixture"
-                assert result[0].get("is_error") is not True
-                assert (self.server.dmk_marker if memory else self.server.body) in json.dumps(result[0]["content"])
-                if skill:
-                    block = {"type": "tool_use", "id": "toolu_skill", "name": "Skill", "input": {}}
-                    delta = {"type": "input_json_delta", "partial_json": json.dumps({"skill": skill})}
+            else:
+                assert prior <= len(steps) and len(result) == prior
+                if prior:
+                    entry = next(item for item in result if item["tool_use_id"] == f"toolu_fixture_{prior-1}")
+                    assert entry.get("is_error") is not True
+                    assert steps[prior - 1][2] in json.dumps(data["messages"])
+                if prior < len(steps):
+                    tool, inputs, _ = steps[prior]
+                    block = {"type": "tool_use", "id": f"toolu_fixture_{prior}", "name": tool, "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps(inputs)}
                     reason = "tool_use"
                 else:
                     block = {"type": "text", "text": ""}
                     delta = {"type": "text_delta", "text": ANSWER}
                     reason = "end_turn"
-            else:
-                assert prior == 2 and skill
-                assert any(item["tool_use_id"] == "toolu_skill" and not item.get("is_error") for item in result)
-                assert self.server.skill_marker in json.dumps(data["messages"])
-                block = {"type": "text", "text": ""}
-                delta = {"type": "text_delta", "text": ANSWER}
-                reason = "end_turn"
             message = {
                 "id": f"msg_fixture_{prior}", "type": "message", "role": "assistant", "content": [],
                 "model": data["model"], "stop_reason": None, "stop_sequence": None,

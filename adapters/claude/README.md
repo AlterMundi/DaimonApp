@@ -57,6 +57,17 @@ loads a skill through its native `Skill` tool. A changed skill catalog or
 changed `SKILL.md` revision starts a fresh native session for the next
 original, keeping the Interaction conversation and its signed history.
 
+`matrixFoundation` takes the qualified Matrix Foundation stdio `command` and
+the exact permitted `tools` list. Use the owner launcher for the Claude
+body's existing runtime root and owner-local request directory. The worker
+checks the protected client descriptor's embodiment, incarnation and
+authority window, then checks the actual SDK catalog and verifies
+`daimon_status` through that same capability before submission. Matrix
+decides each subsequent call under its signed grant. An owner change to
+access that also retires earlier disclosed context should rotate the
+Foundation capability, which starts a fresh Claude session. The stdio wrapper
+clears inherited provider credential environment variables.
+
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
@@ -77,7 +88,7 @@ Source content cannot select these settings. See
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
 worker permits up to two agent turns for the status-only route, or six with
-shared DMK or skills for tool calls and replies. The SDK
+shared DMK, skills or Foundation for tool calls and replies. The SDK
 estimate can overrun its limit, so applicable provider-side limits still control
 spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
@@ -214,6 +225,8 @@ that fixture with the native DMK stdio recall server over a disposable pool.
 Set `FOREGROUND_TEST_SHARED_SKILLS=1` to make the native harness invoke a
 fixture skill and verify the provider receives its instructions before the
 signed reply.
+Set `FOREGROUND_TEST_FOUNDATION=1` to exercise a disposable Foundation
+stdio tool in the same native turn.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
