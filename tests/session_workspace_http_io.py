@@ -2,8 +2,11 @@
 """Explicit owned pins through HTTP, retained ASR and actual native dispatch; no models."""
 import json
 from pathlib import Path
+import sqlite3
 import sys
+import time
 from conversation_cold_entry_http_io import ColdEntry, Browser
+from scripts.activity_indicator import inventory_source
 
 
 def qualify(binary):
@@ -51,7 +54,6 @@ def qualify(binary):
         # The selected history endpoint reads only that owned native root. Its
         # synthetic rollout exercises HTTP framing, tools and append completion;
         # it is not a real provider transcript or a claim of physical hearing.
-        import sqlite3
         native_home=j.root/'history-fixture';sessions=native_home/'sessions';sessions.mkdir(parents=True)
         history=sessions/'worker.jsonl'
         header={'type':'session_meta','payload':{'id':'native-topic-7'}}
@@ -81,4 +83,56 @@ def qualify(binary):
         j.close()
 
 
-if __name__=='__main__':qualify(sys.argv[1])
+def portable_activity(binary):
+    j=ColdEntry(str(Path(binary).resolve()));b=None
+    try:
+        j.prepare()
+        j.stop()
+        config=j.config.read_text()
+        targets=j.target_config.replace('topic_id=7','topic_id=7\nharness="goose"').replace(
+            'topic_id=8','topic_id=8\nharness="goose"')
+        j.config.write_text(config.replace(j.target_config,targets)+f'''
+[interaction.goose_foreground]
+interaction_direct=true
+worker_command=["/usr/bin/false"]
+[interaction.goose_foreground.transport]
+command=["/usr/bin/false"]
+source={{kind="body",being_ref="dm:being:v1:{'A'*43}",embodiment_id="embodiment:fixture-goose"}}
+timeout_seconds=5
+''')
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute('UPDATE sessions SET codex_thread_id=NULL WHERE thread_id=8')
+            db.row_factory=sqlite3.Row
+            source=inventory_source(db)
+        j.start();j.wait_control_socket(j.socket);b=Browser(j)
+        activity=j.root/'activity'
+        activity.mkdir()
+        snapshot=activity/'topics.json'
+        snapshot.touch(mode=0o600)
+        snapshot.write_text(json.dumps({'schema':'telecodex.topic-observations/v1','source':source,
+            'connected':True,'observations':{'100:7':{'native':'native-topic-7','human':100,
+            'observed_at':time.time(),'execution':'working','goal_state':'active',
+            'tools_running':True,'waiting_for_human':True,'error':True}}}))
+        b.provider.config['activity_state_dir']=str(activity)
+        def rows():
+            return {row['audio_key']:row for row in b.get('/api/interaction/sessions')['sessions']}
+        current=rows()
+        for key in ('100:7','100:8'):
+            row=current[key]
+            assert row['runtime']['harness']=='goose' and row['execution']=='idle' and row['fresh'],row
+            assert row['goal_state']=='unknown' and row['tools_running'] is None and row['error'] is None,row
+        with sqlite3.connect(j.root/'state.sqlite') as db:
+            db.execute("""INSERT INTO turns(session_id,from_user_id,prompt,status,started_at,execution_harness)
+                SELECT id,creator_user_id,'fixture','running',strftime('%Y-%m-%dT%H:%M:%SZ','now'),'goose'
+                FROM sessions WHERE thread_id=8""")
+        current=rows()
+        assert current['100:7']['execution']=='idle' and current['100:8']['execution']=='working'
+        print('PASS Activity follows the selected portable harness, even without an old native Codex binding.')
+    finally:
+        if b:b.client.close();b.provider.close()
+        j.close()
+
+
+if __name__=='__main__':
+    qualify(sys.argv[1])
+    portable_activity(sys.argv[1])

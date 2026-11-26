@@ -33,6 +33,11 @@ The read uses the configured subscription through the native `/usage`
 command, starts no inference, and shares one short-lived result per
 selected account and profile. Missing or stale allowance is omitted.
 
+The Interaction workspace uses the selected portable harness's Gateway
+activity for its working, waiting-to-start and idle labels, including topics
+that have no Codex binding. Native Codex history stays available through the
+existing history reader. Its goal and tool flags do not describe portable work.
+
 On Codex, the line also shows the available weekly allowance from native
 `account/rateLimits/read`, cached for sixty seconds. The weekly window is
 identified by its seven-day duration; the Codex bucket is preferred when multiple

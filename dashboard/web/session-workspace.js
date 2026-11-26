@@ -6,7 +6,7 @@
   const replyIcon='<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H9l-5 5Z"/><path d="M8 8h8M8 12h5"/></svg>';
   const muteIcon=muted=>'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4Z"/>'+
     (muted?'<path d="m16 9 5 6m0-6-5 6"/>':'<path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>')+'</svg>';
-  const active=row=>row.fresh===true&&(row.execution==='working'||row.execution==='running'||row.tools_running===true||row.goal_state==='active');
+  const active=row=>row.fresh===true&&(row.execution==='working'||row.execution==='running'||row.execution==='queued'||row.tools_running===true||row.goal_state==='active');
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
@@ -192,6 +192,7 @@
       else if(row.goal_state==='active')states.push('◎ Goal active');
       if(row.tools_running)states.push('⚒ Tools running');
       if(row.execution==='working' || row.execution==='running')states.push('⚙ Working');
+      else if(row.execution==='queued')states.push('○ Waiting to start');
       else if(row.execution==='idle')states.push('○ Idle');
       if(row.error)states.push('! Needs attention');
       if(!row.fresh)states.push('◌ Status not current');

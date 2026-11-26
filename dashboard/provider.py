@@ -304,6 +304,7 @@ class Provider:
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
         destinations={};latest_replies={};results_available={};runtimes={};entry_latest=None;entry_runtime=None;destinations_state='unavailable'
+        portable_status={}
         try:
             selected=self.presentation('input workspace')
         except ProviderUnavailable:
@@ -325,6 +326,9 @@ class Provider:
                 destinations[item['audio_key']]=item['destination']
                 runtimes[item['audio_key']]=item.get('runtime')
             entry_runtime=selected.get('entry_runtime')
+            portable_status=selected.get('portable_status',{})
+            if not isinstance(portable_status,dict) or len(portable_status)>128:
+                raise ProviderUnavailable('Invalid portable session observations')
             entry_latest=selected.get('entry_latest_reply')
             if entry_latest is not None:
                 self.check_reply(entry_latest)
@@ -372,6 +376,17 @@ class Provider:
                     ORDER BY m.rowid DESC LIMIT 1''', (row['session'],row['native'])).fetchone() if available else None
                 is_entry=chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']
                 runtime=runtime_view(entry_runtime if is_entry else runtimes.get(row['key']))
+                observation=portable_status.get(row['key'])
+                if isinstance(observation,dict) and observation.get('session')==row['session']:
+                    execution=observation.get('execution')
+                    sampled=observation.get('observed_at')
+                    selected_runtime=runtime_view(observation.get('runtime'))
+                    if execution not in ('working','idle','queued') or type(sampled) not in (int,float) or not math.isfinite(sampled) or not selected_runtime:
+                        raise ProviderUnavailable('Invalid portable session observation')
+                    runtime=selected_runtime
+                    row={**row,'execution':execution,'observed_at':sampled,'fresh':True,
+                         'goal_state':'unknown','waiting_for_human':None,'tools_running':None,
+                         'error':None,'marker':'⚙' if execution=='working' else ''}
                 items.append({'id':ident,'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
