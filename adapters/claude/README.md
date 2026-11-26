@@ -73,7 +73,9 @@ their native full-access mode without per-tool approvals. Claude's Agent SDK
 uses `permissionMode: 'bypassPermissions'` with
 `allowDangerouslySkipPermissions: true` and Bash sandboxing disabled. The
 default native tool catalog is Bash, Read, Write, Edit, Glob, Grep and
-NotebookEdit. Use `hostTools` to select a subset explicitly. Set
+NotebookEdit. Startup remains bounded. After the Gateway records submission,
+private full-access turns without an explicit test budget can run until Claude
+returns or the input is interrupted. Use `hostTools` to select a subset explicitly. Set
 `hostToolDirectory` to the owner-managed directory of shared command wrappers
 to expose commands such as the existing `dmk` writer to authenticated Bash
 turns. It extends the worker's explicit system path and starts a fresh native

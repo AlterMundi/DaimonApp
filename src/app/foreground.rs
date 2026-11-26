@@ -47,7 +47,12 @@ pub(in crate::app) async fn execute_worker(
     turn: WorkerTurn<'_>,
     commit: impl FnOnce(Value) -> Result<bool>,
 ) -> Result<Value> {
-    use std::{os::unix::process::CommandExt, process::Stdio, time::Duration};
+    use std::{
+        os::unix::process::CommandExt,
+        process::Stdio,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::process::Command;
 
@@ -114,7 +119,11 @@ pub(in crate::app) async fn execute_worker(
     let group = OwnedProcessGroup(child.id().context("Missing native worker process")?);
     let controller_closed = cancel.child_token();
     let lease = controller_closed.clone().drop_guard();
-    let exchange = tokio::time::timeout(Duration::from_secs(130), async {
+    let allow_long_turn =
+        engine == ForegroundEngine::Claude && (human_original || routed_host_access);
+    let committed_long_turn = AtomicBool::new(false);
+    let deadline = tokio::time::sleep(Duration::from_secs(130));
+    let exchange = async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
         let mut output = BufReader::new(
             child
@@ -182,6 +191,7 @@ pub(in crate::app) async fn execute_worker(
             let committed = commit(prepared)?;
             if committed {
                 native_session = Some(selected.to_owned());
+                committed_long_turn.store(allow_long_turn, Ordering::Relaxed);
             }
             send(
                 &mut input,
@@ -266,11 +276,17 @@ pub(in crate::app) async fn execute_worker(
             "native worker exited without a verified outcome"
         );
         Ok(outcome)
-    });
+    };
     let result = tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(anyhow::anyhow!("Native worker cancelled")),
-        result = exchange => result.context("native worker deadline").and_then(|outcome| outcome),
+        _ = async {
+            deadline.await;
+            if committed_long_turn.load(Ordering::Relaxed) {
+                std::future::pending::<()>().await;
+            }
+        } => Err(anyhow::anyhow!("native worker deadline")),
+        result = exchange => result,
     };
     drop(lease);
     drop(group);
