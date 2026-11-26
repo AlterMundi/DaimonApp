@@ -1525,6 +1525,20 @@ impl App {
                             if let Some(weekly) = runtime["weekly_available_percent"].as_f64() {
                                 text.push_str(&format!("\n{weekly:.0}% weekly left"));
                             }
+                            if let Some(available) = runtime["session_available_percent"].as_f64() {
+                                text.push_str(&format!(
+                                    "\n{available:.0}% left in the 5-hour window"
+                                ));
+                                if let Some(reset) = runtime["session_resets_at"]
+                                    .as_i64()
+                                    .and_then(|value| chrono::DateTime::from_timestamp(value, 0))
+                                {
+                                    text.push_str(&format!(
+                                        " · resets {} UTC",
+                                        reset.format("%H:%M")
+                                    ));
+                                }
+                            }
                             self.send_status(message.chat.id, message.message_thread_id, &text)
                                 .await?;
                             return Ok(());

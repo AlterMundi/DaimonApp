@@ -30,6 +30,18 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             length = int(self.headers["Content-Length"])
             assert 0 < length < 262_144
             data = json.loads(self.rfile.read(length))
+            if getattr(self.server, "rate_limited", False):
+                self.admitted()
+                body = json.dumps({"type": "error", "error": {
+                    "type": "rate_limit_error", "message": "Rate limit exceeded",
+                }}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("retry-after", "0")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             system = json.dumps(data["system"], ensure_ascii=False)
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system

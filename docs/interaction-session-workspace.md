@@ -248,3 +248,13 @@ The saved-input reader uses the existing refresh cadence independently of
 reply, question and playback reads. An unchanged message stays in place when
 its status updates. Checking a saved message reports whether it is still
 queued and uses the existing read-only input endpoint.
+
+## Claude subscription limits
+
+The session runtime reads the selected Claude subscription’s current five-hour
+and weekly windows without submitting model work. The composer shows the
+five-hour reset when that window is exhausted. A rejected native turn retains
+the provider’s typed quota outcome with the original message and projects it
+to both Conversation and Telegram. An exact refusal before any assistant work
+does not hide the previous completed native session from continuation. Unknown
+effects remain unresolved and no input is automatically resubmitted.

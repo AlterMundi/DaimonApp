@@ -443,6 +443,8 @@ timeout_seconds=5
                         try:
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
+                                self._telegram_quota(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -590,6 +592,23 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_quota(self, journey, provider):
+            provider.rate_limited = True
+            provider.original = "Please retain this original if the provider refuses it."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            journey.wait(lambda: journey.has("Claude Code reached its usage limit.", 7) or provider.failure, seconds=40)
+            self.assertIsNone(provider.failure)
+            rows = journey.row(
+                "SELECT i.phase,json_extract(i.doc,'$.subscription_limit'),t.status FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?", (str(update),))
+            self.assertEqual(rows, [("rejected", '{"window":null,"resets_at":null}', "failed")])
+            notices = [payload for message,payload in journey.messages
+                       if "Claude Code reached its usage limit." in message["text"]]
+            self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
 
         def _telegram_attachments(self, journey, provider):
             import base64

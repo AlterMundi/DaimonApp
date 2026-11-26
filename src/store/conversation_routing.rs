@@ -85,6 +85,8 @@ pub struct ConversationRouting {
     pub selection_input: Option<crate::interaction::InputReference>,
     pub instruction: Option<String>,
     pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_limit: Option<crate::interaction::SubscriptionLimit>,
 }
 pub enum ConversationRouteAction {
     Worker(Box<crate::interaction::Instruction>, bool),
@@ -748,6 +750,7 @@ impl Store {
         if body == "/interrupt" {
             input.phase = "interruption".into();
             input.routing = Some(ConversationRouting {
+                subscription_limit: None,
                 target,
                 label,
                 session: target_session,
@@ -805,6 +808,7 @@ impl Store {
         )?;
         input.phase = "routed".into();
         input.routing = Some(ConversationRouting {
+            subscription_limit: None,
             target,
             label,
             session: target_session,

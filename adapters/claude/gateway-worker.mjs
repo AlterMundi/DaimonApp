@@ -257,7 +257,7 @@ async function observeRuntime(path) {
         || account.apiProvider !== 'firstParty' || !account.subscriptionType || account.apiKeySource != null
         || !(await native.supportedCommands()).some(command => /^\/?usage$/.test(command.name))) return {};
     permit(true);
-    let model, weekly;
+    let model, weekly, session;
     for await (const event of native) {
       if (event.type === 'system' && event.subtype === 'init'
           && typeof event.model === 'string' && /^claude-[a-z0-9-]{1,96}$/.test(event.model)) {
@@ -266,19 +266,22 @@ async function observeRuntime(path) {
       if (event.type === 'assistant') {
         const limits = event.usage_report?.rate_limits?.limits;
         if (Array.isArray(limits)) {
-          const matches = limits.filter(window => window?.kind === 'weekly_all' && window.group === 'weekly'
-            && window.scope == null && Number.isFinite(window.percent) && window.percent >= 0 && window.percent <= 100);
-          if (matches.length === 1) {
+          const readWindow = (kind, group) => {
+            const matches = limits.filter(window => window?.kind === kind && window.group === group
+              && window.scope == null && Number.isFinite(window.percent) && window.percent >= 0 && window.percent <= 100);
+            if (matches.length !== 1) return;
             const reset = Date.parse(matches[0].resets_at);
             if (Number.isFinite(reset) && reset > Date.now()) {
-              weekly = { available: 100 - matches[0].percent, resets_at: Math.floor(reset / 1000) };
+              return { available: 100 - matches[0].percent, resets_at: Math.floor(reset / 1000) };
             }
-          }
+          };
+          weekly = readWindow('weekly_all', 'weekly');
+          session = readWindow('session', 'session');
         }
       }
       if (event.type === 'result') {
         if (event.subtype === 'success' && event.is_error === false && event.local_command === 'usage'
-            && event.duration_api_ms === 0) return { model, weekly };
+            && event.duration_api_ms === 0) return { model, weekly, session };
         return {};
       }
     }

@@ -672,6 +672,53 @@ impl RequestRelation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionLimit {
+    pub window: Option<String>,
+    pub resets_at: Option<i64>,
+}
+
+impl SubscriptionLimit {
+    pub(crate) fn from_worker(outcome: &serde_json::Value) -> Option<Self> {
+        (outcome["phase"] == "subscription_limited" && outcome["limit"].is_object()).then(|| {
+            let value = &outcome["limit"];
+            Self {
+                window: value["window"]
+                    .as_str()
+                    .filter(|window| {
+                        matches!(
+                            *window,
+                            "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet"
+                        )
+                    })
+                    .map(str::to_owned),
+                resets_at: value["resets_at"]
+                    .as_i64()
+                    .filter(|seconds| chrono::DateTime::from_timestamp(*seconds, 0).is_some()),
+            }
+        })
+    }
+
+    pub(crate) fn message(&self) -> String {
+        let window = match self.window.as_deref() {
+            Some("five_hour") => "5-hour usage limit",
+            Some("seven_day" | "seven_day_opus" | "seven_day_sonnet") => "weekly usage limit",
+            _ => "usage limit",
+        };
+        let mut message = format!("Claude Code reached its {window}. Your message is saved.");
+        if let Some(reset) = self
+            .resets_at
+            .and_then(|time| chrono::DateTime::from_timestamp(time, 0))
+        {
+            message.push_str(&format!(
+                " Reset at {} UTC.",
+                reset.format("%H:%M on %d %b")
+            ));
+        }
+        message
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     pub id: String,
     pub input_id: String,
@@ -686,6 +733,8 @@ pub struct Instruction {
     pub text: String,
     pub origin: ReturnRoute,
     pub phase: TransportPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_limit: Option<SubscriptionLimit>,
     /// Captured for this dispatch attempt; async continuations must not adopt a
     /// later admission generation. Only explicit known-unsent recovery clears it.
     #[serde(default)]
