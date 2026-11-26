@@ -645,7 +645,7 @@ timeout_seconds=5
             with journey.lock:
                 journey.updates.append(original)
             self.assertTrue(duplicate_polled.wait(5))
-            journey.command("/retry 1", "Use /interrupt", topic=7)
+            journey.command("/retry 1", "to stop the current turn", topic=7)
             self.assertEqual(provider.calls, calls)
             self.assertEqual(journey.native_turns, native_turns)
             self.assertEqual(return_attempts, [])
