@@ -1143,8 +1143,12 @@ impl Store {
         }
         if activation.lane == HeartbeatLane::Reports {
             if let Some(review) = &mut p.review {
-                review.checks = review.checks.saturating_add(1);
-                review.next_check_ms = now + i64::from(review.contract.interval_seconds) * 1000;
+                // Event-driven checks share the Reports lane without advancing
+                // the selected periodic cadence.
+                if now >= review.next_check_ms {
+                    review.checks = review.checks.saturating_add(1);
+                    review.next_check_ms = now + i64::from(review.contract.interval_seconds) * 1000;
+                }
             }
         }
         p.next_activation = (index + 1) % available.len();

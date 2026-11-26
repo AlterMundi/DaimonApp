@@ -155,7 +155,9 @@ fn owner_control_command(args: &[String]) -> Option<String> {
     match args[3].as_str() {
         "stop" => Some(args[4..].join(" ")),
         "attach-active" | "presentation" | "input" | "requests" | "matrix" | "observer"
-        | "heartbeat" | "topics" | "goal" | "workflow" | "creation" => Some(args[3..].join(" ")),
+        | "heartbeat" | "topics" | "goal" | "workflow" | "creation" | "owner-action" => {
+            Some(args[3..].join(" "))
+        }
         _ => None,
     }
 }

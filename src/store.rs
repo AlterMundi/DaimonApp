@@ -37,8 +37,8 @@ mod heartbeat;
 pub use heartbeat::HeartbeatReportSource;
 pub(crate) use heartbeat::producer::Check as HeartbeatCheck;
 pub use heartbeat::{
-    HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
-    HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
+    HeartbeatCommand, HeartbeatInboxSource, HeartbeatLane, HeartbeatProducerContract,
+    HeartbeatPurpose, HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
 };
 mod execution;
 mod interaction;
@@ -279,7 +279,7 @@ impl Store {
                 params![now_string(), store.instance_id],
             )?;
         }
-        let recovered = store.recover_interrupted_turns(&stale_cutoff)?;
+        let recovered = store.recover_interrupted_turns()?;
         store.seed_admins(admin_ids)?;
         store.audit(
             None,
@@ -399,23 +399,31 @@ impl Store {
         release_instance_lock_for(&conn, &self.instance_id)
     }
 
-    fn recover_interrupted_turns(&self, stale_cutoff: &str) -> Result<InterruptedTurnRecovery> {
+    fn recover_interrupted_turns(&self) -> Result<InterruptedTurnRecovery> {
+        // The instance lock is already exclusively ours. Its stale threshold
+        // selects ownership, not the age of work left by the departed owner.
         let now = now_string();
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let interrupted_turns = conn.execute(
-            "UPDATE turns
-             SET status = 'failed',
-                 assistant_text = COALESCE(assistant_text, 'The listener restarted before local collection finished. Native execution and delivery are unconfirmed. Check the original outcome before retrying.'),
-                 completed_at = ?1
-             WHERE status = 'running' AND started_at < ?2",
-            params![now, stale_cutoff],
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let locals = {
+            let mut q = tx.prepare("SELECT id FROM turns WHERE status='running'")?;
+            q.query_map([], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let interrupted_turns = tx.execute(
+            "UPDATE turns SET status='failed',
+             assistant_text=COALESCE(assistant_text, 'Listener restarted before local collection completed. Native execution and delivery remain unconfirmed; inspect the original before retrying.'),
+             completed_at=?1 WHERE status='running'",
+            [&now],
         )?;
-        let busy_sessions = conn.execute(
-            "UPDATE sessions
-             SET busy = 0, updated_at = ?1
-             WHERE busy != 0 AND updated_at < ?2",
-            params![now, stale_cutoff],
+        let busy_sessions = tx.execute(
+            "UPDATE sessions SET busy=0,updated_at=?1 WHERE busy!=0",
+            [&now],
         )?;
+        for local in locals {
+            heartbeat::recover_departed_collection_on(&tx, local)?;
+        }
+        tx.commit()?;
         Ok(InterruptedTurnRecovery {
             interrupted_turns,
             busy_sessions,
@@ -2330,12 +2338,12 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(notice.contains("Native execution and delivery are unconfirmed."));
-        assert!(notice.contains("Check the original outcome before retrying."));
+        assert!(notice.contains("Native execution and delivery remain unconfirmed"));
+        assert!(notice.contains("inspect the original before retrying"));
     }
 
     #[test]
-    fn keeps_fresh_running_turns_on_startup() {
+    fn recovers_fresh_predecessor_turns_after_exclusive_claim() {
         let tmp = NamedTempFile::new().unwrap();
         let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
         let session = store
@@ -2357,10 +2365,10 @@ mod tests {
         let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
         let session = store.get_session(session.key).unwrap().unwrap();
 
-        assert!(session.busy);
+        assert!(!session.busy);
         assert_eq!(
             store.turn_status(turn_id).unwrap().as_deref(),
-            Some("running")
+            Some("failed")
         );
     }
 
