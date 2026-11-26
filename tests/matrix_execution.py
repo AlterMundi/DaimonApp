@@ -1973,6 +1973,28 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         self.assertEqual(received["origin"]["embodiment_id"], body)
         self.assertEqual(received["payload"]["body"]["text"], authored["text"])
         self.assertEqual(received["payload"]["intent"]["thread_id"], authored["thread_id"])
+        if not hasattr(service.we_lane, "retained_delivery"):
+            return  # Verify the old compatible transport without the new lookup.
+
+        return_attempts.clear()
+        lost = dict(authored, request_id=str(uuid.uuid4()), text="Lose the outer acknowledgement")
+        invoke = NativeOwnerClient.invoke
+
+        def lose_converse_response(current, method, params):
+            response = invoke(current, method, params)
+            if method == "we.converse":
+                raise OSError("fixture lost the outer acknowledgement")
+            return response
+
+        with patch.object(NativeOwnerClient, "invoke", lose_converse_response):
+            recovered = operator_we_origin(lost, client, timeout=5, recipient=author)
+        self.assertEqual(recovered["state"], "delivered")
+        self.assertEqual(return_attempts, [lost["request_id"]])
+        self.assertEqual(recovered["thread_id"], lost["thread_id"])
+        self.assertEqual(
+            sdk.ledger_a.event(recovered["receipt_event_id"])["payload"]["message_ref"]["event_id"],
+            recovered["message_id"],
+        )
 
 
 class AuthenticatedGroupHostTests(unittest.TestCase):
