@@ -41,7 +41,10 @@ class Parent(BaseHTTPRequestHandler):
  def log_message(self,*a):pass
  def do_GET(self):
   data=('''<!doctype html><style>body{margin:0}iframe{width:100%;height:700px;border:0}</style><iframe allow="microphone" src="'''+child_origin+'''/?view=conversation&client=standalone&surface=holodeck"></iframe><script>
-  window.messages=[];addEventListener('message',e=>{const f=document.querySelector('iframe');if(e.source!==f.contentWindow||e.origin!=='''+json.dumps(child_origin)+''')return;const d=e.data;messages.push(d);if(d.type==='ready')f.contentWindow.postMessage({...d,type:'connect'},e.origin);if(d.type==='prepare')f.contentWindow.postMessage({...d,type:'prepared',file:{file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64}},e.origin);});</script>''').encode()
+  window.messages=[];addEventListener('message',e=>{const f=document.querySelector('iframe');if(e.source!==f.contentWindow||e.origin!=='''+json.dumps(child_origin)+''')return;const d=e.data;messages.push(d);if(d.type==='ready')f.contentWindow.postMessage({...d,type:'connect'},e.origin);if(d.type==='prepare'){
+    if(window.fixtureContextFailure==='error')f.contentWindow.postMessage({...d,type:'error'},e.origin);
+    else if(window.fixtureContextFailure!=='timeout')f.contentWindow.postMessage({...d,type:'prepared',file:{file_id:crypto.randomUUID(),sha256:'a'.repeat(64),name:'holodeck-situation.json',mime:'application/json',size:64}},e.origin);
+  }});</script>''').encode()
   self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers();self.wfile.write(data)
 child=ThreadingHTTPServer(('127.0.0.1',0),Child);parent=ThreadingHTTPServer(('127.0.0.1',0),Parent)
 child_origin='http://127.0.0.1:'+str(child.server_port);parent_origin='http://127.0.0.1:'+str(parent.server_port)
@@ -160,6 +163,23 @@ try:
     assert posts and posts[-1]['files'][-1]['name']=='holodeck-situation.json'
     assert page.evaluate("messages.filter(m=>m.type==='prepare').at(-1).id")==posts[-1]['id']
     assert page.evaluate("n=>{const part=messages.slice(n);return part.findIndex(m=>m.type==='prepare')<part.findIndex(m=>m.fixture==='file-start');}",prior_messages),'Context must precede the canonical audio attachment upload'
+    frame.evaluate('window.fixtureLoseAck=false')
+    for mode in ('error','timeout'):
+     page.evaluate('(mode)=>window.fixtureContextFailure=mode',mode)
+     before=frame.evaluate('fixtureInputs.length');words='Continue without world context: '+mode
+     field.fill(words);frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+     frame.wait_for_function('n=>fixtureInputs.length===n+1',arg=before,timeout=4500)
+     accepted=frame.evaluate('fixtureInputs.at(-1)')
+     assert accepted['text']==words and not accepted.get('files'),accepted
+     requests=page.evaluate("id=>messages.filter(m=>m.id===id).map(m=>m.type)",accepted['id'])
+     assert requests.count('prepare')==1 and requests.count('discard')==1,requests
+     frame.get_by_text('World context could not be attached to this message.').wait_for()
+    page.evaluate("window.fixtureContextFailure='error'")
+    voice_before=len(posts)
+    frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===2')
+    frame.locator('#conversation-send').click()
+    frame.get_by_text('World context could not be attached to this voice message.').wait_for()
+    assert len(posts)==voice_before+1 and not posts[-1]['files']
     geometry=frame.locator('#conversation-compose').bounding_box();assert geometry['width']<=width and geometry['y']+geometry['height']<=701,geometry
     assert not errors,errors
     assert page.evaluate("!JSON.stringify(messages).includes('Draft before reload')")
