@@ -867,6 +867,12 @@ freshness and missing evidence. Refresh does not dispatch input, create a work
 session or interrupt a worker. This is the observer input to later semantic
 selection, not completed semantic dispatch.
 
+An inspection of a topic currently assigned to a portable harness reports
+the selected harness and its latest Gateway attempt from the owned journal.
+Any retained Codex binding and semantic evidence appear separately. Goal
+inspection reports unsupported when the selected harness has no connected
+reader, so a parked Codex goal cannot be mistaken for the current activity.
+
 The client validates the current native thread and active turn for each request,
 suppresses duplicate request/call identities, and returns deferred results while
 continuing to process events, steering and interruption. Entry ownership, allowed

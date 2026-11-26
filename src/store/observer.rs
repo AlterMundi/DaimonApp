@@ -114,7 +114,7 @@ impl Store {
         // the same snapshot without fetching any harness-native history.
         let latest_executions = {
             let mut query = tx.prepare(
-                "SELECT t.execution_harness,t.id,COALESCE(c.phase,t.status),
+                "SELECT t.execution_harness,t.id,COALESCE(c.phase,r.phase,t.status),
                         COALESCE(t.completed_at,t.started_at),
                         t.execution_generation=g.generation
                  FROM turns t
@@ -122,6 +122,12 @@ impl Store {
                  LEFT JOIN conversation_inputs c ON c.local_turn=t.id
                    AND c.session_id=t.session_id AND c.human_id=t.from_user_id
                    AND json_type(c.doc,'$.portable')='object'
+                 LEFT JOIN bot_state issued ON t.execution_harness!='codex'
+                   AND issued.key='execution_root:'||t.id
+                 LEFT JOIN interaction_instructions r ON r.id=json_extract(issued.value,'$')
+                   AND r.session_id=t.session_id AND json_extract(r.doc,'$.human_id')=t.from_user_id
+                   AND json_extract(r.doc,'$.local_turn')=t.id
+                   AND json_extract(r.doc,'$.target_execution.harness')=t.execution_harness
                  WHERE t.id IN (
                      SELECT MAX(id) FROM turns
                      WHERE session_id=?1 AND from_user_id=?2
