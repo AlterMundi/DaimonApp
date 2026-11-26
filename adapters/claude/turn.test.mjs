@@ -100,6 +100,36 @@ test('shared DMK guidance distinguishes recall from the selected native writer',
   }
 });
 
+test('committed private work can outlive startup while bounded work still expires', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const profile of [
+    { fullAccess: true },
+    { fullAccess: true, maxBudgetUsd: 0.10 },
+    { fullAccess: false },
+  ]) {
+    const bounded = !profile.fullAccess || profile.maxBudgetUsd !== undefined;
+    const outcome = await runClaudeTurn(options({
+      profile: { ...options().profile, ...profile },
+      beforeSubmit: () => true,
+      query: ({ prompt, options: nativeOptions }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async *[Symbol.asyncIterator]() {
+          for await (const request of prompt) {
+            t.mock.timers.tick(121_000);
+            assert.equal(nativeOptions.abortController.signal.aborted, bounded);
+            if (bounded) return;
+            yield { type: 'result', subtype: 'success', is_error: false,
+              session_id: request.session_id, result: 'Long private result.' };
+          }
+        },
+        close() {},
+      }),
+    }));
+    assert.equal(outcome.phase, bounded ? 'uncertain' : 'completed');
+  }
+});
+
 const sdkPath = process.env.CLAUDE_TEST_SDK_PATH;
 const cliVersion = process.env.CLAUDE_TEST_CLI_VERSION ?? '2.1.323';
 const claudePath = process.env.CLAUDE_TEST_BINARY;

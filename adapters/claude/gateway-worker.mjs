@@ -388,6 +388,7 @@ async function main() {
         // After exposure only exact outstanding replies may arrive on this pipe.
         void receiveControllerReplies().catch(() => stop.abort());
         committed = await scopeStillActive();
+        if (committed && fullAccess && profile.maxBudgetUsd === undefined) clearTimeout(timeout);
         return committed;
       },
     });

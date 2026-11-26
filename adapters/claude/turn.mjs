@@ -64,8 +64,9 @@ export async function runClaudeTurn({
 
   let release;
   const ready = new Promise(resolve => { release = resolve; });
-  const deadline = AbortSignal.timeout(120_000);
-  const stop = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 120_000);
+  const stop = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   const abortController = new AbortController();
   function cancel() { abortController.abort(); }
   stop.addEventListener('abort', cancel, { once: true });
@@ -79,6 +80,7 @@ export async function runClaudeTurn({
     if (await beforeSubmit(input.id, input.sessionId) !== true) return;
     dispatched = true;
     if (abortController.signal.aborted) return;
+    if (profile.fullAccess && profile.maxBudgetUsd === undefined) clearTimeout(timer);
     yield {
       type: 'user', uuid: input.id, session_id: input.sessionId, parent_tool_use_id: null,
       client_composed: true,
@@ -228,6 +230,7 @@ export async function runClaudeTurn({
     }
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
+    clearTimeout(timer);
     release(false);
     abortController.abort();
     native?.close();
