@@ -98,13 +98,26 @@ is still a loopback responder with no account or real inference. It verifies
 the sender's signed readback, the original thread and the receipt hash.
 
 To qualify a named Interaction topic with an actual local model, run the
-same signed fixture with `FOREGROUND_TEST_INVERSE_HARNESSES=1`. Set
-`FOREGROUND_TEST_ANTIGRAVITY_PROVIDER_COMMAND` to the JSON argv of the
+signed fixture as the normal test user with
+`FOREGROUND_TEST_INVERSE_HARNESSES=1`. Pass the Cargo-built `telecodex` test
+executable as the Gateway argument. The fixture seeds its disposable topic
+with the local Telegram simulator before switching to external transport.
+Set `FOREGROUND_TEST_ANTIGRAVITY_PROVIDER_COMMAND` to the JSON argv of the
 qualified local provider. Use `{port}` for the assigned loopback port and
 `fixture` as the model alias. The fixture submits a paired human original to
 its owned test topic, reads the selected disposable DMK record through the
 native tool, and checks the result and provider shutdown. Existing Codex
-bindings and real conversations are outside the fixture.
+bindings and real conversations are outside the fixture. The deployed
+Gateway and TeleDaimon use their independently named executables.
+
+For a receiving trial in an existing Interaction topic, enable
+`interaction_direct` in the Antigravity foreground profile and set
+`harness = "antigravity"` on the owner-selected target. Preflight the exact
+candidate Gateway profile before activating it. Keep the previous profile for
+rollback. Verify the harness and result of a newly authored input in that
+topic. Existing admitted inputs retain their original execution binding.
+A private Matrix exchange qualifies the signed body and return path. The
+paired Interaction trial also needs observed delivery in the selected topic.
 
 `matrix antigravity interrupt EVENT_ID` stops the selected current worker.
 Set `FOREGROUND_TEST_SIGNED_INTERRUPT=before` in the signed fixture to test
