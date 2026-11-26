@@ -34,7 +34,9 @@ input.on('line', line => {
     appendFileSync(process.env.MARKER, 'provider\\n');
     if (process.env.OUTCOME === 'lost') process.exit(1);
     send({ method: 'session/update', params: {
-      sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reply for 42' } },
+      sessionId, update: { sessionUpdate: 'agent_message_chunk', content: {
+        type: 'text', text: process.env.REPLY || 'Reply for 42',
+      } },
     }});
   }
   const result = ({
@@ -50,8 +52,8 @@ input.on('line', line => {
 });
 `);
   await chmod(binary, 0o700);
-  const run = (tools, beforeSubmit, outcome) => runGooseTurn({
-    binary, cwd, env: { MARKER: marker, TOOLS: tools, OUTCOME: outcome ?? '' },
+  const run = (tools, beforeSubmit, outcome, reply) => runGooseTurn({
+    binary, cwd, env: { MARKER: marker, TOOLS: tools, OUTCOME: outcome ?? '', REPLY: reply ?? '' },
     mcpServers: [], toolNames: [toolName], text: 'Original 42', beforeSubmit,
     signal: AbortSignal.timeout(5000),
   });
@@ -69,7 +71,16 @@ input.on('line', line => {
   assert.deepEqual(accepted, { phase: 'completed', sessionId: 'native-session-42', text: 'Reply for 42' });
   const lost = await run(toolName, () => true, 'lost');
   assert.deepEqual(lost, { phase: 'uncertain', reason: 'native_result_unconfirmed', sessionId: 'native-session-42' });
-  assert.equal(await readFile(marker, 'utf8'), 'provider\nprovider\n');
+  const rawCall = '<tool_call>\n<function=matrix__daimon_status>\n</function>\n</tool_call>';
+  const incomplete = await run(toolName, () => true, '', rawCall);
+  assert.deepEqual(incomplete, {
+    phase: 'uncertain', reason: 'native_result_unconfirmed', sessionId: 'native-session-42',
+  });
+  const example = 'The provider returned this markup as text:\n\n```xml\n' + rawCall + '\n```';
+  assert.deepEqual(await run(toolName, () => true, '', example), {
+    phase: 'completed', sessionId: 'native-session-42', text: example,
+  });
+  assert.equal(await readFile(marker, 'utf8'), 'provider\n'.repeat(4));
 });
 
 test('stock Goose cannot authorize a provider prompt', {

@@ -20,7 +20,9 @@ The callback receives Goose's native ID and must return true only after the
 existing Gateway transaction retains that ID with the original and marks
 provider exposure. A denied decision sends no prompt. A missing terminal reply,
 unexpected session, oversized reply or interruption after exposure retains an
-uncertain outcome. When the ACP client reaches its deadline, it attempts
+uncertain outcome. A terminal text consisting solely of an unframed local
+provider tool call also remains uncertain, even if ACP reports end of turn.
+When the ACP client reaches its deadline, it attempts
 `session/cancel` and bounds process teardown. On Gateway shutdown the owning
 worker group can end before that ACP request. Both paths retain the original
 and its provider uncertainty. The caller owns the worker group and the
