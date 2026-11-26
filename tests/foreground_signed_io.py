@@ -113,7 +113,7 @@ exec {shlex.quote(executable)} "$@"
 
 
 def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False, mixed=False,
-            inverse=False, telegram_topic=False):
+            inverse=False, telegram_topic=False, signed_interrupt=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
@@ -416,6 +416,8 @@ command={json.dumps([*sender,"--we-origin",body])}
 source={{kind="body",being_ref="{being}",embodiment_id="{sender_source["embodiment_id"]}"}}
 timeout_seconds=5
 """
+                if signed_interrupt == "before":
+                    command = ["/bin/sh", "-c", 'sleep 60; exec "$@"', "--", *command]
                 journey.config.write_text(journey.config.read_text() + f"""
 [interaction.{engine}_foreground]
 worker_command={json.dumps(command)}
@@ -456,6 +458,9 @@ timeout_seconds=5
                         return
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
+                    if signed_interrupt:
+                        self._signed_interrupt(journey, provider, selected, return_attempts)
+                        return
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
                     self.assertEqual(reply["phase"], "delivered", reply)
@@ -533,6 +538,52 @@ timeout_seconds=5
             self.addCleanup(worker.join)
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
+
+        def _signed_interrupt(self, journey, provider, selected, return_attempts):
+            provider.mode = "held"
+            provider.arrived, provider.release = Event(), Event()
+            ident = selected["event_id"]
+            args = [journey.binary, "--control", str(journey.config),
+                    "matrix", engine, "run", json.dumps(selected)]
+            before = signed_interrupt == "before"
+            with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
+                try:
+                    if before:
+                        journey.wait(lambda: journey.row(
+                            "SELECT phase FROM interaction_matrix_requests WHERE source_event=?", (ident,)
+                        ) == [("starting",)])
+                    else:
+                        self.assertTrue(provider.arrived.wait(35), provider.failure)
+                    in_flight = journey.read("matrix", engine, "status", ident)["result"]
+                    self.assertEqual(in_flight["phase"], "starting" if before else "provider_exposed")
+                    self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                                     in_flight)
+                    other = "goose" if engine == "antigravity" else "antigravity"
+                    wrong = journey.read("matrix", other, "interrupt", ident)["result"]
+                    self.assertFalse(wrong["interruption_requested"])
+                    requested = journey.read("matrix", engine, "interrupt", ident)["result"]
+                    self.assertTrue(requested["interruption_requested"])
+                    stdout, errors = run.communicate(timeout=15)
+                    self.assertEqual(run.returncode, 0, errors)
+                finally:
+                    provider.release.set()
+                    if run.poll() is None:
+                        run.terminate()
+            outcome = json.loads(stdout)["result"]
+            self.assertEqual(outcome["phase"], "rejected" if before else "provider_uncertain", outcome)
+            self.assertEqual(outcome["result"]["reason"],
+                             "interrupted_before_submission" if before else "foreground_interrupted")
+            expected_calls = [] if before else [ident]
+            self.assertEqual(provider.calls, expected_calls)
+            self.assertEqual(return_attempts, [])
+            terminal = journey.read("matrix", engine, "interrupt", ident)["result"]
+            self.assertFalse(terminal["interruption_requested"])
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
+            self.assertEqual(provider.calls, expected_calls)
+            self.assertEqual(return_attempts, [])
 
         def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
@@ -1064,6 +1115,9 @@ if __name__ == "__main__":
     mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
     telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
     inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
+    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT") if engine != "claude" else None
+    if signed_interrupt not in {"1", "before"}:
+        signed_interrupt = None
     if inverse and engine == "claude":
         direct = True
     if (interaction or direct or inverse) and not telegram_topic:
@@ -1074,4 +1128,4 @@ if __name__ == "__main__":
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
                             interaction=interaction, direct=direct, mixed=mixed, inverse=inverse,
-                            telegram_topic=telegram_topic))
+                            telegram_topic=telegram_topic, signed_interrupt=signed_interrupt))

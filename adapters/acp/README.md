@@ -76,6 +76,10 @@ return once through the existing journal. For software rollback, remove the
 Goose configuration before selecting an older executable. Keep the same
 journal and retain pending or uncertain work.
 
+`matrix goose interrupt EVENT_ID` requests a stop of the selected current
+worker. An already exposed original remains uncertain even when the worker
+exits. The status command and restart readback preserve the same attempt.
+
 Run the contract tests using Node 20:
 
 ```sh
@@ -103,6 +107,10 @@ Run as the normal test user so the fixture's Unix peer credentials match.
 python3 -B tests/foreground_signed_io.py goose \
   /absolute/gateway-executable /absolute/patched/goose-acp /absolute/dmk/scripts
 ```
+
+Set `FOREGROUND_TEST_SIGNED_INTERRUPT=before` to test interruption before
+provider exposure, or `=1` to interrupt after the fixture provider has
+received the request. Both cases check the original across restart.
 
 The fixture checks the exact provider-facing tool list, a read through the
 real DMK reader, a signed same-thread reply observed by the sender and

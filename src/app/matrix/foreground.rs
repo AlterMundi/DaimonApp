@@ -4,6 +4,21 @@ use crate::app::foreground::{WorkerTurn, execute_worker};
 use crate::interaction::{ForegroundEngine, InteractionConfig};
 use crate::store::{MatrixAuthor, WeOriginal, WePhase, WeSelection};
 
+struct ForegroundRun<'a> {
+    shared: &'a AppShared,
+    event: &'a str,
+}
+
+impl Drop for ForegroundRun<'_> {
+    fn drop(&mut self) {
+        self.shared
+            .matrix_foreground_runs
+            .lock()
+            .expect("Matrix foreground mutex poisoned")
+            .remove(self.event);
+    }
+}
+
 pub(super) async fn owner(
     app: &App,
     cfg: &InteractionConfig,
@@ -15,8 +30,29 @@ pub(super) async fn owner(
     if let Some(id) = args.strip_prefix("status ") {
         return Ok(store.we_status(human, entry, id)?.unwrap_or(Value::Null));
     }
+    if let Some(id) = args.strip_prefix("interrupt ") {
+        let active = app
+            .shared
+            .matrix_foreground_runs
+            .lock()
+            .expect("Matrix foreground mutex poisoned");
+        let retained = store.we_status(human, entry, id)?;
+        let requested = retained.is_some_and(|status| {
+            matches!(
+                status["phase"].as_str(),
+                Some("starting" | "provider_exposed")
+            ) && active.get(id).is_some_and(|(active_engine, cancel)| {
+                if *active_engine != engine {
+                    return false;
+                }
+                cancel.cancel();
+                true
+            })
+        });
+        return Ok(json!({"event_id":id,"interruption_requested":requested}));
+    }
     let Some(raw) = args.strip_prefix("run ") else {
-        bail!("Expected a foreground run with a selected original, or status with its UUID");
+        bail!("Expected run with a selected original, or status or interrupt with its UUID");
     };
     anyhow::ensure!(raw.len() <= 4096, "Bounded Matrix selection required");
     let selected: WeSelection = serde_json::from_str(raw)?;
@@ -67,11 +103,26 @@ pub(super) async fn run_selected(
     );
     let text = original.text.clone();
     let id = selected.event_id;
-    let Some(attempt) = store.we_start(human, entry, engine, source, observed, original, input)?
-    else {
-        return store
-            .we_status(human, entry, &id)?
-            .context("Retained original unavailable");
+    let cancel = app.shared.shutdown.child_token();
+    let attempt = {
+        let mut active = app
+            .shared
+            .matrix_foreground_runs
+            .lock()
+            .expect("Matrix foreground mutex poisoned");
+        let Some(attempt) =
+            store.we_start(human, entry, engine, source, observed, original, input)?
+        else {
+            return store
+                .we_status(human, entry, &id)?
+                .context("Retained original unavailable");
+        };
+        active.insert(id.clone(), (engine, cancel.clone()));
+        attempt
+    };
+    let foreground = ForegroundRun {
+        shared: &app.shared,
+        event: &id,
     };
     let mut exposed = false;
     let execution = execute_worker(
@@ -87,11 +138,17 @@ pub(super) async fn run_selected(
             session_instructions: None,
             text: &text,
             body,
-            cancel: &app.shared.shutdown,
+            cancel: &cancel,
             controller: None,
         },
         |prepared| {
-            if app.shared.shutdown.is_cancelled() {
+            // Order the exposure commit and the operator interruption together.
+            let _active = app
+                .shared
+                .matrix_foreground_runs
+                .lock()
+                .expect("Matrix foreground mutex poisoned");
+            if cancel.is_cancelled() {
                 return Ok(false);
             }
             exposed = store.we_transition(
@@ -106,6 +163,9 @@ pub(super) async fn run_selected(
         },
     )
     .await;
+    // Close the operator interruption window before a possible signed return.
+    drop(foreground);
+    let interrupted = cancel.is_cancelled() && !app.shared.shutdown.is_cancelled();
     match (exposed, execution) {
         (false, outcome) => {
             let known = outcome
@@ -124,7 +184,11 @@ pub(super) async fn run_selected(
                 &attempt,
                 WePhase::Starting,
                 WePhase::Rejected,
-                known.unwrap_or_else(|| json!({"reason":"worker_exited_before_exposure"})),
+                if interrupted {
+                    json!({"reason":"interrupted_before_submission"})
+                } else {
+                    known.unwrap_or_else(|| json!({"reason":"worker_exited_before_exposure"}))
+                },
             )?;
         }
         (true, Ok(outcome)) if outcome["phase"] == "completed" => {
@@ -136,7 +200,7 @@ pub(super) async fn run_selected(
             host["send_id"] = json!(send_id);
             let can_return = reply.len() <= 16384
                 && serde_json::to_vec(&host)?.len() <= 65536
-                && !app.shared.shutdown.is_cancelled()
+                && !cancel.is_cancelled()
                 && store.we_transition(
                     human,
                     entry,
@@ -168,7 +232,9 @@ pub(super) async fn run_selected(
             let budget_exhausted = outcome.is_ok_and(|value| {
                 value["phase"] == "uncertain" && value["reason"] == "claude_budget_exhausted"
             });
-            let reason = if budget_exhausted {
+            let reason = if interrupted {
+                "foreground_interrupted"
+            } else if budget_exhausted {
                 "claude_budget_exhausted"
             } else {
                 "native_result_unconfirmed"
