@@ -679,6 +679,24 @@ timeout_seconds=5
             self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
             self.assertEqual(journey.native_turns, native_turns)
 
+            after_retry = list(provider.calls)
+            forwarded_goal = journey.admit("/goal", topic=7, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.row("SELECT status FROM incoming_updates WHERE update_id=?",
+                                               (forwarded_goal,)) == [("handled",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
+                                         (str(forwarded_goal),)), [(0,)])
+            goal = journey.admit("/goal", topic=7)
+            journey.wait(lambda: journey.has("No goal set.", 7), seconds=30)
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.prompt FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(goal),)), [("accepted", "claude", "completed", "/goal")])
+            self.assertEqual(provider.calls, after_retry)
+            self.assertEqual(journey.native_turns, native_turns)
+
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
             answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
             page = journey.read("presentation", "list", "0", "0")["result"]

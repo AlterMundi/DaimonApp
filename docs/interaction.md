@@ -274,6 +274,15 @@ even while its native outcome is unconfirmed. Routing does not resubmit the
 entry turn. Telegram `/status` in an owner-selected portable topic reads
 the worker and waiting-message state from the canonical journal.
 
+In a paired Claude Telegram topic, an explicitly typed `/goal` is sent to the
+selected native session through the existing turn journal. A condition uses
+Claude's native goal loop and `/goal clear` is Claude's native clear. Forwarded
+messages and session-authored context cannot invoke native commands. The worker
+first checks that its selected SDK session advertises the command. Gateway does
+not publish a Codex goal snapshot or apply an old Codex intent for a topic
+currently assigned to Claude. The shared goal controller and same-being
+requests from routed Claude workers still need their own portable bindings.
+
 The Goose and Antigravity proof profiles expose signed status and the
 owner-selected DMK read. Their observed adapters open a fresh native session
 for each admitted attempt. Gateway retains conversation and attempt history.

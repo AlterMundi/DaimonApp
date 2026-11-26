@@ -164,6 +164,13 @@ fn goal_hint(objective: &str) -> String {
     }
 }
 
+pub(super) fn portable_goal_unavailable(
+    shared: &AppShared,
+    key: SessionKey,
+) -> Option<&'static str> {
+    super::routing::portable_topic(shared, key).map(|(engine, _)| engine.name())
+}
+
 pub(super) async fn handle_command(
     app: &App,
     message: &Message,
@@ -187,6 +194,15 @@ async fn command(app: &App, message: &Message, requester: i64, args: &str) -> Re
             .await;
     }
     let key = SessionKey::new(message.chat.id, message.message_thread_id);
+    if portable_goal_unavailable(&app.shared, key).is_some() {
+        return app
+            .send_plain_status(
+                key.chat_id,
+                message.message_thread_id,
+                "Goal controls are not connected for this session's harness yet.",
+            )
+            .await;
+    }
     let session = app.ensure_resolved_session(key, requester)?;
     let current = match session.codex_thread_id.as_deref() {
         Some(thread) => app.shared.codex.get_goal(thread).await?,
@@ -833,6 +849,13 @@ pub(super) async fn inspect_shared(
         .store
         .get_session(target)?
         .context("Selected session is unavailable")?;
+    if let Some(harness) = portable_goal_unavailable(shared, target) {
+        return Ok(
+            json!({"kind":"goal_inspection","target":target,"harness":harness,
+            "availability":"unsupported","receiver_busy":session.busy,"read_only":true,
+            "detail":"Goal controls are not connected for this session's selected harness."}),
+        );
+    }
     let Some(native) = session.codex_thread_id.as_deref() else {
         if shared.store.conversation_request_binding(human, target)? != binding {
             bail!("Selected session changed during inspection");

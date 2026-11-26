@@ -133,6 +133,7 @@ pub(super) async fn run_selected(
             session: &attempt.session_id,
             resume: attempt.resume.as_ref(),
             human_original: attempt.human_original,
+            native_goal_command: false,
             routed_human: false,
             routed_host_access: false,
             session_instructions: None,

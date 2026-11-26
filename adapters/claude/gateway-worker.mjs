@@ -239,16 +239,19 @@ async function main() {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
+    const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
     const fullAccess = first?.humanOriginal === true || routedHostAccess;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
       ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
+      ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
       || (routedHostAccess && !routedHuman)
       || (routedHuman && (first.humanOriginal || controllerSelected))
-      || (controllerSelected && first.humanOriginal !== true)
+      || ((controllerSelected || nativeGoalCommand) && first.humanOriginal !== true)
+      || (nativeGoalCommand && (typeof first.text !== 'string' || !/^\/goal(?: |$)/.test(first.text.trimEnd())))
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.humanOriginal !== 'boolean'
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
@@ -364,7 +367,7 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume, nativeGoalCommand },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
