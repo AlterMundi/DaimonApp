@@ -8,17 +8,49 @@ from unittest.mock import patch
 from provider_gate import ProviderGate
 
 
-def payload(text, history=()):
+def payload(text, history=(), tools=("daimon_status",)):
     return json.dumps({
         "model": "fixture",
         "tools": [{"type": "function", "function": {
-            "name": "daimon_status", "parameters": {"type": "object", "properties": {}},
-        }}],
+            "name": name, "parameters": {"type": "object", "properties": {}},
+        }} for name in tools],
         "messages": [{"role": "user", "content": text}, *history],
     })
 
 
 class ProviderReservation(unittest.TestCase):
+    def test_followups_require_new_approved_observations(self):
+        tools = ("daimon_status", "dmk_read_selected")
+        gate = ProviderGate("fixture", 1, tools, "Exact original")
+        gate.respond(payload(gate.challenge, tools=tools))
+        status = {"role": "tool", "content": "Signed body"}
+        memory = {"role": "tool", "content": "Selected memory"}
+        with ThreadPoolExecutor(max_workers=1) as worker, patch("provider_gate.HTTPConnection") as connection:
+            response = connection.return_value.getresponse.return_value
+            response.status = 200
+            response.getheader.return_value = "application/json"
+            response.read.return_value = b"{}"
+            first = worker.submit(gate.respond, payload("Exact original", tools=tools))
+            try:
+                self.assertTrue(gate.request_waiting.wait(timeout=1))
+                gate.release()
+                first.result(timeout=1)
+                gate.allow_followup()
+                gate.respond(payload("Exact original", [status], tools))
+                with self.assertRaises(ValueError):
+                    gate.respond(payload("Exact original", [status, memory], tools))
+                gate.allow_followup()
+                gate.respond(payload("Exact original", [status, memory], tools))
+                sent = connection.return_value.request.call_args.args[2]
+                self.assertEqual(json.loads(sent)["tool_choice"], "none")
+                with self.assertRaises(ValueError):
+                    gate.respond(payload("Exact original", [status, memory], tools))
+                with self.assertRaises(ValueError):
+                    gate.allow_followup()
+                self.assertEqual(connection.call_count, 3)
+            finally:
+                gate.abort()
+
     def test_original_reservation_and_abort(self):
         gate = ProviderGate("fixture", 1, {"daimon_status"}, "Exact original")
         gate.respond(payload(gate.challenge))

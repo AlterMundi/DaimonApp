@@ -60,8 +60,8 @@ class ProviderGate:
         self.released = False
         self.forwarded = 0
         self.succeeded = 0
-        self.first_request = None
-        self.ready_for_followup = False
+        self.approved_observations = 0
+        self.forwarded_observations = 0
         self.lock = Lock()
         self.request_waiting = Event()
         self.approval = Event()
@@ -86,9 +86,11 @@ class ProviderGate:
 
     def allow_followup(self):
         with self.lock:
-            if self.closed or not self.released or self.forwarded != 1 or self.ready_for_followup:
+            if (self.closed or not self.released or self.forwarded == 0
+                    or self.forwarded != self.succeeded
+                    or self.approved_observations >= len(self.tools)):
                 raise ValueError("Unexpected tool result")
-            self.ready_for_followup = True
+            self.approved_observations += 1
 
     def respond(self, data):
         request = json.loads(data)
@@ -134,16 +136,17 @@ class ProviderGate:
                 if self.pending_first is not request or monotonic() >= self.first_deadline:
                     raise ValueError("Reserved provider request expired")
                 self.pending_first = None
-            if self.forwarded:
-                if (
-                    self.forwarded != 1 or not self.ready_for_followup
-                    or self.first_request == request
-                    or not any(message["role"] == "tool" for message in messages)
-                ):
-                    raise ValueError("Additional provider request refused")
-            else:
-                self.first_request = request
+            observations = sum(message["role"] == "tool" for message in messages)
+            if (observations != self.approved_observations
+                    or (not first and observations <= self.forwarded_observations)):
+                raise ValueError("Additional provider request refused")
+            self.forwarded_observations = observations
             self.forwarded += 1
+        if observations == len(self.tools):
+            # The whole approved catalog has already run. Ask the provider
+            # for the final answer with the observations in context.
+            request["tool_choice"] = "none"
+            data = json.dumps(request).encode()
         connection = HTTPConnection("127.0.0.1", self.port, timeout=35)
         try:
             connection.request("POST", "/v1/chat/completions", data, {"Content-Type": "application/json"})
