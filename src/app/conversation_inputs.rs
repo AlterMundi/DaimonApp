@@ -66,6 +66,7 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
     let mut value = outcome(input, fresh);
+    value["phase"] = json!(app.shared.store.conversation_input_projected_phase(input)?);
     value["clarifiable"] = json!(
         input.phase == "awaiting_target"
             && app
@@ -893,10 +894,20 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             false,
         );
     }
-    let request: Submit = serde_json::from_str(
-        args.strip_prefix("submit ")
-            .context("Expected input submit JSON, status UUID or list cursor")?,
-    )?;
+    let (raw, private_host_access) = if let Some(raw) = args.strip_prefix("submit-human ") {
+        (raw, true)
+    } else {
+        (
+            args.strip_prefix("submit ")
+                .context("Expected input submit JSON, status UUID or list cursor")?,
+            false,
+        )
+    };
+    let request: Submit = serde_json::from_str(raw)?;
+    anyhow::ensure!(
+        !private_host_access || matches!(request.target, Some(InputTarget::Claude)),
+        "Private host access applies only to the selected Claude route"
+    );
     if let Some(InputTarget::Claude) = request.target {
         anyhow::ensure!(
             request.visual.is_none()
@@ -923,6 +934,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
                 &request.text,
                 &origin.source,
                 &receiver.transport.source,
+                private_host_access,
             )?
         };
         if fresh && input.phase == "retained" {

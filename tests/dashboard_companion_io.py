@@ -75,7 +75,7 @@ class Companion(unittest.TestCase):
         self.web_only()
         self.provider.conversation_inputs=lambda before,direction:{'items':[],'more':False}
         calls=[]
-        self.provider.conversation_input_submit=lambda body:calls.append(body) or {'phase':'queued'}
+        self.provider.conversation_input_submit=lambda body, **grant:calls.append((body, grant)) or {'phase':'queued'}
         identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
                   'expires':int(time.time())+3600,
                   'actor':{'kind':'human','ref':'human:telegram:100'}}
@@ -92,11 +92,22 @@ class Companion(unittest.TestCase):
             self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers={**write,'Origin':'https://other.test'}).status_code,403)
             self.assertEqual(calls,[])
             self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=write).status_code,200)
-            self.assertEqual(calls,[payload])
+            self.assertEqual(calls,[(payload,{})])
+            claude={**payload, 'id':str(uuid.uuid4()), 'target':'claude'}
+            self.assertEqual(self.client.post('/api/interaction/inputs',json=claude,headers=write).status_code,200)
+            self.assertEqual(calls[-1],(claude,{'private_host_access':True}))
             identity['actor']['ref']='human:telegram:101'
             self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
         for route in ['/api/session','/api/alerts/attention']:
             self.assertEqual(self.client.post(route,json={'init_data':'100'},headers=headers).status_code,403)
+
+    def test_companion_can_select_claude_without_owning_host_tools(self):
+        calls=[]
+        self.provider.conversation_input_submit=lambda body, **grant:calls.append((body, grant)) or {'phase':'queued'}
+        payload={'id':str(uuid.uuid4()),'text':'Synthetic device original','target':'claude'}
+        response=self.client.post('/api/interaction/inputs',json=payload,headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(calls,[(payload,{'private_host_access':False})])
 
     def test_web_only_configuration_requires_explicit_scope_and_native_transport_off(self):
         self.web_only()

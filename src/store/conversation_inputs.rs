@@ -89,6 +89,8 @@ pub struct ConversationInput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix: Option<PrivateMatrixSelection>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) private_matrix_host_access: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix_origin: Option<PrivateMatrixOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -374,6 +376,48 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
             .unwrap_or_else(|| "unavailable".into());
     }
     Ok(input)
+}
+
+fn projected_phase_on<'a>(
+    conn: &Connection,
+    input: &'a ConversationInput,
+    writer: &str,
+) -> Result<&'a str> {
+    let Some(origin) = input.private_matrix_origin.as_ref() else {
+        return Ok(&input.phase);
+    };
+    if input.phase != "matrix_received" {
+        return Ok(&input.phase);
+    }
+    let attempt: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT phase, json_extract(doc,'$.instance')=?5
+            FROM interaction_matrix_requests
+            WHERE human_id=?1 AND entry_session=?2 AND source_channel='/we' AND source_event=?3
+                AND (claude_input=?4 OR claude_input IS NULL)",
+            params![
+                input.human,
+                input.session,
+                origin.message_id,
+                input.id,
+                writer
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(
+        match attempt
+            .as_ref()
+            .map(|(phase, current)| (phase.as_str(), *current))
+        {
+            Some(("rejected", _) | ("starting", false)) => "claude_rejected",
+            Some(
+                ("provider_uncertain" | "return_uncertain" | "result_retained", _)
+                | ("provider_exposed" | "returning" | "delivered", false),
+            ) => "claude_unconfirmed",
+            _ => &input.phase,
+        },
+    )
 }
 
 /// Historical inspection never grants admission or refreshes a voice transcript.
@@ -734,6 +778,7 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn conversation_private_matrix_capture(
         &self,
         human: i64,
@@ -743,6 +788,7 @@ impl Store {
         text: &str,
         sender: &crate::interaction::MatrixDestination,
         recipient: &crate::interaction::MatrixDestination,
+        host_access: bool,
     ) -> Result<(ConversationInput, bool)> {
         use crate::interaction::MatrixDestination::Body;
         sender.validate()?;
@@ -777,8 +823,19 @@ impl Store {
             Vec::new(),
             None,
             None,
-            Some(selection),
+            Some((selection, host_access)),
         )
+    }
+
+    pub(crate) fn conversation_input_projected_phase<'a>(
+        &self,
+        input: &'a ConversationInput,
+    ) -> Result<&'a str> {
+        if input.phase != "matrix_received" {
+            return Ok(&input.phase);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        projected_phase_on(&conn, input, &self.instance_id)
     }
 
     /// Reserve before invoking the native sender. Recovery observes uncertainty.
@@ -1283,8 +1340,12 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
-        private_matrix: Option<PrivateMatrixSelection>,
+        private_matrix: Option<(PrivateMatrixSelection, bool)>,
     ) -> Result<(ConversationInput, bool)> {
+        let (private_matrix, private_matrix_host_access) = private_matrix
+            .map_or((None, false), |(selection, access)| {
+                (Some(selection), access)
+            });
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1339,6 +1400,7 @@ impl Store {
             if input.entry != entry
                 || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
                 || input.private_matrix != private_matrix
+                || input.private_matrix_host_access != private_matrix_host_access
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -1418,6 +1480,7 @@ impl Store {
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
             private_matrix,
+            private_matrix_host_access,
             private_matrix_origin: None,
             private_matrix_reply: None,
             tribu_source: tribu.map(|(source, _)| source),
@@ -2034,7 +2097,7 @@ impl Store {
             )?;
             let mut item = serde_json::json!({
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
-                "phase":input.phase,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
+                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
                 "native_binding_current":input.native==native,
             });
@@ -4328,6 +4391,7 @@ mod tests {
                 "Exact input",
                 &sender,
                 &receiver,
+                false,
             )
             .unwrap();
         assert!(fresh);
@@ -4342,6 +4406,21 @@ mod tests {
                     "Exact input",
                     &sender,
                     &body("other"),
+                    false,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_private_matrix_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "Exact input",
+                    &sender,
+                    &receiver,
+                    true,
                 )
                 .is_err()
         );
@@ -4366,6 +4445,7 @@ mod tests {
                 "Exact input",
                 &sender,
                 &receiver,
+                false,
             )
             .unwrap();
         assert!(!fresh);
@@ -4376,6 +4456,160 @@ mod tests {
                 .conversation_private_matrix_claim(100, key, &id)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn private_claude_resumes_only_the_latest_confirmed_native_session_after_restart() {
+        use crate::interaction::{ForegroundEngine, MatrixDestination};
+        use crate::store::{MatrixAuthor, WeOriginal, WePhase};
+        use serde_json::json;
+        let (file, store, key, binding) = setup();
+        let body = |name: &str| MatrixDestination::Body {
+            being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            embodiment_id: format!("embodiment:{name}"),
+        };
+        let sender = body("sender");
+        let receiver = body("claude");
+        let source = MatrixAuthor {
+            being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            embodiment_id: "embodiment:claude".into(),
+        };
+        let start = |store: &Store| {
+            let id = Uuid::now_v7().to_string();
+            let (input, _) = store
+                .conversation_private_matrix_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "Synthetic input",
+                    &sender,
+                    &receiver,
+                    true,
+                )
+                .unwrap();
+            let selection = input.private_matrix.as_ref().unwrap();
+            let original = WeOriginal {
+                schema: "daimon-gateway.matrix-we-original/v1".into(),
+                event_id: Uuid::now_v7().to_string(),
+                author: "embodiment:sender".into(),
+                thread_id: selection.thread_id.clone(),
+                receipt_event_id: Uuid::now_v7().to_string(),
+                text: input.text.clone(),
+            };
+            assert!(
+                store
+                    .conversation_private_matrix_claim(100, key, &id)
+                    .unwrap()
+            );
+            store
+                .conversation_private_matrix_record_origin(
+                    100,
+                    key,
+                    &id,
+                    Some(PrivateMatrixOrigin {
+                        message_id: original.event_id.clone(),
+                        receipt_event_id: original.receipt_event_id.clone(),
+                        message_hash: "a".repeat(64),
+                    }),
+                )
+                .unwrap();
+            let attempt = store
+                .we_start(
+                    100,
+                    key,
+                    ForegroundEngine::Claude,
+                    source.clone(),
+                    json!({"fixture": "body"}),
+                    original.clone(),
+                    Some(&input),
+                )
+                .unwrap()
+                .unwrap();
+            let native = attempt.resume.as_ref().map_or_else(
+                || Uuid::new_v4().to_string(),
+                |prior| prior.session_id.clone(),
+            );
+            let declare_exposure = || {
+                store.we_transition(
+                    100,
+                    key,
+                    &attempt,
+                    WePhase::Starting,
+                    WePhase::ProviderExposed,
+                    json!({"native_session_id": native, "native_session_scope": "a".repeat(64)}),
+                )
+            };
+            if attempt.resume.is_some() {
+                // Simulate another Gateway taking the SQLite writer lease
+                // after selection but before this old worker's commit.
+                let conn = rusqlite::Connection::open(file.path()).unwrap();
+                conn.execute(
+                    "UPDATE app_instance_lock SET instance_id='successor' WHERE key='main'",
+                    [],
+                )
+                .unwrap();
+                assert!(!declare_exposure().unwrap());
+                conn.execute(
+                    "UPDATE app_instance_lock SET instance_id=?1 WHERE key='main'",
+                    [&store.instance_id],
+                )
+                .unwrap();
+            }
+            assert!(declare_exposure().unwrap());
+            (id, original, attempt, native)
+        };
+        let (id, original, attempt, native) = start(&store);
+        assert!(attempt.resume.is_none());
+        let reply = WeOriginal {
+            schema: original.schema,
+            event_id: Uuid::now_v7().to_string(),
+            author: source.embodiment_id.clone(),
+            thread_id: original.thread_id,
+            receipt_event_id: Uuid::now_v7().to_string(),
+            text: "Synthetic reply".into(),
+        };
+        for (from, to, outcome) in [
+            (
+                WePhase::ProviderExposed,
+                WePhase::Returning,
+                json!({"text": reply.text}),
+            ),
+            (
+                WePhase::Returning,
+                WePhase::Delivered,
+                json!({"message_id": reply.event_id}),
+            ),
+        ] {
+            assert!(
+                store
+                    .we_transition(100, key, &attempt, from, to, outcome)
+                    .unwrap()
+            );
+        }
+        store
+            .conversation_private_matrix_record_reply(100, key, &id, reply)
+            .unwrap();
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (interrupted_id, _, continuation, _) = start(&store);
+        assert_eq!(continuation.resume.as_ref().unwrap().session_id, native);
+        assert_ne!(continuation.session_id, attempt.session_id);
+        // Lose the process after authorization. The next original must not
+        // reopen the transcript that may contain the interrupted turn.
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let lost = store
+            .conversation_input_read(100, key, &interrupted_id)
+            .unwrap();
+        assert_eq!(lost.phase, "matrix_received");
+        assert_eq!(
+            store.conversation_input_projected_phase(&lost).unwrap(),
+            "claude_unconfirmed"
+        );
+        let (_, _, successor, _) = start(&store);
+        assert!(successor.resume.is_none());
+        assert_ne!(successor.session_id, continuation.session_id);
     }
 
     #[test]

@@ -3242,6 +3242,7 @@ else:
     retained = json.loads(raw)
     assert retained.pop("native_session_id")
     retained.pop("engine", None)
+    retained.pop("native_session_scope", None)
     assert retained == dict(send_id=input["send_id"], text="Synthetic result")
     assert input["text"] == "Synthetic result"
     with open(marker, "a") as f:
@@ -3259,10 +3260,15 @@ if first["text"] == "reject-before-commit":
     print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="not_submitted",
                       reason="claude_catalog_mismatch"))), flush=True)
     sys.exit(0)
-engine = first["schema"].removeprefix("daimon-gateway.").removesuffix("-turn/v1")
+engine = first["schema"].removeprefix("daimon-gateway.").split("-turn/")[0]
 assert engine in ("claude", "goose", "antigravity")
 native = "goose-native-id" if engine == "goose" else first["sessionId"]
+if engine == "claude":
+    assert first["humanOriginal"] is False
+    native = first["freshNativeSessionId"]
 preparation = dict(ids, type="prepare_submission", nativeSessionId=native)
+if engine == "claude":
+    preparation["sessionScope"] = "a" * 64
 if first["text"] == "wrong-native-id":
     preparation["nativeSessionId"] = "different-session"
 if first["text"] == "missing-native-id":
@@ -3337,7 +3343,7 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
         .await
         .unwrap();
     assert_eq!(delivered["phase"], "delivered");
-    assert_eq!(delivered["native_session_id"], delivered["session_id"]);
+    assert_ne!(delivered["native_session_id"], delivered["session_id"]);
     assert_eq!(delivered["engine"], "claude");
     let goose_run = |id| run(id, "fixture-sender").replacen("claude", "goose", 1);
     let duplicate = stopping::command(&app, 100, &goose_run(&id), None)

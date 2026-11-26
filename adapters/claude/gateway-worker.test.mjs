@@ -10,10 +10,12 @@ import { fileURLToPath } from 'node:url';
 
 const executable = fileURLToPath(new URL('gateway-worker.mjs', import.meta.url));
 const correlation = {
-  schema: 'daimon-gateway.claude-turn/v1',
+  schema: 'daimon-gateway.claude-turn/v2',
   inputId: 'bd55cfc3-710f-44b8-b778-d15be1b77997',
   sessionId: '3d5ef97e-bd13-4ee1-9f4c-f2807b2b472b',
 };
+const nativeSessionId = '627b6f7e-50a1-46ad-90d2-684c5faf97c3';
+const priorSessionId = '7da8a4c1-f56b-43f8-ba35-e9d6fa710e64';
 const original = 'Reply using this selected fixture original.';
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
@@ -53,8 +55,16 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             assert.equal(options.env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
           }
           assert.equal(process.env.ANTHROPIC_API_KEY, undefined);
-          assert.equal(options.maxTurns, 2);
-          assert.equal(options.maxBudgetUsd, 0.10);
+          if (options.env.CLAUDE_CONFIG_DIR) {
+            assert.equal(options.maxTurns, options.tools.length ? 6 : 2);
+            assert.equal(options.maxBudgetUsd, 0.10);
+          } else {
+            assert.equal(Object.hasOwn(options, 'maxTurns'), false);
+            assert.equal(Object.hasOwn(options, 'maxBudgetUsd'), false);
+          }
+          assert.equal(options.systemPrompt.snapshot, false);
+          assert.match(options.systemPrompt.append, /CompAII fixture · claude@itaca/);
+          assert.ok(!options.systemPrompt.append.includes(${JSON.stringify(subscriptionEmail)}));
           return {
             async initializationResult() {
               return { claude_code_version: 'fixture-version', account: {
@@ -68,6 +78,17 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }]; },
             async *[Symbol.asyncIterator]() {
               for await (const request of prompt) {
+                const ownerDefault = request.message.content === 'Synthetic private default.';
+                const paired = ownerDefault || request.message.content === 'Synthetic private tool grant.';
+                assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
+                assert.equal(options.systemPrompt.append.includes(
+                  'The paired human wrote the current user message in Interaction.'), paired);
+                assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
+                assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
+                const expectedTools = ownerDefault
+                  ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
+                  : paired ? ['Bash', 'Read'] : [];
+                assert.deepEqual(options.tools, expectedTools);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
                 yield { type: 'result', subtype: 'success', is_error: false,
@@ -88,21 +109,32 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       };
       const profile = {
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
-        cliVersion: 'fixture-version', model: 'fixture-model',
+        cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
+        hostTools: ['Read', 'Bash'],
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,
       };
       await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
 
-      const { apiKeyFile: _keyFile, configurationDirectory: _directory, ...commonProfile } = profile;
+      const {
+        apiKeyFile: _keyFile, configurationDirectory: _directory, maxBudgetUsd: _qualificationBudget,
+        ...commonProfile
+      } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
-      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'committed', 'result-lost',
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
+        'companion-after-human', 'companion-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
+      let restrictedScope;
+      let hostScope;
       // Native bootstrap with a synthetic key timed out offline.
       // Exercise the native auth selector here with the isolated fixture SDK.
       if (realBinary) decisions.push('native-auth-rejected');
       for (const decision of decisions) {
+        if (decision === 'owner-default') {
+          const { hostTools: _tools, ...defaultProfile } = profile;
+          await writeFile(selection, JSON.stringify(defaultProfile));
+        }
         if (decision === 'subscription-committed') await writeFile(selection, JSON.stringify(subscription));
         if (decision === 'subscription-wrong-account') {
           await writeFile(selection, JSON.stringify({ ...subscription, subscriptionEmail: 'other@example.test' }));
@@ -120,8 +152,16 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
+          const humanOriginal = ['committed', 'owner-default'].includes(decision);
+          const text = decision === 'owner-default' ? 'Synthetic private default.'
+            : humanOriginal ? 'Synthetic private tool grant.'
+            : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
+          const previousScope = decision === 'companion-after-human' ? hostScope
+            : decision === 'companion-resume' ? restrictedScope : undefined;
+          const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
+          const expectedSession = decision === 'companion-resume' ? priorSessionId : nativeSessionId;
+          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
+            resume, humanOriginal, text, body }) + '\n');
           const first = JSON.parse((await lines.next()).value);
           if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
             assert.deepEqual(first, { ...correlation, type: 'outcome',
@@ -131,9 +171,15 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
             continue;
           }
+          assert.match(first.sessionScope, /^[a-f0-9]{64}$/);
+          if (decision === 'disconnected') restrictedScope = first.sessionScope;
+          if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
-            { ...correlation, type: 'prepare_submission', nativeSessionId: correlation.sessionId });
+            { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession, sessionScope: first.sessionScope });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+          if (decision === 'profile-changed') {
+            await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
+          }
           if (decision === 'disconnected') worker.stdin.end();
           else {
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
@@ -142,12 +188,12 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'owner-default'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
-            ? { phase: 'completed', sessionId: correlation.sessionId, text: 'Qualified fixture reply.' }
+            ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
             : committed
-              ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: correlation.sessionId }
+              ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: nativeSessionId }
               : { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' };
           assert.deepEqual(frame, { ...correlation, type: 'outcome', outcome }, decision);
           if (committed) {
@@ -157,6 +203,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           }
           assert.equal((await exited)[0], 0);
+          if (decision === 'profile-changed') await writeFile(selection, JSON.stringify(profile));
         } finally {
           worker.kill();
           await exited;
@@ -171,7 +218,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          worker.stdin.end(JSON.stringify({ ...correlation, type: 'start', text: original, body }) + '\n');
+          worker.stdin.end(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
+            resume: null, humanOriginal: false, text: original, body }) + '\n');
           assert.deepEqual(JSON.parse((await lines.next()).value), {
             ...correlation, type: 'outcome',
             outcome: { phase: 'not_submitted', reason: 'claude_api_auth_unverified' },

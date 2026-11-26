@@ -956,7 +956,7 @@ class Provider:
         self.retire_voice_capture(value)
         return value
 
-    def conversation_input_submit(self, body):
+    def conversation_input_submit(self, body, *, private_host_access=False):
         if not isinstance(body, dict) or not {'binding','id','text'} <= set(body) or set(body)-{'binding','id','text','reply','visual','playback','files','target'}:
             raise ValueError('Select the conversation and provide one original message')
         if 'target' in body and (body['target'] != 'claude'
@@ -975,7 +975,9 @@ class Provider:
                 or '\0' in body['text'] or len(body['text'].encode('utf-8')) > (16384 if 'target' in body else 32768)):
             raise ValueError('A message must contain text and fit the selected destination')
         # The Rust journal owns idempotency and exact-source checks. No retry.
-        return self.decorate_input(self.presentation('input submit ' + json.dumps(body, ensure_ascii=False)))
+        private_authorized = body.get('target') == 'claude' and private_host_access is True
+        prefix = 'input submit-human ' if private_authorized else 'input submit '
+        return self.decorate_input(self.presentation(prefix + json.dumps(body, ensure_ascii=False)))
 
     def check_visual_original(self,value,ident):
         if value is None:return
