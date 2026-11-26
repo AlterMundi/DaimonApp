@@ -52,10 +52,15 @@ topic_id=8
                                              for line in text.splitlines()
                                              if line.startswith('Transport provenance: ')))
                 assert provenance['via'] == 'interaction-controller'
-                assert provenance['original_human_author'] == 100
-                assert provenance['source_channel'] == 'conversation'
-                assert provenance['original_ingress_update'] is None
-                assert provenance['source_message']['message_id'] is None
+                if getattr(self, 'allow_local_dependencies', False) and provenance['source_channel'] == 'local-session':
+                    assert provenance['author']['kind'] == 'session_request'
+                    assert provenance['author']['authorized_human'] == 100
+                    assert provenance['original_human_author'] is None
+                else:
+                    assert provenance['original_human_author'] == 100
+                    assert provenance['source_channel'] == 'conversation'
+                    assert provenance['original_ingress_update'] is None
+                    assert provenance['source_message']['message_id'] is None
                 if method == 'turn/start':
                     turn = 'canonical-worker-'+str(len(self.workers)+1)
                     self.workers[thread] = turn

@@ -47,7 +47,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             host_tools = getattr(self.server, "host_tools", [])
             expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools + host_tools
             controller = getattr(self.server, "controller", False)
-            if controller:
+            routed_controller = getattr(self.server, "inverse_paired", False)
+            if controller or routed_controller:
                 expected.append(CONTROLLER)
             by_name = {tool["name"]: tool for tool in data["tools"]}
             if extra_foundation:
@@ -92,11 +93,27 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             assert self.server.original in json.dumps(data["messages"])
             submission = self.admitted()
             assert submission["native_session_id"]
+            distinct_request = getattr(self.server, "test_session_request", False)
+            fixture_id = "scoped" if distinct_request else "fixture"
+            if distinct_request:
+                request = {"parent_instruction": self.server.current, "request_id": "fixture-general",
+                           "selector": "general", "text": "Check the design summary for the current request."}
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
+                    (CONTROLLER, {"operation": "capabilities", "arguments": {}}, "telecodex.local-session/v1"),
+                    (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":true'),
+                    (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":false'),
+                ]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
             previous = getattr(self.server, "previous_original", None)
+            messages = data["messages"]
+            if distinct_request:
+                original = next(index for index, message in enumerate(messages)
+                                if self.server.original in json.dumps(message["content"]))
+                messages = messages[original:]
             result = [
-                item for message in data["messages"] if isinstance(message["content"], list)
+                item for message in messages if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
             if self.server.current == getattr(self.server, "interrupted_id", None):
@@ -135,9 +152,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 delta = {"type": "text_delta", "text": getattr(self.server, "followup_answer", "I retained the first turn.")}
                 reason = "end_turn"
             else:
-                assert prior <= len(steps) and len(result) == prior
+                assert prior <= len(steps) and len(result) == prior, (prior, len(steps), [r["tool_use_id"] for r in result])
                 if prior:
-                    entry = next(item for item in result if item["tool_use_id"] == f"toolu_fixture_{prior-1}")
+                    entry = next(item for item in result if item["tool_use_id"] == f"toolu_{fixture_id}_{prior-1}")
                     assert entry.get("is_error") is not True
                     payload = json.dumps(entry["content"], ensure_ascii=False) if isinstance(
                         entry["content"], (dict, list)) else entry["content"]
@@ -153,12 +170,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
+                        if distinct_request and isinstance(entry["content"], list):
+                            payload = "".join(item.get("text", "") for item in entry["content"])
                         assert expected_result in payload
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:
                         assert FOUNDATION in by_name
-                    block = {"type": "tool_use", "id": f"toolu_fixture_{prior}", "name": tool, "input": {}}
+                    block = {"type": "tool_use", "id": f"toolu_{fixture_id}_{prior}", "name": tool, "input": {}}
                     delta = {"type": "input_json_delta", "partial_json": json.dumps(inputs)}
                     reason = "tool_use"
                 else:
@@ -166,7 +185,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     delta = {"type": "text_delta", "text": ANSWER}
                     reason = "end_turn"
             message = {
-                "id": f"msg_fixture_{prior}", "type": "message", "role": "assistant", "content": [],
+                "id": f"msg_{fixture_id}_{prior}", "type": "message", "role": "assistant", "content": [],
                 "model": data["model"], "stop_reason": None, "stop_sequence": None,
                 "usage": {"input_tokens": 8, "output_tokens": 1},
             }
@@ -189,5 +208,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
         except Exception as error:
-            self.server.failure = error
+            import traceback
+            point = traceback.extract_tb(error.__traceback__)[-1]
+            self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)
