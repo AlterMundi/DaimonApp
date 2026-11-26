@@ -2424,7 +2424,15 @@ function boot(readOnly=false,standalone=false,options={}) {
 (async()=>{
   const f=boot(false,true),id='matrix-publication:33333333-3333-4333-8333-333333333333';
   f.overrideSource(8,{id,kind:'matrix_visibility',label:'Communication record',preview:'Eko: An attributed ordinary message.',revision:'e'.repeat(64),text_characters:36,publication_id:'33333333-3333-4333-8333-333333333333',publication_resource:'selected-surface',publication_request_sha256:'f'.repeat(64),part_index:0,part_count:1,verification:'Committed owner-local visibility publication.'});
-  await f.ui.refresh();const card=f.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id);
+  const technical='matrix-publication:44444444-4444-4444-8444-444444444444';
+  const raw='dm:being:v1:fixture-origin/embodiment:11111111-1111-4111-8111-111111111111 → dm:identity:v1:fixture-recipient\n\nIntegridad: ok — TEST-29';
+  f.overrideSource(7,{id:technical,kind:'matrix_visibility',label:'Communication record',preview:raw,revision:'d'.repeat(64),text_characters:raw.length,part_index:0,part_count:1});
+  await f.ui.refresh();
+  assert(!f.nodes.get('#conversation-timeline').children.some(c=>c.dataset.sourceId===technical));
+  const saved=f.nodes.get('#conversation-results').children.find(c=>c.dataset.sourceId===technical);
+  assert(saved);assert.equal(saved.children[2].textContent,raw);
+  assert.equal(saved.children[3].children[1].hidden,true);
+  const card=f.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId===id);
   assert(card);assert.equal(card.children[1].textContent,'Communication');
   assert.equal(card.children[2].textContent,'Eko: An attributed ordinary message.');
   assert.doesNotMatch(card.children[1].textContent,/Durable|confirmation|verification|receipt/);

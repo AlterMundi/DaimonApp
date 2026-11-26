@@ -1953,7 +1953,12 @@ window.Conversation = (() => {
       }
       return listenTo(card.source,saved?.revision===card.source.revision?saved.offset:0);
     }
+    const matrixAddress=String.raw`dm:(?:being|identity):v[0-9]+:[A-Za-z0-9_-]+(?:/embodiment:[a-f0-9-]{36})?`;
+    const machineRoute=new RegExp(`^${matrixAddress} → ${matrixAddress}(?: · [0-9]+/[0-9]+)?\r?\n(?:\r?\n|↩ )`);
     function upsert(source) {
+      // The visibility writer's unresolved route header is transport data.
+      // Keep its full retained copy in the existing diagnostic reader.
+      const technicalVisibility=source.kind==="matrix_visibility"&&machineRoute.test(source.preview);
       // One visible card per signed event when both ordinary reply and inbox projections exist.
       const matrixEvent=source.kind==="matrix_result"?source.id.slice("matrix:".length):source.kind==="matrix_response"?source.handling?.outcome?.message_id:undefined;
       if(matrixEvent){const echo=cards.get(`matrix-inbox:${matrixEvent}`);if(echo){echo.box.remove();cards.delete(echo.source.id);}}
@@ -1978,7 +1983,7 @@ window.Conversation = (() => {
         actions.append(read, listen,reply,copyButton(()=>copySource(card))); box.append(title, status, body, actions, error,time);
         box.dataset.sequence = String(source.sequence);
         const following = [...container.children].find((item) => Number(item.dataset.sequence) < source.sequence);
-        if(!timeline || source.kind==="worker_progress")container.insertBefore(box, following || null);
+        if(!timeline || source.kind==="worker_progress" || technicalVisibility)container.insertBefore(box, following || null);
         card = {source, box, title, status, body, read, listen, error,time, offset:0, expanded:false};
         cards.set(source.id, card);
         reply.addEventListener("click",()=>selectFocus({source:card.source.id,revision:card.source.revision,...(["matrix_result","matrix_inbox","matrix_response"].includes(card.source.kind) || card.source.kind.startsWith("integrator_")?{context_only:true}:{})},card.source.label||"this session"));
@@ -2037,13 +2042,18 @@ window.Conversation = (() => {
             request_sha256:source.publication_request_sha256,part_index:source.part_index,part_count:source.part_count}:{})},null,2);
       }
       card.box.dataset.pending = String(!!source.correction_pending || source.native_binding_current === false);
-      card.listen.hidden = !canListen;
+      card.technicalVisibility = technicalVisibility;
+      card.listen.hidden = !canListen || technicalVisibility;
       if(source.current===false || source.correction_pending || source.native_binding_current===false
         || speechPositions.get(source.id)?.revision!==source.revision)forgetPosition(source);
       positionLabel(card);
-      if(!progress)graph?.result(source);
+      if(!progress && !technicalVisibility)graph?.result(source);
       sessionProgress(source);
-      if(source.kind!=="worker_progress"){
+      if(technicalVisibility){
+        textObserver?.unobserve(card.box);
+        const results=$("#conversation-results");
+        if(card.box.parentNode!==results)results.append(card.box);
+      }else if(source.kind!=="worker_progress"){
         placeInTimeline(card.box,source.id,source.observed_at,followingLive);
         if(textChanged)textObserver?.unobserve(card.box);
         textObserver?.observe(card.box);
@@ -2133,7 +2143,7 @@ window.Conversation = (() => {
       playbackLabels();
       showResponseDraft(value.response_draft);
       if(active?.auto && !audio.paused && !active.verifying)prefetchNext(active);
-      for (const card of cards.values()) card.listen.hidden = !canListen;
+      for (const card of cards.values()) card.listen.hidden = !canListen || card.technicalVisibility;
       if (direction === "before" && rememberHistory) {
         oldest = value.cursor;
         $("#conversation-older").hidden = !value.more;
