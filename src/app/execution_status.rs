@@ -187,5 +187,34 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
             }
         }
     }
+    let mut portable_status = serde_json::Map::new();
+    for target in &config.targets {
+        let key = SessionKey::new(config.chat_id, Some(target.topic_id));
+        let Some((engine, _)) = config.portable_route(key) else {
+            continue;
+        };
+        let Some(binding) = app.shared.store.execution_binding(key, human)? else {
+            continue;
+        };
+        let Some((_, runtime)) = profiles.iter().find(|(candidate, _)| *candidate == engine) else {
+            continue;
+        };
+        let (started, waiting) = app.shared.store.routed_portable_status(
+            binding.conversation_id,
+            human,
+            engine.name(),
+        )?;
+        let execution = match (started, waiting) {
+            (Some(_), _) => "working",
+            (None, 0) => "idle",
+            (None, _) => "queued",
+        };
+        portable_status.insert(
+            format!("{}:{}", key.chat_id, key.thread_id),
+            json!({"session":binding.conversation_id,"runtime":runtime,"execution":execution,
+                "observed_at":Utc::now().timestamp_millis() as f64 / 1000.0}),
+        );
+    }
+    view["portable_status"] = Value::Object(portable_status);
     Ok(view)
 }
