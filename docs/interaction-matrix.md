@@ -95,7 +95,10 @@ The normal authenticated Conversation feed has an independent `publications`
 cursor. Its `matrix_visibility` sources use the existing revision-checked part
 reader and retain explicit provenance. They are neither human utterances nor
 execution authority, receiving-copy evidence or task completion. They do not
-trigger automatic speech or companion reactions. Older native readers keep the
+trigger automatic speech or companion reactions. Legacy copies headed by an
+unresolved machine-to-machine route live under Under the hood → Session
+activity, with the original text and receipt retained. Readable attributed
+copies remain in Conversation. Older native readers keep the
 old cursor form when this optional configuration is absent.
 
 The staged journal caps each owner's conversation at 4096 parts / 64 MiB. Its
