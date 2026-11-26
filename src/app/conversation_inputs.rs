@@ -364,10 +364,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         .as_ref()
         .context("Missing integrating entry")?;
     if args == "workspace" {
-        return app
-            .shared
-            .store
-            .conversation_workspace_destinations(human, cfg.entry());
+        return super::execution_status::workspace(app, human, cfg);
     }
     if let Some(body) = args.strip_prefix("foreground context ") {
         let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;

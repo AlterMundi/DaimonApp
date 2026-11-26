@@ -417,15 +417,26 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (session, native) = super::presentation::entry_on(&conn, human, entry)?;
         let binding = super::presentation::entry_binding(&conn, human, entry, session)?;
-        let mut q = conn.prepare("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.creator_user_id=?1 AND u.allowed=1 ORDER BY s.id LIMIT 129")?;
+        let mut q = conn.prepare("SELECT s.id,s.model,s.reasoning_effort FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.creator_user_id=?1 AND u.allowed=1 ORDER BY s.id LIMIT 129")?;
         let ids = q
-            .query_map([human], |r| r.get::<_, i64>(0))?
+            .query_map([human], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         if ids.len() > 128 {
             bail!("Session workspace exceeds qualified bound");
         }
         let mut items = Vec::new();
-        for id in ids {
+        let mut entry_runtime = Value::Null;
+        for (id, model, effort) in ids {
+            let runtime = json!({"harness":"codex","model":model,"effort":effort});
+            if id == session {
+                entry_runtime = runtime.clone();
+            }
             let Ok((reference, focus, label)) = destination_on(&conn, human, entry, id) else {
                 continue;
             };
@@ -443,7 +454,7 @@ impl Store {
                 .transpose()?;
             items.push(
                 json!({"audio_key":format!("{}:{}",focus.target.chat_id,focus.target.thread_id),
-                "label":label,"destination":reference,"latest_reply":latest_reply,"result_available":result_available}),
+                "label":label,"runtime":runtime,"destination":reference,"latest_reply":latest_reply,"result_available":result_available}),
             );
         }
         let entry_latest: Option<i64>=conn.query_row(
@@ -452,7 +463,7 @@ impl Store {
         let entry_latest_reply=entry_latest.map(|row|super::presentation::source_on(&conn,human,entry,&format!("native:{row}")))
             .transpose()?.flatten().map(|source|json!({"source":source["id"],"revision":source["revision"],"context_only":true}));
         Ok(
-            json!({"schema":"daimon.session-destinations/v1","binding":binding,"entry_binding":[human,entry,session,native],"items":items,"entry_latest_reply":entry_latest_reply,
+            json!({"schema":"daimon.session-destinations/v1","binding":binding,"entry_binding":[human,entry,session,native],"items":items,"entry_runtime":entry_runtime,"entry_latest_reply":entry_latest_reply,
             "meaning":"Owned current destination references. Listing does not admit input, enroll routing or start work."}),
         )
     }
