@@ -127,12 +127,17 @@ try:
     retained=other.evaluate('fixtureInputs[0]')
     assert retained['target']=='claude' and retained['text']=='Private Claude fixture original'
     assert not ({'files','reply','playback','visual'} & set(retained))
+    card=other.locator(f'[data-input-id="{retained["id"]}"]')
+    other.evaluate("fixtureInputs[0].phase='claude_unconfirmed'; fixtureUI.refresh(true)")
+    status=card.get_by_text('Claude Code received the message. A reply could not be confirmed.')
+    status.wait_for()
+    other.evaluate("fixtureInputs[0].phase='matrix_received'; fixtureUI.refresh(true)")
+    assert status.is_visible()
     other.evaluate('''()=>{
       fixtureInputs[0].phase='matrix_replied';
       fixtureInputs[0].claude_reply={text:'Private Claude fixture reply',message_id:crypto.randomUUID()};
       return fixtureUI.refresh(true);
     }''')
-    card=other.locator(f'[data-input-id="{retained["id"]}"]')
     reply=other.locator(f'[data-claude-reply-to="{retained["id"]}"]')
     reply.get_by_text('Private Claude fixture reply',exact=True).wait_for()
     assert reply.get_by_text('Claude Code',exact=True).is_visible()

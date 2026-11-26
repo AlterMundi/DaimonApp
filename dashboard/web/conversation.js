@@ -914,6 +914,7 @@ window.Conversation = (() => {
       sendState.setAttribute('data-attention',String(attention));
       syncComposerRecovery();
     }
+    const claudeFailure = phase => ["claude_rejected","claude_unconfirmed"].includes(phase);
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     function inputNotice(value){
       if(savedWaiting(value))return composerNotice('',false);
@@ -1241,6 +1242,9 @@ window.Conversation = (() => {
             card.value.voice={...card.value.voice,...value.voice};
           }
         }
+        if (claudeFailure(value.phase) && card.value.phase !== "matrix_replied") {
+          card.value.phase = value.phase;
+        }
         if(value.routing && (!card.value.routing || (value.routing.phase==="accepted" && card.value.routing.instruction===value.routing.instruction))){
           card.value.routing=value.routing;card.value.phase=value.phase;
           if(value.continuation)card.value.continuation=value.continuation;
@@ -1261,6 +1265,9 @@ window.Conversation = (() => {
       // Native acceptance and retirement cannot be undone by a late snapshot.
       if (["answered","matrix_requested","retained_unsent","matrix_replied"].includes(card.value.phase) ||
           (card.value.phase==="accepted" && !["answered","matrix_requested"].includes(value.phase))) value = {...value,phase:card.value.phase};
+      if (claudeFailure(card.value.phase) && ["retained","sending","matrix_received"].includes(value.phase)) {
+        value = {...value,phase:card.value.phase};
+      }
       if(card.value.routing) {
         // Destination selection is immutable, even if a later-started request
         // sampled an earlier database state before the route committed.
