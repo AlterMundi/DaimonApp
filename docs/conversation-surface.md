@@ -72,8 +72,10 @@ Simultaneous edits are kept visible in the local composer and require an explici
 choice before replacing the other copy. A confirmed original clears only its own
 matching draft. From Send through confirmation, the submitted text cannot be
 edited into a second original. If the write is unconfirmed, the composer must
-check the retained original ID before accepting another text submission. This
-also applies after reload. Draft changes never submit an
+check the retained original ID before accepting another text submission. The
+user can also explicitly retry the same original, including after reload. The
+tab keeps the original request and its attachment references for that retry.
+Draft changes never submit an
 original or send data to the host. Attachments, draft routing, microphone and
 provisional transcripts retain their own lifecycle. Server drafts expire after
 seven days and are limited to 32 KiB per authorized actor and binding, with at

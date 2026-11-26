@@ -192,6 +192,19 @@ try:
     geometry=frame.locator('#conversation-compose').bounding_box();assert geometry['width']<=width and geometry['y']+geometry['height']<=701,geometry
     assert not errors,errors
     assert page.evaluate("!JSON.stringify(messages).includes('Draft before reload')")
+    frame.evaluate('window.fixtureLoseAck=true')
+    frame.locator('#conversation-message').fill('Recover the same original after reloading')
+    frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    frame.get_by_text('This message may already have been sent.').wait_for()
+    frozen=frame.evaluate('fixtureInputs.at(-1)')
+    page.reload();frame=page.frames[1];frame.wait_for_function('!!window.Conversation');frame.evaluate(mount)
+    warning=frame.get_by_text('This message may already have been sent.')
+    warning.wait_for()
+    assert frame.evaluate('fixtureInputs.length')==0
+    warning.locator('..').get_by_role('button',name='Retry this same message').click()
+    frame.wait_for_function('fixtureInputs.length===1 && document.querySelector("#conversation-message").value===""')
+    assert frame.evaluate('fixtureInputs[0]')==frozen
+    assert not page.evaluate("messages.some(m=>m.type==='prepare')")
     results.append({'width':width,'text_original_id':original['id'],'synthetic_audio_original_id':posts[-1]['id'],'composer_visible':True,'draft_reloaded_and_synced':True,'private_payload_to_parent':False});page.close()
   finally:browser.close()
 finally:

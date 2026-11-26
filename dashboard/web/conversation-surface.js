@@ -96,12 +96,15 @@ window.ConversationSurface=(()=>{
 
   // The same authenticated Conversation origin owns both copies. The parent
   // never receives draft text or a reason to create original work.
-  function mountDraft({field,api,busy,show,check}){
+  function mountDraft({field,api,busy,show,check,retry}){
     const slot='daimon-conversation-draft/v1',ttl=7*86400000;
     const scope=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
     const textOK=text=>typeof text==='string' && !text.includes('\0') && new TextEncoder().encode(text).length<=32768;
     const bufferOK=text=>typeof text==='string' && text.length<=65536;
     const valid=value=>value&&Number.isSafeInteger(value.revision)&&value.revision>=0&&textOK(value.text);
+    const exactOriginal=(pending,binding)=>pending.original?.id===pending.id
+      && pending.original.binding===binding && pending.original.text===pending.text
+      && JSON.stringify(pending.original).length<=262144;
     let current,timer;
     function buffers(){
       try{const values=JSON.parse(window.sessionStorage.getItem(slot));return Array.isArray(values)?values.filter(v=>v&&Date.now()-v.at<ttl):[];}
@@ -115,7 +118,8 @@ window.ConversationSurface=(()=>{
       if(current!==s || busy())return;
       if(field.value!==s.text)field.value=s.text;
       const pending=!!s.pending;
-      show(pending?'unconfirmed':s.conflict?'conflict':'',pending?()=>checkPending(s):()=>choose(s,true),()=>choose(s,false));
+      show(pending?'unconfirmed':s.conflict?'conflict':'',pending?()=>checkPending(s):()=>choose(s,true),
+        pending?(s.pending.original?()=>checkPending(s,true):undefined):()=>choose(s,false));
     }
     function bind(owner,binding){
       const key=scope(owner)&&scope(binding)?owner+'|'+binding:undefined;
@@ -127,8 +131,11 @@ window.ConversationSurface=(()=>{
       const saved=buffers().find(v=>v.key===key);
       const s={key,binding,text:'',base:0,dirty:false};
       if(saved&&Number.isSafeInteger(saved.base)&&saved.base>=0&&bufferOK(saved.text)){
-        Object.assign(s,{text:saved.text,base:saved.base,dirty:saved.dirty===true,
-          pending:uuid(saved.pending?.id)&&textOK(saved.pending?.text)?saved.pending:undefined});
+        Object.assign(s,{text:saved.text,base:saved.base,dirty:saved.dirty===true});
+        if(uuid(saved.pending?.id)&&textOK(saved.pending?.text)){
+          const {id,text,original}=saved.pending;
+          s.pending=exactOriginal(saved.pending,binding)?{id,text,original}:{id,text};
+        }
       }
       current=s;render(s);
       if(s.pending)void checkPending(s);
@@ -169,16 +176,26 @@ window.ConversationSurface=(()=>{
       const s=current;if(!s||!bufferOK(text))return;
       s.text=text;s.dirty=true;persist(s);pulse(s);
     }
-    function attempt(id,text){const s=current;if(s&&textOK(text)){s.pending={id,text};persist(s);}}
+    function attempt(original){
+      const s=current;
+      if(!s||!uuid(original.id)||!textOK(original.text)||original.binding!==s.binding)return;
+      s.pending={id:original.id,text:original.text,original};
+      if(!exactOriginal(s.pending,s.binding))delete s.pending.original;
+      persist(s);
+    }
     function confirm(value){
       const s=current;if(!s||!s.pending||value?.id!==s.pending.id||value.binding!==s.binding||!value.phase||value.phase==='reselection')return;
       if(s.text===s.pending.text){s.text='';s.dirty=true;}
       s.pending=undefined;persist(s);render(s);pulse(s);
     }
-    async function checkPending(s){
+    async function checkPending(s,sendAgain=false){
       if(s!==current||!s.pending||s.checking)return;
       s.checking=true;
-      try{const value=await check(s.pending.id);if(current===s)confirm(value);}
+      try{
+        const {id,original}=s.pending;
+        const value=sendAgain&&original?await retry(original):await check(id);
+        if(current===s)confirm(value);
+      }
       catch{/* An absent or unknown receipt must not repeat the input. */}
       finally{s.checking=false;render(s);}
     }
@@ -187,8 +204,8 @@ window.ConversationSurface=(()=>{
       s.pending=undefined;persist(s);render(s);pulse(s);
     }
     return {bind,observe,change,attempt,confirm,unsent,
-      hasUnconfirmed:()=>!!current?.pending,
-      lockedText:()=>current?.pending?.text===current?.text?current?.pending?.text:undefined};
+      hasUnconfirmed:text=>!!current?.pending&&(!!current.pending.original||current.pending.text===text),
+      lockedText:()=>current?.pending?.original&&current.pending.text===current.text?current.pending.text:undefined};
   }
   return {create,mountDraft};
 })();

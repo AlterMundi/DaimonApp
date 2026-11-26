@@ -838,13 +838,25 @@ window.Conversation = (() => {
         const receipt=await api(`interaction/inputs/${encodeURIComponent(id)}`);
         if(owned===inputGeneration&&selected===inputBinding)return draftReceipt(receipt);
       },
+      async retry(original){
+        if(posting||captureBusy||!ready||original.binding!==binding||inputBinding!==binding)return;
+        const owned=inputGeneration;
+        const result=await api('interaction/inputs',original);
+        if(owned!==inputGeneration||result.id!==original.id||!result.phase)return;
+        const receipt=draftReceipt(result);
+        if(receipt.binding!==original.binding)return;
+        hostSurface?.status(result);
+        inputCard(result,++inputObservation,original.binding);
+        return receipt;
+      },
       show(state,primary,other){
         draftStatus.hidden=!state;
         if(!state)return;
         const conflict=state==='conflict';
         draftNote.textContent=conflict?'Another device changed this draft.':'This message may already have been sent.';
         draftPrimary.textContent=conflict?'Keep this draft':'Check message status';draftPrimary.onclick=primary;
-        draftOther.hidden=!conflict;draftOther.onclick=other;
+        draftOther.textContent=conflict?'Use other draft':'Retry this same message';
+        draftOther.hidden=!other;draftOther.onclick=other;
       }});
     if(draftState)draft.after(draftStatus);
     let submittedText;
@@ -1355,7 +1367,7 @@ window.Conversation = (() => {
       if(microphone?.ownsSend?.())return microphone.submit();
       if (readOnly || posting || !ready || !binding || inputBinding !== binding) return;
       const text = draft.value;
-      if(draftState?.hasUnconfirmed()){composerNotice('Check message status before sending another message.');return;}
+      if(draftState?.hasUnconfirmed(text)){composerNotice('Check message status before sending another message.');return;}
       if(toClaude && (!text.trim() || new TextEncoder().encode(text).length>16384 ||
           replyFocus || visual?.hasImages?.() || attachedFiles?.hasFiles())){
         composerNotice("Claude Code accepts plain text up to 16 KiB. Remove attachments or reply context to send.");return;
@@ -1392,8 +1404,9 @@ window.Conversation = (() => {
       composerNotice("Sending…",false);
       try {
         hostSurface?.attempt?.({id,binding:selectedBinding});
-        draftState?.attempt(id,text);
-        const result = await api("interaction/inputs", {binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
+        const original={binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})};
+        draftState?.attempt(original);
+        const result=await api("interaction/inputs",original);
         if (owned !== inputGeneration) return;
         if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);
