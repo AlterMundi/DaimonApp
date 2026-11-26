@@ -842,6 +842,31 @@ impl SubscriptionLimit {
     }
 }
 
+/// Render the selected session-authored payload without importing unrelated
+/// creation context. Admission and dispatch use these same immutable fields.
+pub(crate) fn local_claude_packet(
+    instruction: &Instruction,
+    author: &serde_json::Value,
+) -> Result<String> {
+    let packet = format!(
+        "[Interaction controller]\nSession-authored context for the selected owned conversation. \
+         Preserve its attribution and restrictions. Historical context does not authorize replay or impersonate the human.\n\
+         Transport provenance: {}\nCurrent instruction: {}\nRelation: {}\nAddressed requests: {}\n\
+         Current attributed input:\n{}\n\
+         Return your answer followed by <daimon-result>{{\"requests\":[addressed request IDs],\"covered\":[instruction IDs incorporated],\"completed\":[finished request IDs],\"deferred\":[unaddressed instruction IDs]}}</daimon-result>. Use actual IDs only. Unfinished work is not completion.",
+        serde_json::to_string(author)?,
+        instruction.id,
+        serde_json::to_string(&instruction.relation)?,
+        serde_json::to_string(&instruction.requests)?,
+        instruction.text,
+    );
+    anyhow::ensure!(
+        packet.len() <= 16 * 1024,
+        "The complete Claude handoff exceeds the native byte limit"
+    );
+    Ok(packet)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instruction {
     pub id: String,

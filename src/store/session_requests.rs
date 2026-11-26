@@ -329,6 +329,9 @@ impl Store {
             phase: "requested".into(),
         };
         let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human});
+        if route.is_some() {
+            crate::interaction::local_claude_packet(&i, &author)?;
+        }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
@@ -558,6 +561,9 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let author = json!({"kind":"session_result","session":helper.target,"native_thread":result_native,"native_turn":result_turn,"parent_instruction":call.parent_instruction,"local_request":call.id,"canonical_result":result_id,"authorized_human":human});
+        if route.is_some() {
+            crate::interaction::local_claude_packet(&i, &author)?;
+        }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
@@ -682,21 +688,42 @@ mod tests {
                     "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
         }))
         .unwrap();
-        let (_, delivered, fresh) = store
-            .interaction_session_request_scoped(
+        let send = |id, text| {
+            store.interaction_session_request_scoped(
                 caller.key,
                 100,
                 "native-7",
                 "parent-turn",
                 &instruction.id,
-                "context",
+                id,
                 target.key,
-                "A scoped context handoff",
+                text,
                 &Default::default(),
                 None,
                 Some(&profile),
             )
+        };
+        let oversized = "任".repeat(CLAUDE_LOCAL_TEXT_BYTES / 3 + 1);
+        assert!(send("oversized", &oversized).is_err());
+        let (_, delivered, fresh) = send("context", "A scoped context handoff").unwrap();
+        let authorship = store
+            .interaction_author(&delivered.id, 100)
+            .unwrap()
             .unwrap();
+        let packet = crate::interaction::local_claude_packet(&delivered, &authorship).unwrap();
+        assert!(packet.contains("A scoped context handoff"));
+        assert!(packet.contains("session_request"));
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM interaction_session_requests",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
         assert!(fresh);
         assert_eq!(
             delivered.target_execution.as_ref().unwrap().harness,
