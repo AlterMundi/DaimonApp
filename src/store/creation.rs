@@ -454,6 +454,7 @@ impl Store {
         let topic = operation["topic"].as_i64().context("Missing topic")?;
         let session:i64=tx.query_row("SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3 AND codex_thread_id IS NULL AND force_fresh_thread=1",params![entry.chat_id,topic,human],|r|r.get(0))?;
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: serde_json::from_value(
                 d.get("tribu_source").cloned().unwrap_or(Value::Null),
             )?,
@@ -1132,6 +1133,7 @@ mod tests {
         let oldrow = store.ensure_session(old, 100, &defaults).unwrap();
         store.set_session_codex_thread(old, "old-native").unwrap();
         let input = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),
@@ -1312,6 +1314,7 @@ mod tests {
         let oldrow = store.ensure_session(old, 100, &defaults).unwrap();
         store.set_session_codex_thread(old, "old-native").unwrap();
         let input = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),

@@ -1,56 +1,152 @@
-//! One read-only display contract for an owned session's selected execution.
+//! Shared read-only display contract for an owned session's selected execution.
 use super::*;
 use crate::interaction::{ForegroundEngine, InteractionConfig};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::io::Read;
 
-fn portable_metadata(config: &InteractionConfig) -> Vec<(ForegroundEngine, Value)> {
-    [
-        ForegroundEngine::Claude,
-        ForegroundEngine::Antigravity,
-        ForegroundEngine::Goose,
-    ]
-    .into_iter()
-    .filter_map(|engine| {
-        let selected = config
-            .foreground(engine)
-            .filter(|profile| profile.interaction_direct)?;
-        let mut runtime = json!({"harness":engine.name(),"model":null,"effort":null});
-        // The selected owner command already passes the worker this profile.
-        if let Some(path) = selected
-            .worker_command
-            .windows(2)
-            .find_map(|args| (args[0] == "--profile").then_some(&args[1]))
-            .filter(|path| std::path::Path::new(path).is_absolute())
-        {
-            if let Ok(file) = std::fs::File::open(path)
-                && file
-                    .metadata()
-                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 65536)
-                && let Ok(profile) = serde_json::from_reader::<_, Value>(file.take(65536))
-            {
-                for field in ["model", "effort"] {
-                    if let Some(value) = profile[field].as_str().filter(|value| {
-                        !value.trim().is_empty()
-                            && value.len() <= 128
-                            && !value.chars().any(char::is_control)
-                    }) {
-                        runtime[field] = json!(value);
-                    }
-                }
-            }
-        }
-        Some((engine, runtime))
-    })
-    .collect()
+#[derive(Default)]
+pub(super) struct ClaudeRuntimeCache {
+    observation: Option<([u8; 32], Instant, Value)>,
 }
 
-pub(super) fn workspace(app: &App, human: i64, config: &InteractionConfig) -> Result<Value> {
+fn profile_bytes(path: &str) -> Option<Vec<u8>> {
+    let mut file = std::fs::File::open(path).ok()?.take(65537);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 65536).then_some(bytes)
+}
+
+fn safe_label(value: &Value) -> Option<&str> {
+    value.as_str().filter(|text| {
+        !text.trim().is_empty() && text.len() <= 128 && !text.chars().any(char::is_control)
+    })
+}
+
+async fn observe_claude(
+    shared: &AppShared,
+    command: &[String],
+    index: usize,
+    key: [u8; 32],
+) -> Value {
+    let mut cache = shared.claude_runtime_cache.lock().await;
+    if let Some((cached, until, value)) = cache.observation.as_ref()
+        && *cached == key
+        && *until > Instant::now()
+    {
+        return value.clone();
+    }
+    let mut invocation = command.to_owned();
+    invocation[index] = "--observe-runtime".into();
+    let mut child = tokio::process::Command::new(&invocation[0]);
+    child
+        .args(&invocation[1..])
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let sample = tokio::time::timeout(Duration::from_secs(12), child.output()).await;
+    let observed = match sample {
+        Ok(Ok(output)) if output.status.success() && output.stdout.len() <= 2048 => {
+            serde_json::from_slice::<Value>(&output.stdout).ok()
+        }
+        _ => None,
+    }
+    .filter(|_| {
+        profile_bytes(&command[index + 1]).is_some_and(|bytes| fingerprint(command, &bytes) == key)
+    })
+    .unwrap_or(Value::Null);
+    let ttl = if observed.is_object() { 90 } else { 20 };
+    cache.observation = Some((
+        key,
+        Instant::now() + Duration::from_secs(ttl),
+        observed.clone(),
+    ));
+    observed
+}
+
+fn fingerprint(command: &[String], bytes: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    for part in command {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    digest.update(bytes);
+    digest.finalize().into()
+}
+
+pub(super) async fn portable_runtime(
+    shared: &AppShared,
+    config: &InteractionConfig,
+    engine: ForegroundEngine,
+) -> Value {
+    let mut runtime = json!({"harness":engine.name(),"model":null,"effort":null});
+    let Some(selected) = config
+        .foreground(engine)
+        .filter(|profile| profile.interaction_direct)
+    else {
+        return runtime;
+    };
+    let command = &selected.worker_command;
+    let Some(index) = command
+        .windows(2)
+        .position(|args| args[0] == "--profile" && std::path::Path::new(&args[1]).is_absolute())
+    else {
+        return runtime;
+    };
+    let Some(bytes) = profile_bytes(&command[index + 1]) else {
+        return runtime;
+    };
+    let Ok(profile) = serde_json::from_slice::<Value>(&bytes) else {
+        return runtime;
+    };
+    for field in ["model", "effort"] {
+        if let Some(value) = safe_label(&profile[field]) {
+            runtime[field] = json!(value);
+        }
+    }
+    if engine != ForegroundEngine::Claude || profile["subscriptionEmail"].as_str().is_none() {
+        return runtime;
+    }
+    let observed = observe_claude(shared, command, index, fingerprint(command, &bytes)).await;
+    if let Some(model) = safe_label(&observed["model"]).filter(|model| model.starts_with("claude-"))
+    {
+        runtime["model"] = json!(model);
+    }
+    for window in ["weekly", "session"] {
+        if let (Some(available), Some(resets_at)) = (
+            observed[window]["available"]
+                .as_f64()
+                .filter(|value| (0.0..=100.0).contains(value)),
+            observed[window]["resets_at"]
+                .as_i64()
+                .filter(|time| *time > Utc::now().timestamp()),
+        ) {
+            runtime[format!("{window}_available_percent")] = json!(available);
+            runtime[format!("{window}_resets_at")] = json!(resets_at);
+        }
+    }
+    runtime
+}
+
+pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig) -> Result<Value> {
     let mut view = app
         .shared
         .store
         .conversation_workspace_destinations(human, config.entry())?;
-    let profiles = portable_metadata(config);
+    let mut profiles = Vec::new();
+    for engine in [
+        ForegroundEngine::Claude,
+        ForegroundEngine::Antigravity,
+        ForegroundEngine::Goose,
+    ] {
+        if config
+            .foreground(engine)
+            .is_some_and(|profile| profile.interaction_direct)
+        {
+            profiles.push((engine, portable_runtime(&app.shared, config, engine).await));
+        }
+    }
     let codex = &app.shared.config.codex;
     let apply = |key, runtime: &mut Value| {
         if let Some((engine, _)) = config.portable_route(key)

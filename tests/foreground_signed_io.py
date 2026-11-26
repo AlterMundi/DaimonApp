@@ -236,10 +236,13 @@ operator.main()
                             (self.server.human_original,),
                         )[0]
                         assert phase == "submitting"
-                        assert self.server.original in prompt
-                        if telegram_topic:
-                            assert prompt == self.server.original
+                        if getattr(self.server, "attachment", None):
+                            assert prompt == self.server.attachment["caption"]
                         else:
+                            assert self.server.original in prompt
+                        if telegram_topic and not getattr(self.server, "attachment", None):
+                            assert prompt == self.server.original
+                        elif not telegram_topic:
                             assert '"original_human_author":100' in prompt
                         self.server.current = ident
                         self.server.exposures.append(ident)
@@ -438,7 +441,12 @@ timeout_seconds=5
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                         )
                         try:
-                            self._telegram_topic_exchange(journey, provider, return_attempts, profile)
+                            if os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
+                                self._telegram_attachments(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
+                                self._telegram_quota(journey, provider)
+                            else:
+                                self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
                             if adapter.poll() is None:
                                 adapter.send_signal(signal.SIGINT)
@@ -585,13 +593,65 @@ timeout_seconds=5
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
 
+        def _telegram_quota(self, journey, provider):
+            provider.rate_limited = True
+            provider.original = "Please retain this original if the provider refuses it."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            journey.wait(lambda: journey.has("Claude Code reached its usage limit.", 7) or provider.failure, seconds=40)
+            self.assertIsNone(provider.failure)
+            rows = journey.row(
+                "SELECT i.phase,json_extract(i.doc,'$.subscription_limit'),t.status FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?", (str(update),))
+            self.assertEqual(rows, [("rejected", '{"window":null,"resets_at":null}', "failed")])
+            notices = [payload for message,payload in journey.messages
+                       if "Claude Code reached its usage limit." in message["text"]]
+            self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _telegram_attachments(self, journey, provider):
+            import base64
+            import hashlib
+
+            image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+            journey.media_files = {"fixture-image.png": image}
+            photo = {"photo": [{"file_id": "fixture-image.png", "width": 1, "height": 1}]}
+            forwarded = journey.admit(topic=7, message_fields={
+                **photo, "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"},
+            })
+            journey.wait(lambda: journey.has("Forwarded messages aren't supported here.", 7))
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
+                                         (str(forwarded),)), [(0,)])
+            for caption in ("  Please inspect this photo.  ", "", "/inspect@otherbot once you see the photo"):
+                provider.original = caption or "Gateway attached these files"
+                provider.attachment = {"caption": caption, "base64": base64.b64encode(image).decode()}
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+                update = journey.admit(topic=7, message_fields={**photo, **({"caption": caption} if caption else {})})
+                journey.wait(lambda: provider.failure or any(
+                    ANSWER in message["text"] and payload.get("reply_parameters", {}).get("message_id") == update
+                    for message, payload in journey.messages), seconds=25)
+                self.assertIsNone(provider.failure)
+                rows = journey.row("SELECT s.doc,i.phase FROM interaction_sources s "
+                                   "JOIN interaction_instructions i ON i.input_id=s.id WHERE s.event_id=?", (str(update),))
+                self.assertEqual(len(rows), 1)
+                source, phase = rows[0]
+                self.assertEqual(phase, "accepted")
+                source = json.loads(source)
+                self.assertEqual(source["text"], caption)
+                expected = hashlib.sha256(image).hexdigest()
+                self.assertEqual(source["telegram_files"][0]["sha256"], expected)
+                self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), image)
+            self.assertEqual(len(set(provider.exposures)), 3)
+
         def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
             native_turns = journey.native_turns
             forwarded = journey.admit("/stop all", topic=7, message_fields={
                 "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
             })
-            journey.wait(lambda: journey.has("Forwarded messages and attachments", 7))
+            journey.wait(lambda: journey.has("Forwarded messages aren't supported here.", 7))
             journey.command("/retry 1", "to stop the current turn", topic=7)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
                                          (str(forwarded),)), [(0,)])
@@ -678,6 +738,44 @@ timeout_seconds=5
             self.assertIsNone(provider.failure)
             self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
             self.assertEqual(journey.native_turns, native_turns)
+
+            after_retry = list(provider.calls)
+            forwarded_goal = journey.admit("/goal", topic=7, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.row("SELECT status FROM incoming_updates WHERE update_id=?",
+                                               (forwarded_goal,)) == [("handled",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
+                                         (str(forwarded_goal),)), [(0,)])
+            goal = journey.admit("/goal", topic=7)
+            journey.wait(lambda: journey.has("No goal set.", 7), seconds=30)
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.prompt FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(goal),)), [("accepted", "claude", "completed", "/goal")])
+            self.assertEqual(provider.calls, after_retry)
+            self.assertEqual(journey.native_turns, native_turns)
+
+            # The earlier checks had no Codex activity. This next distinct
+            # human input explicitly needs the local general conversation.
+            provider.previous_original = None
+            provider.calls.clear()
+            provider.test_session_request = True
+            journey.allow_local_dependencies = True
+            provider.original = "Ask our general conversation to check the design summary."
+            provider.human_original = str(journey.sequence + 1)
+            journey.admit(provider.original, topic=7)
+            journey.wait(lambda: provider.failure or journey.row(
+                "SELECT count(*) FROM interaction_session_requests") == [(1,)], seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.wait(lambda: provider.failure or len(provider.calls) == 5, seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.wait(lambda: journey.row(
+                "SELECT i.phase FROM interaction_session_requests r "
+                "JOIN interaction_instructions i ON i.id=r.target_instruction "
+                "JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=1") == [("accepted",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
             answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER

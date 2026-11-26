@@ -69,21 +69,47 @@ impl App {
         session: &crate::models::SessionRecord,
     ) -> Result<Vec<LocalAttachment>> {
         let inbox_dir = self.session_inbox_dir(session)?;
-        let result = self.download_attachments_into(message, &inbox_dir).await;
+        let result = self
+            .download_attachments_into(message, &inbox_dir, None)
+            .await;
         if result.is_err() && fs::remove_dir_all(&inbox_dir).is_err() {
             tracing::warn!("failed to clean up rejected incoming attachments");
         }
         result
     }
 
+    pub(super) async fn retain_portable_attachments(
+        &self,
+        message: &Message,
+    ) -> Result<Vec<crate::files::FileReference>> {
+        #[cfg(unix)]
+        {
+            let temporary = tempfile::tempdir()?;
+            let attachments = self
+                .download_attachments_into(message, temporary.path(), Some(crate::files::MAX_BYTES))
+                .await?;
+            let db = self.shared.config.db_path.clone();
+            tokio::task::spawn_blocking(move || {
+                let _temporary = temporary;
+                crate::files::retain_downloads(&db, &attachments)
+            })
+            .await?
+        }
+        #[cfg(not(unix))]
+        anyhow::bail!("Portable Telegram attachments are unsupported on this host");
+    }
+
     async fn download_attachments_into(
         &self,
         message: &Message,
         inbox_dir: &Path,
+        max_bytes: Option<u64>,
     ) -> Result<Vec<LocalAttachment>> {
         let mut attachments = Vec::new();
 
-        for (source, sticker) in message_stickers(message) {
+        for (source, sticker) in message_stickers(message)
+            .filter(|(source, _)| max_bytes.is_none() || *source == "sticker")
+        {
             let file_id = sticker.image_file_id().ok_or(StickerImageUnavailable)?;
             let file_name = if sticker.is_animated || sticker.is_video {
                 format!("{source}-thumbnail")
@@ -91,25 +117,33 @@ impl App {
                 source.to_string()
             };
             attachments.push(
-                self.download_attachment(
+                self.download_attachment_bounded(
                     file_id,
                     Some(&file_name),
                     None,
                     AttachmentKind::Image,
                     inbox_dir,
+                    max_bytes,
                 )
                 .await?,
             );
         }
 
         if let Some(file_id) = preferred_image_file_id(message) {
+            let original = message
+                .document
+                .as_ref()
+                .filter(|document| document.file_id == file_id);
             attachments.push(
-                self.download_attachment(
+                self.download_attachment_bounded(
                     file_id,
-                    None,
-                    Some("image/png"),
+                    original.and_then(|doc| doc.file_name.as_deref()),
+                    original
+                        .and_then(|doc| doc.mime_type.as_deref())
+                        .or(Some("image/jpeg")),
                     AttachmentKind::Image,
                     inbox_dir,
+                    max_bytes,
                 )
                 .await?,
             );
@@ -122,12 +156,13 @@ impl App {
             );
             if kind != AttachmentKind::Image {
                 attachments.push(
-                    self.download_attachment(
+                    self.download_attachment_bounded(
                         &document.file_id,
                         document.file_name.as_deref(),
                         document.mime_type.as_deref(),
                         kind,
                         inbox_dir,
+                        max_bytes,
                     )
                     .await?,
                 );
@@ -136,12 +171,13 @@ impl App {
 
         if let Some(audio) = &message.audio {
             attachments.push(
-                self.download_attachment(
+                self.download_attachment_bounded(
                     &audio.file_id,
                     audio.file_name.as_deref(),
                     audio.mime_type.as_deref(),
                     AttachmentKind::Audio,
                     inbox_dir,
+                    max_bytes,
                 )
                 .await?,
             );
@@ -149,12 +185,13 @@ impl App {
 
         if let Some(voice) = &message.voice {
             attachments.push(
-                self.download_attachment(
+                self.download_attachment_bounded(
                     &voice.file_id,
                     Some("voice.ogg"),
                     voice.mime_type.as_deref(),
                     AttachmentKind::Voice,
                     inbox_dir,
+                    max_bytes,
                 )
                 .await?,
             );
@@ -162,12 +199,13 @@ impl App {
 
         if let Some(video) = &message.video {
             attachments.push(
-                self.download_attachment(
+                self.download_attachment_bounded(
                     &video.file_id,
                     video.file_name.as_deref(),
                     video.mime_type.as_deref(),
                     AttachmentKind::Video,
                     inbox_dir,
+                    max_bytes,
                 )
                 .await?,
             );
@@ -187,18 +225,6 @@ impl App {
             .join(Uuid::now_v7().to_string());
         fs::create_dir_all(&dir)?;
         Ok(dir)
-    }
-
-    pub(super) async fn download_attachment(
-        &self,
-        file_id: &str,
-        file_name: Option<&str>,
-        mime_type: Option<&str>,
-        kind: AttachmentKind,
-        target_dir: &Path,
-    ) -> Result<LocalAttachment> {
-        self.download_attachment_bounded(file_id, file_name, mime_type, kind, target_dir, None)
-            .await
     }
 
     pub(super) async fn download_attachment_bounded(

@@ -263,8 +263,14 @@ paired web authentication from capture. A Companion original and earlier
 originals without recorded actor authority retain the scoped catalog,
 including on retry. A fresh retry of known-unsent paired Claude work requires
 paired authentication. The paired submit and retry commands run on the local
-owner socket. Workers use their assigned catalog without an integrating
-controller.
+owner socket. The controller follows the conversation's role and is
+independent of the selected harness. A paired Claude worker receives its
+local-session catalog after Gateway records the native submission. It can
+inspect its current original and request work from an owned topic or from
+`general`, the same-being conversation on this Gateway. Gateway attributes
+the request to the worker, applies the original's dependency limit, and
+retains the result through the existing local return journal. The wider
+integrating catalog remains attached to the integrating conversation.
 
 A paired Telegram original from the integrating conversation can also be
 routed to an owned portable topic. Gateway verifies its retained native
@@ -273,6 +279,16 @@ exact native input receipt for the original entry can establish acceptance
 even while its native outcome is unconfirmed. Routing does not resubmit the
 entry turn. Telegram `/status` in an owner-selected portable topic reads
 the worker and waiting-message state from the canonical journal.
+
+In a paired Claude Telegram topic, an explicitly typed `/goal` is sent to the
+selected native session through the existing turn journal. A condition uses
+Claude's native goal loop and `/goal clear` is Claude's native clear. Forwarded
+messages and session-authored context cannot invoke native commands. The worker
+first checks that its selected SDK session advertises the command. Gateway does
+not publish a Codex goal snapshot or apply an old Codex intent for a topic
+currently assigned to Claude. The shared goal controller still needs a
+portable goal binding for inspection and delegated mutations from other
+conversations.
 
 The Goose and Antigravity proof profiles expose signed status and the
 owner-selected DMK read. Their observed adapters open a fresh native session

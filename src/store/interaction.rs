@@ -101,7 +101,12 @@ pub(super) fn admit_selected_on(
         &source.event_id,
         source.update_id,
     )?;
-    if source.text.trim().is_empty()
+    if (source.text.trim().is_empty() && source.telegram_files.is_empty())
+        || (!source.telegram_files.is_empty()
+            && (source.update_id.is_none()
+                || !route.is_some_and(|(engine, _)| {
+                    engine == crate::interaction::ForegroundEngine::Claude
+                })))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -335,6 +340,7 @@ pub(super) fn admit_selected_on(
         origin: source.origin.clone(),
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
+        subscription_limit: None,
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,
@@ -1132,6 +1138,7 @@ mod tests {
     }
     fn input(event: i64, targets: &[i64]) -> crate::interaction::SourceInput {
         crate::interaction::SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "telegram:test-bot".into(),

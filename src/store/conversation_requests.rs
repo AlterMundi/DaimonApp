@@ -784,6 +784,7 @@ mod tests {
                 .item
                 .local_turn;
             let source = SourceInput {
+                telegram_files: vec![],
                 tribu_source: None,
                 transcription: None,
                 channel: "local-session".into(),

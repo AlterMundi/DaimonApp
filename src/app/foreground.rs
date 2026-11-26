@@ -12,10 +12,12 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub session: &'a str,
     pub resume: Option<&'a ClaudeContinuation>,
     pub human_original: bool,
+    pub native_goal_command: bool,
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
     pub text: &'a str,
+    pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
@@ -26,6 +28,7 @@ pub(in crate::app) struct WorkerController<'a> {
     key: crate::models::SessionKey,
     human: i64,
     local_turn: i64,
+    routed: bool,
 }
 
 #[cfg(unix)]
@@ -93,10 +96,12 @@ pub(in crate::app) async fn execute_worker(
         session,
         resume,
         human_original,
+        native_goal_command,
         routed_human,
         routed_host_access,
         session_instructions,
         text,
+        attachments,
         body,
         cancel,
         controller,
@@ -134,12 +139,29 @@ pub(in crate::app) async fn execute_worker(
         let mut start = json!({"schema":schema,"type":"start","inputId":id,
             "sessionId":session,"text":text,"body":body});
         if engine == ForegroundEngine::Claude {
+            if !attachments.is_empty() {
+                anyhow::ensure!(
+                    human_original && !native_goal_command,
+                    "Attachments require a direct human turn"
+                );
+                start["attachments"] = json!(
+                    attachments
+                        .iter()
+                        .map(|file| json!({
+                            "path": file.path, "name": file.file_name, "mime": file.mime_type
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
             if let Some(instructions) = session_instructions {
                 start["sessionInstructions"] = json!(instructions);
             }
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume);
             start["humanOriginal"] = json!(human_original);
+            if native_goal_command {
+                start["nativeGoalCommand"] = json!(true);
+            }
             if routed_human {
                 start["routedHuman"] = json!(true);
                 if routed_host_access {
@@ -229,15 +251,27 @@ pub(in crate::app) async fn execute_worker(
                 namespace: None,
                 arguments: json!({"operation":frame["operation"],"arguments":frame["arguments"]}),
             };
-            let reply = super::dialogue::tool_call(
-                owner.app.clone(),
-                owner.key,
-                owner.human,
-                request,
-                controller_closed.clone(),
-            )
-            .await
-            .context("Native controller result unavailable; inspect retained effects")?;
+            let result = if owner.routed {
+                super::session_requests::tool_call(
+                    owner.app.clone(),
+                    owner.key,
+                    owner.human,
+                    request,
+                    controller_closed.clone(),
+                    Some(owner.local_turn),
+                )
+            } else {
+                super::dialogue::tool_call(
+                    owner.app.clone(),
+                    owner.key,
+                    owner.human,
+                    request,
+                    controller_closed.clone(),
+                )
+            };
+            let reply = result
+                .await
+                .context("Native controller result unavailable; inspect retained effects")?;
             let mut response = json!({"schema":schema,"type":"controller_reply",
                 "inputId":id,"sessionId":session,"callId":next_call,
                 "success":reply.success,"text":reply.text});
@@ -266,6 +300,13 @@ pub(in crate::app) async fn execute_worker(
                     Some("uncertain") =>
                         outcome["sessionId"].as_str() == native_session.as_deref()
                             && native_session.is_some(),
+                    Some("subscription_limited") =>
+                        engine == ForegroundEngine::Claude
+                            && outcome["sessionId"].as_str() == native_session.as_deref()
+                            && native_session.is_some()
+                            && outcome["limit"].is_object()
+                            && outcome["workObserved"].is_boolean()
+                            && outcome["terminalObserved"].is_boolean(),
                     Some("not_submitted") => true,
                     _ => false,
                 },
@@ -358,10 +399,13 @@ pub(super) async fn run_portable_turn(
                 session: &input.id,
                 resume: resume.as_ref(),
                 human_original: true,
+                native_goal_command: input.paired_actor
+                    && super::routing::native_claude_goal(&input.text),
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
                 text: &input.text,
+                attachments: &[],
                 body: body.clone(),
                 cancel: &cancel,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
@@ -370,6 +414,7 @@ pub(super) async fn run_portable_turn(
                         key: request.session_key,
                         human: input.human,
                         local_turn: local,
+                        routed: false,
                     }),
             },
             |prepared| {
@@ -383,14 +428,7 @@ pub(super) async fn run_portable_turn(
     }
     .await
     .ok();
-    let reply = outcome
-        .as_ref()
-        .filter(|value| value["phase"] == "completed")
-        .and_then(|value| value["text"].as_str());
-    let resume_unavailable = outcome.as_ref().is_some_and(|value| {
-        value["phase"] == "not_submitted" && value["reason"] == "claude_resume_session_missing"
-    });
-    store.finish_portable_turn(input, local, reply, resume_unavailable)
+    store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))
 }
 
 pub(super) async fn run_routed_portable(
@@ -400,10 +438,6 @@ pub(super) async fn run_routed_portable(
     slot: std::sync::Arc<std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 ) -> Result<()> {
     use crate::{interaction::MatrixDestination, store::MatrixAuthor};
-    anyhow::ensure!(
-        request.attachments.is_empty(),
-        "Routed portable worker does not yet receive attachments"
-    );
     let cfg = super::routing::profile(&app.shared)?;
     let selected = input
         .target_execution
@@ -438,7 +472,24 @@ pub(super) async fn run_routed_portable(
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
-    let direct_original = input.origin.message_id.is_some() && !super::routing::relayed(input);
+    let human_authored = store
+        .interaction_author(&input.id, input.human_id)?
+        .is_none();
+    let direct_original =
+        human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
+    anyhow::ensure!(
+        request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
+        "Routed worker attachments require a direct Claude turn"
+    );
+    let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
+        .then_some(WorkerController {
+            app,
+            key: input.target,
+            human: input.human_id,
+            local_turn: local,
+            routed: true,
+        });
+
     // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
     // adapters must receive a new session coordinate for that attempt.
     let attempt = uuid::Uuid::new_v4().to_string();
@@ -453,9 +504,12 @@ pub(super) async fn run_routed_portable(
         } else {None};
         execute_worker(&config.worker_command,engine,WorkerTurn{
             id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:direct_original,
+            native_goal_command:engine==ForegroundEngine::Claude && direct_original
+                && routed_host_access && request.attachments.is_empty()
+                && super::routing::native_claude_goal(&request.prompt),
             routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
             session_instructions:session.session_prompt.as_deref(),
-            text:&request.prompt,body:body.clone(),cancel:&cancel,controller:None,
+            text:&request.prompt,attachments:&request.attachments,body:body.clone(),cancel:&cancel,controller,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
             if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
@@ -467,6 +521,13 @@ pub(super) async fn run_routed_portable(
         }).await
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
+    if input.origin.message_id.is_some()
+        && let Some(limit) = store
+            .interaction_instruction(&input.id, input.human_id)?
+            .and_then(|instruction| instruction.subscription_limit)
+    {
+        super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+    }
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

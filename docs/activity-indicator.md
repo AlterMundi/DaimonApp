@@ -25,8 +25,13 @@ For a topic routed to Claude Code, Antigravity or Goose, the observer reads
 the active owned turn and queue from the Gateway journal. The same card shows
 the harness, whether work is starting or underway, elapsed time and messages
 waiting. The card retires after the turn ends. Portable turns currently
-provide no tool-level activity or weekly quota to this observer. Gateway
-answers an explicit `/status` directly for routed portable topics.
+provide no tool-level activity to this observer. Gateway answers explicit
+`/status` directly for routed portable topics. Claude's own account report
+can supply the resolved model and all-models weekly allowance. The same
+Gateway observation is shown in Conversation and on explicit `/status`.
+The read uses the configured subscription through the native `/usage`
+command, starts no inference, and shares one short-lived result per
+selected account and profile. Missing or stale allowance is omitted.
 
 On Codex, the line also shows the available weekly allowance from native
 `account/rateLimits/read`, cached for sixty seconds. The weekly window is

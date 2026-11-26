@@ -857,10 +857,23 @@ window.Conversation = (() => {
       if(!runtimeSummary)return;
       const runtime=workspace?.runtime?.();
       const harness={codex:"Codex",claude:"Claude Code",antigravity:"Antigravity",goose:"Goose"}[runtime?.harness];
-      const model={opus:"Opus",sonnet:"Sonnet",haiku:"Haiku"}[runtime?.model]??runtime?.model;
+      const claudeModel=runtime?.harness==="claude"
+        ? /^claude-(opus|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(runtime.model)
+        : null;
+      const modelNames={opus:"Opus",sonnet:"Sonnet",haiku:"Haiku"};
+      const model=claudeModel
+        ? `${modelNames[claudeModel[1]]} ${[claudeModel[2],claudeModel[3]].filter(Boolean).join(".")}`
+        : modelNames[runtime?.model]??runtime?.model;
       const quota=runtime?.weekly_available_percent;
-      const weekly=Number.isFinite(quota)&&quota>=0&&quota<=100?`${Math.round(quota)}% weekly left`:undefined;
-      const text=harness?[harness,model,runtime.effort,weekly].filter(Boolean).join(" · "):"";
+      const seconds=Math.floor(runtime?.weekly_resets_at-Date.now()/1000);
+      const days=Math.floor(seconds/86400), hours=Math.floor(seconds/3600)%24;
+      const reset=seconds>0?(days>0?`${days}d${hours}h`:hours>0?`${hours}h`:`${Math.ceil(seconds/60)}m`):"";
+      const weekly=Number.isFinite(quota)&&quota>=0&&quota<=100
+        ? [`${Math.round(quota)}%`,reset].filter(Boolean).join(" "):undefined;
+      const limited=runtime?.session_available_percent===0 && runtime.session_resets_at>Date.now()/1000;
+      const shortReset=limited?new Date(runtime.session_resets_at*1000):null;
+      const shortLimit=shortReset ? "5h limit until "+shortReset.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "";
+      const text=harness?[harness,model,runtime.effort,weekly,shortLimit].filter(Boolean).join(" · "):"";
       runtimeSummary.hidden=!text;
       runtimeSummary.textContent=text;
       runtimeSummary.title=text;
@@ -933,12 +946,14 @@ window.Conversation = (() => {
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     function inputNotice(value){
       if(savedWaiting(value))return composerNotice('',false);
-      composerNotice(phaseText(value),['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','claude_unconfirmed','claude_rejected','reselection'].includes(value.phase) || (!value.phase && !value.routing));
+      composerNotice(phaseText(value),!!(value.subscription_limit || value.routing?.subscription_limit) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','claude_unconfirmed','claude_rejected','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     }
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
+      : value.subscription_limit ? subscriptionLimitText(value.subscription_limit)
+      : value.routing?.subscription_limit ? routeText(value.routing)
       : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
@@ -946,7 +961,16 @@ window.Conversation = (() => {
           reselection:"This attempt did not submit the message. Select the image again, then send.", answered:"Answer recorded for the selected question. Work may continue.",
           retained_unsent:"Saved; not sent.", uncertain:"Saved; delivery unconfirmed. Check status."})[value.phase]
         || "Submission unconfirmed. Check status before sending this message again.";
+    function subscriptionLimitText(limit) {
+      const window=limit.window==="five_hour" ? "5-hour usage limit"
+        : ["seven_day","seven_day_opus","seven_day_sonnet"].includes(limit.window) ? "weekly usage limit" : "usage limit";
+      const reset=new Date(limit.resets_at*1000);
+      const when=Number.isFinite(limit.resets_at)&&Number.isFinite(reset.getTime())
+        ? " Resets "+reset.toLocaleString([], {dateStyle:"short",timeStyle:"short"})+"." : "";
+      return `Claude Code reached its ${window}. Your message is saved.${when}`;
+    }
     function routeText(route) {
+      if(route.subscription_limit)return `#${route.label}: ${subscriptionLimitText(route.subscription_limit)}`;
       if(!route.instruction)return `#${route.label}: `+({requested:"turn interruption requested.",no_active_turn:"no selected running turn.",scope_unavailable:"the original turn selection is unavailable; no interruption was made.",unconfirmed:"interruption remains unconfirmed; nothing will be repeated."}[route.phase]||"control outcome retained.");
       return `#${route.label}: `+({accepted:"sent to this session. Work may continue.",queued:"saved; waiting for this session.",submitting:"sending to this session…",steering:"sending to this session…",retained_unsent:"saved; not sent.",uncertain:"delivery unconfirmed. Check status.",cancelled:"not sent; withdrawn.",rejected:"not accepted by this execution."}[route.phase]||"route retained; inspect its current state.");
     }

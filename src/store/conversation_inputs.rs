@@ -132,6 +132,8 @@ pub struct ConversationInput {
     pub focus: Option<ConversationFocus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<ConversationRouting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_limit: Option<crate::interaction::SubscriptionLimit>,
     pub phase: String,
     pub local_turn: Option<i64>,
     pub retired: bool,
@@ -382,14 +384,19 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
-        route.phase = conn
+        let selected: Option<(String, Option<String>)> = conn
             .query_row(
-                "SELECT phase FROM interaction_instructions WHERE id=?1",
+                "SELECT phase,json_extract(doc,'$.subscription_limit') FROM interaction_instructions WHERE id=?1",
                 [instruction],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?
-            .unwrap_or_else(|| "unavailable".into());
+            .optional()?;
+        if let Some((phase, limit)) = selected {
+            route.phase = phase;
+            route.subscription_limit = limit.as_deref().map(serde_json::from_str).transpose()?;
+        } else {
+            route.phase = "unavailable".into();
+        }
     }
     Ok(input)
 }
@@ -1579,6 +1586,7 @@ impl Store {
                 "retained"
             }
             .into(),
+            subscription_limit: None,
             local_turn: None,
             retired: false,
         };
@@ -2018,6 +2026,7 @@ impl Store {
                 "forwarded_original":instruction.text.chars().take(2048).collect::<String>(),
                 "forwarded_next_offset":(instruction.text.chars().count()>2048).then_some(2048),"transport_phase":phase,
                 "native_acceptance":phase=="accepted","target_available":available,
+                "subscription_limit":instruction.subscription_limit,
                 "results":results,"more_results":more_results,"results_cursor":result_cursor}),
             );
         }
@@ -2166,7 +2175,7 @@ impl Store {
             )?;
             let mut item = serde_json::json!({
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
-                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
+                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"subscription_limit":input.subscription_limit,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
                 "native_binding_current":if input.portable.is_some() { !input.retired } else { input.native==native },
             });

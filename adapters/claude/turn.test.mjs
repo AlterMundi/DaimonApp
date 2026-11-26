@@ -67,6 +67,65 @@ test('submission is recorded before input and loss leaves the same request uncer
   }
 });
 
+test('only an explicitly selected human goal uses the native command mode', async () => {
+  for (const [nativeGoalCommand, supported] of [[false, true], [true, true], [true, false]]) {
+    const observed = [];
+    const text = '/goal';
+    const outcome = await runClaudeTurn(options({
+      input: { ...input, text, nativeGoalCommand },
+      beforeSubmit: () => { observed.push('committed'); return true; },
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async supportedCommands() { return supported ? [{ name: 'goal' }] : []; },
+        async *[Symbol.asyncIterator]() {
+          for await (const request of prompt) {
+            observed.push('submitted');
+            assert.equal(request.message.content, text);
+            assert.equal(request.client_composed, nativeGoalCommand ? undefined : true);
+            assert.deepEqual(request.origin, nativeGoalCommand ? { kind: 'human' } : undefined);
+          }
+          yield { type: 'result', subtype: 'success', is_error: false,
+            session_id: input.sessionId, result: 'No goal set.' };
+        },
+        close() {},
+      }),
+    }));
+    assert.deepEqual(observed, supported ? ['committed', 'submitted'] : []);
+    assert.equal(outcome.phase, supported ? 'completed' : 'not_submitted');
+    if (!supported) assert.equal(outcome.reason, 'claude_goal_command_unavailable');
+  }
+});
+
+test('subscription refusal is retained without mistaking it for an unobserved result', async () => {
+  const resetsAt = 1795719000;
+  for (const [workObserved, terminalObserved] of [[false, true], [true, true], [false, false]]) {
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async *[Symbol.asyncIterator]() {
+          for await (const request of prompt) {
+            const session_id = request.session_id;
+            if (workObserved) yield { type: 'assistant', session_id, message: { content: [{ type: 'tool_use' }] } };
+            yield { type: 'rate_limit_event', session_id,
+              rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt } };
+            yield { type: 'assistant', session_id, parent_tool_use_id: null, error: 'rate_limit',
+              message: { model: '<synthetic>', content: [{ type: 'text', text: 'Untrusted raw provider content' }] } };
+            if (terminalObserved) yield { type: 'result', session_id, subtype: 'error_during_execution', is_error: true };
+          }
+        },
+        close() {},
+      }),
+    }));
+    assert.deepEqual(outcome, {
+      phase: 'subscription_limited', sessionId: input.sessionId, workObserved, terminalObserved,
+      limit: { window: 'five_hour', resets_at: resetsAt },
+    });
+  }
+});
+
 test('wrong receiving incarnation refuses before spawning Claude', async () => {
   const result = await runClaudeTurn(options({
     expectedBody: { ...expectedBody, incarnationId: 'replacement' },

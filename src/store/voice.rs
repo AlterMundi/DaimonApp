@@ -562,6 +562,7 @@ mod tests {
             .set_session_codex_thread(target, "worker-native")
             .unwrap();
         let mut input = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: Some(proof.clone()),
             channel: "telegram:fixture".into(),

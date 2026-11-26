@@ -227,8 +227,78 @@ async function providerEnvironment(profile, signal) {
   return env;
 }
 
+async function observeRuntime(path) {
+  const profile = await ownerProfile(path);
+  if (!profile.subscriptionEmail) return {};
+  const deadline = AbortSignal.timeout(10000);
+  const env = await providerEnvironment(profile, deadline);
+  // The SDK suppresses account-limit retrieval under this option. The
+  // observer explicitly reads /usage and does not submit model work.
+  delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  const { query } = await import(pathToFileURL(profile.sdk));
+  const abortController = new AbortController();
+  const cancel = () => abortController.abort();
+  deadline.addEventListener('abort', cancel, { once: true });
+  let permit;
+  const ready = new Promise(resolve => { permit = resolve; });
+  const prompt = (async function* () {
+    if (!await ready) return;
+    // This is a fixed account query. No caller text can enter this session.
+    yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: '/usage' } };
+  })();
+  const native = query({ prompt, options: {
+    abortController, env, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
+    model: profile.model, effort: profile.effort, tools: [], settingSources: [],
+    persistSession: false, strictMcpConfig: true,
+  } });
+  try {
+    const { account, claude_code_version: cliVersion } = await native.initializationResult();
+    if (cliVersion !== profile.cliVersion || account?.email !== profile.subscriptionEmail
+        || account.apiProvider !== 'firstParty' || !account.subscriptionType || account.apiKeySource != null
+        || !(await native.supportedCommands()).some(command => /^\/?usage$/.test(command.name))) return {};
+    permit(true);
+    let model, weekly, session;
+    for await (const event of native) {
+      if (event.type === 'system' && event.subtype === 'init'
+          && typeof event.model === 'string' && /^claude-[a-z0-9-]{1,96}$/.test(event.model)) {
+        model = event.model;
+      }
+      if (event.type === 'assistant') {
+        const limits = event.usage_report?.rate_limits?.limits;
+        if (Array.isArray(limits)) {
+          const readWindow = (kind, group) => {
+            const matches = limits.filter(window => window?.kind === kind && window.group === group
+              && window.scope == null && Number.isFinite(window.percent) && window.percent >= 0 && window.percent <= 100);
+            if (matches.length !== 1) return;
+            const reset = Date.parse(matches[0].resets_at);
+            if (Number.isFinite(reset) && reset > Date.now()) {
+              return { available: 100 - matches[0].percent, resets_at: Math.floor(reset / 1000) };
+            }
+          };
+          weekly = readWindow('weekly_all', 'weekly');
+          session = readWindow('session', 'session');
+        }
+      }
+      if (event.type === 'result') {
+        if (event.subtype === 'success' && event.is_error === false && event.local_command === 'usage'
+            && event.duration_api_ms === 0) return { model, weekly, session };
+        return {};
+      }
+    }
+    return {};
+  } finally {
+    permit(false);
+    native.close();
+    deadline.removeEventListener('abort', cancel);
+  }
+}
+
 async function main() {
   const [flag, path, ...extra] = process.argv.slice(2);
+  if (flag === '--observe-runtime' && extra.length === 0) {
+    process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
+    return;
+  }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
   const stop = new AbortController();
   const timeout = setTimeout(() => stop.abort(), 125_000);
@@ -239,16 +309,22 @@ async function main() {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
+    const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
+    const attachments = first?.attachments;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
     const fullAccess = first?.humanOriginal === true || routedHostAccess;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
       ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
+      ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
+      ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
       || (routedHostAccess && !routedHuman)
-      || (routedHuman && (first.humanOriginal || controllerSelected))
-      || (controllerSelected && first.humanOriginal !== true)
+      || (routedHuman && first.humanOriginal)
+      || (controllerSelected && !fullAccess)
+      || (nativeGoalCommand && first.humanOriginal !== true)
+      || (nativeGoalCommand && (typeof first.text !== 'string' || !/^\/goal(?: |$)/.test(first.text.trimEnd())))
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.humanOriginal !== 'boolean'
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
@@ -258,7 +334,13 @@ async function main() {
         || typeof first.resume.sessionId !== 'string' || !UUID.test(first.resume.sessionId)
         || first.resume.sessionId === first.freshNativeSessionId
         || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
-      || typeof first.text !== 'string' || !first.text.trim()
+      || (attachments !== undefined && (first.humanOriginal !== true || nativeGoalCommand
+        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
+        || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
+          && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096
+          && typeof file.name === 'string' && file.name.length <= 240
+          && typeof file.mime === 'string' && file.mime.length <= 128)))
+      || typeof first.text !== 'string' || (!first.text.trim() && attachments === undefined)
       || Buffer.byteLength(first.text) > 16 * 1024
       || (sessionInstructions !== undefined && (typeof sessionInstructions !== 'string'
         || Buffer.byteLength(sessionInstructions) > 16 * 1024))
@@ -364,7 +446,7 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

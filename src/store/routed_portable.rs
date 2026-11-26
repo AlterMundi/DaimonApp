@@ -47,8 +47,7 @@ pub(super) fn telegram_original_epoch(
         return Ok(None);
     };
     let original: crate::telegram::Update = serde_json::from_str(&raw)?;
-    let matching = original.direct_human_text
-        && original.update_id == update
+    let matching = original.update_id == update
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
                 && message.chat.id == target.chat_id
@@ -57,8 +56,16 @@ pub(super) fn telegram_original_epoch(
                     .from
                     .as_ref()
                     .is_some_and(|user| user.id == source.human_id && !user.is_bot)
-                && message.text.as_deref() == Some(source.text.as_str())
-                && message.is_text_only()
+                && if source.telegram_files.is_empty() {
+                    original.direct_human_text
+                        && message.text.as_deref() == Some(source.text.as_str())
+                        && message.is_text_only()
+                } else {
+                    original.direct_human_attachment
+                        && source.origin.thread_id == target.thread_id
+                        && message.has_own_attachment()
+                        && message.attachment_caption() == source.text
+                }
         });
     if !matching {
         return Ok(None);
@@ -90,6 +97,18 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
         source.tribu_source.is_none()
             && source.update_id.is_none()
             && super::dialogue::dispatched_source_on(conn, &input.id, input.human_id, writer)?
+    } else if matches!(
+        source.channel.as_str(),
+        "local-session" | "local-session-result"
+    ) {
+        let expected = if source.channel == "local-session" {
+            "session_request"
+        } else {
+            "session_result"
+        };
+        super::session_requests::author_on(conn, &input.input_id)?
+            .is_some_and(|value| value["kind"] == expected)
+            && super::session_requests::session_input_allowed_on(conn, &input.id, input.human_id)?
     } else {
         telegram_original_epoch(conn, &source, input.target)?
             .as_ref()
@@ -114,6 +133,46 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
         )?)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn controller_parent_on(
+    conn: &Connection,
+    parent: &Instruction,
+    caller: SessionKey,
+    human: i64,
+    native: &str,
+    turn: &str,
+    local: i64,
+    instance: &str,
+) -> Result<bool> {
+    if parent.id != turn
+        || parent.target != caller
+        || parent.human_id != human
+        || parent.phase != Phase::Submitting
+        || parent.local_turn != Some(local)
+        || parent.native_thread.as_deref() != Some(native)
+        || !parent
+            .target_execution
+            .as_ref()
+            .is_some_and(|value| value.harness == Harness::Claude)
+        || super::session_requests::author_on(conn, &parent.input_id)?.is_some()
+        || !current_on(conn, parent, instance)?
+    {
+        return Ok(false);
+    }
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
+         JOIN users u ON u.tg_user_id=s.creator_user_id
+         JOIN conversation_entry_generations g ON g.session_id=s.id
+         JOIN interaction_instructions i ON i.session_id=s.id
+         WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND s.creator_user_id=?3
+           AND u.allowed=1 AND t.native_thread_id=?4 AND t.execution_harness='claude'
+           AND t.execution_generation=g.generation AND t.status='running'
+           AND i.id=?5 AND i.instance_id=?6 AND i.phase='submitting')",
+        params![local, parent.target_session, human, native, turn, instance],
+        |row| row.get(0),
+    )?)
+}
+
 pub(super) fn recover_on(conn: &Connection, writer: &str) -> Result<()> {
     conn.execute(
         "UPDATE turns SET status='failed',completed_at=?2 WHERE status='running'
@@ -134,11 +193,11 @@ impl Store {
         session: i64,
         human: i64,
         engine: &str,
-    ) -> Result<(bool, i64)> {
+    ) -> Result<(Option<String>, i64)> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.from_user_id=?2
-                AND t.execution_harness=?3 AND t.status='running'),
+            "SELECT (SELECT t.started_at FROM turns t WHERE t.session_id=s.id AND t.from_user_id=?2
+                AND t.execution_harness=?3 AND t.status='running' ORDER BY t.id DESC LIMIT 1),
                 (SELECT count(*) FROM interaction_instructions i
                  WHERE i.session_id=s.id AND i.instance_id=?4 AND i.phase='queued'
                  AND json_extract(i.doc,'$.target_execution.harness')=?3
@@ -171,8 +230,10 @@ impl Store {
             super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
                 .paired_actor
         } else {
-            // current_on verified the exact sender in the owned topic.
-            true
+            // A retained same-session result may continue its opted-in, already
+            // authorized parent, while a new session-authored request has no
+            // independent grant to the paired human's host tools.
+            source.channel != "local-session"
         };
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
@@ -212,6 +273,10 @@ impl Store {
              FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
              WHERE p.id<t.id AND p.execution_harness='claude' AND p.execution_generation=t.execution_generation
                AND (p.native_thread_id IS NOT NULL OR p.execution_native_scope='resume_unavailable')
+               AND NOT EXISTS (SELECT 1 FROM interaction_instructions i
+                 WHERE i.session_id=p.session_id AND i.phase='rejected'
+                 AND json_extract(i.doc,'$.local_turn')=p.id
+                 AND json_type(i.doc,'$.subscription_limit')='object')
              ORDER BY p.id DESC LIMIT 1",[local],|r|Ok(PriorExecution { status:r.get(0)?, session:r.get(1)?, scope:r.get(2)?, body:r.get(3)? }),
         ).optional()?;
         let Some(PriorExecution {
@@ -321,6 +386,14 @@ impl Store {
             (Phase::Submitting | Phase::Queued | Phase::Cancelled, _) => None,
             _ => bail!("Routed native attempt already settled"),
         };
+        let limit = (current.phase == Phase::Submitting
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == Harness::Claude))
+        .then(|| crate::interaction::SubscriptionLimit::from_worker(outcome))
+        .flatten();
         let mut deliveries = Vec::new();
         if let Some(text) = reply {
             let native = current
@@ -359,10 +432,22 @@ impl Store {
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
-                _ if outcome["phase"] == "not_submitted" => Phase::Rejected,
+                _ if outcome["phase"] == "not_submitted"
+                    || (limit.is_some()
+                        && crate::interaction::SubscriptionLimit::refused_before_work(outcome)) =>
+                {
+                    Phase::Rejected
+                }
                 _ => Phase::Uncertain,
             };
             super::interaction::transport_on(&tx, &input.id, input.human_id, local, phase, None)?;
+            if let Some(limit) = limit {
+                tx.execute(
+                    "UPDATE interaction_instructions
+                    SET doc=json_set(doc,'$.subscription_limit',json(?2)) WHERE id=?1",
+                    params![input.id, serde_json::to_string(&limit)?],
+                )?;
+            }
         }
         let resume_unavailable = outcome["reason"] == "claude_resume_session_missing";
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,
