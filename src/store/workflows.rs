@@ -6071,6 +6071,8 @@ mod tests {
             e.key,
             generation,
             HeartbeatReviewTask {
+                cadence: None,
+                change_source: None,
                 id: "intake".into(),
                 purpose,
                 purpose_revision: String::new(),
@@ -6455,6 +6457,8 @@ mod tests {
         s.heartbeat_select_review(100, e.key, generation, contract.clone())
             .unwrap();
         let task=crate::store::HeartbeatReviewTask {
+            cadence: None,
+            change_source: None,
             id:"bitacora".into(), purpose:contract.purpose.clone(), purpose_revision:String::new(),
             instructions:"Reconcile selected institutional intake; preserve selected originals before cache cleanup; no publication.".into(),
         };
