@@ -540,7 +540,7 @@ pub(super) async fn run_routed_portable(
             {
                 return Ok(false);
             }
-            store.expose_routed_portable(input,local,&body,&prepared)
+            store.expose_routed_portable(input,local,&body,&prepared,routed_host_access)
         }).await
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;

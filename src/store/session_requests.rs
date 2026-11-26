@@ -109,6 +109,46 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
     ))
 }
 
+// The retained human parent can grant the recipient its paired host tools.
+// The helper remains session-authored and cannot itself become a parent.
+pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
+    let human = child.human_id;
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+             WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+               AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
+                              WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+            params![child.id, human],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(parent) = parent else {
+        return Ok(false);
+    };
+    let parent = instruction_on(conn, &parent, human)?;
+    if parent.admission_epoch != child.admission_epoch
+        || author_on(conn, &parent.input_id)?.is_some()
+    {
+        return Ok(false);
+    }
+    let source = super::routing::source_on(conn, &parent.id, human)?;
+    if source.channel == "conversation" {
+        let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
+        return Ok(original.paired_actor
+            && original.tribu_source.is_none()
+            && source.tribu_source.is_none()
+            && super::conversation_inputs::eligible_binding_on(conn, &original).is_ok());
+    }
+    if source.channel.starts_with("telegram:") {
+        return Ok(
+            super::routed_portable::telegram_original_epoch(conn, &source, parent.target)?
+                .is_some_and(|epoch| Some(epoch) == child.admission_epoch),
+        );
+    }
+    Ok(false)
+}
+
 fn session_requests_on(
     conn: &Connection,
     caller: SessionKey,
@@ -669,6 +709,12 @@ mod tests {
     }
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
+        for paired in [false, true] {
+            check_portable_dependency(paired);
+        }
+    }
+
+    fn check_portable_dependency(paired: bool) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         let caller = setup(&store, 7);
@@ -679,7 +725,53 @@ mod tests {
                 &super::super::tests::defaults(),
             )
             .unwrap();
-        let instruction = parent(&store, &caller);
+        let event = Uuid::now_v7().to_string();
+        let binding = store
+            .interaction_presentation_list(100, caller.key, 0, 0)
+            .unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        store
+            .conversation_input_capture_files(
+                100,
+                caller.key,
+                &binding,
+                &event,
+                "Human task",
+                None,
+                None,
+                None,
+                vec![],
+                paired,
+            )
+            .unwrap();
+        let (instruction, _) = store
+            .interaction_admit(
+                &SourceInput {
+                    telegram_files: vec![],
+                    tribu_source: None,
+                    transcription: None,
+                    channel: "conversation".into(),
+                    event_id: event.clone(),
+                    update_id: None,
+                    human_id: 100,
+                    target_sessions: vec![caller.id],
+                    origin: ReturnRoute {
+                        chat_id: 100,
+                        thread_id: 7,
+                        message_id: None,
+                    },
+                    text: "Human task".into(),
+                },
+                caller.key,
+                RequestRelation::New,
+            )
+            .unwrap();
+        store
+            .interaction_bind_epoch(&instruction.id, 100, "initial")
+            .unwrap();
+        accept(&store, &caller, &instruction, "parent-turn");
         let profile: crate::interaction::InteractionConfig = serde_json::from_value(json!({
             "human_id":100,"chat_id":100,"topic_id":7,
             "targets":[{"topic_id":8,"name":"Design","harness":"claude"}],
@@ -737,7 +829,7 @@ mod tests {
                 .unwrap()["kind"],
             "session_request"
         );
-        let (_, host_access) = store
+        let (local, host_access) = store
             .begin_routed_portable(
                 &delivered,
                 &TurnRequest {
@@ -751,9 +843,30 @@ mod tests {
                 },
             )
             .unwrap();
+        assert_eq!(host_access, paired);
+        if paired {
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
+                    [&event],
+                )
+                .unwrap();
+            assert!(!store.expose_routed_portable(
+                &delivered,
+                local,
+                &json!({}),
+                &json!({"native_session_id": Uuid::now_v7().to_string(), "native_session_scope": "a".repeat(64)}),
+                true,
+            ).unwrap());
+        }
         assert!(
-            !host_access,
-            "Context delivery must keep session authorship and scoped tools"
+            store
+                .interaction_author(&delivered.id, 100)
+                .unwrap()
+                .is_some()
         );
     }
 

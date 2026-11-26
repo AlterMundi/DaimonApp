@@ -219,14 +219,13 @@ impl Store {
             "Routed input retired before native preparation"
         );
         let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
-        let paired = if source.channel == "conversation" {
-            super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
-                .paired_actor
-        } else {
-            // A retained same-session result may continue its opted-in, already
-            // authorized parent, while a new session-authored request has no
-            // independent grant to the paired human's host tools.
-            source.channel != "local-session"
+        let paired = match source.channel.as_str() {
+            "conversation" => {
+                super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
+                    .paired_actor
+            }
+            "local-session" => super::session_requests::paired_request_parent_on(&tx, &current)?,
+            _ => true,
         };
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
@@ -312,6 +311,7 @@ impl Store {
         local: i64,
         body: &Value,
         prepared: &Value,
+        paired_host_access: bool,
     ) -> Result<bool> {
         let harness = input
             .target_execution
@@ -349,6 +349,13 @@ impl Store {
         if current.phase != Phase::Queued
             || current.local_turn != Some(local)
             || !current_on(&tx, &current, &self.instance_id)?
+        {
+            return Ok(false);
+        }
+        if paired_host_access
+            && super::routing::source_on(&tx, &current.id, current.human_id)?.channel
+                == "local-session"
+            && !super::session_requests::paired_request_parent_on(&tx, &current)?
         {
             return Ok(false);
         }

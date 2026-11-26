@@ -1263,6 +1263,13 @@ executions also do not inherit an older native progress return binding. Legacy
 records use retained session authorship/coverage without erasing any delivery or
 uncertain-send receipt. Later corrections keep their existing freshness semantics.
 
+An attributed local request to Claude can use the destination's paired host
+tools when its exact retained parent came from the authenticated paired human.
+The companion lane and unattested parents keep the scoped tool set. The
+recipient receives the request as session-authored context and cannot use it to
+authorize a second dependency. Gateway checks the retained parent independently
+of the helper's text.
+
 A local dependency is a single level: another session's request or result cannot
 serve as a human parent. An accepted original human instruction can authorize at
 most four dependencies. Self-addressing is rejected. Reusing a request ID retains
