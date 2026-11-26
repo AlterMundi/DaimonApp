@@ -795,6 +795,17 @@ account balances or a financial grant. It requires a qualified native reader,
 local environment and matching standalone executor in the selected native package.
 A reader rejecting this field must never receive a retry with it stripped.
 
+`processLimits.writableStorage` optionally selects an existing operator-owned
+filesystem with `root` (absolute, excluding `/`) and `maxBytes` (positive, at most
+16 GiB). App captures and forwards this closed selection unchanged for funded
+and attempt-only owners; paths are omitted from Debug output. App does not inspect,
+allocate, mount, resize or grant access to it. Core44 and successors validate its
+actual mount, total capacity and existing write permissions, then keep private
+HOME/TMPDIR inside that budget. Select only a qualified matching native package;
+an older reader refusal never permits stripping the field or retrying work.
+Omission preserves legacy selections. Source support does not select a production
+workspace, account, lane or resource allowance.
+
 Core binds one physical turn to one aggregate shared by its private stdio executor,
 command descendants and V8 host. Startup captures a private explicit environment
 and empty temporary HOME/CODEX_HOME; the existing named permission ceiling is

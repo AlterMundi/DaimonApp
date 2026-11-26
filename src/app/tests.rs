@@ -2508,6 +2508,7 @@ fn deliberate_nexus_binding_never_falls_back_to_latest_cwd_history() {
             author_ref: "human:test".into(),
             human_user_id: 100,
             label: "Nexus".into(),
+            launch_enabled: true,
             launch_selector: None,
         }],
     });

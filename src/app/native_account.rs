@@ -405,6 +405,7 @@ for line in sys.stdin:
             },
             timeout_seconds: 1,
             native_funding_binding: Some("/private/selected-funding.json".into()),
+            native_attention_host_restrictions: Default::default(),
             native_host_restrictions: None,
         };
         let start = json!({"thread_id":"observed-native","parent_allowance":{
