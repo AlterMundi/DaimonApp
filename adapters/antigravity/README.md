@@ -66,8 +66,10 @@ binding and reachability of the selected loopback listener. A refused or timed-o
 connection before Gateway's submission decision is a known unsent turn.
 The connection check sends no HTTP request or original text. The selected
 provider receives the input only after Gateway's decision. Each subsequent
-provider request must carry the exact original and the same tool catalog. One follow-up
-is permitted after one approved observation. Failure after commit is
+provider request must carry the exact original and the same tool catalog. Each
+approved observation tool can run once. A follow-up must carry the new approved
+tool results. Once all approved tools have run, the provider receives a request
+for the final answer with further tool calls disabled. Failure after commit is
 uncertain and never triggers resubmission.
 
 Run the joined qualification in a disposable loopback namespace:
@@ -94,6 +96,15 @@ This second test runs an authenticated Matrix socket and a real DMK reader
 against disposable signing material and a disposable DMK pool. The provider
 is still a loopback responder with no account or real inference. It verifies
 the sender's signed readback, the original thread and the receipt hash.
+
+To qualify a named Interaction topic with an actual local model, run the
+same signed fixture with `FOREGROUND_TEST_INVERSE_HARNESSES=1`. Set
+`FOREGROUND_TEST_ANTIGRAVITY_PROVIDER_COMMAND` to the JSON argv of the
+qualified local provider. Use `{port}` for the assigned loopback port and
+`fixture` as the model alias. The fixture submits a paired human original to
+its owned test topic, reads the selected disposable DMK record through the
+native tool, and checks the result and provider shutdown. Existing Codex
+bindings and real conversations are outside the fixture.
 
 `matrix antigravity interrupt EVENT_ID` stops the selected current worker.
 Set `FOREGROUND_TEST_SIGNED_INTERRUPT=before` in the signed fixture to test

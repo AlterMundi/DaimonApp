@@ -177,12 +177,11 @@ async def run(profile, reader):
 
             observed = await observe("daimon_status")
             require(json.loads(observed) == profile["body"])
-            used = False
+            used = set()
 
             async def reply_with(name):
-                nonlocal used
-                require(committed and not used)
-                used = True
+                require(committed and name in tools and name not in used)
+                used.add(name)
                 result = await observe(name)
                 gate.allow_followup()
                 return result
@@ -203,7 +202,9 @@ async def run(profile, reader):
                     save_dir=str(state), app_data_dir=str(state), workspaces=[str(state)],
                     capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False,
                                                     agent_behavior=AgentBehavior.MINIMAL),
-                    budget_config=BudgetConfig(max_model_calls=4, max_tool_calls=2),
+                    # The SDK stops at its tool ceiling before generating a
+                    # final answer. The callbacks enforce the exact lower cap.
+                    budget_config=BudgetConfig(max_model_calls=4, max_tool_calls=len(tools) + 1),
                     tools=[daimon_status, dmk_read_selected] if len(tools) == 2 else [daimon_status],
                 )
                 with TemporaryDirectory(prefix="catalog-check-", dir=state) as disposable:
@@ -234,7 +235,7 @@ async def run(profile, reader):
                     async def collect_reply():
                         text = await reply.text()
                         require(reply.stop_reason == StopReason.UNSPECIFIED)
-                        require(0 < gate.succeeded == gate.forwarded <= 2)
+                        require(0 < gate.succeeded == gate.forwarded <= 1 + len(tools))
                         require(agent.conversation_id == first["sessionId"] and 0 < len(text.strip().encode()) <= 16_384)
                         return text
 

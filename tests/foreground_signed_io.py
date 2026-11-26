@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 import shlex
 import signal
+from socket import socket as tcp_socket
 import socketserver
 import sqlite3
 import subprocess
@@ -318,6 +319,15 @@ operator.main()
                 if memory:
                     config["selectedMemory"] = memory
                 command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
+                real_provider = os.environ.get("FOREGROUND_TEST_ANTIGRAVITY_PROVIDER_COMMAND")
+                if real_provider and engine == "antigravity" and inverse:
+                    with tcp_socket() as reservation:
+                        reservation.bind(("127.0.0.1", 0))
+                        config["providerPort"] = reservation.getsockname()[1]
+                    config["providerCommand"] = [
+                        arg.replace("{port}", str(config["providerPort"]))
+                        for arg in json.loads(real_provider)
+                    ]
                 if interaction and scripts:
                     python = os.environ.get("CLAUDE_TEST_DMK_PYTHON", sys.executable)
                     selected, _ = selected_memory(root, python, scripts, being, provider.current, engine)
@@ -804,6 +814,52 @@ timeout_seconds=5
                 contents = json.loads(profile.read_bytes())
                 contents["selectedMemory"]["inputId"] = str(instruction_id)
                 profile.write_text(json.dumps(contents))
+
+            profile_doc = json.loads(profile.read_bytes())
+            if "providerCommand" in profile_doc:
+                text = ("#Alpha Verify the body with daimon_status and read the record with "
+                        "dmk_read_selected. Your visible answer must start with the exact sentence "
+                        "from the selected memory record. Put any required result metadata after "
+                        "that sentence.")
+                original = {"id": str(uuid.uuid4()), "binding": page["binding"], "text": text}
+                select_memory_for(original)
+                status = journey.read("input", "submit-human", json.dumps(original))["result"]
+                self.assertTrue(status["new_input"])
+                journey.wait(lambda: journey.row(
+                    "SELECT i.phase FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=? "
+                    "AND i.phase IN ('accepted','uncertain','retained_unsent','rejected')",
+                    (original["id"],),
+                ), seconds=115)
+                phase, native = journey.row(
+                    "SELECT i.phase,t.native_thread_id FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (original["id"],),
+                )[0]
+                transcript_path = (Path(profile_doc["stateRoot"]) / "brain" / (native or "missing")
+                                   / ".system_generated/logs/transcript.jsonl")
+                log = transcript_path.read_text() if transcript_path.is_file() else ""
+                tool_steps = [event["tool_calls"] for row in log.splitlines()
+                              if (event := json.loads(row)).get("tool_calls")]
+                self.assertEqual(phase, "accepted", f"Native tool selections: {tool_steps}")
+                rows = journey.row(
+                    "SELECT r.body,t.execution_harness,t.native_thread_id FROM interaction_results r "
+                    "JOIN turns t ON t.id=r.local_turn"
+                )
+                self.assertEqual(len(rows), 1, rows)
+                self.assertEqual(rows[0][1], engine)
+                self.assertIn(foreground.MARKER, rows[0][0])
+                self.assertEqual(rows[0][2], native)
+                for tool in ("daimon_status", "dmk_read_selected"):
+                    self.assertIn(f"Tool response for {tool}:", log)
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+                self.assertFalse(journey.packets or journey.worker_packets or return_attempts or provider.calls)
+                self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
+                                 previous_codex)
+                with tcp_socket() as endpoint:
+                    self.assertNotEqual(endpoint.connect_ex(("127.0.0.1", profile_doc["providerPort"])), 0)
+                return
 
             original = submit_original(provider.original)
             select_memory_for(original)
