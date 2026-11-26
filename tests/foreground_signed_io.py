@@ -21,7 +21,7 @@ import unittest
 import uuid
 
 import antigravity_foreground_io as foreground
-from claude_provider_fixture import ANSWER, ClaudeProvider
+from claude_provider_fixture import ANSWER, REVOKED_ANSWER, ClaudeProvider
 from conversation_input_control_io import Inputs
 
 
@@ -234,6 +234,7 @@ operator.main()
                     provider.dmk_record = {"action": "read", "pool": selected["pool"],
                                            "record_uid": selected["recordUid"],
                                            "expected_revision": selected["revision"]}
+                    provider.worker_profile = profile
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -409,6 +410,32 @@ timeout_seconds=5
                 self.assertEqual(len(return_attempts), 2)
                 self.assertEqual(journey.telegram_methods, [])
                 self.assertEqual(journey.rpc, [])
+                if not hasattr(provider, "dmk_record"):
+                    return
+                provider.previous_scope = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_scope') FROM interaction_matrix_requests WHERE source_event=?",
+                    (provider.current,),
+                )[0][0]
+                # Revoke the provider's direct DMK route without changing
+                # the receiving Matrix body or the Interaction conversation.
+                worker = json.loads(provider.worker_profile.read_text())
+                del worker["sharedDmk"]
+                provider.worker_profile.write_text(json.dumps(worker))
+                del provider.dmk_record
+                provider.dmk_revoked = True
+                provider.human_original = str(uuid.uuid4())
+                provider.original = "What can you see after the access change?"
+                revoked = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=revoked, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (revoked["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+revoked["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertEqual(status["claude_reply"]["text"], REVOKED_ANSWER)
+                self.assertEqual(len(return_attempts), 3)
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1

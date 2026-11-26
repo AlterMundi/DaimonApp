@@ -1,5 +1,6 @@
 // One foreground turn on a Gateway-owned pair of pipes.
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -11,8 +12,20 @@ import { runClaudeTurn } from './turn.mjs';
 
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 
-const VERSION = 'daimon-gateway.claude-turn/v1';
+const VERSION = 'daimon-gateway.claude-turn/v2';
 const exec = promisify(execFile);
+
+function turnScope(profile, bytes = '') {
+  const selector = profile.sharedDmk;
+  return createHash('sha256')
+    .update(JSON.stringify([
+      profile.home, profile.cwd, profile.subscriptionEmail ?? null,
+      profile.configurationDirectory ?? null, profile.apiKeyFile ?? null,
+      selector?.command ?? null, selector?.bodyRef ?? null,
+    ]))
+    .update(bytes)
+    .digest('hex');
+}
 
 async function ownerProfile(path) {
   const value = JSON.parse(await privateBytes(path, 16 * 1024));
@@ -67,9 +80,10 @@ async function sharedDmkServer(profile, retainDirectory) {
   retainDirectory(directory);
   const snapshot = join(directory, 'binding.json');
   await writeFile(snapshot, bytes, { mode: 0o600, flag: 'wx' });
-  return { type: 'stdio', command: '/usr/bin/env',
+  const config = { type: 'stdio', command: '/usr/bin/env',
     args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${profile.home}`, ...command, '--binding', snapshot],
     alwaysLoad: true };
+  return { config, scope: turnScope(profile, bytes) };
 }
 
 async function providerEnvironment(profile, signal) {
@@ -106,12 +120,15 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    const resume = Object.hasOwn(first ?? {}, 'resume');
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body', ...(resume ? ['resume'] : [])])
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'text', 'body'])
       || first.schema !== VERSION || first.type !== 'start'
-      || (resume && first.resume !== true)
-      || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
-      || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
+      || ![first.inputId, first.sessionId, first.freshNativeSessionId]
+        .every(value => typeof value === 'string' && UUID.test(value))
+      || first.freshNativeSessionId === first.sessionId
+      || (first.resume !== null && (!closed(first.resume, ['sessionId', 'scope'])
+        || typeof first.resume.sessionId !== 'string' || !UUID.test(first.resume.sessionId)
+        || first.resume.sessionId === first.freshNativeSessionId
+        || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
       || typeof first.text !== 'string' || !first.text.trim()
       || Buffer.byteLength(first.text) > 16 * 1024
       || !closed(first.body, Object.keys(profile.body))
@@ -132,33 +149,45 @@ async function main() {
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
     const sharedDmk = await sharedDmkServer(profile, directory => { dmkDirectory = directory; });
+    const scope = sharedDmk?.scope ?? turnScope(profile);
+    const resume = first.resume?.scope === scope;
+    const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
+    async function scopeStillActive() {
+      const current = await ownerProfile(path);
+      if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
+      if (!Object.hasOwn(current, 'sharedDmk')) return !sharedDmk && turnScope(current) === scope;
+      if (!sharedDmk || typeof current.sharedDmk?.bindingFile !== 'string') return false;
+      const bytes = await privateBytes(current.sharedDmk.bindingFile, 16 * 1024);
+      return turnScope(current, bytes) === scope;
+    }
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
       createSdkMcpServer, tool, signal: stop.signal,
     });
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: first.sessionId, text: first.text, resume },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk,
+        sharedDmk: sharedDmk?.config,
         persistSession: true, maxTurns: sharedDmk ? 6 : 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {
-        if (inputId !== first.inputId || sessionId !== first.sessionId) return false;
+        if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;
+        if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
-          nativeSessionId: sessionId }, stop.signal);
+          nativeSessionId: sessionId, sessionScope: scope }, stop.signal);
         const decision = (await input.next()).value;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
-          || decision.inputId !== inputId || decision.sessionId !== sessionId
+          || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
         // A closed owner pipe or a second command cancels this attempt.
         void input.next().then(() => stop.abort(), () => stop.abort());
-        return true;
+        return scopeStillActive();
       },
     });
     await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);

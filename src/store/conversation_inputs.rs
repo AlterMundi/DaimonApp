@@ -4445,6 +4445,10 @@ mod tests {
                 )
                 .unwrap()
                 .unwrap();
+            let native = attempt.resume.as_ref().map_or_else(
+                || Uuid::new_v4().to_string(),
+                |prior| prior.session_id.clone(),
+            );
             let declare_exposure = || {
                 store.we_transition(
                     100,
@@ -4452,10 +4456,10 @@ mod tests {
                     &attempt,
                     WePhase::Starting,
                     WePhase::ProviderExposed,
-                    json!({"native_session_id": attempt.session_id}),
+                    json!({"native_session_id": native, "native_session_scope": "a".repeat(64)}),
                 )
             };
-            if attempt.resume {
+            if attempt.resume.is_some() {
                 // Simulate another Gateway taking the SQLite writer lease
                 // after selection but before this old worker's commit.
                 let conn = rusqlite::Connection::open(file.path()).unwrap();
@@ -4472,10 +4476,10 @@ mod tests {
                 .unwrap();
             }
             assert!(declare_exposure().unwrap());
-            (id, original, attempt)
+            (id, original, attempt, native)
         };
-        let (id, original, attempt) = start(&store);
-        assert!(!attempt.resume);
+        let (id, original, attempt, native) = start(&store);
+        assert!(attempt.resume.is_none());
         let reply = WeOriginal {
             schema: original.schema,
             event_id: Uuid::now_v7().to_string(),
@@ -4507,15 +4511,15 @@ mod tests {
             .unwrap();
         drop(store);
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
-        let (_, _, continuation) = start(&store);
-        assert!(continuation.resume);
-        assert_eq!(continuation.session_id, attempt.session_id);
+        let (_, _, continuation, _) = start(&store);
+        assert_eq!(continuation.resume.as_ref().unwrap().session_id, native);
+        assert_ne!(continuation.session_id, attempt.session_id);
         // Lose the process after authorization. The next original must not
         // reopen the transcript that may contain the interrupted turn.
         drop(store);
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
-        let (_, _, successor) = start(&store);
-        assert!(!successor.resume);
+        let (_, _, successor, _) = start(&store);
+        assert!(successor.resume.is_none());
         assert_ne!(successor.session_id, continuation.session_id);
     }
 

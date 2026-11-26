@@ -7,6 +7,7 @@ import json
 TOOL = "mcp__matrix__daimon_status"
 DMK = ["mcp__hmk__dmk_recall", "mcp__hmk__hmk_recall"]
 ANSWER = "The selected Matrix body reported integrity ok."
+REVOKED_ANSWER = "I can continue without the earlier memory."
 
 
 class ClaudeProvider(BaseHTTPRequestHandler):
@@ -38,7 +39,16 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 item for message in data["messages"] if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
-            if previous is not None:
+            if getattr(self.server, "dmk_revoked", False):
+                assert not result
+                assert self.server.dmk_marker not in json.dumps(data["messages"])
+                assert ANSWER not in json.dumps(data["messages"])
+                assert json.loads(submission)["native_session_id"] != self.server.previous_session
+                assert json.loads(submission)["native_session_scope"] != self.server.previous_scope
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": REVOKED_ANSWER}
+                reason = "end_turn"
+            elif previous is not None:
                 assert prior == 2
                 assert previous in json.dumps(data["messages"])
                 assert ANSWER in json.dumps(data["messages"])

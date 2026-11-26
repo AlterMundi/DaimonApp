@@ -74,25 +74,30 @@ spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
 The UTF-8 newline-delimited protocol uses schema
-`daimon-gateway.claude-turn/v1`. Every frame carries the same `inputId` and
+`daimon-gateway.claude-turn/v2`. Every frame carries the same `inputId` and
 `sessionId`. Gateway sends `start` with the retained `text` and independently
 observed Matrix `body`. The worker requires that body to match its private
 profile. After the identity and catalog checks, the worker emits
-`prepare_submission` with the native session identity. Gateway records that
-binding and exposure together in the existing journal before returning
-`submission_decision` with `committed: true`. A fresh Claude session uses the
-allocated UUID. For a private Interaction conversation, Gateway can send
-`resume: true` with the previous native session UUID. It selects that UUID
-in the canonical journal only when the last exposed turn in the same
+`prepare_submission` with the native session identity and current DMK
+authorization scope. Gateway records both and the exposure together in the
+existing journal before returning `submission_decision` with
+`committed: true`. Each `start` provides a fresh native UUID independent of the
+turn's correlation UUID. For a private Interaction conversation, Gateway can
+also offer the previous native UUID and scope. It selects that candidate
+only when the last exposed turn in the same
 conversation and Matrix thread returned a signed reply that Interaction
-retained, with the same receiving body and manifest. The original still has
-its own input ID and submission decision. A previous exposure with an
+retained, with the same receiving body and manifest. The worker resumes only
+when the current DMK authority matches the scope recorded for that UUID.
+Changing or revoking the binding uses the fresh UUID for the new original.
+A previous exposure with an
 uncertain result starts a separate native session for the next new original.
 The same applies if Claude reports that the selected native session is missing
 before submission. A new original sent before the previous reply has been
 retained in Interaction starts its own session.
 Manual owner runs and existing unbound transcripts stay isolated. Deploy
-the Gateway and Claude worker from the same revision for resumed turns.
+the Gateway and Claude worker from the same revision. Rollback restores
+both together with the earlier compatible owner profile. The distinct
+native UUID bars a previous Gateway from resuming a scoped transcript.
 Status presents both identities, including retained exposures after a restart.
 An absent, rejected or mismatched decision prevents prompt submission. The
 only terminal frame is `outcome`. A missing outcome after a recorded exposure

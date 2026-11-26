@@ -10,10 +10,11 @@ import { fileURLToPath } from 'node:url';
 
 const executable = fileURLToPath(new URL('gateway-worker.mjs', import.meta.url));
 const correlation = {
-  schema: 'daimon-gateway.claude-turn/v1',
+  schema: 'daimon-gateway.claude-turn/v2',
   inputId: 'bd55cfc3-710f-44b8-b778-d15be1b77997',
   sessionId: '3d5ef97e-bd13-4ee1-9f4c-f2807b2b472b',
 };
+const nativeSessionId = '627b6f7e-50a1-46ad-90d2-684c5faf97c3';
 const original = 'Reply using this selected fixture original.';
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
@@ -100,7 +101,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
 
       const { apiKeyFile: _keyFile, configurationDirectory: _directory, ...commonProfile } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
-      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'committed', 'result-lost',
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       // Native bootstrap with a synthetic key timed out offline.
       // Exercise the native auth selector here with the isolated fixture SDK.
@@ -124,7 +125,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
           const text = decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', text, body }) + '\n');
+          worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId, resume: null, text, body }) + '\n');
           const first = JSON.parse((await lines.next()).value);
           if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
             assert.deepEqual(first, { ...correlation, type: 'outcome',
@@ -134,9 +135,13 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
             continue;
           }
+          assert.match(first.sessionScope, /^[a-f0-9]{64}$/);
           assert.deepEqual(first,
-            { ...correlation, type: 'prepare_submission', nativeSessionId: correlation.sessionId });
+            { ...correlation, type: 'prepare_submission', nativeSessionId, sessionScope: first.sessionScope });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+          if (decision === 'profile-changed') {
+            await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
+          }
           if (decision === 'disconnected') worker.stdin.end();
           else {
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
@@ -148,9 +153,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           const completed = ['committed', 'subscription-committed'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
-            ? { phase: 'completed', sessionId: correlation.sessionId, text: 'Qualified fixture reply.' }
+            ? { phase: 'completed', sessionId: nativeSessionId, text: 'Qualified fixture reply.' }
             : committed
-              ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: correlation.sessionId }
+              ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: nativeSessionId }
               : { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' };
           assert.deepEqual(frame, { ...correlation, type: 'outcome', outcome }, decision);
           if (committed) {
@@ -160,6 +165,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           }
           assert.equal((await exited)[0], 0);
+          if (decision === 'profile-changed') await writeFile(selection, JSON.stringify(profile));
         } finally {
           worker.kill();
           await exited;
@@ -174,7 +180,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          worker.stdin.end(JSON.stringify({ ...correlation, type: 'start', text: original, body }) + '\n');
+          worker.stdin.end(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId, resume: null, text: original, body }) + '\n');
           assert.deepEqual(JSON.parse((await lines.next()).value), {
             ...correlation, type: 'outcome',
             outcome: { phase: 'not_submitted', reason: 'claude_api_auth_unverified' },

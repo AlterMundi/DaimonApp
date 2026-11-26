@@ -91,9 +91,23 @@ impl Request {
 pub(crate) struct WeAttempt {
     pub id: String,
     pub session_id: String,
-    pub resume: bool,
+    pub resume: Option<ClaudeContinuation>,
     entry_session: i64,
     original: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClaudeContinuation {
+    pub session_id: String,
+    pub scope: String,
+}
+
+pub(crate) fn valid_claude_scope(scope: &str) -> bool {
+    scope.len() == 64
+        && scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn owns_writer(tx: &Connection, instance: &str) -> Result<bool> {
@@ -149,6 +163,7 @@ fn view(request: &Request, mut phase: WePhase, mut result: Value, instance: &str
         .unwrap_or(ForegroundEngine::Claude.name());
     let native_session_id = result.as_object_mut().and_then(|outcome| {
         outcome.remove("text");
+        outcome.remove("native_session_scope");
         outcome.remove("native_session_id")
     });
     if matches!(
@@ -302,26 +317,30 @@ impl Store {
                 let result: Value = serde_json::from_str(&result)?;
                 // An exposed turn without confirmed readback, including a
                 // row from an older writer, breaks continuity for this lane.
+                let native = result["native_session_id"].as_str().unwrap_or_default();
+                let scope = result["native_session_scope"].as_str().unwrap_or_default();
                 (phase == "delivered"
                     && read_back
                     && prior.source == source
                     && prior.body == body
-                    && result["native_session_id"].as_str() == Some(&prior.session_id)
-                    && canonical_uuid(&prior.session_id))
-                .then_some(prior.session_id)
+                    && canonical_uuid(native)
+                    && valid_claude_scope(scope))
+                .then(|| ClaudeContinuation {
+                    session_id: native.into(),
+                    scope: scope.into(),
+                })
             } else {
                 None
             }
         } else {
             None
         };
-        let resume = prior_session.is_some();
         let request = Request {
             id: Uuid::now_v7().to_string(),
             instance: self.instance_id.clone(),
             entry_generation,
             epoch: stopping::admission_epoch_on(&tx, entry)?,
-            session_id: prior_session.unwrap_or_else(|| Uuid::new_v4().to_string()),
+            session_id: Uuid::new_v4().to_string(),
             source,
             body,
             original,
@@ -341,7 +360,7 @@ impl Store {
         Ok(Some(WeAttempt {
             id: request.id,
             session_id: request.session_id,
-            resume,
+            resume: prior_session,
             entry_session: session,
             original: request.original.event_id,
         }))
@@ -406,7 +425,15 @@ impl Store {
                         && !id.chars().any(|c| c.is_whitespace() || c.is_control())
                 })
                 .context("Bounded native session identity required before provider exposure")?;
-            json!({"native_session_id":native_session})
+            let mut prepared = json!({"native_session_id":native_session});
+            if let Some(scope) = outcome.get("native_session_scope") {
+                let scope = scope
+                    .as_str()
+                    .filter(|value| valid_claude_scope(value))
+                    .context("Invalid Claude session authorization scope")?;
+                prepared["native_session_scope"] = json!(scope);
+            }
+            prepared
         } else if previous == Returning {
             // Retain the selected send UUID and model result alongside readback.
             json!({"send_id":retained["send_id"],"text":retained["text"],"delivery":outcome})
@@ -414,7 +441,7 @@ impl Store {
             outcome
         };
         let mut outcome = outcome;
-        for field in ["native_session_id", "engine"] {
+        for field in ["native_session_id", "native_session_scope", "engine"] {
             if let Some(bound) = retained.get(field) {
                 outcome
                     .as_object_mut()
