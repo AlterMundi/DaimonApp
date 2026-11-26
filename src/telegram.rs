@@ -1480,6 +1480,8 @@ pub struct Update {
     /// Set at authenticated Bot API ingress before narrowing the raw message.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) direct_human_text: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) direct_human_attachment: bool,
 }
 
 impl Update {
@@ -1509,6 +1511,11 @@ impl Update {
                         .as_ref()
                         .is_some_and(|text| !text.trim().is_empty())
                     && message.is_text_only()
+            });
+        update.direct_human_attachment = human_origin
+            && update.message.as_ref().is_some_and(|message| {
+                message.from.as_ref().is_some_and(|sender| !sender.is_bot)
+                    && message.has_own_attachment()
             });
         Ok(update)
     }
@@ -1540,13 +1547,24 @@ pub struct Message {
 }
 
 impl Message {
+    pub(crate) fn has_own_attachment(&self) -> bool {
+        !self.photo.is_empty()
+            || self.document.is_some()
+            || self.audio.is_some()
+            || self.voice.is_some()
+            || self.video.is_some()
+            || self.sticker.is_some()
+    }
+
+    pub(crate) fn attachment_caption(&self) -> &str {
+        self.caption
+            .as_deref()
+            .or(self.text.as_deref())
+            .unwrap_or("")
+    }
+
     pub(crate) fn is_text_only(&self) -> bool {
-        self.photo.is_empty()
-            && self.document.is_none()
-            && self.audio.is_none()
-            && self.voice.is_none()
-            && self.video.is_none()
-            && self.sticker.is_none()
+        !self.has_own_attachment()
             && self
                 .reply_to_message
                 .as_ref()

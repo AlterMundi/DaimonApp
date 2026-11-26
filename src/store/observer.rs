@@ -366,6 +366,7 @@ mod tests {
         let (instruction, _) = store
             .interaction_admit(
                 &SourceInput {
+                    telegram_files: vec![],
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),

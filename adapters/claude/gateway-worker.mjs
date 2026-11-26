@@ -308,12 +308,14 @@ async function main() {
     const controllerSelected = first?.controller === true;
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
+    const attachments = first?.attachments;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
     const fullAccess = first?.humanOriginal === true || routedHostAccess;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
       ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
+      ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
       || (routedHostAccess && !routedHuman)
       || (routedHuman && first.humanOriginal)
@@ -329,7 +331,13 @@ async function main() {
         || typeof first.resume.sessionId !== 'string' || !UUID.test(first.resume.sessionId)
         || first.resume.sessionId === first.freshNativeSessionId
         || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
-      || typeof first.text !== 'string' || !first.text.trim()
+      || (attachments !== undefined && (first.humanOriginal !== true || nativeGoalCommand
+        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
+        || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
+          && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096
+          && typeof file.name === 'string' && file.name.length <= 240
+          && typeof file.mime === 'string' && file.mime.length <= 128)))
+      || typeof first.text !== 'string' || (!first.text.trim() && attachments === undefined)
       || Buffer.byteLength(first.text) > 16 * 1024
       || (sessionInstructions !== undefined && (typeof sessionInstructions !== 'string'
         || Buffer.byteLength(sessionInstructions) > 16 * 1024))
@@ -435,7 +443,7 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume, nativeGoalCommand },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

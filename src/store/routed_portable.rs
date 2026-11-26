@@ -47,8 +47,7 @@ pub(super) fn telegram_original_epoch(
         return Ok(None);
     };
     let original: crate::telegram::Update = serde_json::from_str(&raw)?;
-    let matching = original.direct_human_text
-        && original.update_id == update
+    let matching = original.update_id == update
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
                 && message.chat.id == target.chat_id
@@ -57,8 +56,16 @@ pub(super) fn telegram_original_epoch(
                     .from
                     .as_ref()
                     .is_some_and(|user| user.id == source.human_id && !user.is_bot)
-                && message.text.as_deref() == Some(source.text.as_str())
-                && message.is_text_only()
+                && if source.telegram_files.is_empty() {
+                    original.direct_human_text
+                        && message.text.as_deref() == Some(source.text.as_str())
+                        && message.is_text_only()
+                } else {
+                    original.direct_human_attachment
+                        && source.origin.thread_id == target.thread_id
+                        && message.has_own_attachment()
+                        && message.attachment_caption() == source.text
+                }
         });
     if !matching {
         return Ok(None);

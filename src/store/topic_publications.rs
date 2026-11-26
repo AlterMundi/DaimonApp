@@ -1128,6 +1128,7 @@ mod tests {
         let (source, _) = s
             .interaction_admit(
                 &SourceInput {
+                    telegram_files: vec![],
                     tribu_source: None,
                     transcription: None,
                     channel: "telegram:bot".into(),

@@ -108,6 +108,7 @@ pub(super) fn original_owned_on(
             };
             Ok((
                 SourceInput {
+                    telegram_files: vec![],
                     tribu_source: None,
                     transcription,
                     channel: channel.into(),
@@ -167,6 +168,7 @@ pub(super) fn original_order_on(conn: &Connection, source: &SourceInput) -> Resu
 
 fn conversation_source(input: &super::ConversationInput) -> SourceInput {
     SourceInput {
+        telegram_files: vec![],
         tribu_source: input.tribu_source.clone(),
         transcription: input
             .voice
@@ -316,7 +318,7 @@ impl Store {
     ) -> Result<Vec<crate::files::FileReference>> {
         let source = self.interaction_source(id, human)?;
         if source.channel != "conversation" {
-            return Ok(Vec::new());
+            return Ok(source.telegram_files);
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
@@ -624,6 +626,7 @@ mod tests {
         );
         let closed = tokio_util::sync::CancellationToken::new();
         let mut source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: None,
             channel: "telegram:123".into(),

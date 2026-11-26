@@ -17,6 +17,7 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
     pub text: &'a str,
+    pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
@@ -100,6 +101,7 @@ pub(in crate::app) async fn execute_worker(
         routed_host_access,
         session_instructions,
         text,
+        attachments,
         body,
         cancel,
         controller,
@@ -137,6 +139,20 @@ pub(in crate::app) async fn execute_worker(
         let mut start = json!({"schema":schema,"type":"start","inputId":id,
             "sessionId":session,"text":text,"body":body});
         if engine == ForegroundEngine::Claude {
+            if !attachments.is_empty() {
+                anyhow::ensure!(
+                    human_original && !native_goal_command,
+                    "Attachments require a direct human turn"
+                );
+                start["attachments"] = json!(
+                    attachments
+                        .iter()
+                        .map(|file| json!({
+                            "path": file.path, "name": file.file_name, "mime": file.mime_type
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
             if let Some(instructions) = session_instructions {
                 start["sessionInstructions"] = json!(instructions);
             }
@@ -382,6 +398,7 @@ pub(super) async fn run_portable_turn(
                 routed_host_access: false,
                 session_instructions: None,
                 text: &input.text,
+                attachments: &[],
                 body: body.clone(),
                 cancel: &cancel,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
@@ -421,10 +438,6 @@ pub(super) async fn run_routed_portable(
     slot: std::sync::Arc<std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
 ) -> Result<()> {
     use crate::{interaction::MatrixDestination, store::MatrixAuthor};
-    anyhow::ensure!(
-        request.attachments.is_empty(),
-        "Routed portable worker does not yet receive attachments"
-    );
     let cfg = super::routing::profile(&app.shared)?;
     let selected = input
         .target_execution
@@ -464,6 +477,10 @@ pub(super) async fn run_routed_portable(
         .is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
+    anyhow::ensure!(
+        request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
+        "Routed worker attachments require a direct Claude turn"
+    );
     let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then_some(WorkerController {
             app,
@@ -488,10 +505,11 @@ pub(super) async fn run_routed_portable(
         execute_worker(&config.worker_command,engine,WorkerTurn{
             id:&input.id,session:&attempt,resume:resume.as_ref(),human_original:direct_original,
             native_goal_command:engine==ForegroundEngine::Claude && direct_original
-                && routed_host_access && super::routing::native_claude_goal(&request.prompt),
+                && routed_host_access && request.attachments.is_empty()
+                && super::routing::native_claude_goal(&request.prompt),
             routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
             session_instructions:session.session_prompt.as_deref(),
-            text:&request.prompt,body:body.clone(),cancel:&cancel,controller,
+            text:&request.prompt,attachments:&request.attachments,body:body.clone(),cancel:&cancel,controller,
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
             if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?

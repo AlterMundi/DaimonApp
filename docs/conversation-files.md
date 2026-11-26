@@ -43,3 +43,14 @@ preserve required originals before explicit archival/retirement; do not delete
 files by age or restore an old input journal. Temporary upload files are removed
 on ordinary success/failure. Interrupted staging files count against the same
 capacity until an operator inspects them; no unbounded cleanup daemon is added.
+
+
+In Telegram topics configured for Claude Code, the paired human can send files
+directly with or without a caption. TeleDaimon authenticates the original
+sender and downloads the files. Gateway retains their bytes in the same bounded
+owner-private store and keeps their references alongside the original caption.
+Claude receives supported small images as image content and can open the
+retained originals through its normal tools. Telegram albums are processed as
+their individual messages. The existing forward restriction applies to files
+as well as text. A caption is ordinary turn content, including when it begins
+with a slash.

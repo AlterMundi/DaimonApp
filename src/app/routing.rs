@@ -246,7 +246,7 @@ pub(super) async fn handle_portable_topic(
     message: &Message,
     human: i64,
     key: SessionKey,
-    direct_human_text: bool,
+    (direct_human_text, direct_human_attachment): (bool, bool),
     selected: (
         crate::interaction::ForegroundEngine,
         &crate::interaction::MatrixDestination,
@@ -263,15 +263,24 @@ pub(super) async fn handle_portable_topic(
         return Ok(());
     }
     let origin = route(message);
-    let Some(text) = message
-        .text
-        .as_deref()
-        .filter(|text| direct_human_text && text.len() <= 16 * 1024)
-    else {
-        notice(app.shared.clone(), origin, "Send a text message directly in this topic. Forwarded messages and attachments aren't supported here yet.".into());
+    let with_files =
+        direct_human_attachment && selected.0 == crate::interaction::ForegroundEngine::Claude;
+    let text = if with_files {
+        Some(message.attachment_caption())
+    } else {
+        message.text.as_deref().filter(|_| direct_human_text)
+    };
+    let Some(text) = text.filter(|text| text.len() <= 16 * 1024) else {
+        notice(
+            app.shared.clone(),
+            origin,
+            "Send your message directly in this topic. Forwarded messages aren't supported here."
+                .into(),
+        );
         return Ok(());
     };
-    if text.trim_start().starts_with('/')
+    if !with_files
+        && text.trim_start().starts_with('/')
         && !(selected.0 == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
     {
         let commands = match selected.0 {
@@ -293,7 +302,25 @@ pub(super) async fn handle_portable_topic(
         .store
         .get_session(key)?
         .context("Selected topic session is missing")?;
+    let telegram_files = if with_files {
+        match app.retain_portable_attachments(message).await {
+            Ok(files) => files,
+            Err(error) => {
+                tracing::warn!(kind = %error, "Could not retain directly attached Telegram file");
+                notice(
+                    app.shared.clone(),
+                    origin,
+                    "I couldn't open this attachment. Try sending the file again (up to 20 MB)."
+                        .into(),
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let source = SourceInput {
+        telegram_files,
         tribu_source: None,
         transcription: None,
         channel: format!("telegram:{}", app.shared.bot_id),
@@ -827,6 +854,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
     };
     if targets.len() != 1 {
         let source = SourceInput {
+            telegram_files: vec![],
             tribu_source: None,
             transcription: app
                 .shared
@@ -1023,6 +1051,7 @@ async fn admit_message(
         .get_session(target)?
         .context("Selected interaction session missing")?;
     let source = SourceInput {
+        telegram_files: vec![],
         tribu_source: None,
         transcription: app
             .shared

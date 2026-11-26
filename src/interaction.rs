@@ -639,6 +639,8 @@ impl TribuSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub telegram_files: Vec<crate::files::FileReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tribu_source: Option<TribuSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

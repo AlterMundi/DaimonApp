@@ -46,6 +46,139 @@ impl FileReference {
         Ok(())
     }
 }
+#[cfg(unix)]
+pub(crate) fn retain_downloads(
+    db: &Path,
+    downloads: &[LocalAttachment],
+) -> Result<Vec<FileReference>> {
+    use std::{
+        fs,
+        io::Write,
+        os::fd::AsRawFd,
+        os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    };
+    const MAX_STORED_BYTES: u64 = 256 * 1024 * 1024;
+    const MAX_STORED_FILES: usize = 1024;
+
+    let directory = std::path::PathBuf::from(format!("{}.files", db.display()));
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    check_private_directory(&directory)?;
+    fs::File::open(
+        directory
+            .parent()
+            .context("Attachment storage has no parent")?,
+    )?
+    .sync_all()?;
+    let capacity = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(directory.join(".capacity.lock"))?;
+    let metadata = capacity.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0,
+        "Original file capacity lock is not owner-private"
+    );
+    // Use the same writer lock as the authenticated Conversation upload endpoint.
+    if unsafe { libc::flock(capacity.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let mut entries = 0;
+    let mut used = 0;
+    for entry in fs::read_dir(&directory)? {
+        let entry = entry?;
+        if entry.file_name() == ".capacity.lock" {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        anyhow::ensure!(metadata.is_file(), "Unexpected original file storage entry");
+        entries += 1;
+        used += metadata.len();
+    }
+    let sizes = downloads
+        .iter()
+        .map(|item| Ok(fs::metadata(&item.path)?.len()))
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !sizes.is_empty()
+            && sizes.len() <= MAX_FILES
+            && sizes.iter().all(|size| *size <= MAX_BYTES)
+            && sizes.iter().sum::<u64>() <= 2 * MAX_BYTES,
+        "Invalid attachment size"
+    );
+    let mut references = Vec::new();
+    for (download, size) in downloads.iter().zip(sizes) {
+        let bytes = fs::read(&download.path)?;
+        anyhow::ensure!(bytes.len() as u64 == size, "Telegram attachment changed");
+        let image_mime = if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+            Some("image/jpeg")
+        } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some("image/png")
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            Some("image/gif")
+        } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+            Some("image/webp")
+        } else {
+            None
+        };
+        let mut reference = FileReference {
+            file_id: uuid::Uuid::now_v7().to_string(),
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            name: download.file_name.clone(),
+            mime: image_mime
+                .or(download
+                    .mime_type
+                    .as_deref()
+                    .filter(|mime| !mime.starts_with("image/")))
+                .unwrap_or("application/octet-stream")
+                .to_owned(),
+            size,
+        };
+        // Third-party declared media types can contain parameters or be malformed.
+        if reference.validate().is_err() {
+            reference.mime = "application/octet-stream".into();
+            reference.validate()?;
+        }
+        let destination = directory.join(&reference.sha256);
+        if !destination.exists() {
+            anyhow::ensure!(
+                entries < MAX_STORED_FILES && used.saturating_add(size) <= MAX_STORED_BYTES,
+                "Original file storage reached its receiving limit"
+            );
+            let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+            temporary.write_all(&bytes)?;
+            temporary.as_file().sync_all()?;
+            temporary.persist_noclobber(destination)?;
+            fs::File::open(&directory)?.sync_all()?;
+            entries += 1;
+            used += size;
+        }
+        references.push(reference);
+    }
+    attachments(db, &references)?;
+    Ok(references)
+}
+
+fn check_private_directory(directory: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::symlink_metadata(directory)?;
+        if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+            bail!("Original files require private owner storage")
+        }
+    }
+    Ok(())
+}
+
 pub fn attachments(db: &Path, files: &[FileReference]) -> Result<Vec<LocalAttachment>> {
     for reference in files {
         reference.validate()?;
@@ -61,14 +194,7 @@ pub fn attachments(db: &Path, files: &[FileReference]) -> Result<Vec<LocalAttach
             bail!("Repeated file identity")
         }
         let directory = std::path::PathBuf::from(format!("{}.files", db.display()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let m = std::fs::symlink_metadata(&directory)?;
-            if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
-                bail!("Original files require private owner storage")
-            }
-        }
+        check_private_directory(&directory)?;
         let path = directory.join(&reference.sha256);
         let mut options = OpenOptions::new();
         options.read(true);
