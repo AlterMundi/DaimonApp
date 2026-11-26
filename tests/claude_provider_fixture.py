@@ -151,6 +151,10 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
+            elif attachment:
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": ANSWER}
+                reason = "end_turn"
             elif previous is not None:
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
