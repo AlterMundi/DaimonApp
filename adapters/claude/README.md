@@ -79,7 +79,10 @@ to expose commands such as the existing `dmk` writer to authenticated Bash
 turns. It extends the worker's explicit system path and starts a fresh native
 session when the selection changes. Keep the DMK MCP connector as the reader
 and use the same installed DMK wrapper and pool as the other local embodiment
-for native writes.
+for native writes. When this profile selects a DMK reader and its host tool
+directory contains an executable `dmk` wrapper, the prompt tells paired Bash
+turns about both routes. The owner provisions that wrapper for the same pools
+as the reader. The hint preserves the existing native session scope.
 
 Gateway includes the authenticated-original marker only after checking the
 retained private Interaction input against the signed Matrix original. Companion

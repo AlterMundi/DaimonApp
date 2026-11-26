@@ -146,6 +146,12 @@ export async function runClaudeTurn({
             ...(profile.sessionInstructions ? [profile.sessionInstructions] : []),
             'Keep credentials private. A global Stop requires a fresh explicit human request. Do not start background inbox attention.',
             ...(sharedSkills ? ['Use the Skill tool to load a relevant skill from the shared catalog.'] : []),
+            ...(profile.sharedDmk ? [
+              'The DMK MCP connector provides contextual recall and reads.',
+              ...(profile.sharedDmkWriter ? [
+                `For writes to shared DMK, use the owner-configured DMK wrapper at ${JSON.stringify(profile.sharedDmkWriter)} through Bash with the memoryctl.py subcommand. Follow the DaimonMemoryKit skill for write and readback.`,
+              ] : []),
+            ] : []),
             'Describe only the conversation history and tools actually available to you. A Matrix body identity by itself does not provide shared memories or skills.',
           ].join(' '),
         },
