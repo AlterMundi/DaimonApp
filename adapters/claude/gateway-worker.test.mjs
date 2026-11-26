@@ -91,6 +91,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
                   : paired ? ['Bash', 'Read'] : [];
                 assert.deepEqual(options.tools, expectedTools);
+                assert.equal(options.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
+                  options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
                 yield { type: 'result', subtype: 'success', is_error: false,
