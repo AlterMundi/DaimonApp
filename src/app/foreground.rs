@@ -300,6 +300,12 @@ pub(in crate::app) async fn execute_worker(
                     Some("uncertain") =>
                         outcome["sessionId"].as_str() == native_session.as_deref()
                             && native_session.is_some(),
+                    Some("subscription_limited") =>
+                        engine == ForegroundEngine::Claude
+                            && outcome["sessionId"].as_str() == native_session.as_deref()
+                            && native_session.is_some()
+                            && outcome["limit"].is_object()
+                            && outcome["workObserved"].is_boolean(),
                     Some("not_submitted") => true,
                     _ => false,
                 },
@@ -521,6 +527,13 @@ pub(super) async fn run_routed_portable(
         }).await
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
+    if input.origin.message_id.is_some()
+        && let Some(limit) = store
+            .interaction_instruction(&input.id, input.human_id)?
+            .and_then(|instruction| instruction.subscription_limit)
+    {
+        super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+    }
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

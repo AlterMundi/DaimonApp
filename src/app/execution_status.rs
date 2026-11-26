@@ -113,16 +113,18 @@ pub(super) async fn portable_runtime(
     {
         runtime["model"] = json!(model);
     }
-    if let (Some(available), Some(resets_at)) = (
-        observed["weekly"]["available"]
-            .as_f64()
-            .filter(|value| (0.0..=100.0).contains(value)),
-        observed["weekly"]["resets_at"]
-            .as_i64()
-            .filter(|time| *time > Utc::now().timestamp()),
-    ) {
-        runtime["weekly_available_percent"] = json!(available);
-        runtime["weekly_resets_at"] = json!(resets_at);
+    for window in ["weekly", "session"] {
+        if let (Some(available), Some(resets_at)) = (
+            observed[window]["available"]
+                .as_f64()
+                .filter(|value| (0.0..=100.0).contains(value)),
+            observed[window]["resets_at"]
+                .as_i64()
+                .filter(|time| *time > Utc::now().timestamp()),
+        ) {
+            runtime[format!("{window}_available_percent")] = json!(available);
+            runtime[format!("{window}_resets_at")] = json!(resets_at);
+        }
     }
     runtime
 }

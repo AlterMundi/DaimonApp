@@ -353,6 +353,12 @@ class Provider:
                     result['weekly_available_percent']=available
                     if type(reset) in (int,float) and math.isfinite(reset) and reset>time.time():
                         result['weekly_resets_at']=reset
+                available=runtime.get('session_available_percent')
+                reset=runtime.get('session_resets_at')
+                if type(available) in (int,float) and 0 <= available <= 100:
+                    result['session_available_percent']=available
+                    if type(reset) in (int,float) and math.isfinite(reset) and reset>time.time():
+                        result['session_resets_at']=reset
                 return result
             items=[]
             for row in owned:

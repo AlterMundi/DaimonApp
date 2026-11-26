@@ -273,6 +273,10 @@ impl Store {
              FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
              WHERE p.id<t.id AND p.execution_harness='claude' AND p.execution_generation=t.execution_generation
                AND (p.native_thread_id IS NOT NULL OR p.execution_native_scope='resume_unavailable')
+               AND NOT EXISTS (SELECT 1 FROM interaction_instructions i
+                 WHERE i.session_id=p.session_id AND i.phase='rejected'
+                 AND json_extract(i.doc,'$.local_turn')=p.id
+                 AND json_type(i.doc,'$.subscription_limit')='object')
              ORDER BY p.id DESC LIMIT 1",[local],|r|Ok(PriorExecution { status:r.get(0)?, session:r.get(1)?, scope:r.get(2)?, body:r.get(3)? }),
         ).optional()?;
         let Some(PriorExecution {
@@ -382,6 +386,14 @@ impl Store {
             (Phase::Submitting | Phase::Queued | Phase::Cancelled, _) => None,
             _ => bail!("Routed native attempt already settled"),
         };
+        let limit = (current.phase == Phase::Submitting
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == Harness::Claude))
+        .then(|| crate::interaction::SubscriptionLimit::from_worker(outcome))
+        .flatten();
         let mut deliveries = Vec::new();
         if let Some(text) = reply {
             let native = current
@@ -420,10 +432,21 @@ impl Store {
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
-                _ if outcome["phase"] == "not_submitted" => Phase::Rejected,
+                _ if outcome["phase"] == "not_submitted"
+                    || (limit.is_some() && outcome["workObserved"].as_bool() == Some(false)) =>
+                {
+                    Phase::Rejected
+                }
                 _ => Phase::Uncertain,
             };
             super::interaction::transport_on(&tx, &input.id, input.human_id, local, phase, None)?;
+            if let Some(limit) = limit {
+                tx.execute(
+                    "UPDATE interaction_instructions
+                    SET doc=json_set(doc,'$.subscription_limit',json(?2)) WHERE id=?1",
+                    params![input.id, serde_json::to_string(&limit)?],
+                )?;
+            }
         }
         let resume_unavailable = outcome["reason"] == "claude_resume_session_missing";
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,

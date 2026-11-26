@@ -39,6 +39,31 @@ async function attachmentBlocks(attachments) {
   return blocks;
 }
 
+function limitWindow(info) {
+  const windows = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+  const reset = Number.isSafeInteger(info?.resetsAt) && info.resetsAt > 0 ? info.resetsAt : undefined;
+  return { window: windows.includes(info?.rateLimitType) ? info.rateLimitType : undefined, resets_at: reset };
+}
+
+function nativeThrottle(event, observedLimit) {
+  if (event.error !== 'rate_limit' || event.type !== 'assistant'
+      || event.parent_tool_use_id != null) return;
+  if (observedLimit?.resets_at) return observedLimit;
+  // Older CLI builds omit typed reset data on their first rejection. Extract
+  // only the fixed synthetic UTC format after observing the typed assistant error.
+  const message = event.message;
+  if (message?.model !== '<synthetic>') return observedLimit ?? {};
+  const text = message.content?.find(block => block.type === 'text')?.text;
+  const match = /^You've hit your 5-hour limit · resets (1[0-2]|[1-9]):([0-5][0-9])(am|pm) \(UTC\)$/.exec(text ?? '');
+  if (!match) return observedLimit ?? {};
+  const now = new Date();
+  const hours = Number(match[1]) % 12 + (match[3] === 'pm' ? 12 : 0);
+  const reset = new Date(now);
+  reset.setUTCHours(hours, Number(match[2]), 0, 0);
+  if (reset <= now) reset.setUTCDate(reset.getUTCDate() + 1);
+  return { window: 'five_hour', resets_at: Math.floor(reset.getTime() / 1000) };
+}
+
 function catalogMatches(status, expected) {
   return Array.isArray(status) && status.length === expected.length
     && expected.every(({ name, source, tools }) => {
@@ -105,6 +130,10 @@ export async function runClaudeTurn({
   let dispatched = false;
   let native;
   let reason = 'matrix_identity_unverified';
+  let observedLimit, throttle;
+  let observedWork = false;
+  const throttled = () => ({ phase: 'subscription_limited', sessionId: input.sessionId,
+    limit: throttle, workObserved: observedWork });
 
   async function* prompt() {
     if (!await ready || abortController.signal.aborted) return;
@@ -251,7 +280,22 @@ export async function runClaudeTurn({
             : { phase: 'not_submitted', reason: 'claude_session_changed' };
         }
       }
-      if (event.type !== 'result' || !dispatched) continue;
+      if (!dispatched || event.session_id !== input.sessionId) continue;
+      if (event.type === 'rate_limit_event') {
+        observedLimit = event.rate_limit_info?.status === 'rejected'
+          ? limitWindow(event.rate_limit_info) : undefined;
+        if (throttle && observedLimit?.resets_at) throttle = observedLimit;
+      }
+      if (event.type === 'assistant') {
+        const limit = nativeThrottle(event, observedLimit);
+        if (limit) throttle = limit;
+        else if (!event.error) {
+          observedWork = true;
+          if (event.parent_tool_use_id == null) throttle = undefined;
+        }
+      }
+      if (event.type !== 'result') continue;
+      if (throttle) return throttled();
       if (event.subtype === 'success' && event.is_error === false
           && event.session_id === input.sessionId
           && typeof event.result === 'string' && event.result.trim()
@@ -268,6 +312,7 @@ export async function runClaudeTurn({
         `Claude Code returned an error result: No conversation found with session ID: ${input.sessionId}`) {
       return { phase: 'not_submitted', reason: 'claude_resume_session_missing' };
     }
+    if (dispatched && throttle) return throttled();
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
     clearTimeout(timer);
@@ -276,6 +321,7 @@ export async function runClaudeTurn({
     native?.close();
     stop.removeEventListener('abort', cancel);
   }
+  if (dispatched && throttle) return throttled();
   return dispatched
     ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: input.sessionId }
     : { phase: 'not_submitted', reason: stop.aborted ? 'cancelled' : reason };
