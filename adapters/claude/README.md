@@ -116,8 +116,12 @@ Source content cannot select these settings. See
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
 worker permits up to two agent turns for the status-only route, or six with
-shared DMK, skills, Foundation or host tools for tool calls and replies. The SDK
-estimate can overrun its limit, so applicable provider-side limits still control
+shared DMK, skills, Foundation or host tools for tool calls and replies. For
+Foundation catalogs of ten or more tools, native ToolSearch loads Foundation
+schemas on demand. The full signed MCP inventory is still checked before
+Gateway authorizes submission. The identity check and shared DMK stay available
+on the first model call. The SDK estimate can overrun its limit, so applicable
+provider-side limits still control
 spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 

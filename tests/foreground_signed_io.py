@@ -266,7 +266,13 @@ operator.main()
                         "manifest_hash": config["body"]["manifestHash"],
                         "local_origin": {"embodiment_id": body, "incarnation_id": origin["incarnation_id"]},
                     }
-                    server.write_text("const status = " + json.dumps(status) + ";\n" + """
+                    extra_tools = [f"fixture_extra_{n}" for n in range(10)] if os.environ.get(
+                        "FOREGROUND_TEST_DEFERRED_TOOLS"
+                    ) == "1" else []
+                    tool_names = ["fixture_read", "daimon_status", *extra_tools]
+                    provider.deferred_foundation = extra_tools
+                    server.write_text("const status = " + json.dumps(status) + ";\n"
+                                      + "const toolNames = " + json.dumps(tool_names) + ";\n" + """
 import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -277,7 +283,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   const result = {
     'initialize': { protocolVersion: params?.protocolVersion, capabilities: {tools:{}},
       serverInfo: {name:'foundation-fixture', version:'1'} },
-    'tools/list': { tools: ['fixture_read','daimon_status'].map(name => ({
+    'tools/list': { tools: toolNames.map(name => ({
        name, description:'Read a synthetic status', inputSchema: {type:'object',properties:{}} })) },
     'tools/call': params?.name === 'daimon_status'
       ? { isError:existsSync(revoked), content:[], structuredContent:{ok:!existsSync(revoked),result:status} }
@@ -288,7 +294,7 @@ for await (const line of createInterface({ input: process.stdin })) {
 """)
                     config["matrixFoundation"] = {
                         "command": ["/usr/bin/node",str(server),"--runtime-root",str(foundation)],
-                        "tools": ["fixture_read", "daimon_status"],
+                        "tools": tool_names,
                     }
                     provider.foundation_marker = "Fixture Foundation readback."
                 if interaction and os.environ.get("FOREGROUND_TEST_HOST_TOOLS") == "1":
@@ -441,6 +447,7 @@ timeout_seconds=5
                 self.assertEqual(signed["origin"]["embodiment_id"], receiver)
                 self.assertEqual(signed["payload"]["body"]["text"], result["text"])
                 first_calls = (2 + hasattr(provider, "skill_name") + hasattr(provider, "foundation_marker")
+                               + bool(getattr(provider, "deferred_foundation", []))
                                + len(getattr(provider, "host_tools", [])))
                 self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)

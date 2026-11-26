@@ -28,13 +28,25 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             skill = getattr(self.server, "skill_name", None)
             foundation = getattr(self.server, "foundation_marker", None)
             foundation_tools = [FOUNDATION, "mcp__matrix_foundation__daimon_status"] if foundation else []
+            extra_foundation = getattr(self.server, "deferred_foundation", [])
+            foundation_tools += [f"mcp__matrix_foundation__{name}" for name in extra_foundation]
             host_tools = getattr(self.server, "host_tools", [])
             expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools + host_tools
-            assert sorted(tool["name"] for tool in data["tools"]) == sorted(expected)
+            by_name = {tool["name"]: tool for tool in data["tools"]}
+            if extra_foundation:
+                expected = [name for name in expected if name not in foundation_tools]
+                expected += ["ToolSearch", "DeferredToolPlaceholder"]
+                found = set(foundation_tools) & by_name.keys()
+                assert found <= {FOUNDATION}, found
+                expected.extend(found)
+                assert all(not by_name[name].get("defer_loading") for name in (DMK if memory else []))
+            assert sorted(by_name) == sorted(expected), sorted(by_name)
             steps = [(DMK[0], memory, self.server.dmk_marker) if memory else (TOOL, {}, self.server.body)]
             if skill:
                 steps.append(("Skill", {"skill": skill}, self.server.skill_marker))
             if foundation:
+                if extra_foundation:
+                    steps.append(("ToolSearch", {"query": f"select:{FOUNDATION}"}, FOUNDATION))
                 steps.append((FOUNDATION, {}, foundation))
             if host_tools:
                 steps += [
@@ -95,6 +107,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     assert steps[prior - 1][2] in json.dumps(data["messages"])
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
+                    if tool == FOUNDATION and extra_foundation:
+                        assert FOUNDATION in by_name
                     block = {"type": "tool_use", "id": f"toolu_fixture_{prior}", "name": tool, "input": {}}
                     delta = {"type": "input_json_delta", "partial_json": json.dumps(inputs)}
                     reason = "tool_use"

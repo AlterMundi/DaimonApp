@@ -9,6 +9,7 @@ export const SKILL_NAMESPACE = 'compaii-shared';
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
+const TOOL_SEARCH_MIN_CATALOG = 10;
 
 function catalogMatches(status, expected) {
   return Array.isArray(status) && status.length === expected.length
@@ -105,15 +106,22 @@ export async function runClaudeTurn({
     }
     const sharedSkills = profile.sharedSkills;
     const hostTools = profile.hostTools ?? [];
-    const builtins = sharedSkills ? [...hostTools, 'Skill'] : hostTools;
-    const allowedTools = [...hostTools,
+    const foundationSearch = (profile.matrixFoundation?.tools.length ?? 0) >= TOOL_SEARCH_MIN_CATALOG;
+    const discoveryTools = foundationSearch ? ['ToolSearch'] : [];
+    if (foundationSearch) {
+      mcpServers.matrix_foundation = { ...mcpServers.matrix_foundation, alwaysLoad: false };
+      if (profile.sharedDmk) mcpServers.hmk = { ...mcpServers.hmk, alwaysLoad: true };
+    }
+    const builtins = [...hostTools, ...discoveryTools, ...(sharedSkills ? ['Skill'] : [])];
+    const allowedTools = [...hostTools, ...discoveryTools,
       ...expected.flatMap(({ name, tools }) => tools.map(tool => `mcp__${name}__${tool}`)),
     ];
     native = query({
       prompt: prompt(),
       options: {
         abortController, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
-        env: profile.env, model: profile.model,
+        env: foundationSearch ? { ...profile.env, ENABLE_TOOL_SEARCH: 'true' } : profile.env,
+        model: profile.model,
         ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
         ...(profile.effort ? { effort: profile.effort } : {}),
         systemPrompt: {
