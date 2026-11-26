@@ -136,7 +136,7 @@ pub(super) async fn tool(
     app: &App,
     key: SessionKey,
     human: i64,
-    request: &crate::codex::DynamicToolRequest,
+    request: &crate::execution::ToolInvocation,
     operation: &str,
     arguments: Value,
     closed: &CancellationToken,
@@ -150,21 +150,21 @@ pub(super) async fn tool(
         return store.interaction_workflow_result(
             human,
             key,
-            &request.thread_id,
+            &request.native_session,
             &args.workflow,
             &args.step,
             &args.revision,
             args.offset,
         );
     }
-    super::observer::tool_owner(&app.shared, key, human, &request.thread_id)?;
+    super::observer::tool_owner(&app.shared, key, human, &request.native_session)?;
     match operation {
         "heartbeat_source" => {
             let args: HeartbeatSource = serde_json::from_value(arguments)?;
             store.heartbeat_source(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.return_id,
                 &args.source,
                 &args.revision,
@@ -176,7 +176,7 @@ pub(super) async fn tool(
             store.heartbeat_reported(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.return_id,
                 &args.revision,
             )?;
@@ -189,7 +189,7 @@ pub(super) async fn tool(
             store.native_routed_source(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.return_id,
                 &args.revision,
                 args.offset,
@@ -200,7 +200,7 @@ pub(super) async fn tool(
             store.interaction_matrix_reported(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.message_id,
                 &args.revision,
             )?;
@@ -213,7 +213,7 @@ pub(super) async fn tool(
             store.native_routed_reported(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.return_id,
                 &args.revision,
             )?;
@@ -241,7 +241,7 @@ pub(super) async fn tool(
             let declared = store.interaction_workflow_declare(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &format!("telegram:{}", app.shared.bot_id),
                 crate::store::WorkflowPlan {
                     parent_instruction: args.parent_instruction,
@@ -264,7 +264,7 @@ pub(super) async fn tool(
             store.interaction_workflow_question(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.question,
                 &args.revision,
                 args.offset,
@@ -275,7 +275,7 @@ pub(super) async fn tool(
             store.interaction_workflow_supersede(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &format!("telegram:{}", app.shared.bot_id),
                 &args.workflow,
                 &args.revision,
@@ -284,7 +284,7 @@ pub(super) async fn tool(
         }
         "workflow_status" => {
             let args: Selection = serde_json::from_value(arguments)?;
-            store.interaction_workflow_status(human, key, &request.thread_id, &args.workflow)
+            store.interaction_workflow_status(human, key, &request.native_session, &args.workflow)
         }
         "workflow_attention" if arguments == json!({}) => view(app, human, key),
         "workflow_advance" => {
@@ -292,8 +292,8 @@ pub(super) async fn tool(
             let instruction = store.interaction_workflow_advance_at_turn(
                 human,
                 key,
-                &request.thread_id,
-                Some(&request.turn_id),
+                &request.native_session,
+                Some(&request.native_turn),
                 &args.workflow,
                 &args.revision,
                 closed,
@@ -309,7 +309,7 @@ pub(super) async fn tool(
                 );
             }
             Ok(
-                json!({"workflow":store.interaction_workflow_status(human,key,&request.thread_id,&args.workflow)?,"new_admission":outcome,"automatic_native_return":super::routing::profile(&app.shared)?.native_workflow_returns,"meaning":"Configured native return policy; retained workflow progression only. Native acceptance, result coverage, integration and human publication remain separate."}),
+                json!({"workflow":store.interaction_workflow_status(human,key,&request.native_session,&args.workflow)?,"new_admission":outcome,"automatic_native_return":super::routing::profile(&app.shared)?.native_workflow_returns,"meaning":"Configured native return policy; retained workflow progression only. Native acceptance, result coverage, integration and human publication remain separate."}),
             )
         }
         "workflow_reported" => {
@@ -317,7 +317,7 @@ pub(super) async fn tool(
             store.interaction_workflow_reported(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.workflow,
                 &args.revision,
             )?;
@@ -330,7 +330,7 @@ pub(super) async fn tool(
             store.interaction_workflow_finish(
                 human,
                 key,
-                &request.thread_id,
+                &request.native_session,
                 &args.workflow,
                 &args.revision,
                 &args.checkpoint,

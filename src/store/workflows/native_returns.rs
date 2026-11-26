@@ -329,7 +329,9 @@ pub(in crate::store) fn transfer_collection_on(
     native: &str,
     physical: &str,
 ) -> Result<Option<bool>> {
-    let foreground:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='foreground_context_local:'||old.id WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id)",params![local,physical],|r|r.get(0))?;
+    let foreground:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='foreground_context_local:'||old.id WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id
+          AND old.execution_harness=current.execution_harness
+          AND (old.execution_generation IS NULL OR old.execution_generation=current.execution_generation))",params![local,physical],|r|r.get(0))?;
     if foreground {
         conn.execute(
             "INSERT OR IGNORE INTO bot_state(key,value) VALUES(?1,'true')",
@@ -337,7 +339,9 @@ pub(in crate::store) fn transfer_collection_on(
         )?;
     }
     let ids = {
-        let mut query = conn.prepare("SELECT DISTINCT j.value FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='workflow_return_local:'||old.id JOIN json_each(b.value) j WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id ORDER BY j.value LIMIT 33")?;
+        let mut query = conn.prepare("SELECT DISTINCT j.value FROM native_collections n JOIN turns old ON old.id=n.local_turn JOIN turns current ON current.id=?1 JOIN bot_state b ON b.key='workflow_return_local:'||old.id JOIN json_each(b.value) j WHERE old.id<?1 AND n.first_turn=?2 AND old.session_id=current.session_id AND old.native_thread_id=current.native_thread_id AND old.from_user_id=current.from_user_id
+          AND old.execution_harness=current.execution_harness
+          AND (old.execution_generation IS NULL OR old.execution_generation=current.execution_generation) ORDER BY j.value LIMIT 33")?;
         query
             .query_map(params![local, physical], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?

@@ -331,16 +331,21 @@ async fn session_card(
         "\nNative source binding: {}",
         observed.native_thread.as_deref().unwrap_or("unbound")
     ));
-    let activity = match observed.native_thread.as_deref() {
-        Some(thread) => shared.codex.native_activity(thread).await.ok(),
-        None => None,
+    let activity = match (
+        observed.execution.harness,
+        observed.execution.native_session.as_deref(),
+    ) {
+        (crate::execution::Harness::Codex, Some(thread)) => {
+            shared.codex.native_activity(thread).await.ok()
+        }
+        _ => None,
     };
     let binding_unchanged = shared
         .store
-        .get_session(target)
+        .execution_binding(target, human)
         .ok()
         .flatten()
-        .is_some_and(|s| s.codex_thread_id == observed.native_thread);
+        .is_some_and(|binding| binding == observed.execution);
     let activity = if binding_unchanged { activity } else { None };
     card.push_str(&format!(
         "\nNative activity: {} (sampled {})",

@@ -295,8 +295,27 @@ pub struct DynamicToolRequest {
     pub arguments: Value,
 }
 
-pub fn dynamic_tool_result(success: bool, text: String) -> Value {
-    json!({"success":success,"contentItems":[{"type":"inputText","text":text}]})
+impl DynamicToolRequest {
+    pub(crate) fn into_gateway(self, local_turn: i64) -> crate::execution::ToolInvocation {
+        use crate::execution::{Harness, ToolInvocation};
+        ToolInvocation {
+            local_turn,
+            harness: Harness::Codex,
+            native_session: self.thread_id,
+            native_turn: self.turn_id,
+            tool: self.tool,
+            namespace: self.namespace,
+            arguments: self.arguments,
+        }
+    }
+}
+
+pub(crate) fn encode_tool_reply(reply: crate::execution::ToolReply) -> Value {
+    json!({"success":reply.success,"contentItems":[{"type":"inputText","text":reply.text}]})
+}
+
+fn dynamic_tool_result(success: bool, text: String) -> Value {
+    encode_tool_reply(crate::execution::ToolReply::new(success, text))
 }
 
 #[derive(Debug, Clone)]
@@ -410,7 +429,7 @@ pub enum CodexEventOutcome {
     ProviderUsageRecorded(bool),
     Approval(oneshot::Receiver<CodexApprovalDecision>),
     UserInput(oneshot::Receiver<UserInputDecision>),
-    DynamicTool(oneshot::Receiver<Value>),
+    DynamicTool(oneshot::Receiver<crate::execution::ToolReply>),
 }
 
 /// Only a definite rejection permits submitting the input as a new turn.
@@ -2404,7 +2423,7 @@ where
                         CodexEventOutcome::DynamicTool(receiver) => {
                             open_tools.insert(id.clone(),(turn.clone(),closed));
                             pending_tools.push(Box::pin(async move {
-                                let result=receiver.await.unwrap_or_else(|_|dynamic_tool_result(false,"Tool result unavailable; no automatic retry.".into()));
+                                let result=receiver.await.map(encode_tool_reply).unwrap_or_else(|_|dynamic_tool_result(false,"Tool result unavailable; no automatic retry.".into()));
                                 (id,turn,result)
                             }));
                         },

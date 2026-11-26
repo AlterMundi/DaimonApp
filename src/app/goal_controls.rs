@@ -74,7 +74,7 @@ pub(super) async fn tool(
     app: &App,
     key: SessionKey,
     human: i64,
-    request: &crate::codex::DynamicToolRequest,
+    request: &crate::execution::ToolInvocation,
     operation: &str,
     args: Value,
     closed: &CancellationToken,
@@ -89,7 +89,7 @@ pub(super) async fn tool(
         && !app
             .shared
             .store
-            .goal_delegation_allows_actor(human, key, &request.thread_id)?
+            .goal_delegation_allows_actor(human, key, &request.native_session)?
     {
         bail!("This native execution has no effective goal delegation");
     }
@@ -110,8 +110,8 @@ pub(super) async fn tool(
         key,
         human,
         local,
-        native: &request.thread_id,
-        physical: &request.turn_id,
+        native: &request.native_session,
+        physical: &request.native_turn,
         integrator,
     };
     match operation {
@@ -124,10 +124,11 @@ pub(super) async fn tool(
                 .unwrap_or(&args.selector);
             let delegated = args.input_ref.is_none()
                 && args.plan.delegatable()
-                && app
-                    .shared
-                    .store
-                    .goal_delegation_allows_actor(human, key, &request.thread_id)?;
+                && app.shared.store.goal_delegation_allows_actor(
+                    human,
+                    key,
+                    &request.native_session,
+                )?;
             let targets = if integrator && !delegated {
                 super::goals::resolve_goal_target(&super::routing::profile(&app.shared)?, selector)
             } else {
@@ -482,16 +483,16 @@ pub(super) fn delegated_call(
     app: App,
     key: SessionKey,
     human: i64,
-    request: crate::codex::DynamicToolRequest,
+    request: crate::execution::ToolInvocation,
     operation: String,
     args: Value,
     closed: CancellationToken,
-) -> oneshot::Receiver<Value> {
+) -> oneshot::Receiver<crate::execution::ToolReply> {
     let (send, recv) = oneshot::channel();
     tokio::spawn(async move {
         let result:Result<Value>=async {
             if closed.is_cancelled() || request.namespace.is_some() || args.to_string().len()>16000 ||
-                !app.shared.store.goal_delegation_allows_actor(human,key,&request.thread_id)? {
+                !app.shared.store.goal_delegation_allows_actor(human,key,&request.native_session)? {
                 bail!("Goal delegation is unavailable for this execution");
             }
             match operation.as_str() {
@@ -515,8 +516,8 @@ pub(super) fn delegated_call(
             }
         }.await;
         let result = match result {
-            Ok(value) => crate::codex::dynamic_tool_result(true, value.to_string()),
-            Err(error) => crate::codex::dynamic_tool_result(
+            Ok(value) => crate::execution::ToolReply::new(true, value.to_string()),
+            Err(error) => crate::execution::ToolReply::new(
                 false,
                 format!(
                     "Goal control was not confirmed: {error}. Inspect retained status before retrying; uncertain work is not replayable."

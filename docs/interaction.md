@@ -164,6 +164,38 @@ have passed receiving acceptance and existing installations have a migration
 path. The MIT license retains the upstream copyright and Telecodex provenance.
 No separate repository or second durable store is required for the cutover.
 
+### Logical conversations and native execution
+
+Use the existing Gateway conversation ID to identify the owned conversation.
+An execution binding separately reports its harness, current native session
+if established, and conversation revision. Native IDs are opaque within the
+selected harness. A local conversation exists before a native session does.
+For Codex, the compatibility reader derives the binding from the existing
+session and generation records. The Observer and live controller check the
+same ownership and binding. An old thread retained while a conversation is
+reset remains historical evidence without conferring execution authority.
+
+Controller handlers receive a Gateway tool invocation, with the harness,
+native session and native turn supplied by the receiving adapter. A tool's
+arguments cannot replace those coordinates. Match the owned execution before
+applying the existing operation-specific checks. Codex still correlates and
+deduplicates the native call and encodes the result in its own wire format.
+The existing owner-socket controller keeps its compatible response format.
+
+The existing turn record stores its harness and pins the logical generation
+at local admission. The adapter checks the same generation before exposing input. The live controller and Codex collector
+check that affinity even if a later session reuses the same opaque thread ID.
+Legacy turn records without a pinned generation keep their existing exact
+native correlation. Receipt and history reads still identify the original
+turn.
+
+The compatibility reader does not change routing or create a new native
+workspace. Subsequent adapters should feed the same Gateway binding and attempt
+lifecycle. Keep API projections and recovery keyed to the original execution
+when a new harness is selected for future work. Follow the
+[first-class harness contract](https://github.com/AlterMundi/daimon-matrix/issues/497#issuecomment-7182907326)
+for common dispatch, Observer and controller acceptance.
+
 ### Qualify a private Matrix foreground route
 
 Select a signed sibling body and the approved model account in the existing

@@ -39,6 +39,7 @@ pub use heartbeat::{
     HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
     HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
 };
+mod execution;
 mod interaction;
 mod interactions;
 mod live_context;
@@ -77,7 +78,8 @@ fn record_turn_started_on(
     request: &TurnRequest,
     root: Option<&str>,
 ) -> Result<i64> {
-    conn.execute("INSERT INTO turns(session_id,from_user_id,prompt,review_json,status,started_at,completed_at,assistant_text) VALUES(?1,?2,?3,?4,'running',?5,NULL,NULL)",params![session,request.from_user_id,request.prompt,serde_json::to_string(&request.review_mode)?,now_string()])?;
+    conn.execute("INSERT INTO turns(session_id,from_user_id,prompt,review_json,status,started_at,completed_at,assistant_text,execution_generation)
+        VALUES(?1,?2,?3,?4,'running',?5,NULL,NULL,(SELECT generation FROM conversation_entry_generations WHERE session_id=?1))",params![session,request.from_user_id,request.prompt,serde_json::to_string(&request.review_mode)?,now_string()])?;
     let id = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
@@ -763,17 +765,12 @@ impl Store {
 
     /// Exact owner/native binding for owner-local lifecycle operations.
     pub fn validate_owned_binding(&self, key: SessionKey, human: i64, native: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let valid: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
-             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
-             AND s.codex_thread_id=?4 AND s.force_fresh_thread=0)",
-            params![key.chat_id, key.thread_id, human, native],
-            |r| r.get(0),
-        )?;
-        if !valid {
-            anyhow::bail!("Selected session owner or native binding changed");
-        }
+        use crate::execution::Harness;
+        anyhow::ensure!(
+            self.execution_binding(key, human)?
+                .is_some_and(|binding| binding.matches(Harness::Codex, native)),
+            "Selected session owner or native binding changed"
+        );
         Ok(())
     }
 
@@ -1141,18 +1138,9 @@ impl Store {
         key: SessionKey,
         human: i64,
     ) -> Result<String> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.query_row(
-            "SELECT t.native_thread_id FROM turns t JOIN sessions s ON s.id=t.session_id
-            JOIN users u ON u.tg_user_id=s.creator_user_id
-            WHERE t.id=?1 AND t.from_user_id=?2 AND t.status='running' AND t.completed_at IS NULL
-            AND s.chat_id=?3 AND s.thread_id=?4 AND s.creator_user_id=?2 AND u.allowed=1
-            AND s.force_fresh_thread=0 AND s.codex_thread_id=t.native_thread_id",
-            params![local, human, key.chat_id, key.thread_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .context("Controller execution or native binding changed")
+        self.controller_execution(local, key, human)?
+            .native_session
+            .context("Controller execution has no native session")
     }
 
     pub fn record_turn_native_thread(&self, turn_id: i64, thread: &str) -> Result<()> {
@@ -1263,13 +1251,16 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let updated=tx.execute("UPDATE turns SET status='running',completed_at=NULL
-            WHERE id=?1 AND from_user_id=?2 AND native_thread_id=?3 AND status IN ('running','failed')
+            WHERE id=?1 AND from_user_id=?2 AND execution_harness='codex' AND native_thread_id=?3 AND status IN ('running','failed')
             AND session_id IN (SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+              JOIN conversation_entry_generations g ON g.session_id=s.id
               WHERE s.chat_id=?4 AND s.thread_id=?5 AND s.creator_user_id=?2 AND u.allowed=1
-              AND s.codex_thread_id=?3 AND s.force_fresh_thread=0)",params![local,human,native,key.chat_id,key.thread_id])?;
+              AND s.codex_thread_id=?3 AND s.force_fresh_thread=0
+              AND (turns.execution_generation IS NULL OR turns.execution_generation=g.generation))",params![local,human,native,key.chat_id,key.thread_id])?;
         if updated != 1 {
             anyhow::bail!("Collector execution or owner binding changed");
         }
+        execution::pin_codex_turn_on(&tx, local)?;
         let human_publication =
             workflows::native_transfer_collection_on(&tx, local, human, key, native, physical)?;
         let mut receipt = serde_json::json!({"native_thread":native,"native_turn":physical,"observed_at":now_string()});
@@ -1514,6 +1505,13 @@ impl Store {
             ",
         )?;
         add_column_if_missing(&conn, "turns", "native_thread_id", "TEXT")?;
+        add_column_if_missing(
+            &conn,
+            "turns",
+            "execution_harness",
+            "TEXT NOT NULL DEFAULT 'codex'",
+        )?;
+        add_column_if_missing(&conn, "turns", "execution_generation", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "reasoning_effort", "TEXT")?;

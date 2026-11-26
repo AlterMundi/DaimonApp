@@ -6,6 +6,7 @@ mod codex_history;
 mod commands;
 mod config;
 mod control_client;
+mod execution;
 mod files;
 mod interaction;
 mod limits;

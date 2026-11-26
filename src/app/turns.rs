@@ -894,7 +894,7 @@ pub(super) async fn process_turn(
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;}
                                 if preserve_thread_binding && attach_native.is_none() {
                                     if conversation_input.is_none() && !voice_bound && !initial_bound {
-                                        shared.store.set_session_codex_thread(session_key, &thread_id)?;
+                                        shared.store.bind_codex_turn(turn_id, &thread_id)?;
                                     }
                                     if super::rename::sync_native_title(&shared, session_key).await.is_err() {
                                         let _ = send_markdown_message(
@@ -1105,8 +1105,14 @@ pub(super) async fn process_turn(
                                     let host_restrictions=owner.host_restrictions.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
                                     *held=Some(owner);
+                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                     return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions});
                                     }
+                                }
+                                // A collector observes an existing physical turn. Its exact
+                                // attachment is checked by record_collector_attachment.
+                                if attach_native.is_none() {
+                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                 }
                                 Ok(match allowance {
                                     Some(allowance)=>match shared.config.interaction.as_ref()
@@ -1177,7 +1183,7 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::DynamicToolRequest {request,closed} => {
-                                Ok(CodexEventOutcome::DynamicTool(super::dialogue::tool_call(routing_app.clone(),session_key,requester_user_id,request,closed)))
+                                Ok(CodexEventOutcome::DynamicTool(super::dialogue::tool_call(routing_app.clone(),session_key,requester_user_id,request.into_gateway(turn_id),closed)))
                             }
                             CodexEvent::UserInputRequest {
                                 id,
