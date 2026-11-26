@@ -1,27 +1,28 @@
 // One foreground turn on a Gateway-owned pair of pipes.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { createMatrixStatusBroker } from './matrix-broker.mjs';
-import { runClaudeTurn } from './turn.mjs';
+import { runClaudeTurn, SKILL_NAMESPACE } from './turn.mjs';
 
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 
 const VERSION = 'daimon-gateway.claude-turn/v2';
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes = '') {
+function turnScope(profile, bytes, skills) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
       profile.home, profile.cwd, profile.subscriptionEmail ?? null,
       profile.configurationDirectory ?? null, profile.apiKeyFile ?? null,
       selector?.command ?? null, selector?.bodyRef ?? null,
+      profile.sharedSkillsDirectory ?? null, skills,
     ]))
     .update(bytes)
     .digest('hex');
@@ -35,11 +36,15 @@ async function ownerProfile(path) {
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
+  const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...memory, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills,
+      'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
+      || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
+        || !isAbsolute(value.sharedSkillsDirectory)))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
@@ -58,7 +63,7 @@ async function ownerProfile(path) {
   return value;
 }
 
-async function sharedDmkServer(profile, retainDirectory) {
+async function sharedDmkBinding(profile) {
   if (!Object.hasOwn(profile, 'sharedDmk')) return undefined;
   if (!closed(profile.sharedDmk, ['command', 'bindingFile', 'bodyRef'])) {
     throw new Error('Invalid shared DMK selection');
@@ -76,14 +81,47 @@ async function sharedDmkServer(profile, retainDirectory) {
       || binding.being_ref !== profile.body.beingRef || binding.body_ref !== bodyRef) {
     throw new Error('Shared DMK differs from selected body or being');
   }
-  const directory = await mkdtemp(join(tmpdir(), 'daimon-claude-dmk-'));
-  retainDirectory(directory);
+  return bytes;
+}
+
+async function sharedDmkServer(profile, bytes, directory) {
+  const { command } = profile.sharedDmk;
   const snapshot = join(directory, 'binding.json');
   await writeFile(snapshot, bytes, { mode: 0o600, flag: 'wx' });
-  const config = { type: 'stdio', command: '/usr/bin/env',
+  return { type: 'stdio', command: '/usr/bin/env',
     args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${profile.home}`, ...command, '--binding', snapshot],
     alwaysLoad: true };
-  return { config, scope: turnScope(profile, bytes) };
+}
+
+async function sharedSkillInventory(root) {
+  if (!root) return { names: [], revision: null };
+  const names = [];
+  const revision = createHash('sha256');
+  for (const name of (await readdir(root)).sort()) {
+    if (name.startsWith('.')) continue;
+    const file = join(root, name, 'SKILL.md');
+    const entry = await stat(file).catch(error => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+      throw error;
+    });
+    if (!entry?.isFile()) continue;
+    const path = await realpath(file);
+    const digest = createHash('sha256').update(await readFile(path)).digest('hex');
+    revision.update(JSON.stringify([name, path, digest]));
+    names.push(`${SKILL_NAMESPACE}:${name}`);
+  }
+  if (!names.length) throw new Error('Selected shared skills directory is empty');
+  return { names, revision: revision.digest('hex') };
+}
+
+async function sharedSkillPlugin(root, names, directory) {
+  const path = join(directory, 'shared-skills');
+  const manifest = join(path, '.claude-plugin');
+  await mkdir(manifest, { recursive: true });
+  await writeFile(join(manifest, 'plugin.json'), JSON.stringify({ name: SKILL_NAMESPACE, version: '1.0.0' }),
+    { mode: 0o600, flag: 'wx' });
+  await symlink(root, join(path, 'skills'), 'dir');
+  return { path, names };
 }
 
 async function providerEnvironment(profile, signal) {
@@ -116,7 +154,7 @@ async function main() {
   const timeout = setTimeout(() => stop.abort(), 125_000);
   stop.signal.addEventListener('abort', () => process.stdin.destroy(), { once: true });
   const input = frames(process.stdin);
-  let dmkDirectory;
+  let scratch;
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
@@ -148,17 +186,23 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
-    const sharedDmk = await sharedDmkServer(profile, directory => { dmkDirectory = directory; });
-    const scope = sharedDmk?.scope ?? turnScope(profile);
+    const [binding, skills] = await Promise.all([
+      sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory),
+    ]);
+    if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
+    const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
+    const sharedSkills = skills.names.length
+      ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
+    const scope = turnScope(profile, binding ?? '', skills.revision);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
-      if (!Object.hasOwn(current, 'sharedDmk')) return !sharedDmk && turnScope(current) === scope;
-      if (!sharedDmk || typeof current.sharedDmk?.bindingFile !== 'string') return false;
-      const bytes = await privateBytes(current.sharedDmk.bindingFile, 16 * 1024);
-      return turnScope(current, bytes) === scope;
+      const [bytes, inventory] = await Promise.all([
+        sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory),
+      ]);
+      return turnScope(current, bytes ?? '', inventory.revision) === scope;
     }
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
@@ -171,8 +215,8 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk: sharedDmk?.config,
-        persistSession: true, maxTurns: sharedDmk ? 6 : 2,
+        sharedDmk, sharedSkills,
+        persistSession: true, maxTurns: sharedDmk || sharedSkills ? 6 : 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {
@@ -194,7 +238,7 @@ async function main() {
   } finally {
     clearTimeout(timeout);
     process.stdin.destroy();
-    if (dmkDirectory) await rm(dmkDirectory, { recursive: true, force: true });
+    if (scratch) await rm(scratch, { recursive: true, force: true });
   }
 }
 

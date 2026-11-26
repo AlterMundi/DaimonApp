@@ -24,7 +24,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
             memory = getattr(self.server, "dmk_record", None)
-            assert sorted(tool["name"] for tool in data["tools"]) == sorted([TOOL, *DMK] if memory else [TOOL])
+            skill = getattr(self.server, "skill_name", None)
+            expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else [])
+            assert sorted(tool["name"] for tool in data["tools"]) == sorted(expected)
             assert self.server.original in json.dumps(data["messages"])
             phase, submission = self.server.journey.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
@@ -39,7 +41,21 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 item for message in data["messages"] if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
-            if getattr(self.server, "dmk_revoked", False):
+            if hasattr(self.server, "old_skill_marker"):
+                assert json.loads(submission)["native_session_id"] != self.server.previous_session
+                messages = json.dumps(data["messages"])
+                assert self.server.old_skill_marker not in messages and REVOKED_ANSWER not in messages
+                if not result:
+                    block = {"type": "tool_use", "id": "toolu_updated_skill", "name": "Skill", "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps({"skill": skill})}
+                    reason = "tool_use"
+                else:
+                    assert result[0]["tool_use_id"] == "toolu_updated_skill" and not result[0].get("is_error")
+                    assert self.server.skill_marker in messages
+                    block = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": self.server.skill_marker}
+                    reason = "end_turn"
+            elif getattr(self.server, "dmk_revoked", False):
                 assert not result
                 assert self.server.dmk_marker not in json.dumps(data["messages"])
                 assert ANSWER not in json.dumps(data["messages"])
@@ -49,7 +65,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
             elif previous is not None:
-                assert prior == 2
+                assert prior == (3 if skill else 2)
                 assert previous in json.dumps(data["messages"])
                 assert ANSWER in json.dumps(data["messages"])
                 assert json.loads(submission)["native_session_id"] == self.server.previous_session
@@ -61,11 +77,23 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "tool_use", "id": "toolu_fixture", "name": DMK[0] if memory else TOOL, "input": {}}
                 delta = {"type": "input_json_delta", "partial_json": json.dumps(memory or {})}
                 reason = "tool_use"
-            else:
+            elif prior == 1:
                 assert prior == 1 and len(result) == 1
                 assert result[0]["tool_use_id"] == "toolu_fixture"
                 assert result[0].get("is_error") is not True
                 assert (self.server.dmk_marker if memory else self.server.body) in json.dumps(result[0]["content"])
+                if skill:
+                    block = {"type": "tool_use", "id": "toolu_skill", "name": "Skill", "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps({"skill": skill})}
+                    reason = "tool_use"
+                else:
+                    block = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": ANSWER}
+                    reason = "end_turn"
+            else:
+                assert prior == 2 and skill
+                assert any(item["tool_use_id"] == "toolu_skill" and not item.get("is_error") for item in result)
+                assert self.server.skill_marker in json.dumps(data["messages"])
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
                 reason = "end_turn"

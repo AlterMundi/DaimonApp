@@ -4,6 +4,7 @@ import { bodyMatches } from './matrix-broker.mjs';
 
 const SERVER = 'matrix';
 const DMK_TOOLS = ['dmk_recall', 'hmk_recall'];
+export const SKILL_NAMESPACE = 'compaii-shared';
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
@@ -82,6 +83,7 @@ export async function runClaudeTurn({
       mcpServers.hmk = profile.sharedDmk;
     }
     const allowedTools = expected.flatMap(({ name, tools }) => tools.map(tool => `mcp__${name}__${tool}`));
+    const sharedSkills = profile.sharedSkills;
     native = query({
       prompt: prompt(),
       options: {
@@ -97,12 +99,15 @@ export async function runClaudeTurn({
               : 'You are speaking as the selected Matrix body in this conversation.',
             'Claude Code is your harness, run through the Claude Agent SDK and Daimon Gateway.',
             'Use daimon_status when asked for signed body coordinates or current integrity.',
+            ...(sharedSkills ? ['Use the Skill tool to load a relevant skill from the shared catalog.'] : []),
             'Describe only the conversation history and tools actually available to you. A Matrix body identity by itself does not provide shared memories or skills.',
           ].join(' '),
         },
         maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
         settingSources: [], settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
-        strictMcpConfig: true, tools: [], allowedTools, mcpServers, permissionMode: 'dontAsk',
+        ...(sharedSkills ? { plugins: [{ type: 'local', path: sharedSkills.path }], skills: sharedSkills.names } : {}),
+        strictMcpConfig: true, tools: sharedSkills ? ['Skill'] : [],
+        allowedTools, mcpServers, permissionMode: 'dontAsk',
         permissionPrompts: 'none', persistSession: profile.persistSession === true,
       },
     });
@@ -119,6 +124,15 @@ export async function runClaudeTurn({
     }
     if (!catalogMatches(await native.mcpServerStatus(), expected)) {
       return { phase: 'not_submitted', reason: 'claude_catalog_mismatch' };
+    }
+    if (sharedSkills) {
+      reason = 'claude_skills_unverified';
+      const commands = (await native.supportedCommands()).map(command => command.name)
+        .filter(name => name.startsWith(`${SKILL_NAMESPACE}:`)).sort();
+      if (commands.length !== sharedSkills.names.length
+          || !commands.every((name, index) => name === sharedSkills.names[index])) {
+        return { phase: 'not_submitted', reason: 'claude_skills_mismatch' };
+      }
     }
     reason = 'matrix_identity_unverified';
     if (!bodyMatches(await broker.readStatus(), expectedBody)) {

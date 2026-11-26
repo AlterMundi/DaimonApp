@@ -48,6 +48,15 @@ automatic memory and dreaming are disabled for this route.
 The worker submits signed text literally. The CLI does not expand file
 mentions or dispatch slash commands from Matrix originals.
 
+`sharedSkillsDirectory` selects the same owner-managed skills directory used
+by the other embodiment. The worker exposes its current skill files through
+a local Claude plugin with the `compaii-shared` namespace. No skill files are
+copied and no user or project settings are imported. Before submission, the
+SDK's loaded shared skill names must match the selected directory. Claude
+loads a skill through its native `Skill` tool. A changed skill catalog or
+changed `SKILL.md` revision starts a fresh native session for the next
+original, keeping the Interaction conversation and its signed history.
+
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
@@ -68,7 +77,7 @@ Source content cannot select these settings. See
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
 worker permits up to two agent turns for the status-only route, or six with
-shared DMK for search and paged reads. The SDK
+shared DMK or skills for tool calls and replies. The SDK
 estimate can overrun its limit, so applicable provider-side limits still control
 spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
@@ -202,6 +211,9 @@ first turn's prompt and reply in the resumed native session, and Interaction
 reads back the new signed reply.
 Set `CLAUDE_TEST_DMK_SCRIPTS` and, if needed, `CLAUDE_TEST_DMK_PYTHON` to run
 that fixture with the native DMK stdio recall server over a disposable pool.
+Set `FOREGROUND_TEST_SHARED_SKILLS=1` to make the native harness invoke a
+fixture skill and verify the provider receives its instructions before the
+signed reply.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with

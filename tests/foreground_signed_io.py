@@ -235,6 +235,18 @@ operator.main()
                                            "record_uid": selected["recordUid"],
                                            "expected_revision": selected["revision"]}
                     provider.worker_profile = profile
+                if interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1":
+                    shared = root / "shared-agent-skills"
+                    skill = shared / "fixture-skill"
+                    skill.mkdir(parents=True)
+                    provider.skill_name = "compaii-shared:fixture-skill"
+                    provider.skill_marker = "Readback from the shared skill directory."
+                    provider.skill_file = skill / "SKILL.md"
+                    provider.skill_file.write_text(
+                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n---\n"
+                        + provider.skill_marker
+                    )
+                    config["sharedSkillsDirectory"] = str(shared)
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -376,7 +388,8 @@ timeout_seconds=5
                               if row["event_id"] == result["message_id"])
                 self.assertEqual(signed["origin"]["embodiment_id"], receiver)
                 self.assertEqual(signed["payload"]["body"]["text"], result["text"])
-                self.assertEqual(provider.calls, [provider.current] * 2)
+                first_calls = 3 if hasattr(provider, "skill_name") else 2
+                self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
                 self.assertEqual(journey.telegram_methods, [])
                 self.assertEqual(journey.rpc, [])
@@ -385,7 +398,7 @@ timeout_seconds=5
                 journey.wait_control_socket(journey.socket)
                 self.assertEqual(client.post("/api/interaction/inputs", json=request, headers=headers)
                                  .json()["claude_reply"], result)
-                self.assertEqual(provider.calls, [provider.current] * 2)
+                self.assertEqual(provider.calls, [provider.current] * first_calls)
                 self.assertEqual(len(return_attempts), 1)
                 first_event = provider.current
                 provider.previous_session = journey.row(
@@ -406,7 +419,7 @@ timeout_seconds=5
                 self.assertEqual(status["phase"], "matrix_replied")
                 self.assertIn("I retained the first turn.", status["claude_reply"]["text"])
                 self.assertNotEqual(provider.current, first_event)
-                self.assertEqual(provider.calls, [first_event, first_event, provider.current])
+                self.assertEqual(provider.calls, [first_event] * first_calls + [provider.current])
                 self.assertEqual(len(return_attempts), 2)
                 self.assertEqual(journey.telegram_methods, [])
                 self.assertEqual(journey.rpc, [])
@@ -436,6 +449,31 @@ timeout_seconds=5
                 self.assertEqual(status["phase"], "matrix_replied")
                 self.assertEqual(status["claude_reply"]["text"], REVOKED_ANSWER)
                 self.assertEqual(len(return_attempts), 3)
+                if not hasattr(provider, "skill_file"):
+                    return
+                provider.previous_session = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_id') FROM interaction_matrix_requests WHERE source_event=?",
+                    (provider.current,),
+                )[0][0]
+                provider.dmk_revoked = False
+                provider.old_skill_marker = provider.skill_marker
+                provider.skill_marker = "Updated shared skill instructions."
+                provider.skill_file.write_text(
+                    provider.skill_file.read_text().replace(provider.old_skill_marker, provider.skill_marker)
+                )
+                provider.human_original = str(uuid.uuid4())
+                provider.original = "Load the latest shared skill instructions."
+                updated = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=updated, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (updated["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+updated["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertEqual(status["claude_reply"]["text"], provider.skill_marker)
+                self.assertEqual(len(return_attempts), 4)
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1
