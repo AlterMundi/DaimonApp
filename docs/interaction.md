@@ -87,9 +87,14 @@ adapter can re-identify the verified bot and reattach its projection listener
 before continuing from the durable cursor. A connection reset, broken pipe
 or early EOF during the readiness read retries only that read for up to
 seven seconds. A missing owner, exhausted readiness retry or lost admission
-acknowledgement ends that adapter run. The supervisor can restart it from the
-durable cursor. Admission and publication acknowledgements retain their
-original uncertainty semantics.
+acknowledgement ends that adapter run. On systemd, configure the TeleDaimon
+unit with `Restart=always` and a bounded restart delay (ITACA uses three
+seconds). This also recovers an unexpected clean adapter exit. An explicit
+`systemctl stop` stays stopped, so an operator can qualify the Gateway with
+Telegram absent. After restart, verify the selected bot through the Gateway
+owner socket and read back the durable cursor before claiming recovery.
+Admission and publication acknowledgements retain their original uncertainty
+semantics.
 
 For an adapter-only release, check the candidate against the running Gateway
 and retain the previous adapter selector. Restart TeleDaimon through the
