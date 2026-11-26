@@ -130,6 +130,8 @@ struct AppShared {
     pending_codex_login: Mutex<Option<PendingCodexLogin>>,
     codex_login_backoff_until: Mutex<Option<Instant>>,
     routing_runs: StdMutex<HashMap<SessionKey, routing::Run>>,
+    matrix_foreground_runs:
+        StdMutex<HashMap<String, (crate::interaction::ForegroundEngine, CancellationToken)>>,
     worker_budget: Arc<attention::WorkerBudget>,
     shutdown: CancellationToken,
 }
@@ -495,6 +497,7 @@ impl App {
                 pending_codex_login: Mutex::new(None),
                 codex_login_backoff_until: Mutex::new(None),
                 routing_runs: StdMutex::new(HashMap::new()),
+                matrix_foreground_runs: StdMutex::new(HashMap::new()),
                 worker_budget,
                 shutdown: CancellationToken::new(),
             }),

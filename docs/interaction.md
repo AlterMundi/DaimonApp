@@ -292,9 +292,9 @@ acceptance and leaves those mixed-harness checks open.
 
 ### Qualify a private Matrix foreground route
 
-Select a signed sibling body and the approved model account in the existing
-Gateway profile. For Claude or Goose, configure the chosen
-`interaction.claude_foreground` or `interaction.goose_foreground` section
+Select a signed sibling body and the approved model account or local provider
+in the existing Gateway profile. Configure `interaction.claude_foreground`,
+`interaction.goose_foreground` or `interaction.antigravity_foreground`
 with its authenticated Matrix transport and worker command. The sender and
 receiver must select the same private sibling conversation. Keep the provider
 credential and any approved memory selection in the receiving worker's
@@ -314,6 +314,13 @@ answer. Inspect the same original with
 Verify the provider result and read the signed reply as the sender in the
 original thread. A loopback fixture qualifies the adapter boundary. A live
 acceptance also requires the actual body, approved provider and sender readback.
+
+Use `daimon-gateway --control CONFIG matrix ENGINE interrupt EVENT_ID` to
+interrupt the selected foreground worker. The command requests interruption
+for that event and engine on the current Gateway. Inspect the original's
+status for the outcome. A stop after provider exposure retains uncertainty
+about provider work. It never resubmits the original or starts a signed return
+for the interrupted worker.
 
 After restart, use the retained event ID to read the prior outcome. A refusal
 before provider exposure is a known rejection. Missing evidence after the
