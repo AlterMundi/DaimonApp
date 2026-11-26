@@ -127,6 +127,19 @@ Gateway authorizes submission. The identity check and shared DMK stay available
 on the first model call.
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
+The current private Interaction route uses the existing signed CompAII sending
+body to transport the original. Interaction retains the paired human as the
+author of the original. For authenticated paired-human turns, Gateway's
+verified original marker tells Claude to preserve that attribution. Matrix
+receipts identify their actual transport signer.
+
+On ITACA use a 30-second Matrix transport deadline for the private foreground
+origin and return. Native same-being fanout can finish a separate sibling's
+visibility attempt after the selected recipient has already acknowledged
+delivery. A shorter outer deadline can lose the selected receipt. Keep a
+timed-out original under its existing identity and inspect the native receipts
+before taking any recovery action.
+
 The UTF-8 newline-delimited protocol uses schema
 `daimon-gateway.claude-turn/v2`. Every frame carries the same `inputId` and
 `sessionId`. Gateway sends `start` with the retained `text` and independently
