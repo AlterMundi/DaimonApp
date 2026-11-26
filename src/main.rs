@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     };
     if gateway && first == Some("--preflight") {
         anyhow::ensure!(args.len() == 3, "Usage: daimon-gateway --preflight CONFIG");
-        let config = load_config(args[2].clone().into())?;
+        let config = config::Config::load_gateway_preflight(args[2].clone().into())?;
         if store::Store::preflight_receiving(&config)? {
             println!("Gateway profile and selected Reports record are readable.");
         } else {
