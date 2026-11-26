@@ -67,6 +67,7 @@ try:
           const {binding,...original}=body;
           const receipt={...original,entry_binding,phase:original.target==='claude'?'matrix_received':'accepted'};
           fixtureInputs.push(receipt);
+          if(window.fixtureHoldAck)await new Promise(resolve=>window.fixtureReleaseAck=resolve);
           if(window.fixtureLoseAck)throw Error('Controlled lost acknowledgement');
           return receipt;
         }
@@ -136,17 +137,29 @@ try:
     assert card.get_by_text('Claude Code',exact=True).is_visible()
     other.close()
     page.wait_for_function("messages.some(m=>m.type==='ready')",timeout=5000)
+    frame.evaluate('window.fixtureHoldAck=true')
     frame.locator('#conversation-files').set_input_files({'name':'fixture.txt','mimeType':'text/plain','buffer':b'synthetic attached original'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-message').fill('Exact fixture human words');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     frame.wait_for_function('fixtureInputs.length===1')
     original=frame.evaluate('fixtureInputs[0]');assert original['text']=='Exact fixture human words' and len(original['files'])==2 and original['files'][0]['name']=='fixture.txt'
     assert page.evaluate("messages.filter(m=>m.type==='prepare')[0].id")==original['id']
     assert page.evaluate("messages.findIndex(m=>m.type==='prepare')<messages.findIndex(m=>m.fixture==='file-start')"),'Context must precede the canonical text attachment upload'
+    field.press('End');field.press('Backspace');field.press('Enter')
+    assert field.input_value()=='Exact fixture human words'
+    assert frame.evaluate('fixtureInputs.length')==1
+    frame.evaluate('window.fixtureHoldAck=false;window.fixtureReleaseAck()')
     frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
     assert not frame.get_by_text('This message may already have been sent.').is_visible()
     frame.evaluate('window.fixtureLoseAck=true')
     field.fill('Kept while acknowledgement is missing');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     frame.get_by_text('This message may already have been sent.').wait_for()
     assert field.input_value()=='Kept while acknowledgement is missing'
+    field.press('End');field.press('Backspace');field.press('Enter')
+    assert field.input_value()=='Kept while acknowledgement is missing'
+    frame.locator('#conversation-compose').evaluate('''form=>{
+      form.querySelector('textarea').value='Kept while acknowledgement is missin';
+      form.requestSubmit();
+    }''')
+    assert frame.evaluate('fixtureInputs.length')==2
     frame.evaluate('fixtureUI.refresh(true)')
     frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
     assert frame.evaluate('fixtureInputs.length')==2

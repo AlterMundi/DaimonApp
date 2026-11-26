@@ -114,7 +114,7 @@ window.ConversationSurface=(()=>{
     function render(s){
       if(current!==s || busy())return;
       if(field.value!==s.text)field.value=s.text;
-      const pending=s.pending?.text===s.text;
+      const pending=!!s.pending;
       show(pending?'unconfirmed':s.conflict?'conflict':'',pending?()=>checkPending(s):()=>choose(s,true),()=>choose(s,false));
     }
     function bind(owner,binding){
@@ -186,7 +186,9 @@ window.ConversationSurface=(()=>{
       const s=current;if(s?.pending?.id!==id)return;
       s.pending=undefined;persist(s);render(s);pulse(s);
     }
-    return {bind,observe,change,attempt,confirm,unsent,isUnconfirmed:text=>current?.pending?.text===text};
+    return {bind,observe,change,attempt,confirm,unsent,
+      hasUnconfirmed:()=>!!current?.pending,
+      lockedText:()=>current?.pending?.text===current?.text?current?.pending?.text:undefined};
   }
   return {create,mountDraft};
 })();
