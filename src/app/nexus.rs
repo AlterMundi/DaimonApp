@@ -1267,7 +1267,12 @@ pub(super) async fn command(app: &App, message: &Message, human: i64, args: &str
     for (id, phase) in app.shared.store.nexus_status(key, human)? {
         text.push_str(&format!("\n{id}: {phase}"));
     }
-    if let Some(username) = app.shared.bot_username().as_deref().filter(|_| r.launch_enabled) {
+    if let Some(username) = app
+        .shared
+        .bot_username()
+        .as_deref()
+        .filter(|_| r.launch_enabled)
+    {
         text.push_str(&format!(
             "\n\n[Open Nexus in Telegram](https://t.me/{username}?startapp={}&mode=fullscreen)",
             cfg.launch_for(r)

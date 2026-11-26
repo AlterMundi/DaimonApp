@@ -397,10 +397,12 @@ pub(super) async fn tool(
         "Projection requires the current owner entry"
     );
     if matches!(args, Request::Status { .. }) {
-        return app
-            .shared
-            .store
-            .private_projection_status(purpose, human, key, &request.native_session);
+        return app.shared.store.private_projection_status(
+            purpose,
+            human,
+            key,
+            &request.native_session,
+        );
     }
     let Ok(_permit) = ACTION.try_acquire() else {
         return Ok(json!({"busy":true,"queued":false}));
