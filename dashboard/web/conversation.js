@@ -838,21 +838,45 @@ window.Conversation = (() => {
         const receipt=await api(`interaction/inputs/${encodeURIComponent(id)}`);
         if(owned===inputGeneration&&selected===inputBinding)return draftReceipt(receipt);
       },
+      async retry(original){
+        if(posting||captureBusy||!ready||original.binding!==binding||inputBinding!==binding)return;
+        const owned=inputGeneration;
+        const result=await api('interaction/inputs',original);
+        if(owned!==inputGeneration||result.id!==original.id||!result.phase)return;
+        const receipt=draftReceipt(result);
+        if(receipt.binding!==original.binding)return;
+        hostSurface?.status(result);
+        inputCard(result,++inputObservation,original.binding);
+        return receipt;
+      },
       show(state,primary,other){
         draftStatus.hidden=!state;
         if(!state)return;
         const conflict=state==='conflict';
         draftNote.textContent=conflict?'Another device changed this draft.':'This message may already have been sent.';
         draftPrimary.textContent=conflict?'Keep this draft':'Check message status';draftPrimary.onclick=primary;
-        draftOther.hidden=!conflict;draftOther.onclick=other;
+        draftOther.textContent=conflict?'Use other draft':'Retry this same message';
+        draftOther.hidden=!other;draftOther.onclick=other;
       }});
     if(draftState)draft.after(draftStatus);
+    let submittedText;
+    // Keep a submitted draft intact until its original has an exact receipt.
+    // A live transcript has its own editing lifecycle.
+    const lockedDraft=()=>transcriptPreview?undefined:(submittedText??draftState?.lockedText());
     const pauseDraft=()=>{if(transcriptPreview&&microphone?.pauseEditing?.()){
       if(transcriptPreview.draft){draft.value=transcriptPreview.draft+'\n'+draft.value;transcriptPreview.draft='';transcriptPreview.text=draft.value;microphone.editDraft(draft.value);}
     }};
     draft.addEventListener('pointerdown',pauseDraft);
-    draft.addEventListener('beforeinput',pauseDraft);
-    draft.addEventListener('input',()=>{if(transcriptPreview){transcriptPreview.text=draft.value;microphone?.editDraft?.(draft.value);}else draftState?.change(draft.value);});
+    draft.addEventListener('beforeinput',event=>{
+      if(lockedDraft()!==undefined){event.preventDefault();return;}
+      pauseDraft();
+    });
+    draft.addEventListener('input',()=>{
+      const original=lockedDraft();
+      if(original!==undefined){if(draft.value!==original)draft.value=original;return;}
+      if(transcriptPreview){transcriptPreview.text=draft.value;microphone?.editDraft?.(draft.value);}
+      else draftState?.change(draft.value);
+    });
 
     const sharedText=readOnly?undefined:window.NativeSharedText?.mount({parent:compose,draft,onFiles:files=>attachedFiles.addFiles(files),getBinding:()=>binding,isBusy:()=>captureBusy||!!voiceMode?.active||!!microphone?.ownsSend()});
     const sendState = $("#conversation-send-state");
@@ -1330,6 +1354,10 @@ window.Conversation = (() => {
         if(typeof compose.requestSubmit==="function")compose.requestSubmit();else send.click();
       }
     });
+    function finishTextPost(){
+      submittedText=undefined;posting=false;draftState?.observe();
+      send.disabled=!inputBinding;microphone?.syncControls?.();syncComposerRecovery();
+    }
     compose.addEventListener("submit", async event => {
       event.preventDefault();
       const toClaude=target?.value==="claude";
@@ -1339,11 +1367,11 @@ window.Conversation = (() => {
       if(microphone?.ownsSend?.())return microphone.submit();
       if (readOnly || posting || !ready || !binding || inputBinding !== binding) return;
       const text = draft.value;
+      if(draftState?.hasUnconfirmed(text)){composerNotice('Check message status before sending another message.');return;}
       if(toClaude && (!text.trim() || new TextEncoder().encode(text).length>16384 ||
           replyFocus || visual?.hasImages?.() || attachedFiles?.hasFiles())){
         composerNotice("Claude Code accepts plain text up to 16 KiB. Remove attachments or reply context to send.");return;
       }
-      if(draftState?.isUnconfirmed(text)){composerNotice('Check message status before sending these words again.');return;}
       if (!text.trim() && !attachedFiles?.hasFiles() || text.includes("\0") || new TextEncoder().encode(text).length > 32768) {
         composerNotice("Write a message of at most 32 KiB."); return;
       }
@@ -1360,7 +1388,7 @@ window.Conversation = (() => {
       const context=toClaude?null:inputReference();
       const reply=context&&JSON.parse(JSON.stringify(context)),playback=toClaude?null:playbackContext();
       let selectedVisual,selectedFiles;
-      posting=true;send.disabled=true;
+      submittedText=text;posting=true;send.disabled=true;
       let contextPreparation;
       try {
         // Dispatch the host snapshot before any visual/file operation can yield.
@@ -1369,15 +1397,16 @@ window.Conversation = (() => {
         if(contextPreparation)selectedFiles=[...(selectedFiles||[]),...await contextPreparation];
         if((selectedFiles?.length||0)>8||(selectedFiles||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024)throw Error('Attachments and world context exceed eight files or 40 MiB. Your draft is kept.');
       }
-      catch(e){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});posting=false;send.disabled=!inputBinding;microphone?.syncControls?.();composerNotice(e.message||"Select your image again.");return;}
-      if(owned!==inputGeneration || selectedBinding!==binding){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});posting=false;send.disabled=!inputBinding;return;}
+      catch(e){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});finishTextPost();composerNotice(e.message||"Select your image again.");return;}
+      if(owned!==inputGeneration || selectedBinding!==binding){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});finishTextPost();return;}
       posting = true; send.disabled = true; latestComposerId = id;
       inputCard({id,text,binding,reply,playback,visual:selectedVisual,files:selectedFiles,...(toClaude?{target:"claude"}:{}),focusVersion:focusAtSubmit}, observation); if(timeline)timeline.scrollTop=timeline.scrollHeight; $("#conversation-sent").open = true;
       composerNotice("Sending…",false);
       try {
         hostSurface?.attempt?.({id,binding:selectedBinding});
-        draftState?.attempt(id,text);
-        const result = await api("interaction/inputs", {binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
+        const original={binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})};
+        draftState?.attempt(original);
+        const result=await api("interaction/inputs",original);
         if (owned !== inputGeneration) return;
         if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);
@@ -1395,7 +1424,7 @@ window.Conversation = (() => {
           else composerNotice("Submission unconfirmed. Check this message status; it will not be resent automatically.");
         }
         if (e.status === 401 || e.status === 403) failed(e);
-      } finally { posting = false; draftState?.observe();send.disabled = !inputBinding;microphone?.syncControls?.();syncComposerRecovery(); }
+      } finally { finishTextPost(); }
     });
     $("#conversation-inputs-older").addEventListener("click", async () => {
       const button = $("#conversation-inputs-older"); button.disabled = true;

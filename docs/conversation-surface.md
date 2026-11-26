@@ -70,8 +70,12 @@ including Holodeck. The normal input reader carries the draft when requested,
 and its separate same-origin, CSRF-protected draft write compares revisions.
 Simultaneous edits are kept visible in the local composer and require an explicit
 choice before replacing the other copy. A confirmed original clears only its own
-matching draft. After a reload with an unconfirmed write, check the original ID
-before attempting to send the same text again. Draft changes never submit an
+matching draft. From Send through confirmation, the submitted text cannot be
+edited into a second original. If the write is unconfirmed, the composer must
+check the retained original ID before accepting another text submission. The
+user can also explicitly retry the same original, including after reload. The
+tab keeps the original request and its attachment references for that retry.
+Draft changes never submit an
 original or send data to the host. Attachments, draft routing, microphone and
 provisional transcripts retain their own lifecycle. Server drafts expire after
 seven days and are limited to 32 KiB per authorized actor and binding, with at
