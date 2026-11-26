@@ -183,6 +183,8 @@ timeout_seconds=5
             config["body"] = {**body, "incarnationId": "another-incarnation"}
         if provider_port is not None:
             config["providerPort"] = provider_port
+        if mode == "startup_failed":
+            config["providerCommand"] = ["/usr/bin/false"]
         profile.write_text(json.dumps(config))
         provider.current = selected
         provider.mode = mode
@@ -202,6 +204,13 @@ timeout_seconds=5
     with socket.socket() as offline:
         offline.bind(("127.0.0.1", 0))
         _, refused = attempt("offline", provider_port=offline.getsockname()[1])
+    assert refused["phase"] == "rejected", refused
+    assert refused["result"]["reason"] == "antigravity_provider_unavailable", refused
+    assert provider.calls == [] and not effects.exists(), refused
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        port = unused.getsockname()[1]
+    _, refused = attempt("startup_failed", provider_port=port)
     assert refused["phase"] == "rejected", refused
     assert refused["result"]["reason"] == "antigravity_provider_unavailable", refused
     assert provider.calls == [] and not effects.exists(), refused

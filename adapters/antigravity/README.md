@@ -32,6 +32,19 @@ file. It takes these fields:
 - `body` contains `beingRef`, `embodimentId`, `incarnationId` and
   `manifestHash`. The Gateway start frame and the broker must confirm it.
 - `providerPort` and `model` select `127.0.0.1:<port>/v1/chat/completions`.
+- Optional `providerCommand` runs an on-demand provider such as `llama-server`.
+  Supply an absolute executable followed by its arguments. Reserve
+  `providerPort` for this profile and configure the executable to bind exactly
+  that loopback port, use the selected model alias, and stay in the worker's
+  process group. For example, use `--host 127.0.0.1 --port <providerPort> --alias
+  <model>` along with the owner-selected local model and resource flags.
+  The worker starts it after catalog verification and waits up to 30 seconds
+  for `GET /health` to return HTTP 200. One worker per state directory can
+  start the provider. A currently occupied port or unsuccessful startup is
+  a known unsent rejection. The provider stops with the turn or its worker
+  process group on interruption. Output is discarded, so repeated starts
+  do not accumulate logs. To revert to an independently managed endpoint,
+  remove `providerCommand` from the owner profile.
 - `stateRoot` is a dedicated owner-only native history directory. The worker
   uses 128 MiB and 2048 entries as admission thresholds. One bounded turn
   may finish above its threshold, and subsequent requests are refused. The operator

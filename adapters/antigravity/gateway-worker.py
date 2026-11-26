@@ -1,11 +1,13 @@
 """Explicit, owner-configured Antigravity foreground worker."""
 
 import asyncio
-from contextlib import suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
 import sys
 from tempfile import TemporaryDirectory
@@ -69,9 +71,63 @@ def emit(ids, **fields):
     print(json.dumps({**ids, **fields}, separators=(",", ":")), flush=True)
 
 
+async def provider_ready(port):
+    async with asyncio.timeout(1):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            status = (await reader.readline()).split(maxsplit=2)
+            return status[:2] in ([b"HTTP/1.1", b"200"], [b"HTTP/1.0", b"200"])
+        finally:
+            writer.close()
+
+
+@asynccontextmanager
+async def managed_provider(command, port, state):
+    # Hold capacity only for this turn. Gateway kills the owning worker
+    # process group on interruption, including the non-forking provider.
+    directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    child = None
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with socket.socket() as unused:
+            unused.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            unused.bind(("127.0.0.1", port))
+        child = await asyncio.create_subprocess_exec(
+            *command, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        async with asyncio.timeout(30):
+            while child.returncode is None:
+                with suppress(OSError, TimeoutError):
+                    if await provider_ready(port) and child.returncode is None:
+                        break
+                await asyncio.sleep(.2)
+            else:
+                raise OSError("Local provider exited before readiness")
+        yield child
+    finally:
+        if child is not None and child.returncode is None:
+            with suppress(ProcessLookupError):
+                child.terminate()
+            try:
+                await asyncio.wait_for(child.wait(), 3)
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    child.kill()
+                await child.wait()
+        os.close(directory)
+
+
 async def run(profile, reader):
     expect = {"node", "stateRoot", "model", "providerPort", "body", "matrixStatusCommand"}
-    require(set(profile) in (expect, expect | {"selectedMemory"}))
+    require(expect <= set(profile) <= expect | {"selectedMemory", "providerCommand"})
+    command = profile.get("providerCommand")
+    if "providerCommand" in profile:
+        require(isinstance(command, list) and 1 <= len(command) <= 32)
+        require(all(isinstance(arg, str) and 0 < len(arg) <= 4096 and "\0" not in arg for arg in command))
+        require(Path(command[0]).is_absolute())
     require(Path(profile["node"]).is_absolute() and isinstance(profile["model"], str))
     require(0 < len(profile["model"]) <= 128 and type(profile["providerPort"]) is int)
     require(1 <= profile["providerPort"] <= 65_535 and set(profile["body"]) == BODY_FIELDS)
@@ -105,7 +161,8 @@ async def run(profile, reader):
     refusal = "antigravity_preflight_refused"
 
     try:
-        async with stdio_client(node) as (receive, send), ClientSession(receive, send) as broker:
+        async with (stdio_client(node) as (receive, send), ClientSession(receive, send) as broker,
+                    AsyncExitStack() as resources):
             await broker.initialize()
             listing = (await broker.list_tools()).tools
             require(len(listing) == len(tools) and {tool.name for tool in listing} == tools)
@@ -160,6 +217,16 @@ async def run(profile, reader):
                         require((await check.text()).strip() == gate.marker)
                         require(gate.checked and check_agent.conversation_id == probe_id)
 
+                provider = None
+                if command:
+                    try:
+                        provider = await resources.enter_async_context(
+                            managed_provider(command, profile["providerPort"], state)
+                        )
+                    except (OSError, TimeoutError):
+                        refusal = "antigravity_provider_unavailable"
+                        raise
+
                 async with Agent(config=config) as agent:
                     require(not agent.conversation.history)
                     reply = await agent.chat(first["text"])
@@ -187,6 +254,8 @@ async def run(profile, reader):
                                 )
                                 endpoint.close()
                                 await endpoint.wait_closed()
+                            if provider is not None and provider.returncode is not None:
+                                raise OSError("Local provider exited before submission")
                         except (OSError, TimeoutError):
                             refusal = "antigravity_provider_unavailable"
                             raise
