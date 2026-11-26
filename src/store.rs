@@ -13,6 +13,7 @@ mod artifacts;
 pub(crate) use artifacts::ArtifactRecord;
 mod conversation_entry;
 mod conversation_inputs;
+pub(crate) use conversation_inputs::PrivateMatrixOrigin;
 mod conversation_routing;
 pub use conversation_routing::{
     ConversationFocus, ConversationReply, ConversationRouteAction, ConversationRouting,

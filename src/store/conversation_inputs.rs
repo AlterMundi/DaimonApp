@@ -88,6 +88,12 @@ pub struct ConversationInput {
     pub epoch: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_matrix: Option<PrivateMatrixSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_matrix_origin: Option<PrivateMatrixOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) private_matrix_reply: Option<crate::store::WeOriginal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tribu_source: Option<crate::interaction::TribuSource>,
     /// Retained voice-layer exchange, separate from an admitted work request.
     /// The identifier groups originals; it is not provider or execution authority.
@@ -121,6 +127,22 @@ pub struct ConversationInput {
     pub phase: String,
     pub local_turn: Option<i64>,
     pub retired: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateMatrixSelection {
+    pub sender: crate::interaction::MatrixDestination,
+    pub recipient: crate::interaction::MatrixDestination,
+    pub thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateMatrixOrigin {
+    pub message_id: String,
+    pub message_hash: String,
+    pub receipt_event_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +440,9 @@ fn trace_original_on(
 }
 
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
+    if input.private_matrix.is_some() {
+        bail!("Private Matrix text belongs to its retained destination");
+    }
     if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
         bail!("Foreground conversation has not been delegated as work");
     }
@@ -427,7 +452,7 @@ pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Resul
     eligible_binding_on(conn, input)
 }
 
-fn eligible_binding_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
+pub(super) fn eligible_binding_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
     let (session, native) = super::presentation::entry_on(conn, input.human, input.entry)?;
     if input.retired
         || session != input.session
@@ -709,6 +734,158 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn conversation_private_matrix_capture(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        binding: &str,
+        id: &str,
+        text: &str,
+        sender: &crate::interaction::MatrixDestination,
+        recipient: &crate::interaction::MatrixDestination,
+    ) -> Result<(ConversationInput, bool)> {
+        use crate::interaction::MatrixDestination::Body;
+        sender.validate()?;
+        recipient.validate()?;
+        anyhow::ensure!(
+            matches!(sender, Body { .. })
+                && matches!(recipient, Body { .. })
+                && sender.being() == recipient.being()
+                && sender != recipient
+                && text.len() <= 16384,
+            "Invalid private Matrix text or destination"
+        );
+        let thread_key =
+            serde_json::to_vec(&("interaction.private-claude/v1", binding, sender, recipient))?;
+        let selection = PrivateMatrixSelection {
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            thread_id: Uuid::new_v5(&Uuid::NAMESPACE_OID, &thread_key).to_string(),
+        };
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Some(selection),
+        )
+    }
+
+    /// Reserve before invoking the native sender. Recovery observes uncertainty.
+    pub(crate) fn conversation_private_matrix_claim(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let input = read_on(&tx, id, human)?;
+        anyhow::ensure!(
+            input.entry == entry && input.private_matrix.is_some(),
+            "Private Matrix original differs from selection"
+        );
+        if input.phase != "retained" {
+            return Ok(false);
+        }
+        eligible_binding_on(&tx, &input)?;
+        let changed = tx.execute(
+            "UPDATE conversation_inputs SET phase='sending' WHERE id=?1 AND human_id=?2 AND phase='retained' AND instance_id=?3",
+            params![id, human, self.instance_id],
+        )?;
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn conversation_private_matrix_finish_unsent(
+        &self,
+        input: &ConversationInput,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "UPDATE conversation_inputs SET phase='retained_unsent' WHERE id=?1 AND human_id=?2 AND session_id=?3 AND phase='retained' AND instance_id=?4 AND json_extract(doc,'$.private_matrix') IS NOT NULL",
+            params![input.id, input.human, input.session, self.instance_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn conversation_private_matrix_record_origin(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        receipt: Option<PrivateMatrixOrigin>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut input = read_on(&tx, id, human)?;
+        anyhow::ensure!(
+            input.entry == entry
+                && input.private_matrix.is_some()
+                && input.phase == "sending"
+                && input.private_matrix_origin.is_none(),
+            "Private Matrix original submission changed"
+        );
+        input.phase = if receipt.is_some() {
+            "matrix_received"
+        } else {
+            "uncertain"
+        }
+        .into();
+        input.private_matrix_origin = receipt;
+        anyhow::ensure!(tx.execute(
+            "UPDATE conversation_inputs SET phase=?1,doc=?2 WHERE id=?3 AND human_id=?4 AND phase='sending' AND instance_id=?5",
+            params![input.phase, serde_json::to_string(&input)?, id, human, self.instance_id],
+        )? == 1, "Private Matrix submission is no longer owned");
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn conversation_private_matrix_record_reply(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        id: &str,
+        reply: crate::store::WeOriginal,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut input = read_on(&tx, id, human)?;
+        let selection = input
+            .private_matrix
+            .as_ref()
+            .context("Private Matrix selection missing")?;
+        anyhow::ensure!(
+            input.entry == entry
+                && input.phase == "matrix_received"
+                && input.private_matrix_origin.is_some()
+                && input.private_matrix_reply.is_none()
+                && selection.thread_id == reply.thread_id
+                && matches!(&selection.recipient, crate::interaction::MatrixDestination::Body { embodiment_id, .. }
+                if embodiment_id == &reply.author),
+            "Private Matrix reply differs from selection"
+        );
+        input.phase = "matrix_replied".into();
+        input.private_matrix_reply = Some(reply);
+        anyhow::ensure!(tx.execute(
+            "UPDATE conversation_inputs SET phase=?1,doc=?2 WHERE id=?3 AND human_id=?4 AND phase='matrix_received' AND instance_id=?5",
+            params![input.phase, serde_json::to_string(&input)?, id, human, self.instance_id],
+        )? == 1, "Private Matrix reply is no longer owned");
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &self,
         human: i64,
@@ -737,6 +914,7 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
             None,
             None,
         )
@@ -775,6 +953,7 @@ impl Store {
             Vec::new(),
             None,
             Some((source, max_pending)),
+            None,
         )
     }
 
@@ -811,6 +990,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -853,6 +1033,7 @@ impl Store {
             capture_questions,
             Vec::new(),
             Some(dialogue_id.into()),
+            None,
             None,
         )
     }
@@ -1102,6 +1283,7 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
+        private_matrix: Option<PrivateMatrixSelection>,
     ) -> Result<(ConversationInput, bool)> {
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
@@ -1156,6 +1338,7 @@ impl Store {
             let input = read_on(&tx, id, human)?;
             if input.entry != entry
                 || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
+                || input.private_matrix != private_matrix
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -1234,6 +1417,9 @@ impl Store {
             native,
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
+            private_matrix,
+            private_matrix_origin: None,
+            private_matrix_reply: None,
             tribu_source: tribu.map(|(source, _)| source),
             foreground_dialogue: foreground_dialogue.clone(),
             foreground_delegation: None,
@@ -1854,6 +2040,13 @@ impl Store {
             });
             if let Some(dialogue) = &input.foreground_dialogue {
                 item["foreground_dialogue"] = serde_json::json!(dialogue);
+            }
+            if input.private_matrix.is_some() {
+                item["target"] = serde_json::json!("claude");
+            }
+            if let Some(reply) = &input.private_matrix_reply {
+                item["claude_reply"] =
+                    serde_json::json!({"text":reply.text,"message_id":reply.event_id});
             }
             items.push(item);
         }
@@ -4112,6 +4305,76 @@ mod tests {
                 .get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn private_matrix_pins_destination_and_keeps_unconfirmed_submission_on_restart() {
+        use crate::interaction::MatrixDestination;
+        let (file, store, key, binding) = setup();
+        let body = |name: &str| MatrixDestination::Body {
+            being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            embodiment_id: format!("embodiment:{name}"),
+        };
+        let sender = body("sender");
+        let receiver = body("claude");
+        let id = Uuid::now_v7().to_string();
+        let (input, fresh) = store
+            .conversation_private_matrix_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                "Exact input",
+                &sender,
+                &receiver,
+            )
+            .unwrap();
+        assert!(fresh);
+        assert!(store.conversation_input_event(100, &id, E::Queue).is_err());
+        assert!(
+            store
+                .conversation_private_matrix_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "Exact input",
+                    &sender,
+                    &body("other"),
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conversation_private_matrix_claim(100, key, &id)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .conversation_private_matrix_claim(100, key, &id)
+                .unwrap()
+        );
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (seen, fresh) = store
+            .conversation_private_matrix_capture(
+                100,
+                key,
+                &binding,
+                &id,
+                "Exact input",
+                &sender,
+                &receiver,
+            )
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(seen.phase, "uncertain");
+        assert_eq!(seen.private_matrix, input.private_matrix);
+        assert!(
+            !store
+                .conversation_private_matrix_claim(100, key, &id)
+                .unwrap()
         );
     }
 

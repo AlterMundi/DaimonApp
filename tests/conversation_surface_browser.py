@@ -65,7 +65,7 @@ try:
         if(route==='interaction/draft')return draftRead(body);
         if(route==='interaction/inputs'&&body){
           const {binding,...original}=body;
-          const receipt={...original,entry_binding,phase:'accepted'};
+          const receipt={...original,entry_binding,phase:original.target==='claude'?'matrix_received':'accepted'};
           fixtureInputs.push(receipt);
           if(window.fixtureLoseAck)throw Error('Controlled lost acknowledgement');
           return receipt;
@@ -83,7 +83,7 @@ try:
           preview:index?'Other session fixture':'General conversation fixture',observed_at:'2026-11-25T01:00:00Z',
           current:true,native_binding_current:true
         })):[];
-        return{binding:'b'.repeat(64),csrf:'fixture',items,newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,goal_controls:[]};
+        return{binding:'b'.repeat(64),csrf:'fixture',items,newest:{delivery:0,native:0},more:false,can_speak:true,can_download_files:true,can_select_claude:true,goal_controls:[]};
       };
       window.fixtureUI=Conversation.mount({api,headers:()=>({'X-Dashboard-CSRF':'fixture'}),setCsrf(){},modeChanged(){},standalone:true});fixtureUI.identity('human:fixture:one');fixtureUI.authenticated();return fixtureUI.refresh();
     }'''
@@ -118,6 +118,22 @@ try:
     frame.get_by_role('button',name='Use other draft').click()
     assert field.input_value()=='Other client edits'
     page.unroute('**/fixture-draft')
+    assert frame.locator('#conversation-target').is_hidden()
+    other.get_by_label('Talk to').select_option('claude')
+    other.locator('#conversation-message').fill('Private Claude fixture original')
+    other.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    other.wait_for_function('fixtureInputs.length===1')
+    retained=other.evaluate('fixtureInputs[0]')
+    assert retained['target']=='claude' and retained['text']=='Private Claude fixture original'
+    assert not ({'files','reply','playback','visual'} & set(retained))
+    other.evaluate('''()=>{
+      fixtureInputs[0].phase='matrix_replied';
+      fixtureInputs[0].claude_reply={text:'Private Claude fixture reply',message_id:crypto.randomUUID()};
+      return fixtureUI.refresh(true);
+    }''')
+    card=other.locator(f'[data-input-id="{retained["id"]}"]')
+    card.get_by_text('Private Claude fixture reply',exact=True).wait_for()
+    assert card.get_by_text('Claude Code',exact=True).is_visible()
     other.close()
     page.wait_for_function("messages.some(m=>m.type==='ready')",timeout=5000)
     frame.locator('#conversation-files').set_input_files({'name':'fixture.txt','mimeType':'text/plain','buffer':b'synthetic attached original'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-message').fill('Exact fixture human words');frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')

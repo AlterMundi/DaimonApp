@@ -1,7 +1,10 @@
 //! Retained cross-body requests and explicitly configured technical submission.
 //! This path neither starts receiving inference nor runs a Matrix inbox consumer.
 use super::*;
-use crate::{interaction::MatrixDestination, store::MatrixInboxReadFailure as InboxFailure};
+use crate::{
+    interaction::{MatrixDestination, MatrixTransportConfig},
+    store::MatrixInboxReadFailure as InboxFailure,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 mod foreground;
@@ -336,6 +339,167 @@ pub(super) async fn tool(
             app.shared.store.interaction_matrix_status(human, key, id)
         }
     }
+}
+
+pub(super) async fn submit_claude_original(
+    app: &App,
+    cfg: &crate::interaction::InteractionConfig,
+    input: &crate::store::ConversationInput,
+    origin: &MatrixTransportConfig,
+) -> Result<()> {
+    use crate::interaction::ForegroundEngine;
+    use crate::store::{PrivateMatrixOrigin, WeOriginal, WeSelection};
+
+    let store = &app.shared.store;
+    let selection = input
+        .private_matrix
+        .as_ref()
+        .context("Missing Matrix destination")?;
+    let MatrixDestination::Body {
+        being_ref,
+        embodiment_id,
+    } = &selection.sender
+    else {
+        bail!("Private Matrix sender is not a body");
+    };
+    let MatrixDestination::Body {
+        embodiment_id: recipient,
+        ..
+    } = &selection.recipient
+    else {
+        bail!("Private Matrix recipient is not a body");
+    };
+    anyhow::ensure!(
+        origin.source == selection.sender,
+        "Private Matrix sender changed"
+    );
+    let source = json!({"being_ref":being_ref,"embodiment_id":embodiment_id});
+    let mut observe = origin.clone();
+    observe.command.truncate(
+        observe
+            .command
+            .len()
+            .checked_sub(2)
+            .context("Missing origin option")?,
+    );
+    let receiver = &cfg
+        .claude_foreground
+        .as_ref()
+        .context("Claude is unavailable")?
+        .transport;
+    anyhow::ensure!(
+        receiver.source == selection.recipient,
+        "Private Matrix recipient changed"
+    );
+    let sender_request = json!({"source":source,"thread_id":selection.thread_id});
+    let receiver_request = json!({
+        "source":{"being_ref":being_ref,"embodiment_id":recipient},
+        "thread_id":selection.thread_id
+    });
+    let (sender_view, receiver_view) = tokio::try_join!(
+        host_command_mode(&observe, &sender_request, Some("--we-baseline")),
+        host_command_mode(receiver, &receiver_request, Some("--we-baseline")),
+    )?;
+    fn cursor(view: &Value) -> Result<String> {
+        view["cursor"]
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= 2048)
+            .map(str::to_owned)
+            .context("Native Matrix observation frontier unavailable")
+    }
+    let body = &sender_view["body"];
+    let sender_cursor = cursor(&sender_view)?;
+    let receiver_cursor = cursor(&receiver_view)?;
+    if app.shared.shutdown.is_cancelled()
+        || !store.conversation_private_matrix_claim(input.human, input.entry, &input.id)?
+    {
+        return Ok(());
+    }
+    let request = json!({"source":source,"body":body,"request_id":input.id,
+        "thread_id":selection.thread_id,"text":input.text});
+    let outcome = tokio::select! {
+        biased;
+        _ = app.shared.shutdown.cancelled() => None,
+        outcome = host_command_mode(origin, &request, None) => outcome.ok(),
+    };
+    fn uuid(value: &Value) -> Option<String> {
+        let raw = value.as_str()?;
+        uuid::Uuid::parse_str(raw)
+            .ok()
+            .filter(|id| id.to_string() == raw)?;
+        Some(raw.into())
+    }
+    let receipt = outcome.and_then(|outcome| {
+        if outcome["schema"] != "daimon-gateway.matrix-we-origin/v1"
+            || outcome["request_id"] != input.id
+            || outcome["thread_id"] != selection.thread_id
+            || outcome["state"] != "delivered"
+        {
+            return None;
+        }
+        let hash = outcome["message_hash"].as_str()?;
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return None;
+        }
+        Some(PrivateMatrixOrigin {
+            message_id: uuid(&outcome["message_id"])?,
+            message_hash: hash.into(),
+            receipt_event_id: uuid(&outcome["receipt_event_id"])?,
+        })
+    });
+    store.conversation_private_matrix_record_origin(
+        input.human,
+        input.entry,
+        &input.id,
+        receipt.clone(),
+    )?;
+    let Some(receipt) = receipt else {
+        return Ok(());
+    };
+    let selected = WeSelection {
+        event_id: receipt.message_id,
+        author: embodiment_id.clone(),
+        thread_id: selection.thread_id.clone(),
+        cursor: Some(receiver_cursor),
+    };
+    let worker =
+        foreground::run_selected(app, cfg, ForegroundEngine::Claude, selected, Some(input)).await?;
+    if worker["phase"] != "delivered" || worker["thread_id"] != selection.thread_id {
+        return Ok(());
+    }
+    let delivery = &worker["result"]["delivery"];
+    let event = uuid(&delivery["message_id"]).context("Missing signed reply identity")?;
+    let result_receipt =
+        uuid(&delivery["receipt_event_id"]).context("Missing signed reply receipt")?;
+    let selection = WeSelection {
+        event_id: event,
+        author: recipient.clone(),
+        thread_id: selection.thread_id.clone(),
+        cursor: Some(sender_cursor),
+    };
+    let reply: WeOriginal = serde_json::from_value(
+        host_command_mode(
+            &observe,
+            &json!({"source":source,"body":body,"original":selection}),
+            Some("--we-read"),
+        )
+        .await?,
+    )?;
+    anyhow::ensure!(
+        reply.schema == "daimon-gateway.matrix-we-original/v1"
+            && reply.event_id == selection.event_id
+            && reply.author == selection.author
+            && reply.thread_id == selection.thread_id
+            && reply.receipt_event_id == result_receipt
+            && !reply.text.trim().is_empty()
+            && reply.text.len() <= 16384,
+        "Authenticated Matrix reply differs from the selected return",
+    );
+    store.conversation_private_matrix_record_reply(input.human, input.entry, &input.id, reply)
 }
 
 pub(super) fn foreground_command(

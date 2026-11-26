@@ -474,6 +474,10 @@ main > #conversation { display:flex;flex:1;flex-direction:column;min-height:0; }
 #conversation-codex-recovery { max-height:35vh;overflow:auto;font-size:14px; }
 #conversation-codex-recovery > summary { min-height:32px;cursor:pointer;color:var(--warn); }
 #conversation-compose label { display: block; margin-bottom: 6px; font-weight: 600; }
+#conversation-target-label:not([hidden]) { display:flex; align-items:center; gap:8px; grid-column:1/-1; }
+#conversation-compose #conversation-target-label label { margin:0; }
+#conversation-compose[data-target="claude"] #conversation-voice { display:none; }
+.input-claude-reply:not([hidden]) { border-top:1px solid var(--line); margin-top:8px; padding-top:8px; }
 #conversation-message {
   display: block; width: 100%; min-height: 88px; resize: vertical;
   padding: 10px; border: 1px solid var(--line); border-radius: 8px;

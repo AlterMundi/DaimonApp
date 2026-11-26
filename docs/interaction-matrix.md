@@ -1,5 +1,28 @@
 # Selected Matrix execution adapter
 
+An Interaction adapter can submit a retained human original with the owner-local
+`matrix_operator.py --we-origin EMBODIMENT_ID` mode. The receiving embodiment is
+fixed by owner configuration. The caller supplies the retained request ID, Matrix
+thread ID, text and authenticated sender observation. The host verifies that
+sender before using the existing `we.converse` capability. It only reports
+delivery when the exact recipient has a matching native receipt. Callers must
+retain an uncertain submission and inspect the original rather than send it again.
+
+The private Claude text route uses the existing authenticated Interaction input
+contract with `target: "claude"`. It is available only when the owner configures
+`interaction.claude_foreground.interaction_origin` for the distinct local sending
+body. Its host command ends in `--we-origin` and the configured receiving
+embodiment. The original row pins both signed bodies and a Matrix thread derived
+from the current Interaction conversation. Only the exact signed receipt can
+admit the retained text to Claude. The response is projected on the original
+Conversation card after authenticated readback from the sending body. Native
+submission and return uncertainty remain in their existing journals.
+
+`tests/foreground_signed_io.py` with `FOREGROUND_TEST_INTERACTION=1` exercises
+the actual authenticated HTTP original, owner socket, private signed Matrix
+transfer, Claude CLI against the loopback provider, and reply readback after
+Gateway restart. It sends no Telegram requests and invokes no Codex RPC.
+
 ## Portable Conversation publication
 
 The optional `interaction.matrix_publication` configuration adds a typed,

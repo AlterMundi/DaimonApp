@@ -12,10 +12,13 @@ import os
 import re
 from pathlib import Path
 import shlex
+import socketserver
 import subprocess
 import sys
 from threading import Thread
+from types import SimpleNamespace
 import unittest
+import uuid
 
 import antigravity_foreground_io as foreground
 from claude_provider_fixture import ANSWER, ClaudeProvider
@@ -105,18 +108,17 @@ exec {shlex.quote(executable)} "$@"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
 
-def qualify(engine, gateway, executable, scripts):
+def qualify(engine, gateway, executable, scripts, *, interaction=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
-        def _check_round_trip(self, root, socket, fixture, service, capabilities, original,
-                              author, body, return_attempts):
+        def _host_command(self, root, socket, service, capabilities):
             import daimon_matrix
             from daimon_matrix.client import CLIENT_CONFIG_SCHEMA_V3
 
-            being = fixture.ledger_b.authority.manifest.being_ref
-            origin = fixture.ledger_b.local_origin
-            source = {"being_ref": being, "embodiment_id": body}
+            origin = service.ledger.local_origin
+            source = {"being_ref": service.ledger.authority.manifest.being_ref,
+                      "embodiment_id": origin["embodiment_id"]}
             binding = {"schema": "daimon-gateway.matrix-we-binding/v1", "source": source}
             for purpose, cap in capabilities.items():
                 config = root / f"{purpose}.json"
@@ -137,6 +139,7 @@ def qualify(engine, gateway, executable, scripts):
             # Use the real CLI operator against that same clock in its host process.
             wrapper = root / "matrix-host.py"
             runtime_paths = [str(foreground.ROOT / "scripts"), str(Path(daimon_matrix.__file__).parents[1])]
+            runtime_paths.extend(path for path in sys.path if Path(path).name == "site-packages")
             wrapper.write_text(f"""
 import sys
 from dataclasses import replace
@@ -151,7 +154,13 @@ def configured(*args, **kwargs):
 operator.configured_client = configured
 operator.main()
 """)
-            host = [sys.executable, "-B", str(wrapper), "--binding", str(document)]
+            return source, [sys.executable, "-B", str(wrapper), "--binding", str(document)]
+
+        def _check_round_trip(self, root, socket, fixture, service, capabilities, original,
+                              author, body, return_attempts):
+            source, host = self._host_command(root, socket, service, capabilities)
+            being = source["being_ref"]
+            origin = fixture.ledger_b.local_origin
             live_status = subprocess.run(
                 [*host, "--body-status"], input=json.dumps({"source": source}),
                 text=True, capture_output=True, check=True, timeout=5,
@@ -179,7 +188,16 @@ operator.main()
             state.mkdir(mode=0o700)
             profile.touch(mode=0o600)
 
-            handler = ClaudeProvider if engine == "claude" else foreground.Provider
+            class InteractionProvider(ClaudeProvider):
+                def do_POST(self):
+                    self.server.current = self.server.journey.row(
+                        "SELECT json_extract(doc,'$.private_matrix_origin.message_id') FROM conversation_inputs WHERE id=?",
+                        (self.server.human_original,),
+                    )[0][0]
+                    super().do_POST()
+
+            handler = InteractionProvider if interaction else (
+                ClaudeProvider if engine == "claude" else foreground.Provider)
             with ThreadingHTTPServer(("127.0.0.1", 0), handler) as provider:
                 provider.journey = journey
                 provider.calls = []
@@ -201,6 +219,15 @@ operator.main()
                     config["selectedMemory"] = memory
                 command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
                 profile.write_text(json.dumps(config))
+                original_host = ""
+                if interaction:
+                    sender_source, sender = self._start_sender(root, fixture, service, capabilities, body)
+                    original_host = f"""
+[interaction.claude_foreground.interaction_origin]
+command={json.dumps([*sender,"--we-origin",body])}
+source={{kind="body",being_ref="{being}",embodiment_id="{sender_source["embodiment_id"]}"}}
+timeout_seconds=5
+"""
                 journey.config.write_text(journey.config.read_text() + f"""
 [interaction.{engine}_foreground]
 worker_command={json.dumps(command)}
@@ -208,12 +235,15 @@ worker_command={json.dumps(command)}
 command={json.dumps(host)}
 source={{kind="body", being_ref="{being}", embodiment_id="{body}"}}
 timeout_seconds=5
-""")
+""" + original_host)
                 server = Thread(target=provider.serve_forever, daemon=True)
                 server.start()
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if interaction:
+                        self._interaction_exchange(journey, provider, fixture, body, return_attempts)
+                        return
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
@@ -229,6 +259,9 @@ timeout_seconds=5
                     synced = fixture.ledger_a
                     result = reply["result"]["delivery"]
                     event = synced.event(result["message_id"])
+                    if event is None and hasattr(synced, "conversation_evidence"):
+                        event = next((row for row in synced.conversation_evidence()
+                                      if row["event_id"] == result["message_id"]), None)
                     self.assertIsNotNone(event)
                     self.assertEqual(event["origin"]["embodiment_id"], body)
                     self.assertEqual(event["payload"]["intent"]["thread_id"], original["thread_id"])
@@ -250,8 +283,93 @@ timeout_seconds=5
                         self.assertEqual(journey.telegram_methods, [])
                         self.assertEqual(journey.rpc, [])
                 finally:
+                    journey.stop()
                     provider.shutdown()
                     server.join()
+
+        def _start_sender(self, root, fixture, receiver, capabilities, body):
+            from daimon_matrix.daemon import serve_connection
+            from daimon_matrix.scopes import ScopeResolver
+            from daimon_matrix.service import HostedWeave
+
+            directory = root / "interaction-author"
+            directory.mkdir(mode=0o700)
+            socket = directory / "sdk.sock"
+            now = receiver.clock()
+
+            def peer(recipient):
+                self.assertEqual(recipient, body)
+                return None, SimpleNamespace(call=lambda payload, **_: receiver.we_lane.intake(payload))
+
+            sender = HostedWeave(
+                fixture.ledger_a, fixture.signers["legion"],
+                {cap.capability_id: cap for cap in capabilities.values()}, lambda: now,
+                "dm:runtime:v1:" + "X" * 43, "interaction-author-test",
+                scopes=ScopeResolver(fixture.ledger_a, clock=lambda: now),
+                peer_context=SimpleNamespace(configured=peer, authority=fixture.authority,
+                                             local_origin=fixture.ledger_a.local_origin),
+                we_lane=fixture.lane("legion", at_ms=now),
+            )
+
+            class Handler(socketserver.BaseRequestHandler):
+                def handle(self):
+                    serve_connection(SimpleNamespace(service=sender), self.request)
+
+            server = socketserver.UnixStreamServer(str(socket), Handler)
+            socket.chmod(0o600)
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(worker.join)
+            self.addCleanup(server.shutdown)
+            return self._host_command(directory, socket, sender, capabilities)
+
+        def _interaction_exchange(self, journey, provider, fixture, receiver, return_attempts):
+            from fastapi.testclient import TestClient
+            from dashboard.app import create_app
+            from dashboard.provider import Provider
+
+            self.assertEqual(journey.row(
+                "SELECT creator_user_id,codex_thread_id FROM sessions WHERE chat_id=100 AND thread_id=1"
+            ), [(100, None)])
+            config = {"receiver_config":str(journey.config), "state_dir":str(journey.root/"dashboard"),
+                      "origin":"https://example.test","bot_id":123}
+            with TestClient(create_app(config, Provider(config), lambda raw, bot: int(raw)),
+                            base_url=config["origin"]) as client:
+                headers = {"origin":config["origin"]}
+                issued = client.post("/api/session", json={"init_data":"100"}, headers=headers)
+                headers["authorization"] = "Bearer " + issued.json()["session_token"]
+                page = client.get("/api/interaction", headers=headers).json()
+                self.assertIs(page["can_select_claude"], True)
+                headers["x-dashboard-csrf"] = page["csrf"]
+                provider.human_original = str(uuid.uuid4())
+                request = {"binding":page["binding"], "id":provider.human_original,
+                           "text":provider.original, "target":"claude"}
+                submitted = client.post("/api/interaction/inputs", json=request, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (request["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+request["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                result = status["claude_reply"]
+                self.assertIn(ANSWER, result["text"])
+                signed = next(row for row in fixture.ledger_a.conversation_evidence()
+                              if row["event_id"] == result["message_id"])
+                self.assertEqual(signed["origin"]["embodiment_id"], receiver)
+                self.assertEqual(signed["payload"]["body"]["text"], result["text"])
+                self.assertEqual(provider.calls, [provider.current] * 2)
+                self.assertEqual(len(return_attempts), 1)
+                self.assertEqual(journey.telegram_methods, [])
+                self.assertEqual(journey.rpc, [])
+                journey.stop()
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                self.assertEqual(client.post("/api/interaction/inputs", json=request, headers=headers)
+                                 .json()["claude_reply"], result)
+                self.assertEqual(provider.calls, [provider.current] * 2)
+                self.assertEqual(len(return_attempts), 1)
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1
@@ -263,4 +381,9 @@ if __name__ == "__main__":
     engine, gateway, executable = sys.argv[1:4]
     if len(sys.argv) != (4 if engine == "claude" else 5):
         raise SystemExit("Supply the DMK scripts directory for Antigravity and Goose.")
-    raise SystemExit(qualify(engine, gateway, executable, Path(sys.argv[4]) if engine != "claude" else None))
+    interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
+    if interaction:
+        os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
+        sys.path.insert(0, str(foreground.ROOT))
+    raise SystemExit(qualify(engine, gateway, executable, Path(sys.argv[4]) if engine != "claude" else None,
+                            interaction=interaction))

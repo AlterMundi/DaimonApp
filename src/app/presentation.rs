@@ -204,6 +204,11 @@ pub(super) fn owner_read(app: &App, human: i64, args: &str) -> Result<serde_json
         ),
     }?;
     if result["schema"] == "telecodex.presentation-list/v1" {
+        result["can_select_claude"] = json!(
+            cfg.claude_foreground
+                .as_ref()
+                .is_some_and(|foreground| foreground.interaction_origin.is_some())
+        );
         let targets = cfg
             .targets
             .iter()

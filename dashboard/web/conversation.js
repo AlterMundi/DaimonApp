@@ -747,11 +747,21 @@ window.Conversation = (() => {
       const text=card.value.text || card.originalText || card.value.preview;
       hostSurface?.status(card.value);
       card.text.textContent=card.value.voice?(text?"Automatic voice transcript:\n"+text:"Original voice recording saved."):text;
+      const reply=card.value.claude_reply;
+      if(typeof reply?.text==="string"){
+        if(!card.claudeBody){
+          const container=node("div",undefined,"input-claude-reply");
+          card.claudeBody=node("div",undefined,"reply-text");
+          container.append(node("strong","Claude Code"),card.claudeBody);
+          card.box.insertBefore(container,card.actions);
+        }
+        card.claudeBody.textContent=reply.text;
+      }
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
       }else {
         card.check.textContent="Check status";
-        card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
+        card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered","matrix_replied"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
       }
     }
     async function readInputText(card,automatic=false){
@@ -811,6 +821,13 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
+    const targetLabel=$("#conversation-target-label"), target=$("#conversation-target"), claudeOption=$("#conversation-target-claude");
+    let claudeAvailable=false;
+    if(target&&new URLSearchParams(location.search).get("target")==="claude")target.value="claude";
+    target?.addEventListener("change",()=>{
+      if(target.value==="claude"&&microphone?.ownsSend?.()){target.value="";return;}
+      compose.dataset.target=target.value;
+    });
     const draftStatus=node('div',undefined,'conversation-tools composer-draft-notice'),draftNote=node('span'),draftPrimary=node('button'),draftOther=node('button','Use other draft');
     draftStatus.hidden=true;draftNote.setAttribute('role','status');draftPrimary.type=draftOther.type='button';
     draftStatus.append(draftNote,draftPrimary,draftOther);
@@ -859,6 +876,7 @@ window.Conversation = (() => {
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
+      : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed."})[value.phase]??"Check this message’s status before sending again."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
           accepted:"Sent to your conversation. Work may continue.", matrix_requested:"Saved for the selected daimon; awaiting its authorized execution and reply.",
@@ -941,7 +959,7 @@ window.Conversation = (() => {
     }
     function renderRetry(card) {
       const recovery=savedRecovery(card);
-      card.retry.hidden=readOnly || card.value.read_only===true || !card.value.binding || (!recovery && !!card.value.phase);
+      card.retry.hidden=readOnly || card.value.read_only===true || card.value.target==="claude" || !card.value.binding || (!recovery && !!card.value.phase);
       card.retry.textContent=recovery?`Try again with #${recovery.label}`:"Retry this same message";
       card.retry.disabled=!!card.retryBusy || !!card.retryNeedsCheck;
       if(card.retryNeedsCheck)card.check.hidden=false;
@@ -1122,7 +1140,7 @@ window.Conversation = (() => {
         if(timeline){box.classList.add?.("human-message");box.append(node("h3","You"));}
         const time=node("time",undefined,"message-time");
         box.append(text,status,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
-        card = {box, text,time, imageButton,imageView,status, check, retry, value, observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
+        card = {box,text,time,actions,imageButton,imageView,status,check,retry,value,observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
         trace.addEventListener("toggle",()=>trace.open&&readTrace(card));
         traceRefresh.addEventListener("click",()=>readTrace(card));
         continueButton.addEventListener("click",()=>card.value.continuation&&selectFocus(card.value.continuation,`#${card.value.routing?.label||"session"}`));
@@ -1193,7 +1211,7 @@ window.Conversation = (() => {
         renderRoute(card);graph?.input(card.value);inputActivity();return card;
       }
       // Native acceptance and retirement cannot be undone by a late snapshot.
-      if (["answered","matrix_requested","retained_unsent"].includes(card.value.phase) ||
+      if (["answered","matrix_requested","retained_unsent","matrix_replied"].includes(card.value.phase) ||
           (card.value.phase==="accepted" && !["answered","matrix_requested"].includes(value.phase))) value = {...value,phase:card.value.phase};
       if(card.value.routing) {
         // Destination selection is immutable, even if a later-started request
@@ -1314,9 +1332,17 @@ window.Conversation = (() => {
     });
     compose.addEventListener("submit", async event => {
       event.preventDefault();
+      const toClaude=target?.value==="claude";
+      if(toClaude && (!claudeAvailable || hostSurface || microphone?.ownsSend?.())){
+        composerNotice("Claude Code is unavailable for this message.");return;
+      }
       if(microphone?.ownsSend?.())return microphone.submit();
       if (readOnly || posting || !ready || !binding || inputBinding !== binding) return;
       const text = draft.value;
+      if(toClaude && (!text.trim() || new TextEncoder().encode(text).length>16384 ||
+          replyFocus || visual?.hasImages?.() || attachedFiles?.hasFiles())){
+        composerNotice("Claude Code accepts plain text up to 16 KiB. Remove attachments or reply context to send.");return;
+      }
       if(draftState?.isUnconfirmed(text)){composerNotice('Check message status before sending these words again.');return;}
       if (!text.trim() && !attachedFiles?.hasFiles() || text.includes("\0") || new TextEncoder().encode(text).length > 32768) {
         composerNotice("Write a message of at most 32 KiB."); return;
@@ -1325,14 +1351,14 @@ window.Conversation = (() => {
         composerNotice("This message has an unconfirmed submission. Use Check status before sending it again.");
         $("#conversation-sent").open = true; return;
       }
-      if(!replyFocus && workspace && !workspace.canSend()){
+      if(!toClaude && !replyFocus && workspace && !workspace.canSend()){
         composerNotice("Select your session again or return the input to the conversation before sending.");return;
       }
       // Freeze the destination before file/image preparation can yield to a
       // later pin or expansion. Original retries keep this same selection.
       const id=crypto.randomUUID(),owned=inputGeneration,observation=++inputObservation,focusAtSubmit=focusVersion,selectedBinding=binding;
-      const context=inputReference();
-      const reply=context&&JSON.parse(JSON.stringify(context)),playback=playbackContext();
+      const context=toClaude?null:inputReference();
+      const reply=context&&JSON.parse(JSON.stringify(context)),playback=toClaude?null:playbackContext();
       let selectedVisual,selectedFiles;
       posting=true;send.disabled=true;
       let contextPreparation;
@@ -1346,12 +1372,12 @@ window.Conversation = (() => {
       catch(e){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});posting=false;send.disabled=!inputBinding;microphone?.syncControls?.();composerNotice(e.message||"Select your image again.");return;}
       if(owned!==inputGeneration || selectedBinding!==binding){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});posting=false;send.disabled=!inputBinding;return;}
       posting = true; send.disabled = true; latestComposerId = id;
-      inputCard({id,text,binding,reply,playback,visual:selectedVisual,files:selectedFiles,focusVersion:focusAtSubmit}, observation); if(timeline)timeline.scrollTop=timeline.scrollHeight; $("#conversation-sent").open = true;
+      inputCard({id,text,binding,reply,playback,visual:selectedVisual,files:selectedFiles,...(toClaude?{target:"claude"}:{}),focusVersion:focusAtSubmit}, observation); if(timeline)timeline.scrollTop=timeline.scrollHeight; $("#conversation-sent").open = true;
       composerNotice("Sending…",false);
       try {
         hostSurface?.attempt?.({id,binding:selectedBinding});
         draftState?.attempt(id,text);
-        const result = await api("interaction/inputs", {binding:selectedBinding, id, text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
+        const result = await api("interaction/inputs", {binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})});
         if (owned !== inputGeneration) return;
         if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);
@@ -2014,6 +2040,12 @@ window.Conversation = (() => {
       avatarWorkshop?.bind(value.binding);
       companion?.observe(value.activity);
       binding = value.binding;hostSurface?.bind(binding);timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
+      claudeAvailable=!readOnly&&!hostSurface&&value.can_select_claude===true;
+      if(target&&targetLabel){
+        if(claudeOption)claudeOption.disabled=!claudeAvailable;
+        targetLabel.hidden=readOnly||(!claudeAvailable&&target.value!=="claude");
+        compose.dataset.target=target.value;
+      }
       canBudgets=!readOnly && value.can_view_coordination===true;
       if(budgetView)budgetView.hidden=!canBudgets;
       if(!canBudgets)budgetEpisodes?.replaceChildren();

@@ -99,6 +99,8 @@ pub struct MatrixTransportConfig {
 pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+    /// Owner-fixed sending body and command for explicitly selected Interaction text.
+    pub interaction_origin: Option<MatrixTransportConfig>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -340,6 +342,34 @@ impl InteractionConfig {
             {
                 bail!("Invalid explicit native foreground configuration");
             }
+        }
+        if let Some(foreground) = &self.claude_foreground
+            && let Some(origin) = &foreground.interaction_origin
+        {
+            origin.source.validate()?;
+            let MatrixDestination::Body { embodiment_id, .. } = &foreground.transport.source else {
+                bail!("Claude requires a signed receiving body");
+            };
+            if !matches!(origin.source, MatrixDestination::Body { .. })
+                || origin.source.being() != foreground.transport.source.being()
+                || origin.source == foreground.transport.source
+                || !valid_owner_command(&origin.command)
+                || !origin
+                    .command
+                    .ends_with(&["--we-origin".into(), embodiment_id.clone()])
+                || !(1..=60).contains(&origin.timeout_seconds)
+                || origin.native_funding_binding.is_some()
+                || origin.native_host_restrictions.is_some()
+            {
+                bail!("Interaction requires a fixed same-being Claude route");
+            }
+        }
+        if [&self.goose_foreground, &self.antigravity_foreground]
+            .into_iter()
+            .flatten()
+            .any(|foreground| foreground.interaction_origin.is_some())
+        {
+            bail!("Interaction foreground selection is only supported for Claude");
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {

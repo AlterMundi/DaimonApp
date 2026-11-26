@@ -7,6 +7,7 @@ or uncertain native send retried. --receive reads one selected-thread page;
 model work. --native-owner is a separate, explicitly configured account-owner
 pipe session over the existing signed work/journal; it never starts a model or
 selects funding values. The controller owns execution and its resource contract.
+--we-origin submits one retained original to a configured same-being recipient.
 --we-read and --we-return address one selected original in a same-being thread.
 """
 
@@ -288,16 +289,56 @@ def we_conversation(value, client, *, timeout, respond=False):
     if not respond:
         return {"schema": "daimon-gateway.matrix-we-original/v1", **original}
 
-    request_id = identifier(value["send_id"])
+    return we_submit(
+        client, request_id=value["send_id"], thread_id=original["thread_id"],
+        recipient=original["author"], content=value["text"],
+        schema="daimon-gateway.matrix-we-return/v1",
+    )
+
+
+def we_origin(value, client, *, timeout, recipient):
+    """Submit an already retained human original to the owner's fixed destination."""
+    closed(value, ("source", "body", "request_id", "thread_id", "text"))
+    client = replace(client, timeout_seconds=timeout,
+                     deadline_ns=time.monotonic_ns() + int(timeout * 1_000_000_000))
+    observed = body_status(value, client, timeout=timeout)
+    if observed != value["body"] or recipient == observed["local_origin"]["embodiment_id"]:
+        raise MatrixExecutionError("Authenticated original author differs from selection")
+    destination({"kind": "body", "being_ref": observed["being_ref"],
+                 "embodiment_id": recipient})
+    return we_submit(
+        client, request_id=value["request_id"], thread_id=value["thread_id"],
+        recipient=recipient, content=value["text"], schema="daimon-gateway.matrix-we-origin/v1",
+    )
+
+
+def we_baseline(value, client, *, timeout):
+    """Pin the current observation frontier without inspecting prior messages."""
+    closed(value, ("source", "thread_id"))
+    client = replace(client, timeout_seconds=timeout,
+                     deadline_ns=time.monotonic_ns() + int(timeout * 1_000_000_000))
+    body = body_status(value, client, timeout=timeout)
+    _, response = client.invoke("we.conversation.page", {
+        "cursor": "tail", "limit": 1, "thread_id": identifier(value["thread_id"]),
+    })
+    page = response.get("result", {}) if response.get("ok") is True else {}
+    if (page.get("schema") != "dm.we.conversation-page/v2"
+            or page.get("entries") != [] or page.get("more") is not False):
+        raise MatrixExecutionError("Authenticated Matrix observation frontier unavailable")
+    return {"body": body, "cursor": text(page.get("cursor"), 2048)}
+
+
+def we_submit(client, *, request_id, thread_id, recipient, content, schema):
+    request_id = identifier(request_id)
     params = {
         "request_id": request_id,
-        "thread_id": original["thread_id"],
-        "addressees": [original["author"]],
-        "text": text(value["text"]),
+        "thread_id": identifier(thread_id),
+        "addressees": [recipient],
+        "text": text(content),
         "ttl_ms": WE_RETURN_TTL_MS,
     }
     outcome = {
-        "schema": "daimon-gateway.matrix-we-return/v1",
+        "schema": schema,
         "request_id": request_id,
         "state": "undetermined",
     }
@@ -324,7 +365,7 @@ def we_conversation(value, client, *, timeout, respond=False):
     )
     # Other signed sibling copies do not prove that the original author heard.
     for delivery in result["deliveries"]:
-        if delivery["embodiment_id"] == original["author"] and delivery["state"] == "delivered":
+        if delivery["embodiment_id"] == recipient and delivery["state"] == "delivered":
             outcome.update(
                 state="delivered", receipt_event_id=identifier(delivery["receipt_event_id"])
             )
@@ -836,6 +877,8 @@ def receiving_command(
     body_status_only=False,
     we_read_only=False,
     we_return_only=False,
+    we_baseline_only=False,
+    we_origin_recipient=None,
     funding_binding=None,
 ):
     """Bootstrap this host module in the existing receiving owner's SDK context.
@@ -845,7 +888,8 @@ def receiving_command(
     host interpreter/import selection. Do not execute a connection's code string.
     """
     modes = (receive_only, inbox_only, respond_only, response_status_only,
-             native_owner_only, body_status_only, we_read_only, we_return_only)
+             native_owner_only, body_status_only, we_read_only, we_return_only, we_baseline_only,
+             we_origin_recipient is not None)
     if sum(modes) > 1:
         raise MatrixExecutionError("Select one host mode")
     with connection.open("rb") as stream:
@@ -913,9 +957,12 @@ def receiving_command(
         str(binding),
         next((flag for active, flag in zip(
             modes, ("--receive", "--inbox", "--respond", "--response-status",
-                    "--native-owner", "--body-status", "--we-read", "--we-return"),
+                    "--native-owner", "--body-status", "--we-read", "--we-return",
+                    "--we-baseline", ""),
         ) if active), ""),
-    ] + (["--funding-binding", str(funding_binding)] if native_owner_only else [])
+    ] + (["--funding-binding", str(funding_binding)] if native_owner_only else []) + (
+        ["--we-origin", we_origin_recipient] if we_origin_recipient is not None else []
+    )
 
 
 def write_host_outcome(result):
@@ -964,6 +1011,10 @@ def main(*, clock=time.time, monotonic=time.monotonic):
                        help="Read one exact original and its same-being intake receipt")
     modes.add_argument("--we-return", action="store_true",
                        help="Submit one retained return to the original same-being author")
+    modes.add_argument("--we-origin", metavar="EMBODIMENT_ID",
+                       help="Submit one retained original to the configured recipient")
+    modes.add_argument("--we-baseline", action="store_true",
+                       help="Pin the current observation frontier without reading past messages")
     args = parser.parse_args()
     if args.native_connection is not None:
         command = receiving_command(
@@ -975,6 +1026,8 @@ def main(*, clock=time.time, monotonic=time.monotonic):
             response_status_only=args.response_status,
             native_owner_only=args.native_owner, body_status_only=args.body_status,
             we_read_only=args.we_read, we_return_only=args.we_return,
+            we_baseline_only=args.we_baseline,
+            we_origin_recipient=args.we_origin,
             funding_binding=args.funding_binding,
         )
         os.execv(command[0], command)
@@ -988,6 +1041,16 @@ def main(*, clock=time.time, monotonic=time.monotonic):
     raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         raise MatrixExecutionError("Bounded controller status required")
+    if args.we_baseline:
+        value = closed(strict_json(raw), ("source", "thread_id"))
+        client = configured_client(args.binding, value["source"], same_being=True)
+        write_host_outcome(we_baseline(value, client, timeout=host_timeout()))
+        return
+    if args.we_origin is not None:
+        value = closed(strict_json(raw), ("source", "body", "request_id", "thread_id", "text"))
+        client = configured_client(args.binding, value["source"], same_being=True)
+        write_host_outcome(we_origin(value, client, timeout=host_timeout(), recipient=args.we_origin))
+        return
     if args.we_read or args.we_return:
         fields = ("source", "body", "original")
         if args.we_return:
