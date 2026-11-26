@@ -92,10 +92,14 @@ class Companion(unittest.TestCase):
             self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers={**write,'Origin':'https://other.test'}).status_code,403)
             self.assertEqual(calls,[])
             self.assertEqual(self.client.post('/api/interaction/inputs',json=payload,headers=write).status_code,200)
-            self.assertEqual(calls,[(payload,{})])
+            self.assertEqual(calls,[(payload,{'private_host_access':True})])
             claude={**payload, 'id':str(uuid.uuid4()), 'target':'claude'}
             self.assertEqual(self.client.post('/api/interaction/inputs',json=claude,headers=write).status_code,200)
             self.assertEqual(calls[-1],(claude,{'private_host_access':True}))
+            self.provider.conversation_input_retry=lambda ident, body, **grant: calls.append((ident, grant)) or {'phase':'queued'}
+            response=self.client.post('/api/interaction/inputs/'+claude['id']+'/retry',json={},headers=write)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(calls[-1],(claude['id'],{'paired':True}))
             identity['actor']['ref']='human:telegram:101'
             self.assertEqual(self.client.get('/api/interaction/access',headers=headers).status_code,403)
         for route in ['/api/session','/api/alerts/attention']:
@@ -108,6 +112,15 @@ class Companion(unittest.TestCase):
         response=self.client.post('/api/interaction/inputs',json=payload,headers=self.headers)
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(calls,[(payload,{'private_host_access':False})])
+        plain={k:v for k,v in payload.items() if k!='target'}
+        plain['id']=str(uuid.uuid4())
+        response=self.client.post('/api/interaction/inputs',json=plain,headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(calls[-1],(plain,{'private_host_access':False}))
+        self.provider.conversation_input_retry=lambda ident, body, **grant: calls.append((ident, grant)) or {'phase':'queued'}
+        response=self.client.post('/api/interaction/inputs/'+plain['id']+'/retry',json={},headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(calls[-1],(plain['id'],{'paired':False}))
 
     def test_web_only_configuration_requires_explicit_scope_and_native_transport_off(self):
         self.web_only()
@@ -277,7 +290,7 @@ class Companion(unittest.TestCase):
         self.provider.conversation_telegram_inputs=lambda before,direction: {'items':[], 'read_only':True}
         self.provider.conversation_input_trace=lambda ident: {'id':ident,'read_only':True}
         submitted=[]
-        self.provider.conversation_input_submit=lambda body: submitted.append(body) or {'phase':'queued'}
+        self.provider.conversation_input_submit=lambda body, **grant: submitted.append(body) or {'phase':'queued'}
         token='h'*43
         headers={'Host':'home.example.test','Cookie':'__Host-home='+token,
                  'Origin':'https://home.example.test'}

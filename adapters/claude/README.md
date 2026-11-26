@@ -73,7 +73,24 @@ their native full-access mode without per-tool approvals. Claude's Agent SDK
 uses `permissionMode: 'bypassPermissions'` with
 `allowDangerouslySkipPermissions: true` and Bash sandboxing disabled. The
 default native tool catalog is Bash, Read, Write, Edit, Glob, Grep and
-NotebookEdit. Use `hostTools` to select a subset explicitly.
+NotebookEdit. Startup remains bounded. After the Gateway records submission,
+private full-access turns without an explicit test budget can run until Claude
+returns or the input is interrupted. Use `hostTools` to select a subset explicitly. Set
+`hostToolDirectory` to the owner-managed directory of shared command wrappers
+to expose commands such as the existing `dmk` writer to authenticated Bash
+turns. It extends the worker's explicit system path and starts a fresh native
+session when the selection changes. Keep the DMK MCP connector as the reader
+and use the same installed DMK wrapper and pool as the other local embodiment
+for native writes. When this profile selects a DMK reader and its host tool
+directory contains an executable `dmk` wrapper, the prompt tells paired Bash
+turns about both routes. The owner provisions that wrapper for the same pools
+as the reader. The hint preserves the existing native session scope.
+
+For the verified paired subscription profile, Bash inherits the receiving
+Linux account's host access, including existing sudo policy. The worker
+constructs the subscription environment without provider credential variables.
+API-key profiles retain the separate subprocess isolation to keep their key
+out of Bash. On Linux that isolation also prevents sudo and limits writes.
 
 Gateway includes the authenticated-original marker only after checking the
 retained private Interaction input against the signed Matrix original. Companion
@@ -127,7 +144,22 @@ Gateway authorizes submission. The identity check and shared DMK stay available
 on the first model call.
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
 
-The current private Interaction route uses the existing signed CompAII sending
+With `interaction_direct = true` in `[interaction.claude_foreground]`,
+paired-human Interaction originals enter the Gateway session queue and
+outcomes are stored in its canonical turn record. The installed body identity,
+effective tool catalog and OAuth selection are still verified before input
+exposure. Ordinary messages do not use Matrix transport. This setting affects
+the Interaction Claude selection; the explicit signed Matrix route is separate.
+
+Keep the upgraded Gateway binary when rolling back the setting after direct
+turns have been exposed. To restore the signed route, turn off
+`interaction_direct` and retain the existing `interaction_origin` profile.
+The upgraded reader keeps previous direct results and prevents the same native
+transcript from reopening behind a newer uncertain attempt. A pre-upgrade
+binary cannot interpret that evidence; use a fresh logical generation before
+resuming input with it.
+
+The signed Interaction route uses the existing signed CompAII sending
 body to transport the original. Interaction retains the paired human as the
 author of the original. For authenticated paired-human turns, Gateway's
 verified original marker tells Claude to preserve that attribution. Matrix

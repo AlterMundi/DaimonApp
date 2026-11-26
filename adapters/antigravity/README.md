@@ -80,5 +80,11 @@ against disposable signing material and a disposable DMK pool. The provider
 is still a loopback responder with no account or real inference. It verifies
 the sender's signed readback, the original thread and the receipt hash.
 
+`matrix antigravity interrupt EVENT_ID` stops the selected current worker.
+Set `FOREGROUND_TEST_SIGNED_INTERRUPT=before` in the signed fixture to test
+the boundary before provider exposure, or `=1` to test a stop after
+the provider has received the request. The latter retains an uncertain
+original across restart. The Gateway never resubmits that original.
+
 The maintained evidence and limits are in
 [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).

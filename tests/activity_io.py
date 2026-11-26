@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Activity observer regressions using real files, SQLite and loopback Telegram HTTP."""
+from contextlib import closing
 import importlib.util
 import http.server
 import json
@@ -76,6 +77,33 @@ class ActivityIO(unittest.TestCase):
                 (1,102,'origin','task','pending','old'),(2,100,'other','task','pending','old');""")
         database.execute("INSERT INTO app_instance_lock VALUES('main','bridge',datetime('now'))")
         database.commit();return database
+
+    def test_portable_activity_uses_only_the_current_owned_turn(self):
+        with closing(self.pending_database()) as database:
+            database.executescript("""
+                CREATE TABLE turns(id INTEGER,session_id INTEGER,from_user_id INTEGER,
+                    execution_harness TEXT,status TEXT,started_at TEXT,native_thread_id TEXT);
+                CREATE TABLE interaction_instructions(session_id INTEGER,instance_id TEXT,phase TEXT,doc TEXT);
+                INSERT INTO turns VALUES(10,1,100,'claude','running','2026-11-26T08:00:00Z',NULL);
+                INSERT INTO interaction_instructions VALUES
+                    (1,'bridge','queued','{"local_turn":10,"target_execution":{"harness":"claude"}}'),
+                    (1,'bridge','queued','{"target_execution":{"harness":"claude"}}'),
+                    (1,'old','queued','{"target_execution":{"harness":"claude"}}'),
+                    (1,'bridge','queued','{"target_execution":{"harness":"goose"}}');
+            """)
+            started = activity.timestamp('2026-11-26T08:00:00Z')
+            early = activity.portable_activity(database, 100, 7, 100, started + 12)
+            self.assertFalse(early['visible'])
+            self.assertIn('Claude Code · starting · 12s · 1 waiting', early['text'])
+            self.assertIsNone(activity.portable_activity(database, 100, 7, 101, started + 61))
+            database.execute("UPDATE turns SET native_thread_id='approved' WHERE id=10")
+            database.execute("UPDATE interaction_instructions SET phase='submitting' WHERE json_extract(doc,'$.local_turn')=10")
+            active = activity.portable_activity(database, 100, 7, 100, started + 61)
+            self.assertTrue(active['visible'])
+            self.assertEqual(active['turn'], early['turn'])
+            self.assertIn('Claude Code · working · 1m · 1 waiting', active['text'])
+            database.execute("UPDATE app_instance_lock SET instance_id='replacement'")
+            self.assertIsNone(activity.portable_activity(database, 100, 7, 100, started + 61))
 
     def test_pending_metadata_is_scoped_and_native_channels_require_a_fresh_owner(self):
         database=self.pending_database()

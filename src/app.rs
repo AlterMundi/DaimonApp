@@ -29,6 +29,8 @@ mod conversation_inputs;
 mod conversation_requests;
 mod creation;
 mod dialogue;
+mod execution_status;
+mod foreground;
 mod forum;
 mod goal_controls;
 mod goal_recovery;
@@ -129,6 +131,8 @@ struct AppShared {
     pending_codex_login: Mutex<Option<PendingCodexLogin>>,
     codex_login_backoff_until: Mutex<Option<Instant>>,
     routing_runs: StdMutex<HashMap<SessionKey, routing::Run>>,
+    matrix_foreground_runs:
+        StdMutex<HashMap<String, (crate::interaction::ForegroundEngine, CancellationToken)>>,
     worker_budget: Arc<attention::WorkerBudget>,
     shutdown: CancellationToken,
 }
@@ -494,6 +498,7 @@ impl App {
                 pending_codex_login: Mutex::new(None),
                 codex_login_backoff_until: Mutex::new(None),
                 routing_runs: StdMutex::new(HashMap::new()),
+                matrix_foreground_runs: StdMutex::new(HashMap::new()),
                 worker_budget,
                 shutdown: CancellationToken::new(),
             }),
@@ -675,6 +680,7 @@ impl App {
             self.process_callback_query(callback).await?;
             return Ok(());
         }
+        let direct_human_text = update.direct_human_text;
         let Some(message) = update.message else {
             return Ok(());
         };
@@ -757,6 +763,39 @@ impl App {
             .await?
         {
             return Ok(());
+        }
+        if let Some((engine, profile)) = routing::portable_topic(&self.shared, topic_key) {
+            if is_foreign_bot_command(text, self.shared.bot_username().as_deref()) {
+                return Ok(());
+            }
+            if direct_human_text
+                && self
+                    .shared
+                    .config
+                    .interaction
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.human_id == from.id)
+            {
+                if text.starts_with("/interaction") {
+                    routing::handle(self, &message, from.id, text).await?;
+                    return Ok(());
+                }
+                if normalize_command(text, self.shared.bot_username().as_deref()).is_some_and(
+                    |(command, _)| matches!(command.as_str(), "/status" | "/interrupt" | "/stop"),
+                ) {
+                    self.dispatch_command_text(&user, &message, text).await?;
+                    return Ok(());
+                }
+            }
+            return routing::handle_portable_topic(
+                self,
+                &message,
+                from.id,
+                topic_key,
+                direct_human_text,
+                (engine, &profile.transport.source),
+            )
+            .await;
         }
         if voice::handle(self, &message, from.id).await? {
             return Ok(());
@@ -1443,6 +1482,36 @@ impl App {
                         .await?;
                     } else {
                         let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
+                        if let Some((engine, _)) = self
+                            .shared
+                            .config
+                            .interaction
+                            .as_ref()
+                            .and_then(|profile| profile.portable_route(session_key))
+                        {
+                            let (running, queued) = self.shared.store.routed_portable_status(
+                                session.id,
+                                user.tg_user_id,
+                                engine.name(),
+                            )?;
+                            let harness = match engine {
+                                crate::interaction::ForegroundEngine::Claude => "Claude Code",
+                                crate::interaction::ForegroundEngine::Antigravity => "Antigravity",
+                                crate::interaction::ForegroundEngine::Goose => "Goose",
+                            };
+                            let activity = if running {
+                                "working on a message"
+                            } else {
+                                "idle"
+                            };
+                            self.send_status(
+                                message.chat.id,
+                                message.message_thread_id,
+                                &format!("{harness} is {activity}. Messages waiting: {queued}."),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
                         let uncertain = self
                             .shared
                             .store
@@ -2914,6 +2983,28 @@ impl App {
                 let nexus_id = turn.nexus.clone();
                 let merge_id = turn.merge.clone();
                 let conversation_input_id = turn.conversation_input.clone();
+                let portable = conversation_input_id
+                    .as_deref()
+                    .and_then(|id| {
+                        shared
+                            .store
+                            .conversation_input_read(requester, target, id)
+                            .ok()
+                    })
+                    .is_some_and(|input| input.portable.is_some());
+                let portable = portable
+                    || turn
+                        .interaction
+                        .as_deref()
+                        .and_then(|id| {
+                            shared
+                                .store
+                                .interaction_instruction(id, requester)
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|input| input.target_execution)
+                        .is_some_and(|binding| binding.harness.is_portable());
                 if let Some(id) = conversation_input_id.as_deref() {
                     let _slot = steer.lock().expect("steer mutex poisoned");
                     match shared
@@ -3017,9 +3108,10 @@ impl App {
                 // A context return may have started a distinct physical turn
                 // just as this collector completed. Attach that exact writer
                 // now; waiting for maintenance would leave its tools unanswered.
-                if native_recovery::attach_foreground(&app, requester, target)
-                    .await
-                    .is_err()
+                if !portable
+                    && native_recovery::attach_foreground(&app, requester, target)
+                        .await
+                        .is_err()
                 {
                     tracing::warn!("Exact foreground collector remains pending; no input replayed");
                 }
@@ -3168,17 +3260,7 @@ impl App {
 
 /// Returns whether a Telegram message can safely be appended to an in-flight text turn.
 fn is_text_only_steer_candidate(message: &Message, text: &str) -> bool {
-    !text.is_empty()
-        && message.photo.is_empty()
-        && message.document.is_none()
-        && message.audio.is_none()
-        && message.voice.is_none()
-        && message.video.is_none()
-        && message.sticker.is_none()
-        && message
-            .reply_to_message
-            .as_ref()
-            .is_none_or(|reply| reply.sticker.is_none())
+    !text.is_empty() && message.is_text_only()
 }
 
 pub(crate) async fn shutdown_signal(shutdown: CancellationToken) {

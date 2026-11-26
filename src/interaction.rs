@@ -79,6 +79,7 @@ fn artifact_total_limit() -> u64 {
 pub struct Target {
     pub name: String,
     pub topic_id: i64,
+    pub(crate) harness: Option<crate::execution::Harness>,
 }
 
 /// Explicit owner setup for technical sends; never a model-selected command.
@@ -99,6 +100,8 @@ pub struct MatrixTransportConfig {
 pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+    #[serde(default)]
+    pub interaction_direct: bool,
     /// Owner-fixed sending body and command for explicitly selected Interaction text.
     pub interaction_origin: Option<MatrixTransportConfig>,
 }
@@ -111,14 +114,27 @@ pub(crate) enum ForegroundEngine {
 }
 
 impl ForegroundEngine {
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) const fn for_harness(harness: crate::execution::Harness) -> Option<Self> {
+        use crate::execution::Harness;
+        match harness {
+            Harness::Codex => None,
+            Harness::Claude => Some(Self::Claude),
+            Harness::Goose => Some(Self::Goose),
+            Harness::Antigravity => Some(Self::Antigravity),
+        }
+    }
+
+    pub(crate) const fn harness(self) -> crate::execution::Harness {
         use crate::execution::Harness;
         match self {
             Self::Claude => Harness::Claude,
             Self::Goose => Harness::Goose,
             Self::Antigravity => Harness::Antigravity,
         }
-        .name()
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.harness().name()
     }
 }
 
@@ -371,7 +387,7 @@ impl InteractionConfig {
             .flatten()
             .any(|foreground| foreground.interaction_origin.is_some())
         {
-            bail!("Interaction foreground selection is only supported for Claude");
+            bail!("A signed Interaction origin is only supported for Claude");
         }
         if let Some(transport) = &self.matrix_transport {
             if let Some(restrictions) = &transport.native_host_restrictions {
@@ -403,6 +419,17 @@ impl InteractionConfig {
                 bail!("Select one bounded owner inbox channel with its existing host transport");
             }
         }
+        for target in &self.targets {
+            if target
+                .harness
+                .is_some_and(crate::execution::Harness::is_portable)
+                && self
+                    .portable_route(SessionKey::new(self.chat_id, Some(target.topic_id)))
+                    .is_none()
+            {
+                bail!("The routed harness requires its configured direct worker");
+            }
+        }
         if self.matrix_targets.len() > 16 {
             bail!("Too many explicitly selected Matrix targets");
         }
@@ -427,6 +454,33 @@ impl InteractionConfig {
         }
         // Duplicate human labels remain resolvable through #t<topic_id>.
         Ok(())
+    }
+
+    pub(crate) fn foreground(&self, engine: ForegroundEngine) -> Option<&ForegroundConfig> {
+        match engine {
+            ForegroundEngine::Claude => self.claude_foreground.as_ref(),
+            ForegroundEngine::Goose => self.goose_foreground.as_ref(),
+            ForegroundEngine::Antigravity => self.antigravity_foreground.as_ref(),
+        }
+    }
+
+    pub(crate) fn portable_route(
+        &self,
+        key: SessionKey,
+    ) -> Option<(ForegroundEngine, &ForegroundConfig)> {
+        if key.chat_id != self.chat_id {
+            return None;
+        }
+        let harness = self
+            .targets
+            .iter()
+            .find(|target| target.topic_id == key.thread_id)?
+            .harness?;
+        let engine = ForegroundEngine::for_harness(harness)?;
+        let config = self
+            .foreground(engine)
+            .filter(|config| config.interaction_direct)?;
+        Some((engine, config))
     }
 
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
@@ -622,6 +676,8 @@ pub struct Instruction {
     pub human_id: i64,
     pub target_session: i64,
     pub target: SessionKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target_execution: Option<crate::execution::ExecutionBinding>,
     pub sequence: i64,
     pub relation: RequestRelation,
     pub requests: Vec<String>,
@@ -795,10 +851,12 @@ mod tests {
                 Target {
                     name: "Nexus".into(),
                     topic_id: 2,
+                    harness: None,
                 },
                 Target {
                     name: "Nexus".into(),
                     topic_id: 3,
+                    harness: None,
                 },
             ],
         };

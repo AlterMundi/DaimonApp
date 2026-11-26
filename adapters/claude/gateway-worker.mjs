@@ -2,7 +2,9 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +19,7 @@ const VERSION = 'daimon-gateway.claude-turn/v2';
 const HOST_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'];
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal) {
+function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal, sessionInstructions) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
@@ -27,6 +29,8 @@ function turnScope(profile, bytes, skills, foundation, hostTools, humanOriginal)
       profile.sharedSkillsDirectory ?? null, skills,
       foundation?.revision ?? null,
       hostTools, humanOriginal ? 'bypassPermissions' : false,
+      ...(hostTools.includes('Bash') && profile.hostToolDirectory ? [profile.hostToolDirectory] : []),
+      ...(sessionInstructions ? [{ sessionInstructions }] : []),
     ]))
     .update(bytes)
     .digest('hex');
@@ -43,10 +47,11 @@ async function ownerProfile(path) {
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
+  const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
       'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
-      ...budget, 'matrixStatusCommand', 'body'])
+      ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
@@ -55,6 +60,8 @@ async function ownerProfile(path) {
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
+      || (hostToolDirectory.length > 0 && (typeof value.hostToolDirectory !== 'string'
+        || !isAbsolute(value.hostToolDirectory) || /[:\0\r\n]/.test(value.hostToolDirectory)))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
@@ -231,7 +238,17 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body'])
+    const controllerSelected = first?.controller === true;
+    const sessionInstructions = first?.sessionInstructions;
+    const routedHuman = first?.routedHuman === true;
+    const routedHostAccess = first?.routedHostAccess === true;
+    const fullAccess = first?.humanOriginal === true || routedHostAccess;
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'freshNativeSessionId', 'resume', 'humanOriginal', 'text', 'body',
+      ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
+      ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
+      || (routedHostAccess && !routedHuman)
+      || (routedHuman && (first.humanOriginal || controllerSelected))
+      || (controllerSelected && first.humanOriginal !== true)
       || first.schema !== VERSION || first.type !== 'start'
       || typeof first.humanOriginal !== 'boolean'
       || ![first.inputId, first.sessionId, first.freshNativeSessionId]
@@ -243,6 +260,8 @@ async function main() {
         || typeof first.resume.scope !== 'string' || !/^[a-f0-9]{64}$/.test(first.resume.scope)))
       || typeof first.text !== 'string' || !first.text.trim()
       || Buffer.byteLength(first.text) > 16 * 1024
+      || (sessionInstructions !== undefined && (typeof sessionInstructions !== 'string'
+        || Buffer.byteLength(sessionInstructions) > 16 * 1024))
       || !closed(first.body, Object.keys(profile.body))
       || !Object.keys(profile.body).every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid foreground start');
@@ -267,8 +286,21 @@ async function main() {
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
     const sharedSkills = skills.names.length
       ? await sharedSkillPlugin(profile.sharedSkillsDirectory, skills.names, scratch) : undefined;
-    const hostTools = first.humanOriginal ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
-    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, first.humanOriginal);
+    const hostTools = fullAccess ? [...(profile.hostTools ?? HOST_TOOLS)].sort() : [];
+    if (hostTools.includes('Bash')) {
+      // The API-key path needs subprocess credential isolation. The paired
+      // subscription environment contains no provider credential variables.
+      // On Linux the scrub option also confines Bash in a user namespace.
+      if (!profile.subscriptionEmail) env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+      if (profile.hostToolDirectory) env.PATH += `:${profile.hostToolDirectory}`;
+    }
+    let sharedDmkWriter;
+    if (sharedDmk && hostTools.includes('Bash') && profile.hostToolDirectory) {
+      const command = join(profile.hostToolDirectory, 'dmk');
+      const executable = await access(command, constants.X_OK).then(() => true, () => false);
+      if (executable) sharedDmkWriter = command;
+    }
+    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, sessionInstructions);
     const resume = first.resume?.scope === scope;
     const nativeSessionId = resume ? first.resume.sessionId : first.freshNativeSessionId;
     async function scopeStillActive() {
@@ -277,14 +309,59 @@ async function main() {
       const [bytes, inventory, currentFoundation] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
       ]);
-      const currentTools = first.humanOriginal ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
-      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, first.humanOriginal) === scope
+      const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
+      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, sessionInstructions) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
       createSdkMcpServer, tool, signal: stop.signal,
     });
+    const pending = new Map();
+    let nextCall = 0;
+    let committed = false;
+    async function receiveControllerReplies() {
+      try {
+        for await (const reply of input) {
+          if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'callId', 'success', 'text'])
+            || reply.schema !== VERSION || reply.type !== 'controller_reply'
+            || reply.inputId !== first.inputId || reply.sessionId !== first.sessionId
+            || typeof reply.success !== 'boolean' || typeof reply.text !== 'string'
+            || !pending.has(reply.callId)) throw new Error('Invalid controller reply');
+          const resolve = pending.get(reply.callId);
+          pending.delete(reply.callId);
+          resolve({ isError: !reply.success, content: [{ type: 'text', text: reply.text }] });
+        }
+      } finally {
+        stop.abort();
+        for (const resolve of pending.values()) {
+          resolve({ isError: true, content: [{ type: 'text', text: 'Controller result unconfirmed. Inspect retained state.' }] });
+        }
+        pending.clear();
+      }
+    }
+    let controller;
+    if (controllerSelected) {
+      const { z } = createRequire(profile.sdk)('zod');
+      const controllerTool = tool('interaction_controller',
+        'Call the shared Gateway conversation controller. Call capabilities with empty arguments to inspect the available operations.',
+        { operation: z.string().min(1).max(64), arguments: z.record(z.string(), z.unknown()) },
+        async ({ operation, arguments: args }) => {
+          if (!committed || stop.signal.aborted || Buffer.byteLength(JSON.stringify(args)) > 15600) {
+            return { isError: true, content: [{ type: 'text', text: 'Controller call is unavailable for this turn or arguments.' }] };
+          }
+          const callId = ++nextCall;
+          const response = new Promise(resolve => { pending.set(callId, resolve); });
+          try {
+            await writeFrame(process.stdout, { ...correlation, type: 'controller_call', nativeSessionId,
+              callId, operation, arguments: args }, stop.signal);
+          } catch {
+            process.stdin.destroy();
+          }
+          return response;
+        }, { alwaysLoad: true });
+      controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
+    }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, resume },
@@ -292,14 +369,14 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedSkills, matrixFoundation: foundation, hostTools,
-        fullAccess: first.humanOriginal,
+        sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, hostTools, controller,
+        fullAccess, routedHuman, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,
-          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length ? 6 : 2,
+          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length || controller ? 6 : 2,
         }),
-        env: hostTools.includes('Bash') ? { ...env, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' } : env,
+        env,
       },
       async beforeSubmit(inputId, sessionId) {
         if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;
@@ -311,9 +388,11 @@ async function main() {
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
-        // A closed owner pipe or a second command cancels this attempt.
-        void input.next().then(() => stop.abort(), () => stop.abort());
-        return scopeStillActive();
+        // After exposure only exact outstanding replies may arrive on this pipe.
+        void receiveControllerReplies().catch(() => stop.abort());
+        committed = await scopeStillActive();
+        if (committed && fullAccess && profile.maxBudgetUsd === undefined) clearTimeout(timeout);
+        return committed;
       },
     });
     await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);

@@ -969,7 +969,9 @@ impl Store {
                     &tx,
                     &admission.instruction,
                     human,
-                    &self.instance_id
+                    &self.instance_id,
+                    false,
+                    None,
                 )?,
                 "Retained workflow recovery changed"
             );
@@ -5749,7 +5751,7 @@ mod tests {
             .unwrap();
         assert!(s.heartbeat_native_not_submitted(second).is_err());
         assert!(s.heartbeat_workflow_deferred(&i.id, 100, second).is_err());
-        assert!(!s.interaction_recover(&i.id, 100).unwrap());
+        assert!(!s.interaction_recover(&i.id, 100, None).unwrap());
         assert_eq!(
             s.interaction_instruction(&i.id, 100)
                 .unwrap()

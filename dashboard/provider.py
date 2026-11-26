@@ -148,6 +148,18 @@ class Host:
         return result
 
 
+
+def observed_codex_weekly(db, directory):
+    try:health=read_owner_json(Path(directory)/'health.json') if directory else {}
+    except (OSError,ValueError):health={}
+    observed=health.get('updated_at');available=health.get('weekly_available');reset=health.get('weekly_resets_at')
+    if (health.get('source')==inventory_source(db) and health.get('connected') is True
+            and type(observed) in (int,float) and math.isfinite(observed) and 0<=time.time()-observed<=20
+            and type(available) in (int,float) and math.isfinite(available) and 0<=available<=100):
+        return {'state':'observed','available_percent':available,'observed_at':observed,
+            'resets_at':reset if type(reset) in (int,float) and math.isfinite(reset) and reset>0 else None}
+    return {'state':'unavailable'}
+
 class Provider:
     def __init__(self, config):
         self.config = config
@@ -291,7 +303,7 @@ class Provider:
         """All owned session metadata, without opening native/model processes."""
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
-        destinations={};latest_replies={};results_available={};entry_latest=None;destinations_state='unavailable'
+        destinations={};latest_replies={};results_available={};runtimes={};entry_latest=None;entry_runtime=None;destinations_state='unavailable'
         try:
             selected=self.presentation('input workspace')
         except ProviderUnavailable:
@@ -311,6 +323,8 @@ class Provider:
                     latest_replies[item['audio_key']]=latest
                 if type(item.get('result_available')) is bool:results_available[item['audio_key']]=item['result_available']
                 destinations[item['audio_key']]=item['destination']
+                runtimes[item['audio_key']]=item.get('runtime')
+            entry_runtime=selected.get('entry_runtime')
             entry_latest=selected.get('entry_latest_reply')
             if entry_latest is not None:
                 self.check_reply(entry_latest)
@@ -324,6 +338,15 @@ class Provider:
             owned=[v for v in inventory['items'] if v['human']==self.human]
             if len(owned)>128 or inventory['truncated']:
                 raise ProviderUnavailable('Session inventory exceeds qualified bound')
+            quota=observed_codex_weekly(db,directory)
+            def runtime_view(runtime):
+                if not isinstance(runtime,dict):
+                    return None
+                result={name:runtime[name] for name in ('harness','model','effort')
+                        if isinstance(runtime.get(name),str)}
+                if runtime.get('quota_source')=='codex' and quota.get('state')=='observed':
+                    result['weekly_available_percent']=quota['available_percent']
+                return result
             items=[]
             for row in owned:
                 chat,topic=map(int,row['key'].split(':'))
@@ -334,14 +357,16 @@ class Provider:
                     JOIN turns t ON t.id=m.local_turn WHERE t.session_id=? AND m.native_thread=?
                     AND COALESCE(m.phase,'final_answer') IN ('final_answer','final')
                     ORDER BY m.rowid DESC LIMIT 1''', (row['session'],row['native'])).fetchone() if available else None
-                items.append({'id':ident,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
+                is_entry=chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']
+                runtime=runtime_view(entry_runtime if is_entry else runtimes.get(row['key']))
+                items.append({'id':ident,'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
                     'results_review':'unknown','result_available':available,'destination':destinations.get(row['key']),
                     'result_revision':result_revision(latest_result[0]) if latest_result else None,
                     'latest_reply':entry_latest if chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id'] else latest_replies.get(row['key']),
-                    'is_entry':chat==self.receiver['interaction']['chat_id'] and topic==self.receiver['interaction']['topic_id']})
+                    'is_entry':is_entry})
         items.sort(key=lambda v:(-(v['last_activity_at'] or 0),v['id']))
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience changed')
@@ -419,15 +444,7 @@ class Provider:
         with closing(readonly(self.receiver['db_path'])) as db:
             inventory=read_topic_inventory(db,Path(directory)/'topics.json') if directory else topic_activity_inventory(db,{})
             owned={item['key']:item for item in inventory['items'] if item['human']==self.human}
-            quota={'state':'unavailable'}
-            try:health=read_owner_json(Path(directory)/'health.json') if directory else {}
-            except (OSError,ValueError):health={}
-            observed=health.get('updated_at');available=health.get('weekly_available');reset=health.get('weekly_resets_at')
-            if (health.get('source')==inventory_source(db) and health.get('connected') is True
-                    and type(observed) in (int,float) and math.isfinite(observed) and 0<=time.time()-observed<=20
-                    and type(available) in (int,float) and math.isfinite(available) and 0<=available<=100):
-                quota={'state':'observed','available_percent':available,'observed_at':observed,
-                    'resets_at':reset if type(reset) in (int,float) and math.isfinite(reset) and reset>0 else None}
+            quota=observed_codex_weekly(db,directory)
             items=[]
             for key,label in selected.items():
                 item=owned.get(key,{})
@@ -648,9 +665,10 @@ class Provider:
         return self.presentation(f'input telegram-list {before} {direction}')
 
     def conversation_trace_text(self, ident, source, offset):
-        if type(offset) is not int or not 0 <= offset <= 32768:
+        max_offset = 65536 if source == 'claude-reply' else 32768
+        if type(offset) is not int or not 0 <= offset <= max_offset:
             raise ValueError('Invalid trace text offset')
-        selected = 'original' if source == 'original' else self.input_id(source)
+        selected = source if source in ('original', 'claude-reply') else self.input_id(source)
         return self.presentation(f'input trace-text {self.trace_id(ident)} {selected} {offset}')
 
     @classmethod
@@ -975,8 +993,7 @@ class Provider:
                 or '\0' in body['text'] or len(body['text'].encode('utf-8')) > (16384 if 'target' in body else 32768)):
             raise ValueError('A message must contain text and fit the selected destination')
         # The Rust journal owns idempotency and exact-source checks. No retry.
-        private_authorized = body.get('target') == 'claude' and private_host_access is True
-        prefix = 'input submit-human ' if private_authorized else 'input submit '
+        prefix = 'input submit-human ' if private_host_access is True else 'input submit '
         return self.decorate_input(self.presentation(prefix + json.dumps(body, ensure_ascii=False)))
 
     def check_visual_original(self,value,ident):
@@ -1102,14 +1119,15 @@ class Provider:
             raise ValueError('Select one destination for this original message')
         return self.decorate_input(self.presentation('input route '+json.dumps({**body, 'id':ident})))
 
-    def conversation_input_retry(self, ident, body):
+    def conversation_input_retry(self, ident, body, *, paired=False):
         import re
         self.input_id(ident)
         if (not isinstance(body, dict) or set(body) != {'binding', 'instruction'}
                 or not isinstance(body['binding'], str) or not re.fullmatch('[a-f0-9]{64}', body['binding'])):
             raise ValueError('Select one saved, definitely-unsent route')
         self.input_id(body['instruction'])
-        return self.decorate_input(self.presentation('input retry '+json.dumps({**body, 'id':ident})))
+        prefix = 'input retry-human ' if paired is True else 'input retry '
+        return self.decorate_input(self.presentation(prefix+json.dumps({**body, 'id':ident})))
 
     @staticmethod
     def check_capture_questions(value):

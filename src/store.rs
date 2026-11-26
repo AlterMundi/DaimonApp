@@ -22,6 +22,7 @@ mod conversation_requests;
 pub use conversation_requests::ConversationRequest;
 mod creation;
 mod dialogue;
+pub(crate) use dialogue::EntryExecution;
 mod goal_alerts;
 mod goal_controls;
 mod scoped_maintenance;
@@ -54,7 +55,7 @@ pub use live_tasks::LiveTaskActor;
 mod matrix;
 mod merging;
 pub(crate) use matrix::foreground::{
-    WeAttempt, WeOriginal, WePhase, WeSelection, valid_claude_scope,
+    ClaudeContinuation, WeOriginal, WePhase, WeSelection, valid_claude_scope,
 };
 pub(crate) use matrix::inbox::{
     Page as MatrixInboxPage, ReadFailure as MatrixInboxReadFailure,
@@ -65,6 +66,7 @@ pub(crate) use matrix::publication::{
 };
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
+mod routed_portable;
 mod routing;
 mod session_requests;
 mod workflows;
@@ -78,6 +80,12 @@ fn record_turn_started_on(
     request: &TurnRequest,
     root: Option<&str>,
 ) -> Result<i64> {
+    if let Some(id) = root {
+        anyhow::ensure!(
+            interaction::queued_root_allowed_on(conn, id, request, session)?,
+            "Selected routed execution changed before the local turn was started"
+        );
+    }
     conn.execute("INSERT INTO turns(session_id,from_user_id,prompt,review_json,status,started_at,completed_at,assistant_text,execution_generation)
         VALUES(?1,?2,?3,?4,'running',?5,NULL,NULL,(SELECT generation FROM conversation_entry_generations WHERE session_id=?1))",params![session,request.from_user_id,request.prompt,serde_json::to_string(&request.review_mode)?,now_string()])?;
     let id = conn.last_insert_rowid();
@@ -165,6 +173,41 @@ impl From<&CodexConfig> for SessionDefaults {
 }
 
 impl Store {
+    /// Check the selected Reports reader without bootstrapping a journal writer.
+    pub(crate) fn preflight_receiving(config: &crate::config::Config) -> Result<bool> {
+        let Some(interaction) = &config.interaction else {
+            return Ok(false);
+        };
+        if !config.db_path.try_exists()? {
+            return Ok(false);
+        }
+        let conn = Connection::open_with_flags(
+            &config.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .context("Could not open the receiving journal read-only")?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let session = conn
+            .query_row(
+                "SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3",
+                params![
+                    interaction.chat_id,
+                    interaction.topic_id,
+                    interaction.human_id
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(session) = session else {
+            return Ok(false);
+        };
+        Ok(
+            heartbeat::producer::load(&conn, interaction.human_id, session)
+                .context("Candidate cannot read the selected Reports record")?
+                .is_some(),
+        )
+    }
+
     #[cfg(test)]
     pub fn open(db_path: &Path, admin_ids: &[i64], defaults: &SessionDefaults) -> Result<Self> {
         Self::open_with_external_bot(db_path, admin_ids, defaults, None)
@@ -409,7 +452,19 @@ impl Store {
             .optional()?;
         if let Some(existing) = existing {
             if existing != payload {
-                return Err(anyhow!("telegram update ID content conflict"));
+                // Upgrading the poller can attach an origin observation to
+                // a redelivered update. The original retained proof is immutable.
+                let mut previous: serde_json::Value = serde_json::from_str(&existing)?;
+                let mut incoming: serde_json::Value = serde_json::from_str(&payload)?;
+                previous
+                    .as_object_mut()
+                    .context("Invalid retained Telegram update")?
+                    .remove("direct_human_text");
+                incoming
+                    .as_object_mut()
+                    .context("Invalid Telegram update")?
+                    .remove("direct_human_text");
+                anyhow::ensure!(previous == incoming, "telegram update ID content conflict");
             }
             return Ok(false);
         }
@@ -1236,7 +1291,11 @@ impl Store {
 
     #[cfg(test)]
     pub fn record_turn_started(&self, session_id: i64, request: &TurnRequest) -> Result<i64> {
-        self.record_turn_started_mode(session_id, request, None)
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let id = record_turn_started_on(&tx, session_id, request, None)?;
+        tx.commit()?;
+        Ok(id)
     }
     /// Restore local collection only after observing the selected native writer.
     /// This changes no goal, ingress acceptance or immutable instruction binding.
@@ -1281,6 +1340,10 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let id = record_turn_started_on(&tx, session_id, request, root)?;
+        tx.execute(
+            "UPDATE sessions SET busy=1,updated_at=?2 WHERE id=?1",
+            params![session_id, now_string()],
+        )?;
         tx.commit()?;
         Ok(id)
     }
@@ -1336,7 +1399,8 @@ impl Store {
                 "SELECT t.prompt, t.review_json, t.status
                  FROM turns t
                  JOIN sessions s ON s.id = t.session_id
-                 WHERE t.id = ?1 AND s.chat_id = ?2 AND s.thread_id = ?3",
+                 WHERE t.id = ?1 AND s.chat_id = ?2 AND s.thread_id = ?3
+                   AND t.execution_harness='codex'",
                 params![turn_id, session_key.chat_id, session_key.thread_id],
                 |row| {
                     Ok((
@@ -1511,6 +1575,8 @@ impl Store {
             "execution_harness",
             "TEXT NOT NULL DEFAULT 'codex'",
         )?;
+        add_column_if_missing(&conn, "turns", "execution_native_scope", "TEXT")?;
+        add_column_if_missing(&conn, "turns", "execution_body", "TEXT")?;
         add_column_if_missing(&conn, "turns", "execution_generation", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;
@@ -2377,6 +2443,21 @@ mod tests {
         assert_eq!(retry.from_user_id, 200);
         assert_eq!(retry.prompt, "hello");
         assert!(retry.review_mode.is_none());
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE turns SET execution_harness='claude' WHERE id=?1",
+                [turn_id],
+            )
+            .unwrap();
+        assert!(
+            store
+                .retry_request_for_turn(turn_id, session.key, 200)
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn human_interactions_recover_tasks_without_resurrecting_native_channels() {

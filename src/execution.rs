@@ -11,6 +11,10 @@ pub(crate) enum Harness {
 }
 
 impl Harness {
+    pub(crate) const fn is_portable(self) -> bool {
+        !matches!(self, Self::Codex)
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::Codex => "codex",
@@ -21,12 +25,14 @@ impl Harness {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ExecutionBinding {
     pub conversation_id: i64,
     pub revision: String,
     pub harness: Harness,
     pub native_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<crate::interaction::MatrixDestination>,
 }
 
 impl ExecutionBinding {

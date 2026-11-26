@@ -21,6 +21,9 @@ pub(super) async fn telegram_command(
     args: &str,
     nonce: Option<String>,
 ) -> Result<Value> {
+    if args.starts_with("input submit-human ") || args.starts_with("input retry-human ") {
+        bail!("Paired Conversation input controls require the local owner socket");
+    }
     if let Some(selected) = args.strip_prefix("matrix ")
         && matrix::foreground_command(selected).is_some()
     {
@@ -363,7 +366,17 @@ async fn stop_target(
     index: usize,
 ) -> Result<()> {
     app.shared.store.stop_binding(op.human, t)?;
+    // Portable work has its own local cancellation even when a retained Codex
+    // thread is unreachable. The Codex goal still needs its own observation.
+    let portable = app.shared.store.portable_turn_running(t.key, op.human)?;
+    let portable_cancelled = portable && app.stop_session(t.key).await;
+    t.was_busy |= portable_cancelled;
     let Some(native) = t.native.clone() else {
+        if portable_cancelled || (!portable && app.stop_session(t.key).await) {
+            t.was_busy = true;
+            t.phase = "stop_requested".into();
+            return Ok(());
+        }
         if app.shared.store.get_session(t.key)?.is_some_and(|s| s.busy) {
             bail!("Native startup is still being resolved; fence retained");
         }
@@ -427,9 +440,8 @@ async fn stop_target(
     op.targets[index] = t.clone();
     app.shared.store.stop_save(op, "stopping")?;
     app.shared.store.stop_binding(op.human, t)?;
-    if !app.stop_session(t.key).await
-        && app.shared.codex.native_activity(&native).await? == "active"
-    {
+    let local_codex_cancelled = !portable && app.stop_session(t.key).await;
+    if !local_codex_cancelled && app.shared.codex.native_activity(&native).await? == "active" {
         let physical = app
             .shared
             .codex

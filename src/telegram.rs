@@ -230,16 +230,18 @@ impl TelegramClient {
         if self.capture_message_reactions {
             allowed_updates.push("message_reaction");
         }
-        self.post_with_timeout(
-            "getUpdates",
-            Some(&Payload {
-                offset,
-                timeout,
-                allowed_updates,
-            }),
-            Duration::from_secs(timeout as u64).saturating_add(TELEGRAM_GET_UPDATES_GRACE),
-        )
-        .await
+        let updates: Vec<serde_json::Value> = self
+            .post_with_timeout(
+                "getUpdates",
+                Some(&Payload {
+                    offset,
+                    timeout,
+                    allowed_updates,
+                }),
+                Duration::from_secs(timeout as u64).saturating_add(TELEGRAM_GET_UPDATES_GRACE),
+            )
+            .await?;
+        updates.into_iter().map(Update::from_poll).collect()
     }
 
     pub async fn set_my_commands(&self, commands: &[BotCommand]) -> Result<()> {
@@ -1475,6 +1477,41 @@ pub struct Update {
     /// Raw JSON keeps actor and future reaction types without narrowing receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_reaction: Option<serde_json::Value>,
+    /// Set at authenticated Bot API ingress before narrowing the raw message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) direct_human_text: bool,
+}
+
+impl Update {
+    fn from_poll(raw: serde_json::Value) -> Result<Self> {
+        let human_origin = raw.get("message").is_some_and(|message| {
+            [
+                "forward_origin",
+                "forward_date",
+                "forward_from",
+                "forward_from_chat",
+                "forward_sender_name",
+                "sender_chat",
+                "via_bot",
+                "sender_business_bot",
+                "is_automatic_forward",
+                "is_from_offline",
+            ]
+            .iter()
+            .all(|field| message.get(field).is_none_or(serde_json::Value::is_null))
+        });
+        let mut update: Self = serde_json::from_value(raw)?;
+        update.direct_human_text = human_origin
+            && update.message.as_ref().is_some_and(|message| {
+                message.from.as_ref().is_some_and(|sender| !sender.is_bot)
+                    && message
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                    && message.is_text_only()
+            });
+        Ok(update)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1500,6 +1537,21 @@ pub struct Message {
     pub forum_topic_closed: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forum_topic_reopened: Option<serde_json::Value>,
+}
+
+impl Message {
+    pub(crate) fn is_text_only(&self) -> bool {
+        self.photo.is_empty()
+            && self.document.is_none()
+            && self.audio.is_none()
+            && self.voice.is_none()
+            && self.video.is_none()
+            && self.sticker.is_none()
+            && self
+                .reply_to_message
+                .as_ref()
+                .is_none_or(|reply| reply.sticker.is_none())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

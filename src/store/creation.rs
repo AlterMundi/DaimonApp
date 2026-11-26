@@ -27,6 +27,7 @@ impl Store {
             Ok(Target {
                 topic_id: r.get(0)?,
                 name: r.get(1)?,
+                harness: None,
             })
         })?;
         for target in rows {
@@ -67,7 +68,11 @@ impl Store {
                                 .any(|t| t.name.eq_ignore_ascii_case(name))
                     })
                     .unwrap_or(fallback);
-                cfg.targets.push(Target { topic_id, name });
+                cfg.targets.push(Target {
+                    topic_id,
+                    name,
+                    harness: None,
+                });
             }
         }
         cfg.validate()?;
@@ -884,6 +889,7 @@ mod tests {
             targets: vec![Target {
                 name: "Explicit".into(),
                 topic_id: 10,
+                harness: None,
             }],
         };
         assert_eq!(store.interaction_profile(&cfg).unwrap().targets.len(), 1);
@@ -1449,6 +1455,7 @@ mod tests {
             targets: vec![Target {
                 name: "Alpha".into(),
                 topic_id: 7,
+                harness: None,
             }],
         };
         assert_eq!(

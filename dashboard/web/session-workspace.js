@@ -385,7 +385,16 @@
       return current.destination?.source===expanded.destination?.source
         &&expanded.destination&&current.destination.revision===expanded.destination.revision?current:{};
     }
-    return {refresh,capture,syncAudio,pinState,pinSource,audioScope,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    function runtime(){
+      if(!allowed)return;
+      const current=selected();
+      if(!current)return [...inventory.values()].find(row=>row.is_entry)?.runtime;
+      const row=inventory.get(current.id);
+      if(current.is_entry)return row?.is_entry?row.runtime:undefined;
+      if(row?.destination?.revision===current.destination?.revision &&
+          row?.destination?.source===current.destination?.source)return row?.runtime;
+    }
+    return {refresh,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};

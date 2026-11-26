@@ -55,17 +55,17 @@ fn outcome(input: &ConversationInput, fresh: bool) -> Value {
         value["foreground_dialogue"] = json!(dialogue);
         value["foreground_delegation"] = json!(input.foreground_delegation);
     }
-    if input.private_matrix.is_some() {
+    if input.targets_claude() {
         value["target"] = json!("claude");
-    }
-    if let Some(reply) = &input.private_matrix_reply {
-        value["claude_reply"] = json!({"text":reply.text,"message_id":reply.event_id});
     }
     value
 }
 
 fn response(app: &App, input: &ConversationInput, fresh: bool) -> Result<Value> {
     let mut value = outcome(input, fresh);
+    if let Some(reply) = app.shared.store.conversation_claude_reply(input)? {
+        value["claude_reply"] = reply;
+    }
     value["phase"] = json!(app.shared.store.conversation_input_projected_phase(input)?);
     value["clarifiable"] = json!(
         input.phase == "awaiting_target"
@@ -364,10 +364,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         .as_ref()
         .context("Missing integrating entry")?;
     if args == "workspace" {
-        return app
-            .shared
-            .store
-            .conversation_workspace_destinations(human, cfg.entry());
+        return super::execution_status::workspace(app, human, cfg);
     }
     if let Some(body) = args.strip_prefix("foreground context ") {
         let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;
@@ -708,7 +705,11 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         }
         return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
     }
-    if let Some(body) = args.strip_prefix("retry ") {
+    if let Some((body, paired)) = args
+        .strip_prefix("retry-human ")
+        .map(|body| (body, true))
+        .or_else(|| args.strip_prefix("retry ").map(|body| (body, false)))
+    {
         let selected: Recover = serde_json::from_str(body)?;
         let _ingress = app.shared.conversation_ingress.lock().await;
         let binding = app
@@ -731,6 +732,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             cfg.entry(),
             &selected.id,
             &selected.instruction,
+            paired,
         )?;
         if changed
             && super::dialogue::dispatch_original(
@@ -904,10 +906,6 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         )
     };
     let request: Submit = serde_json::from_str(raw)?;
-    anyhow::ensure!(
-        !private_host_access || matches!(request.target, Some(InputTarget::Claude)),
-        "Private host access applies only to the selected Claude route"
-    );
     if let Some(InputTarget::Claude) = request.target {
         anyhow::ensure!(
             request.visual.is_none()
@@ -920,6 +918,36 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             .claude_foreground
             .as_ref()
             .context("Claude is unavailable")?;
+        if receiver.interaction_direct {
+            anyhow::ensure!(
+                private_host_access,
+                "Claude requires the paired Interaction actor"
+            );
+            let _ingress = app.shared.conversation_ingress.lock().await;
+            let store = &app.shared.store;
+            let (input, fresh) = store.capture_portable_turn(
+                human,
+                cfg.entry(),
+                &request.binding,
+                &request.id,
+                &request.text,
+                &receiver.transport.source,
+            )?;
+            if fresh && input.phase == "retained" && store.queue_portable_turn(&input)? {
+                let scheduled = app
+                    .worker_for(input.entry)
+                    .await
+                    .and_then(|worker| enqueue(app, &input, worker.sender));
+                if scheduled.is_err() {
+                    store.conversation_input_finish(human, &input.id)?;
+                }
+            }
+            return response(
+                app,
+                &store.conversation_input_read(human, cfg.entry(), &input.id)?,
+                fresh,
+            );
+        }
         let origin = receiver
             .interaction_origin
             .as_ref()
@@ -987,6 +1015,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         request.visual,
         request.playback,
         request.files,
+        private_host_access,
     )?;
     if fresh && input.phase == "retained" {
         if let Err(error) = super::voice::INTERRUPT_TARGETS
@@ -1409,19 +1438,25 @@ fn enqueue(
     input: &ConversationInput,
     sender: mpsc::UnboundedSender<QueuedTurn>,
 ) -> Result<()> {
-    app.shared
-        .store
-        .conversation_input_validate(input.human, &input.id)?;
+    if input.portable.is_none() {
+        app.shared
+            .store
+            .conversation_input_validate(input.human, &input.id)?;
+    }
     sender
         .send(QueuedTurn {
             request: TurnRequest {
                 session_key: input.entry,
                 from_user_id: input.human,
-                prompt: format!(
-                    "{}{}",
-                    input.rendered(),
-                    crate::files::rendered(&app.shared.config.db_path, &input.files)?
-                ),
+                prompt: if input.portable.is_some() {
+                    input.text.clone()
+                } else {
+                    format!(
+                        "{}{}",
+                        input.rendered(),
+                        crate::files::rendered(&app.shared.config.db_path, &input.files)?
+                    )
+                },
                 runtime_instructions: None,
                 attachments: crate::visual::attachments(
                     &app.shared.config.db_path,

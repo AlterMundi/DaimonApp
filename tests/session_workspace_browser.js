@@ -28,6 +28,8 @@ const ref=n=>({source:`session:${n}`,revision});
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
 {id:'2'.repeat(24),title:'Garden · Waiting for your choice',audio_key:'100:8',destination:ref(8),latest_reply:{...ref(8),source:'session:8/43'},fresh:true,human_action_pending:true,execution:'working',goal_state:'blocked'},
 {id:'3'.repeat(24),title:'Conversation',audio_key:'100:1',destination:null,is_entry:true,fresh:true,execution:'working',goal_state:'active'}];
+sessions[0].runtime={harness:'claude',model:'opus',effort:'medium'};
+sessions[2].runtime={harness:'codex',model:'gpt-fixture',effort:'high',weekly_available_percent:63};
 for(const row of sessions)row.last_activity_at=Date.now()/1000;
 sessions.push({id:'4'.repeat(24),title:'Old inactive session',last_activity_at:Date.now()/1000-172800,fresh:false,execution:'idle',goal_state:'absent'});
 const originals=[];let seen=0,workspaceAllowed=true;
@@ -810,8 +812,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  await page.setViewportSize({width:1280,height:800});
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  assert.equal(await page.getByRole('button',{name:'Old inactive session',exact:true}).count(),0);
+ assert.equal(await page.locator('#conversation-target').count(),0);
+ assert.equal(await page.locator('#conversation-runtime').textContent(),'Codex · gpt-fixture · high · 63% weekly left');
  assert.deepEqual(await page.locator('.session-name').allTextContents(),['Daimon',sessions[1].title,sessions[0].title]);
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Pin as the input destination',exact:true}).click();
+ assert.equal(await page.locator('#conversation-runtime').textContent(),'Claude Code · Opus · medium');
  assert.equal(await page.locator('.session-rail').isVisible(),false,'Pin collapses the menu');
  assert(await page.getByRole('button',{name:'Show sessions',exact:true}).evaluate(button=>button===document.activeElement),'Pin returns focus to the toggle');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();

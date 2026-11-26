@@ -425,6 +425,7 @@ fn sample_app() -> (App, NamedTempFile) {
         pending_approvals: Mutex::new(HashMap::new()),
         pending_questions: Mutex::new(HashMap::new()),
         routing_runs: StdMutex::new(HashMap::new()),
+        matrix_foreground_runs: StdMutex::new(HashMap::new()),
         worker_budget: attention::WorkerBudget::new(2),
         pending_task_text: Mutex::new(HashMap::new()),
         conversation_ingress: Mutex::new(()),
@@ -2454,6 +2455,7 @@ fn rebinds_stale_session_to_latest_active_thread_for_same_cwd() {
         pending_approvals: Mutex::new(HashMap::new()),
         pending_questions: Mutex::new(HashMap::new()),
         routing_runs: StdMutex::new(HashMap::new()),
+        matrix_foreground_runs: StdMutex::new(HashMap::new()),
         worker_budget: attention::WorkerBudget::new(2),
         pending_task_text: Mutex::new(HashMap::new()),
         conversation_ingress: Mutex::new(()),
@@ -2585,6 +2587,7 @@ fn keeps_truly_archived_session_unbound_when_no_active_replacement_exists() {
         pending_approvals: Mutex::new(HashMap::new()),
         pending_questions: Mutex::new(HashMap::new()),
         routing_runs: StdMutex::new(HashMap::new()),
+        matrix_foreground_runs: StdMutex::new(HashMap::new()),
         worker_budget: attention::WorkerBudget::new(2),
         pending_task_text: Mutex::new(HashMap::new()),
         conversation_ingress: Mutex::new(()),
@@ -3334,6 +3337,12 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
                 .unwrap_err();
             assert!(error.to_string().contains("require the local owner socket"));
         }
+    }
+    for command in ["input submit-human {}", "input retry-human {}"] {
+        let error = stopping::telegram_command(&app, 100, command, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("require the local owner socket"));
     }
     let status = stopping::command(&app, 100, &format!("matrix claude status {id}"), None)
         .await

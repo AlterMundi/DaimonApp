@@ -23,7 +23,10 @@ fn entry_inputs_query(
     committed: bool,
     preparing_local: Option<i64>,
 ) -> Result<Vec<crate::telegram::Update>> {
-    let mut query=conn.prepare("SELECT i.payload_json FROM incoming_updates i JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id JOIN bot_state captured ON captured.key='stop_input_epoch:'||i.update_id LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND t.from_user_id=?3 AND s.codex_thread_id=?4 AND (t.native_thread_id=?4 OR (t.id=?7 AND t.native_thread_id IS NULL AND t.status='running')) AND (i.status IN ('started','settled','steering') OR (?6=1 AND i.status='undetermined' AND EXISTS(SELECT 1 FROM interaction_creations c WHERE c.human_id=?3 AND c.entry_chat=?1 AND c.entry_topic=?2 AND c.input_update=i.update_id))) AND json_extract(i.payload_json,'$.message.from.id')=?3 AND json_extract(i.payload_json,'$.message.chat.id')=?1 AND json_extract(i.payload_json,'$.message.message_thread_id')=?2 AND (json_type(i.payload_json,'$.message.text')='text' OR EXISTS(SELECT 1 FROM interaction_voice_inputs v WHERE v.update_id=i.update_id AND v.human_id=?3 AND v.phase='committed')) AND captured.value=COALESCE(current.value,'initial') AND (?5 IS NULL OR i.update_id=?5) ORDER BY i.update_id DESC LIMIT 12")?;
+    let mut query=conn.prepare("SELECT i.payload_json FROM incoming_updates i JOIN turns t ON t.id=i.turn_id JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id JOIN bot_state captured ON captured.key='stop_input_epoch:'||i.update_id LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND t.from_user_id=?3 AND s.codex_thread_id=?4 AND (t.native_thread_id=?4 OR (t.id=?7 AND t.native_thread_id IS NULL AND t.status='running')) AND (i.status IN ('started','settled','steering') OR (i.status='undetermined' AND EXISTS(
+        SELECT 1 FROM native_input_receipts n WHERE n.update_id=i.update_id
+        AND n.native_thread=?4 AND n.native_turn!=''))
+        OR (?6=1 AND i.status='undetermined' AND EXISTS(SELECT 1 FROM interaction_creations c WHERE c.human_id=?3 AND c.entry_chat=?1 AND c.entry_topic=?2 AND c.input_update=i.update_id))) AND json_extract(i.payload_json,'$.message.from.id')=?3 AND json_extract(i.payload_json,'$.message.chat.id')=?1 AND json_extract(i.payload_json,'$.message.message_thread_id')=?2 AND (json_type(i.payload_json,'$.message.text')='text' OR EXISTS(SELECT 1 FROM interaction_voice_inputs v WHERE v.update_id=i.update_id AND v.human_id=?3 AND v.phase='committed')) AND captured.value=COALESCE(current.value,'initial') AND (?5 IS NULL OR i.update_id=?5) ORDER BY i.update_id DESC LIMIT 12")?;
     let rows = query.query_map(
         params![
             key.chat_id,
@@ -133,24 +136,7 @@ pub(super) fn original_owned_on(
             {
                 bail!("Original conversation input is not linked to this native entry");
             }
-            Ok((
-                SourceInput {
-                    tribu_source: input.tribu_source.clone(),
-                    transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
-                    channel: "conversation".into(),
-                    event_id: id.clone(),
-                    update_id: None,
-                    human_id: human,
-                    target_sessions: vec![],
-                    origin: ReturnRoute {
-                        chat_id: key.chat_id,
-                        thread_id: key.thread_id,
-                        message_id: None,
-                    },
-                    text: input.text,
-                },
-                None,
-            ))
+            Ok((conversation_source(&input), None))
         }
     }
 }
@@ -179,6 +165,54 @@ pub(super) fn original_order_on(conn: &Connection, source: &SourceInput) -> Resu
         .optional()?)
 }
 
+fn conversation_source(input: &super::ConversationInput) -> SourceInput {
+    SourceInput {
+        tribu_source: input.tribu_source.clone(),
+        transcription: input
+            .voice
+            .as_ref()
+            .and_then(|voice| voice.transcription.clone()),
+        channel: "conversation".into(),
+        event_id: input.id.clone(),
+        update_id: None,
+        human_id: input.human,
+        target_sessions: vec![],
+        origin: ReturnRoute {
+            chat_id: input.entry.chat_id,
+            thread_id: input.entry.thread_id,
+            message_id: None,
+        },
+        text: input.text.clone(),
+    }
+}
+
+fn require_portable_reference(source: &SourceInput, reference: &InputReference) -> Result<()> {
+    if source_reference(source).as_ref() != Some(reference) {
+        bail!("Reference does not match the selected active portable original");
+    }
+    Ok(())
+}
+
+pub(super) fn dispatched_source_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+    writer: &str,
+) -> Result<bool> {
+    let source = super::routing::source_on(conn, id, human)?;
+    if source.channel != "conversation" {
+        return Ok(true);
+    }
+    let input = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
+    Ok(super::conversation_inputs::eligible_dispatched_source_on(conn, &input, writer).is_ok())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EntryExecution<'a> {
+    Codex(&'a str),
+    Portable(i64),
+}
+
 impl Store {
     /// Return only inputs actually linked to this owned native integrating entry.
     /// Retired generations and uncertain inputs cannot become automatic dispatch.
@@ -204,6 +238,24 @@ impl Store {
     ) -> Result<(SourceInput, Option<crate::telegram::Message>)> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         original_on(&conn, key, human, native, reference, channel, false)
+    }
+
+    pub(crate) fn interaction_portable_entry_source(
+        &self,
+        key: SessionKey,
+        human: i64,
+        local: i64,
+    ) -> Result<SourceInput> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let input = super::conversation_inputs::portable_controller_input_on(
+            &conn,
+            local,
+            key,
+            human,
+            &self.instance_id,
+        )?;
+        super::matrix::unclaimed_on(&conn, human, "conversation", &input.id, None)?;
+        Ok(conversation_source(&input))
     }
 
     pub fn interaction_entry_references(
@@ -234,13 +286,8 @@ impl Store {
     }
 
     pub fn interaction_original_allowed(&self, id: &str, human: i64) -> Result<bool> {
-        let source = self.interaction_source(id, human)?;
-        if source.channel != "conversation" {
-            return Ok(true);
-        }
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        Ok(super::conversation_inputs::eligible_on(&conn, &input).is_ok())
+        dispatched_source_on(&conn, id, human, &self.instance_id)
     }
 
     pub fn interaction_visual(
@@ -254,7 +301,11 @@ impl Store {
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        super::conversation_inputs::eligible_on(&conn, &input)?;
+        super::conversation_inputs::eligible_dispatched_source_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )?;
         Ok(input.visual)
     }
 
@@ -269,7 +320,11 @@ impl Store {
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = super::conversation_inputs::read_on(&conn, &source.event_id, human)?;
-        super::conversation_inputs::eligible_on(&conn, &input)?;
+        super::conversation_inputs::eligible_dispatched_source_on(
+            &conn,
+            &input,
+            &self.instance_id,
+        )?;
         Ok(input.files)
     }
 
@@ -304,6 +359,7 @@ impl Store {
         Ok(value)
     }
 
+    #[cfg(test)]
     /// Atomically retain the whole routing plan under the original entry owner,
     /// binding and ingress generation before any per-target transport begins.
     pub fn interaction_admit_entry_plan(
@@ -315,14 +371,52 @@ impl Store {
         plan: &[(SessionKey, crate::interaction::RequestRelation)],
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<(crate::interaction::Instruction, bool)>> {
+        self.interaction_admit_entry_execution_plan(
+            key,
+            human,
+            EntryExecution::Codex(native),
+            source,
+            plan,
+            closed,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn interaction_admit_entry_execution_plan(
+        &self,
+        key: SessionKey,
+        human: i64,
+        execution: EntryExecution<'_>,
+        source: &SourceInput,
+        plan: &[(SessionKey, crate::interaction::RequestRelation)],
+        closed: &tokio_util::sync::CancellationToken,
+        config: Option<&crate::interaction::InteractionConfig>,
+    ) -> Result<Vec<(crate::interaction::Instruction, bool)>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let reference = source
             .update_id
             .map(InputReference::Telegram)
             .unwrap_or_else(|| InputReference::Conversation(source.event_id.clone()));
-        let (mut original, _) =
-            original_on(&tx, key, human, native, &reference, &source.channel, false)?;
+        let (mut original, portable) = match execution {
+            EntryExecution::Codex(native) => (
+                original_on(&tx, key, human, native, &reference, &source.channel, false)?.0,
+                None,
+            ),
+            EntryExecution::Portable(local) => {
+                let input = super::conversation_inputs::portable_controller_input_on(
+                    &tx,
+                    local,
+                    key,
+                    human,
+                    &self.instance_id,
+                )?;
+                let original = conversation_source(&input);
+                require_portable_reference(&original, &reference)?;
+                (original, Some(input))
+            }
+        };
         original.target_sessions = source.target_sessions.clone();
         if original != *source
             || plan.len() != source.target_sessions.len()
@@ -338,12 +432,16 @@ impl Store {
         }
         let mut admitted = vec![];
         for (target, relation) in plan {
-            admitted.push(super::interaction::admit_on(
+            admitted.push(super::interaction::admit_selected_on(
                 &tx,
                 source,
                 *target,
                 relation.clone(),
                 &self.instance_id,
+                portable.as_ref(),
+                config
+                    .and_then(|cfg| cfg.portable_route(*target))
+                    .map(|(engine, route)| (engine, &route.transport.source)),
             )?);
         }
         if closed.is_cancelled() {
@@ -429,13 +527,22 @@ impl Store {
     ) -> Result<Vec<serde_json::Value>> {
         use serde_json::{Value, json};
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL) AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
+        let binding = super::execution::binding_on(&conn, key, human)?;
+        let revision = binding
+            .as_ref()
+            .map(|binding| binding.execution.revision.as_str());
+        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND ((COALESCE(json_extract(i.doc,'$.target_execution.harness'),'codex')='codex'
+          AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL))
+          OR (json_extract(i.doc,'$.target_execution.harness') IN ('claude','goose','antigravity')
+          AND json_extract(i.doc,'$.target_execution.revision')=?5))
+          AND (?4 IS NULL OR EXISTS(SELECT 1 FROM interaction_request_links l JOIN json_each(?4) r ON r.value=l.request_id WHERE l.instruction_id=i.id)) ORDER BY i.sequence DESC LIMIT 16")?;
         let rows = query.query_map(
             params![
                 key.chat_id,
                 key.thread_id,
                 human,
-                requests.map(serde_json::to_string).transpose()?
+                requests.map(serde_json::to_string).transpose()?,
+                revision,
             ],
             |r| {
                 Ok((
@@ -474,7 +581,7 @@ mod tests {
                 .unwrap();
             targets.push((key, s.id));
         }
-        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"The exact original human input"}})).unwrap();
+        let update:crate::telegram::Update=serde_json::from_value(json!({"update_id":20,"direct_human_text":true,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"text":"The exact original human input"}})).unwrap();
         store.admit_update(&update).unwrap();
         store.begin_update(20).unwrap();
         store.mark_update_queued(20).unwrap();
@@ -519,7 +626,7 @@ mod tests {
         let mut source = SourceInput {
             tribu_source: None,
             transcription: None,
-            channel: "telegram:fixture".into(),
+            channel: "telegram:123".into(),
             event_id: "20".into(),
             update_id: Some(20),
             human_id: 100,
@@ -531,6 +638,70 @@ mod tests {
             },
             text: "The exact original human input".into(),
         };
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE incoming_updates SET status='undetermined' WHERE update_id=20",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO bot_state(key,value) VALUES('telegram_identity','{\"id\":123}')",
+                [],
+            )
+            .unwrap();
+            let routed_epoch = || {
+                super::super::routed_portable::telegram_original_epoch(&conn, &source, targets[0].0)
+                    .unwrap()
+            };
+            assert!(
+                routed_epoch().is_none(),
+                "An uncertain original has no routing authority"
+            );
+            conn.execute(
+                "INSERT INTO native_input_receipts VALUES(20,'wrong-thread','native-turn','now')",
+                [],
+            )
+            .unwrap();
+            assert!(
+                routed_epoch().is_none(),
+                "A receipt from another thread is insufficient"
+            );
+            conn.execute(
+                "UPDATE native_input_receipts SET native_thread='entry-native' WHERE update_id=20",
+                [],
+            )
+            .unwrap();
+            assert!(
+                routed_epoch().is_some(),
+                "An accepted original can be routed after restart"
+            );
+            let (target, target_id) = targets[0];
+            let mut selected = source.clone();
+            selected.target_sessions = vec![target_id];
+            let body = crate::interaction::MatrixDestination::Body {
+                being_ref: "fixture-being".into(),
+                embodiment_id: "fixture-claude".into(),
+            };
+            let tx = conn.unchecked_transaction().unwrap();
+            let (instruction, fresh) = super::super::interaction::admit_selected_on(
+                &tx,
+                &selected,
+                target,
+                RequestRelation::New,
+                &store.instance_id,
+                None,
+                Some((crate::interaction::ForegroundEngine::Claude, &body)),
+            )
+            .unwrap();
+            assert!(fresh);
+            assert_eq!(instruction.origin, selected.origin);
+            assert_eq!(
+                instruction.target_execution.unwrap().harness,
+                crate::execution::Harness::Claude
+            );
+            tx.rollback().unwrap();
+        }
         let invalid = [
             (targets[0].0, RequestRelation::New),
             (

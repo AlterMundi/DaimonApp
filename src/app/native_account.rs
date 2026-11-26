@@ -47,7 +47,7 @@ struct Reconciled {
 pub(super) struct Session {
     // Never reap the leader before killing this exact owned group: its PID
     // cannot be reused while the unreaped child still owns it.
-    group: Option<super::matrix::OwnedMatrixCommand>,
+    group: Option<super::foreground::OwnedProcessGroup>,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -139,7 +139,7 @@ impl Session {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         let mut child = command.spawn().context("Native account host unavailable")?;
-        let group = super::matrix::OwnedMatrixCommand(
+        let group = super::foreground::OwnedProcessGroup(
             child.id().context("Native account host PID absent")?,
         );
         let mut stdin = child.stdin.take().context("Native account input absent")?;

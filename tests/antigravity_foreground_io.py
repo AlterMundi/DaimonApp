@@ -26,8 +26,15 @@ class Provider(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def admitted(self):
+        phase, raw = self.server.journey.row(
+            "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
+            (self.server.current,),
+        )[0]
+        assert phase == "provider_exposed"
+        assert json.loads(raw)["engine"] == self.server.engine
+
     def do_POST(self):
-        j = self.server.journey
         try:
             assert self.path == "/v1/chat/completions"
             call = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -40,12 +47,7 @@ class Provider(BaseHTTPRequestHandler):
             tool = self.server.tool_prefix + "dmk_read_selected"
             names = [item["function"]["name"] for item in call["tools"]]
             assert sorted(names) == sorted([self.server.tool_prefix + "daimon_status", tool]), names
-            phase, raw = j.row(
-                "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
-                (self.server.current,),
-            )[0]
-            assert phase == "provider_exposed"
-            assert json.loads(raw)["engine"] == self.server.engine
+            self.admitted()
             self.server.calls.append(self.server.current)
             if self.server.mode == "held":
                 self.server.arrived.set()

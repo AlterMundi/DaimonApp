@@ -69,6 +69,236 @@ fn bind_message(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn result_on(
+    tx: &Connection,
+    instance: &str,
+    root_id: &str,
+    human: i64,
+    local_turn: i64,
+    thread: &str,
+    turn: &str,
+    item: &str,
+    text: &str,
+    capture: bool,
+    allow_unreported: bool,
+) -> Result<Vec<Delivery>> {
+    let root = super::interaction::instruction_on(tx, root_id, human)?
+        .context("Interaction root missing")?;
+    let (body, claim) = worker_result(text);
+    if capture {
+        super::interaction::record_native_message_on(
+            tx,
+            local_turn,
+            thread,
+            turn,
+            item,
+            Some("final_answer"),
+            text,
+        )?;
+    }
+    let bound:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.native_thread=?1 AND m.native_turn=?2 AND m.item_id=?3 AND m.local_turn=?4 AND m.text=?5 AND t.session_id=?6 AND t.from_user_id=?7)",params![thread,turn,item,local_turn,text,root.target_session,human],|r|r.get(0))?;
+    if !bound {
+        return Err(anyhow!(
+            "Interaction result is not a recorded native item of this execution"
+        ));
+    }
+    let mut valid_claim = claim.is_some();
+    if let Some(claim) = &claim {
+        for request in &claim.requests {
+            let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_requests WHERE id=?1 AND human_id=?2 AND session_id=?3)",params![request,human,root.target_session],|r|r.get(0))?;
+            valid_claim &= allowed;
+        }
+        for id in claim.covered.iter().chain(&claim.deferred) {
+            let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_instructions WHERE id=?1 AND session_id=?2)",params![id,root.target_session],|r|r.get(0))?;
+            valid_claim &= allowed;
+        }
+    }
+    let claim = claim.filter(|_| valid_claim);
+    if claim.is_none() && !allow_unreported {
+        // Preserve the actual native item without pretending a legacy
+        // answer addressed an instruction attached while it was running.
+        return Ok(vec![]);
+    }
+    let requests = claim
+        .as_ref()
+        .map(|c| c.requests.clone())
+        .unwrap_or_else(|| root.requests.clone());
+    let covered = claim
+        .as_ref()
+        .map(|c| c.covered.clone())
+        .unwrap_or_default();
+    let result_id = Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        serde_json::to_string(&(thread, turn, item))?.as_bytes(),
+    )
+    .to_string();
+    if tx.execute("INSERT OR IGNORE INTO interaction_results(id,local_turn,native_thread,native_turn,item_id,body,claim) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![result_id,local_turn,thread,turn,item,body,claim.as_ref().map(serde_json::to_string).transpose()?])? == 0 {
+            // A repeated observation must not retarget an already reserved item
+            // after later instructions arrive. All reservations commit together.
+            return Ok(vec![]);
+        }
+    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 ORDER BY i.sequence DESC")?;
+    let inputs = query
+        .query_map(params![root.target_session, human, local_turn], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(query);
+    let inputs = inputs
+        .into_iter()
+        .map(|(input, source)| {
+            Ok((
+                serde_json::from_str::<Instruction>(&input)?,
+                serde_json::from_str::<crate::interaction::SourceInput>(&source)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut selected = Vec::new();
+    for request in requests {
+        let mut candidates = Vec::new();
+        for (input, source) in &inputs {
+            if input.requests.contains(&request) {
+                candidates.push((
+                    super::dialogue::original_order_on(tx, source)?,
+                    input.sequence,
+                    input,
+                    source,
+                ));
+            }
+        }
+        candidates.sort_by_key(|(order, sequence, _, _)| (*order, *sequence));
+        let Some((order, sequence, _input, source)) = candidates.pop() else {
+            // Historical unfinished work is not an unanswered current input.
+            // Its declarations remain in the canonical native result.
+            continue;
+        };
+        let original:String=tx.query_row("SELECT s.doc FROM interaction_requests r JOIN interaction_sources s ON s.id=r.input_id WHERE r.id=?1 AND r.human_id=?2",params![request,human],|r|r.get(0))?;
+        let original: crate::interaction::SourceInput = serde_json::from_str(&original)?;
+        let origin = if source.channel == original.channel
+            && source.origin.chat_id == original.origin.chat_id
+            && source.origin.thread_id == original.origin.thread_id
+        {
+            original.origin
+        } else {
+            source.origin.clone()
+        };
+        // Session dependencies retain their own correlation/return behavior;
+        // human requests share one response per actual requesting carrier.
+        // A helper request always stays internal. A return-only wakeup may
+        // address the parent's IDs, but needs an actual covered human input
+        // in this execution before producing another human-facing answer.
+        let original_internal = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM interaction_requests q JOIN interaction_session_authors a ON a.input_id=q.input_id WHERE q.id=?1)",
+                [&request], |r|r.get::<_,bool>(0),
+            )?;
+        let mut internal_input = false;
+        let mut human_input = false;
+        for (candidate, _) in &inputs {
+            if candidate.requests.contains(&request) {
+                let internal =
+                    super::session_requests::author_on(tx, &candidate.input_id)?.is_some();
+                internal_input |= internal;
+                human_input |= !internal && (claim.is_none() || covered.contains(&candidate.id));
+            }
+        }
+        // A deferred logical task can genuinely finish after its original
+        // physical turn. It must complete current cumulative human coverage,
+        // rather than merely narrating the returned context or re-announcing
+        // a human request already completed before this wakeup.
+        if !human_input
+            && !original_internal
+            && claim
+                .as_ref()
+                .is_some_and(|c| c.completed.contains(&request))
+        {
+            let (fresh, pending) = freshness(tx, &request, &covered, true)?;
+            let already_completed: bool=tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM interaction_deliveries prior JOIN interaction_delivery_requests member ON member.delivery_id=prior.id JOIN interaction_results z ON z.id=prior.result_id WHERE member.request_id=?1 AND prior.human_id=?2 AND EXISTS(SELECT 1 FROM json_each(z.claim,'$.completed') done WHERE done.value=?1) AND COALESCE(json_extract(prior.doc,'$.internal'),0)=0
+                     AND NOT EXISTS(SELECT 1 FROM interaction_request_links l JOIN interaction_instructions i ON i.id=l.instruction_id WHERE l.request_id=?1 AND i.phase='accepted'
+                       AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id)
+                       AND NOT EXISTS(SELECT 1 FROM json_each(prior.doc,'$.covered') cov WHERE cov.value=i.id)))",
+                    params![request,human],|r|r.get(0),
+                )?;
+            human_input = fresh && !pending && !already_completed;
+        }
+        let internal = original_internal || (internal_input && !human_input);
+        let authored = if internal {
+            Some(request.clone())
+        } else {
+            None
+        };
+        selected.push((order, sequence, origin, authored, internal, request));
+    }
+    selected.sort_by_key(|(order, sequence, _, _, _, _)| std::cmp::Reverse((*order, *sequence)));
+    // An explicitly shared entry is one requesting conversation across both carriers.
+    let shared_entry: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM bot_state
+             WHERE key='telegram_entry_projection' AND json_extract(value,'$[0]')=?1",
+            [human],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let mut groups: Vec<(ReturnRoute, Option<String>, bool, Vec<String>)> = Vec::new();
+    for (_, _, origin, authored, internal, request) in selected {
+        if let Some((_, _, _, requests)) = groups.iter_mut().find(|(prior, kind, audience, _)| {
+            prior.chat_id == origin.chat_id
+                && prior.thread_id == origin.thread_id
+                && (prior.message_id.is_some() == origin.message_id.is_some()
+                    || shared_entry == Some((origin.chat_id, origin.thread_id)))
+                && *kind == authored
+                && *audience == internal
+        }) {
+            if !requests.contains(&request) {
+                requests.push(request);
+            }
+        } else {
+            groups.push((origin, authored, internal, vec![request]));
+        }
+    }
+    let mut deliveries = Vec::new();
+    for (origin, _, internal, requests) in groups {
+        let request = requests[0].clone();
+        let id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("{result_id}:{request}").as_bytes(),
+        )
+        .to_string();
+        let mut delivery = Delivery {
+            id: id.clone(),
+            request_id: request,
+            request_ids: requests,
+            target: root.target,
+            origin,
+            body: body.to_owned(),
+            covered: covered.clone(),
+            declared: claim.is_some(),
+            completed: false,
+            current: false,
+            correction_pending: false,
+            phase: "reserved".into(),
+            internal: Some(internal),
+        };
+        delivery.completed = claim.as_ref().is_some_and(|c| {
+            delivery
+                .requests()
+                .iter()
+                .all(|request| c.completed.contains(request))
+        });
+        (delivery.current, delivery.correction_pending) = delivery_freshness(tx, &delivery)?;
+        tx.execute("INSERT INTO interaction_deliveries(id,result_id,request_id,human_id,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'reserved',?5,?6)",params![id,result_id,delivery.request_id,human,serde_json::to_string(&delivery)?,instance])?;
+        for request in delivery.requests() {
+            tx.execute(
+                "INSERT INTO interaction_delivery_requests VALUES(?1,?2)",
+                params![id, request],
+            )?;
+        }
+        deliveries.push(delivery);
+    }
+    Ok(deliveries)
+}
+
 impl Store {
     pub(super) fn init_routing(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -162,228 +392,21 @@ impl Store {
         capture: bool,
         allow_unreported: bool,
     ) -> Result<Vec<Delivery>> {
-        let root = self
-            .interaction_instruction(root_id, human)?
-            .context("Interaction root missing")?;
-        let (body, claim) = worker_result(text);
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        if capture {
-            super::interaction::record_native_message_on(
-                &tx,
-                local_turn,
-                thread,
-                turn,
-                item,
-                Some("final_answer"),
-                text,
-            )?;
-        }
-        let bound:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.native_thread=?1 AND m.native_turn=?2 AND m.item_id=?3 AND m.local_turn=?4 AND m.text=?5 AND t.session_id=?6 AND t.from_user_id=?7)",params![thread,turn,item,local_turn,text,root.target_session,human],|r|r.get(0))?;
-        if !bound {
-            return Err(anyhow!(
-                "Interaction result is not a recorded native item of this execution"
-            ));
-        }
-        let mut valid_claim = claim.is_some();
-        if let Some(claim) = &claim {
-            for request in &claim.requests {
-                let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_requests WHERE id=?1 AND human_id=?2 AND session_id=?3)",params![request,human,root.target_session],|r|r.get(0))?;
-                valid_claim &= allowed;
-            }
-            for id in claim.covered.iter().chain(&claim.deferred) {
-                let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_instructions WHERE id=?1 AND session_id=?2)",params![id,root.target_session],|r|r.get(0))?;
-                valid_claim &= allowed;
-            }
-        }
-        let claim = claim.filter(|_| valid_claim);
-        if claim.is_none() && !allow_unreported {
-            // Preserve the actual native item without pretending a legacy
-            // answer addressed an instruction attached while it was running.
-            tx.commit()?;
-            return Ok(vec![]);
-        }
-        let requests = claim
-            .as_ref()
-            .map(|c| c.requests.clone())
-            .unwrap_or_else(|| root.requests.clone());
-        let covered = claim
-            .as_ref()
-            .map(|c| c.covered.clone())
-            .unwrap_or_default();
-        let result_id = Uuid::new_v5(
-            &Uuid::NAMESPACE_URL,
-            serde_json::to_string(&(thread, turn, item))?.as_bytes(),
-        )
-        .to_string();
-        if tx.execute("INSERT OR IGNORE INTO interaction_results(id,local_turn,native_thread,native_turn,item_id,body,claim) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![result_id,local_turn,thread,turn,item,body,claim.as_ref().map(serde_json::to_string).transpose()?])? == 0 {
-            // A repeated observation must not retarget an already reserved item
-            // after later instructions arrive. All reservations commit together.
-            tx.commit()?;
-            return Ok(vec![]);
-        }
-        let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 ORDER BY i.sequence DESC")?;
-        let inputs = query
-            .query_map(params![root.target_session, human, local_turn], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(query);
-        let inputs = inputs
-            .into_iter()
-            .map(|(input, source)| {
-                Ok((
-                    serde_json::from_str::<Instruction>(&input)?,
-                    serde_json::from_str::<crate::interaction::SourceInput>(&source)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut selected = Vec::new();
-        for request in requests {
-            let mut candidates = Vec::new();
-            for (input, source) in &inputs {
-                if input.requests.contains(&request) {
-                    candidates.push((
-                        super::dialogue::original_order_on(&tx, source)?,
-                        input.sequence,
-                        input,
-                        source,
-                    ));
-                }
-            }
-            candidates.sort_by_key(|(order, sequence, _, _)| (*order, *sequence));
-            let Some((order, sequence, _input, source)) = candidates.pop() else {
-                // Historical unfinished work is not an unanswered current input.
-                // Its declarations remain in the canonical native result.
-                continue;
-            };
-            let original:String=tx.query_row("SELECT s.doc FROM interaction_requests r JOIN interaction_sources s ON s.id=r.input_id WHERE r.id=?1 AND r.human_id=?2",params![request,human],|r|r.get(0))?;
-            let original: crate::interaction::SourceInput = serde_json::from_str(&original)?;
-            let origin = if source.channel == original.channel
-                && source.origin.chat_id == original.origin.chat_id
-                && source.origin.thread_id == original.origin.thread_id
-            {
-                original.origin
-            } else {
-                source.origin.clone()
-            };
-            // Session dependencies retain their own correlation/return behavior;
-            // human requests share one response per actual requesting carrier.
-            // A helper request always stays internal. A return-only wakeup may
-            // address the parent's IDs, but needs an actual covered human input
-            // in this execution before producing another human-facing answer.
-            let original_internal = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM interaction_requests q JOIN interaction_session_authors a ON a.input_id=q.input_id WHERE q.id=?1)",
-                [&request], |r|r.get::<_,bool>(0),
-            )?;
-            let mut internal_input = false;
-            let mut human_input = false;
-            for (candidate, _) in &inputs {
-                if candidate.requests.contains(&request) {
-                    let internal =
-                        super::session_requests::author_on(&tx, &candidate.input_id)?.is_some();
-                    internal_input |= internal;
-                    human_input |=
-                        !internal && (claim.is_none() || covered.contains(&candidate.id));
-                }
-            }
-            // A deferred logical task can genuinely finish after its original
-            // physical turn. It must complete current cumulative human coverage,
-            // rather than merely narrating the returned context or re-announcing
-            // a human request already completed before this wakeup.
-            if !human_input
-                && !original_internal
-                && claim
-                    .as_ref()
-                    .is_some_and(|c| c.completed.contains(&request))
-            {
-                let (fresh, pending) = freshness(&tx, &request, &covered, true)?;
-                let already_completed: bool=tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM interaction_deliveries prior JOIN interaction_delivery_requests member ON member.delivery_id=prior.id JOIN interaction_results z ON z.id=prior.result_id WHERE member.request_id=?1 AND prior.human_id=?2 AND EXISTS(SELECT 1 FROM json_each(z.claim,'$.completed') done WHERE done.value=?1) AND COALESCE(json_extract(prior.doc,'$.internal'),0)=0
-                     AND NOT EXISTS(SELECT 1 FROM interaction_request_links l JOIN interaction_instructions i ON i.id=l.instruction_id WHERE l.request_id=?1 AND i.phase='accepted'
-                       AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id)
-                       AND NOT EXISTS(SELECT 1 FROM json_each(prior.doc,'$.covered') cov WHERE cov.value=i.id)))",
-                    params![request,human],|r|r.get(0),
-                )?;
-                human_input = fresh && !pending && !already_completed;
-            }
-            let internal = original_internal || (internal_input && !human_input);
-            let authored = if internal {
-                Some(request.clone())
-            } else {
-                None
-            };
-            selected.push((order, sequence, origin, authored, internal, request));
-        }
-        selected
-            .sort_by_key(|(order, sequence, _, _, _, _)| std::cmp::Reverse((*order, *sequence)));
-        // An explicitly shared entry is one requesting conversation across both carriers.
-        let shared_entry: Option<(i64, i64)> = tx
-            .query_row(
-                "SELECT json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM bot_state
-             WHERE key='telegram_entry_projection' AND json_extract(value,'$[0]')=?1",
-                [human],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let mut groups: Vec<(ReturnRoute, Option<String>, bool, Vec<String>)> = Vec::new();
-        for (_, _, origin, authored, internal, request) in selected {
-            if let Some((_, _, _, requests)) =
-                groups.iter_mut().find(|(prior, kind, audience, _)| {
-                    prior.chat_id == origin.chat_id
-                        && prior.thread_id == origin.thread_id
-                        && (prior.message_id.is_some() == origin.message_id.is_some()
-                            || shared_entry == Some((origin.chat_id, origin.thread_id)))
-                        && *kind == authored
-                        && *audience == internal
-                })
-            {
-                if !requests.contains(&request) {
-                    requests.push(request);
-                }
-            } else {
-                groups.push((origin, authored, internal, vec![request]));
-            }
-        }
-        let mut deliveries = Vec::new();
-        for (origin, _, internal, requests) in groups {
-            let request = requests[0].clone();
-            let id = Uuid::new_v5(
-                &Uuid::NAMESPACE_URL,
-                format!("{result_id}:{request}").as_bytes(),
-            )
-            .to_string();
-            let mut delivery = Delivery {
-                id: id.clone(),
-                request_id: request,
-                request_ids: requests,
-                target: root.target,
-                origin,
-                body: body.to_owned(),
-                covered: covered.clone(),
-                declared: claim.is_some(),
-                completed: false,
-                current: false,
-                correction_pending: false,
-                phase: "reserved".into(),
-                internal: Some(internal),
-            };
-            delivery.completed = claim.as_ref().is_some_and(|c| {
-                delivery
-                    .requests()
-                    .iter()
-                    .all(|request| c.completed.contains(request))
-            });
-            (delivery.current, delivery.correction_pending) = delivery_freshness(&tx, &delivery)?;
-            tx.execute("INSERT INTO interaction_deliveries(id,result_id,request_id,human_id,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'reserved',?5,?6)",params![id,result_id,delivery.request_id,human,serde_json::to_string(&delivery)?,self.instance_id])?;
-            for request in delivery.requests() {
-                tx.execute(
-                    "INSERT INTO interaction_delivery_requests VALUES(?1,?2)",
-                    params![id, request],
-                )?;
-            }
-            deliveries.push(delivery);
-        }
+        let deliveries = result_on(
+            &tx,
+            &self.instance_id,
+            root_id,
+            human,
+            local_turn,
+            thread,
+            turn,
+            item,
+            text,
+            capture,
+            allow_unreported,
+        )?;
         tx.commit()?;
         Ok(deliveries)
     }
@@ -703,9 +726,17 @@ impl Store {
         human: i64,
     ) -> Result<crate::interaction::SourceInput> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let raw:String=conn.query_row("SELECT s.doc FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|r.get(0))?;
-        Ok(serde_json::from_str(&raw)?)
+        source_on(&conn, id, human)
     }
+}
+
+pub(super) fn source_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+) -> Result<crate::interaction::SourceInput> {
+    let raw:String=conn.query_row("SELECT s.doc FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|r.get(0))?;
+    Ok(serde_json::from_str(&raw)?)
 }
 
 #[cfg(test)]
@@ -745,6 +776,118 @@ mod tests {
         .unwrap()
         .0
     }
+    #[test]
+    fn a_routed_original_keeps_its_admitted_target_execution() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let target = target(&store, 7);
+        let original = admit(&store, &target, 11, R::New);
+        let request = TurnRequest {
+            session_key: target.key,
+            from_user_id: 100,
+            prompt: original.text.clone(),
+            runtime_instructions: None,
+            attachments: vec![],
+            review_mode: None,
+            override_search_mode: None,
+        };
+        let selected = original.target_execution.as_ref().unwrap();
+        assert_eq!(selected.native_session.as_deref(), Some("native-7"));
+        assert!(
+            store
+                .interaction_target_execution_allowed(&original)
+                .unwrap()
+        );
+
+        store
+            .set_session_codex_thread(target.key, "new-writer")
+            .unwrap();
+        store
+            .set_session_codex_thread(target.key, "native-7")
+            .unwrap();
+        let retried = admit(&store, &target, 11, R::New);
+        assert_eq!(retried.id, original.id);
+        assert_eq!(retried.target_execution.as_ref(), Some(selected));
+        assert!(
+            !store
+                .interaction_target_execution_allowed(&retried)
+                .unwrap()
+        );
+        assert!(
+            store
+                .record_turn_started_mode(target.id, &request, Some(&original.id))
+                .is_err()
+        );
+
+        assert!(!store.get_session(target.key).unwrap().unwrap().busy);
+
+        let later = admit(&store, &target, 12, R::New);
+        assert!(store.interaction_target_execution_allowed(&later).unwrap());
+        store
+            .record_turn_started_mode(target.id, &request, Some(&later.id))
+            .unwrap();
+    }
+
+    #[test]
+    fn queued_targets_can_materialize_the_first_writer_in_the_same_generation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(8));
+        let target = store.ensure_session(key, 100, &defaults).unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET force_fresh_thread=1 WHERE id=?1",
+                [target.id],
+            )
+            .unwrap();
+        let first = admit(&store, &target, 13, R::New);
+        let second = admit(&store, &target, 14, R::New);
+        assert!(
+            first
+                .target_execution
+                .as_ref()
+                .unwrap()
+                .native_session
+                .is_none()
+        );
+        store.set_session_codex_thread(key, "first-native").unwrap();
+        assert!(store.interaction_target_execution_allowed(&first).unwrap());
+        assert!(store.interaction_target_execution_allowed(&second).unwrap());
+        let local = store
+            .record_turn_started_mode(
+                target.id,
+                &TurnRequest {
+                    session_key: key,
+                    from_user_id: 100,
+                    prompt: second.text.clone(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+                Some(&second.id),
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "wrong-native")
+            .unwrap();
+        assert!(store.bind_codex_turn(local, "wrong-native").is_err());
+        assert_eq!(
+            store
+                .get_session(key)
+                .unwrap()
+                .unwrap()
+                .codex_thread_id
+                .as_deref(),
+            Some("first-native")
+        );
+    }
+
     fn accept(s: &Store, target: &SessionRecord, i: &Instruction) -> i64 {
         let local = s
             .record_turn_started(
@@ -1008,7 +1151,7 @@ mod tests {
                 .as_deref(),
             Some("original")
         );
-        assert!(s.interaction_recover(&i.id, 100).unwrap());
+        assert!(s.interaction_recover(&i.id, 100, None).unwrap());
         s.interaction_bind_epoch(&i.id, 100, "later").unwrap();
         assert_eq!(
             s.interaction_instruction(&i.id, 100)

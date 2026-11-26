@@ -756,17 +756,34 @@ window.Conversation = (() => {
         if(!card.claudeBody){
           card.claudeBox=node("article",undefined,"reply claude-message");
           card.claudeBody=node("div",undefined,"reply-text");
-          card.claudeBox.append(node("h3","Claude Code"),card.claudeBody);
+          card.claudeRead=node("button","Read full reply");card.claudeRead.type="button";
+          card.claudeRead.addEventListener("click",async()=>{
+            const owned=inputGeneration,id=card.value.id,message=card.value.claude_reply?.message_id;
+            const valid=()=>owned===inputGeneration && inputs.get(id)===card && card.value.claude_reply?.message_id===message;
+            card.claudeRead.disabled=true;
+            try{
+              card.claudeFull=await copyParts(async offset=>{
+                const part=await api(`interaction/inputs/${encodeURIComponent(id)}/trace/claude-reply?offset=${offset}`);
+                if(part.id!==id || part.source!=="claude-reply")throw Error("Reply changed");
+                return part;
+              },valid);
+              if(valid())renderInputText(card);
+            }catch(error){
+              if(valid()){card.claudeRead.textContent="Retry reading reply";if([401,403].includes(error.status))failed(error);}
+            }finally{card.claudeRead.disabled=false;}
+          });
+          card.claudeBox.append(node("h3","Claude Code"),card.claudeBody,card.claudeRead);
           card.claudeBox.dataset.claudeReplyTo=card.value.id;
         }
-        setReplyText(card.claudeBody,reply.text);
+        setReplyText(card.claudeBody,card.claudeFull??reply.text);
+        card.claudeRead.hidden=card.claudeFull!==undefined || !Number.isSafeInteger(reply.next_offset);
         placeClaudeReply(card);
       }
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
       }else {
         card.check.textContent="Check status";
-        card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered","matrix_replied"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
+        card.check.hidden=readOnly || card.value.read_only===true || ((["accepted","routed","answered"].includes(card.value.phase) || claudeReplied(card.value.phase)) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
       }
     }
     function placeClaudeReply(card){
@@ -835,22 +852,19 @@ window.Conversation = (() => {
 
     const inputs = new Map();
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
-    const targetLabel=$("#conversation-target-label"), target=$("#conversation-target"), claudeOption=$("#conversation-target-claude");
-    let claudeAvailable=false;
-    const matrixRecords=$("#conversation-matrix-records"), matrixRecordsLabel=$("#conversation-matrix-records-label");
-    const syncMatrixRecords=()=>{
-      const talkingToClaude=target?.value==="claude";
-      if(matrixRecordsLabel)matrixRecordsLabel.hidden=!talkingToClaude;
-      timeline?.classList.toggle("hide-matrix-records",talkingToClaude && !matrixRecords?.checked);
-    };
-    if(target&&new URLSearchParams(location.search).get("target")==="claude")target.value="claude";
-    matrixRecords?.addEventListener("change",syncMatrixRecords);
-    syncMatrixRecords();
-    target?.addEventListener("change",()=>{
-      if(target.value==="claude"&&microphone?.ownsSend?.()){target.value="";return;}
-      compose.dataset.target=target.value;
-      syncMatrixRecords();
-    });
+    const runtimeSummary=$("#conversation-runtime");
+    function syncRuntimeSummary(){
+      if(!runtimeSummary)return;
+      const runtime=workspace?.runtime?.();
+      const harness={codex:"Codex",claude:"Claude Code",antigravity:"Antigravity",goose:"Goose"}[runtime?.harness];
+      const model={opus:"Opus",sonnet:"Sonnet",haiku:"Haiku"}[runtime?.model]??runtime?.model;
+      const quota=runtime?.weekly_available_percent;
+      const weekly=Number.isFinite(quota)&&quota>=0&&quota<=100?`${Math.round(quota)}% weekly left`:undefined;
+      const text=harness?[harness,model,runtime.effort,weekly].filter(Boolean).join(" · "):"";
+      runtimeSummary.hidden=!text;
+      runtimeSummary.textContent=text;
+      runtimeSummary.title=text;
+    }
     const draftStatus=node('div',undefined,'conversation-tools composer-draft-notice'),draftNote=node('span'),draftPrimary=node('button'),draftOther=node('button','Use other draft');
     draftStatus.hidden=true;draftNote.setAttribute('role','status');draftPrimary.type=draftOther.type='button';
     draftStatus.append(draftNote,draftPrimary,draftOther);
@@ -914,6 +928,7 @@ window.Conversation = (() => {
       sendState.setAttribute('data-attention',String(attention));
       syncComposerRecovery();
     }
+    const claudeReplied = phase => ["matrix_replied","claude_replied"].includes(phase);
     const claudeFailure = phase => ["claude_rejected","claude_unconfirmed"].includes(phase);
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     function inputNotice(value){
@@ -924,7 +939,7 @@ window.Conversation = (() => {
     let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
-      : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code received the message. A reply could not be confirmed."})[value.phase]??"Check this message’s status before sending again."
+      : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
           accepted:"Sent to your conversation. Work may continue.", matrix_requested:"Saved for the selected daimon; awaiting its authorized execution and reply.",
@@ -942,7 +957,7 @@ window.Conversation = (() => {
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
     const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
-      onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();},
+      onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();syncRuntimeSummary();},
       focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
       onAudio:(action,row)=>{
@@ -951,7 +966,7 @@ window.Conversation = (() => {
         else if(key&&action==="mute"){if(mutedSessions.has(key))mutedSessions.delete(key);else if(mutedSessions.size<256)mutedSessions.add(key);}
         else if(key&&action==="solo"){if(soloSessions.has(key))soloSessions.delete(key);else if(soloSessions.size<256)soloSessions.add(key);mutedSessions.clear();}
         audioFilterChanged();
-      },onReady:()=>{syncTitleControls();syncWorkspaceAudio();}
+      },onReady:()=>{syncTitleControls();syncWorkspaceAudio();syncRuntimeSummary();}
     }):undefined;
     function inputReference(){
       if(replyFocus)return replyFocus.reference;
@@ -1242,11 +1257,11 @@ window.Conversation = (() => {
             card.value.voice={...card.value.voice,...value.voice};
           }
         }
-        if (value.phase === "matrix_replied" && typeof value.claude_reply?.text === "string" &&
-            card.value.phase !== "matrix_replied") {
+        if (claudeReplied(value.phase) && typeof value.claude_reply?.text === "string" &&
+            !claudeReplied(card.value.phase)) {
           card.value.phase = value.phase;
           card.value.claude_reply = value.claude_reply;
-        } else if (claudeFailure(value.phase) && card.value.phase !== "matrix_replied") {
+        } else if (claudeFailure(value.phase) && !claudeReplied(card.value.phase)) {
           card.value.phase = value.phase;
         }
         if(value.routing && (!card.value.routing || (value.routing.phase==="accepted" && card.value.routing.instruction===value.routing.instruction))){
@@ -1267,9 +1282,9 @@ window.Conversation = (() => {
         renderRoute(card);graph?.input(card.value);inputActivity();return card;
       }
       // Native acceptance and retirement cannot be undone by a late snapshot.
-      if (["answered","matrix_requested","retained_unsent","matrix_replied"].includes(card.value.phase) ||
+      if (["answered","matrix_requested","retained_unsent"].includes(card.value.phase) || claudeReplied(card.value.phase) ||
           (card.value.phase==="accepted" && !["answered","matrix_requested"].includes(value.phase))) value = {...value,phase:card.value.phase};
-      if (claudeFailure(card.value.phase) && ["retained","sending","matrix_received"].includes(value.phase)) {
+      if (claudeFailure(card.value.phase) && ["retained","sending","matrix_received","claude_preparing","claude_running"].includes(value.phase)) {
         value = {...value,phase:card.value.phase};
       }
       if(card.value.routing) {
@@ -1396,18 +1411,10 @@ window.Conversation = (() => {
     }
     compose.addEventListener("submit", async event => {
       event.preventDefault();
-      const toClaude=target?.value==="claude";
-      if(toClaude && (!claudeAvailable || hostSurface || microphone?.ownsSend?.())){
-        composerNotice("Claude Code is unavailable for this message.");return;
-      }
       if(microphone?.ownsSend?.())return microphone.submit();
       if (readOnly || posting || !ready || !binding || inputBinding !== binding) return;
       const text = draft.value;
       if(draftState?.hasUnconfirmed(text)){composerNotice('Check message status before sending another message.');return;}
-      if(toClaude && (!text.trim() || new TextEncoder().encode(text).length>16384 ||
-          replyFocus || visual?.hasImages?.() || attachedFiles?.hasFiles())){
-        composerNotice("Claude Code accepts plain text up to 16 KiB. Remove attachments or reply context to send.");return;
-      }
       if (!text.trim() && !attachedFiles?.hasFiles() || text.includes("\0") || new TextEncoder().encode(text).length > 32768) {
         composerNotice("Write a message of at most 32 KiB."); return;
       }
@@ -1415,14 +1422,14 @@ window.Conversation = (() => {
         composerNotice("This message has an unconfirmed submission. Use Check status before sending it again.");
         $("#conversation-sent").open = true; return;
       }
-      if(!toClaude && !replyFocus && workspace && !workspace.canSend()){
+      if(!replyFocus && workspace && !workspace.canSend()){
         composerNotice("Select your session again or return the input to the conversation before sending.");return;
       }
       // Freeze the destination before file/image preparation can yield to a
       // later pin or expansion. Original retries keep this same selection.
       const id=crypto.randomUUID(),owned=inputGeneration,observation=++inputObservation,focusAtSubmit=focusVersion,selectedBinding=binding;
-      const context=toClaude?null:inputReference();
-      const reply=context&&JSON.parse(JSON.stringify(context)),playback=toClaude?null:playbackContext();
+      const context=inputReference();
+      const reply=context&&JSON.parse(JSON.stringify(context)),playback=playbackContext();
       let selectedVisual,selectedFiles;
       submittedText=text;posting=true;send.disabled=true;
       let contextPreparation;
@@ -1436,11 +1443,11 @@ window.Conversation = (() => {
       catch(e){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});finishTextPost();composerNotice(e.message||"Select your image again.");return;}
       if(owned!==inputGeneration || selectedBinding!==binding){hostSurface?.discard?.({id,binding:selectedBinding,reason:'preparation-failed'});finishTextPost();return;}
       posting = true; send.disabled = true; latestComposerId = id;
-      inputCard({id,text,binding,reply,playback,visual:selectedVisual,files:selectedFiles,...(toClaude?{target:"claude"}:{}),focusVersion:focusAtSubmit}, observation); if(timeline)timeline.scrollTop=timeline.scrollHeight; $("#conversation-sent").open = true;
+      inputCard({id,text,binding,reply,playback,visual:selectedVisual,files:selectedFiles,focusVersion:focusAtSubmit}, observation); if(timeline)timeline.scrollTop=timeline.scrollHeight; $("#conversation-sent").open = true;
       composerNotice("Sending…",false);
       try {
         hostSurface?.attempt?.({id,binding:selectedBinding});
-        const original={binding:selectedBinding,id,text,...(toClaude?{target:"claude"}:{}),...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})};
+        const original={binding:selectedBinding,id,text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})};
         draftState?.attempt(original);
         const result=await api("interaction/inputs",original);
         if (owned !== inputGeneration) return;
@@ -2116,13 +2123,6 @@ window.Conversation = (() => {
       avatarWorkshop?.bind(value.binding);
       companion?.observe(value.activity);
       binding = value.binding;hostSurface?.bind(binding);timing?.bind(binding);loadPositions();loadSessionMutes();canReportPlayback=value.can_report_playback===true;canReportWordPosition=value.can_report_word_position===true;canLimitCaptureQuestions=value.can_limit_capture_questions===true;canReplyUpdates=value.can_reply_updates===true;
-      claudeAvailable=!readOnly&&!hostSurface&&value.can_select_claude===true;
-      if(target&&targetLabel){
-        if(claudeOption)claudeOption.disabled=!claudeAvailable;
-        targetLabel.hidden=readOnly||(!claudeAvailable&&target.value!=="claude");
-        compose.dataset.target=target.value;
-        syncMatrixRecords();
-      }
       canBudgets=!readOnly && value.can_view_coordination===true;
       if(budgetView)budgetView.hidden=!canBudgets;
       if(!canBudgets)budgetEpisodes?.replaceChildren();

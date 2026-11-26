@@ -13,6 +13,24 @@ pub(super) async fn process_turn(
     registration: Option<String>,
     prepared_worker_lease: Option<super::attention::WorkerLease>,
 ) -> Result<()> {
+    let conversation = queued
+        .conversation_input
+        .as_deref()
+        .map(|id| {
+            app.shared.store.conversation_input_read(
+                queued.request.from_user_id,
+                queued.request.session_key,
+                id,
+            )
+        })
+        .transpose()?;
+    if let Some(input) = conversation
+        .as_ref()
+        .filter(|input| input.portable.is_some())
+    {
+        return super::foreground::run_portable_turn(&app, &queued.request, input, cancel_slot)
+            .await;
+    }
     let shared = app.shared.clone();
     let recovering = queued
         .goal
@@ -46,21 +64,11 @@ pub(super) async fn process_turn(
         workflow_return_attempt = Some(selected.attempts);
         conversation_native = Some(selected.native);
     }
-    if let Some(id) = queued.conversation_input.as_deref() {
+    if let Some(input) = &conversation {
         shared
             .store
-            .conversation_input_validate(queued.request.from_user_id, id)?;
-        conversation_native = Some(
-            shared
-                .store
-                .conversation_input_read(
-                    queued.request.from_user_id,
-                    queued.request.session_key,
-                    id,
-                )?
-                .native,
-        )
-        .filter(|native| !native.is_empty());
+            .conversation_input_validate(input.human, &input.id)?;
+        conversation_native = Some(input.native.clone()).filter(|native| !native.is_empty());
     }
     shared.store.voice_validate(
         queued.update_id,
@@ -77,6 +85,19 @@ pub(super) async fn process_turn(
         }
         if !super::routing::dispatch_allowed(&shared, &instruction)? {
             return Ok(());
+        }
+        if instruction
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness.is_portable())
+        {
+            return super::foreground::run_routed_portable(
+                &app,
+                &queued.request,
+                &instruction,
+                cancel_slot,
+            )
+            .await;
         }
     }
     if shared
@@ -280,7 +301,6 @@ pub(super) async fn process_turn(
     if bounded.is_some() {
         shared.store.tribu_check_thread(&session)?;
     }
-    shared.store.set_session_busy(session.key, true)?;
     let retained_execution =
         if let Some(g) = queued.goal.as_ref().filter(|g| g.attach_turn.is_some()) {
             shared.store.interaction_attachment_execution(
@@ -312,7 +332,10 @@ pub(super) async fn process_turn(
         .transpose()?
         .flatten();
     let turn_id = match retained_execution {
-        Some((local, _)) => local,
+        Some((local, _)) => {
+            shared.store.set_session_busy(session.key, true)?;
+            local
+        }
         None => shared.store.record_turn_started_mode(
             session.id,
             &queued.request,
@@ -891,11 +914,11 @@ pub(super) async fn process_turn(
                                 super::nexus::thread(&shared,turn_id,&thread_id)?;
                                 if let Some(id)=admission.as_deref() {shared.store.tribu_native_thread(session_key,id,&thread_id)?;}
                                 shared.store.record_turn_native_thread(turn_id, &thread_id)?;
-                                if let Some(id)=interaction.as_deref() {shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;}
                                 if preserve_thread_binding && attach_native.is_none() {
                                     if conversation_input.is_none() && !voice_bound && !initial_bound {
                                         shared.store.bind_codex_turn(turn_id, &thread_id)?;
                                     }
+                                    if let Some(id)=interaction.as_deref() {shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;}
                                     if super::rename::sync_native_title(&shared, session_key).await.is_err() {
                                         let _ = send_markdown_message(
                                             &super::presentation::turn_telegram(&shared, Some(turn_id)),
@@ -905,6 +928,9 @@ pub(super) async fn process_turn(
                                             None,
                                         ).await;
                                     }
+                                }
+                                if (!preserve_thread_binding || attach_native.is_some()) && let Some(id)=interaction.as_deref() {
+                                    shared.store.interaction_select_native_return(id,requester_user_id,&thread_id)?;
                                 }
                                 if !routed {
                                     if let Some(tx)=&presentation_tx {retain_presentation_gap(&shared,turn_id,tx.try_send(CodexEvent::ThreadStarted(thread_id)).is_err())?;}
@@ -1071,7 +1097,7 @@ pub(super) async fn process_turn(
                                 if let Some(native)=attach_native.as_deref() {shared.store.validate_owned_binding(session_key,requester_user_id,native)?;}
                                 if let Some(id)=interaction.as_deref() {
                                     let instruction=shared.store.interaction_instruction(id,requester_user_id)?.context("Interaction input missing before submission")?;
-                                    if !super::routing::dispatch_allowed(&shared,&instruction)? {bail!("Interaction admission retired before native submission; input retained");}
+                                    if !super::routing::dispatch_admission_allowed(&shared,&instruction,true)? {bail!("Interaction admission retired before native submission; input retained");}
                                     let source=shared.store.interaction_source(id,requester_user_id)?;
                                     if let Some(external)=source.tribu_source.as_ref(){super::tribu::validate_integrated_source(&shared,external).await?;}
                                     super::nexus::validate_input_target(&shared,source.update_id,session_key,requester_user_id)?;
@@ -1089,6 +1115,7 @@ pub(super) async fn process_turn(
                                 }
                                 if let Some(id)=conversation_input.as_deref() {super::tribu::validate_conversation(&shared,requester_user_id,session_key,id).await?;shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Begin{local_turn:turn_id,steer:false})?;}
                                 let allowance=shared.store.heartbeat_inference_allowance(turn_id,requester_user_id,session_key)?;
+
                                 #[cfg(unix)]
                                 if allowance.is_some() && let Some((config,source))=super::native_account::configured(&shared)? {
                                     let native=shared.store.controller_native_turn(turn_id,session_key,requester_user_id)?;
@@ -1105,14 +1132,8 @@ pub(super) async fn process_turn(
                                     let host_restrictions=owner.host_restrictions.clone();
                                     shared.store.heartbeat_financial_attach(turn_id,requester_user_id,session_key,&native,&source,&start,&descriptor.provider_reservation_cycle_id)?;
                                     *held=Some(owner);
-                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                     return Ok(CodexEventOutcome::FundedInferenceAllowance {allowance:descriptor.allowance,cycle_id:descriptor.provider_reservation_cycle_id,max_output_tokens:descriptor.max_output_tokens,host_restrictions});
                                     }
-                                }
-                                // A collector observes an existing physical turn. Its exact
-                                // attachment is checked by record_collector_attachment.
-                                if attach_native.is_none() {
-                                    shared.store.validate_codex_submission(turn_id, preserve_thread_binding)?;
                                 }
                                 Ok(match allowance {
                                     Some(allowance)=>match shared.config.interaction.as_ref()
@@ -1130,6 +1151,17 @@ pub(super) async fn process_turn(
                                     return Ok(CodexEventOutcome::ProviderUsageRecorded(owner.record_usage(usage).await?));
                                 }
                                 Ok(CodexEventOutcome::ProviderUsageRecorded(false))
+                            }
+                            CodexEvent::NativeTurnReleasing => {
+                                let routed=interaction.as_deref().map(|id|(id,requester_user_id));
+                                let validation=shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed);
+                                if validation.is_err() && let Some((id,human))=routed {
+                                    // This event runs before the first possible native write.
+                                    shared.store.native_collection_rejected(turn_id)?;
+                                    shared.store.interaction_transport(id,human,turn_id,crate::interaction::TransportPhase::Rejected,None)?;
+                                }
+                                validation?;
+                                Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeProviderAttemptReservation(request) => {
                                 #[cfg(unix)]
@@ -1946,6 +1978,7 @@ impl LiveTurnSink {
             | CodexEvent::NativeGoalIdle
             | CodexEvent::NativeTurnStarted(_)
             | CodexEvent::NativeTurnSubmitting
+            | CodexEvent::NativeTurnReleasing
             | CodexEvent::NativeProviderAttemptReservation(_)
             | CodexEvent::NativeExternalInputSubmitting
             | CodexEvent::NativeProviderAttemptUsage(_)

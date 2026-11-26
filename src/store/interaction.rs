@@ -38,7 +38,7 @@ pub(super) fn record_native_message_on(
              (native_thread,native_turn,item_id,local_turn,phase,text,observed_at,presentation_input)
              VALUES(?1,?2,?3,?4,?5,?6,?7,(SELECT p.source_input FROM conversation_returns p
                JOIN conversation_inputs c ON c.id=p.source_input AND c.human_id=p.human_id
-               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0))",
+               JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0 AND t.execution_harness='codex'))",
         params![thread, turn, item, local_turn, phase, text, now_string(),internal_only],
     )? == 1;
     if inserted {
@@ -77,6 +77,21 @@ pub(super) fn admit_on(
     target: SessionKey,
     relation: crate::interaction::RequestRelation,
     instance: &str,
+) -> Result<(crate::interaction::Instruction, bool)> {
+    admit_selected_on(tx, source, target, relation, instance, None, None)
+}
+
+pub(super) fn admit_selected_on(
+    tx: &Connection,
+    source: &crate::interaction::SourceInput,
+    target: SessionKey,
+    relation: crate::interaction::RequestRelation,
+    instance: &str,
+    portable: Option<&super::ConversationInput>,
+    route: Option<(
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    )>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     use crate::interaction::{Instruction, RequestRelation};
     super::matrix::unclaimed_on(
@@ -173,7 +188,19 @@ pub(super) fn admit_on(
     let mut source_epoch = None;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
-        super::conversation_inputs::eligible_on(tx, &original)?;
+        if route.is_some() {
+            anyhow::ensure!(
+                original.files.is_empty() && original.visual.is_none(),
+                "The routed portable worker requires a text original"
+            );
+        }
+        if portable.is_some_and(|input| {
+            input.portable.is_some() && input.id == original.id && input.human == original.human
+        }) {
+            super::conversation_inputs::eligible_dispatched_source_on(tx, &original, instance)?;
+        } else {
+            super::conversation_inputs::eligible_on(tx, &original)?;
+        }
         source_epoch = Some(original.epoch.clone());
         if source.update_id.is_some()
             || source.transcription
@@ -189,6 +216,17 @@ pub(super) fn admit_on(
             bail!("Canonical routing source does not match its original");
         }
     }
+    if route.is_some() && source.channel != "conversation" {
+        source_epoch = Some(
+            super::routed_portable::telegram_original_epoch(tx, source, target)?
+                .context("Portable Telegram source does not match its retained original")?,
+        );
+    } else if route.is_some() {
+        anyhow::ensure!(
+            source.tribu_source.is_none() && source.update_id.is_none(),
+            "The routed portable worker requires a local retained conversation original"
+        );
+    }
     let id = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
         format!(
@@ -202,21 +240,11 @@ pub(super) fn admit_on(
     let target_row: Option<(i64, Option<String>)> = tx.query_row(
         "SELECT s.id,s.codex_thread_id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
          WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
-         AND (s.codex_thread_id IS NOT NULL OR s.force_fresh_thread=1)",
-        params![target.chat_id,target.thread_id,source.human_id], |r| Ok((r.get(0)?,r.get(1)?)),
+         AND (?4 OR s.codex_thread_id IS NOT NULL OR s.force_fresh_thread=1)",
+        params![target.chat_id,target.thread_id,source.human_id,route.is_some()], |r| Ok((r.get(0)?,r.get(1)?)),
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
-    if source.origin.message_id.is_none()
-        && let Some(native) = native.as_deref()
-    {
-        super::conversation_inputs::select_return_on(
-            tx,
-            source.human_id,
-            native,
-            &source.event_id,
-        )?;
-    }
     if !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
@@ -243,6 +271,27 @@ pub(super) fn admit_on(
         .optional()?;
     if old_source.as_ref().is_some_and(|old| old != &raw_source) {
         return Err(anyhow!("Interaction source identity is immutable"));
+    }
+    let mut target_execution = super::execution::binding_on(tx, target, source.human_id)?
+        .context("Interaction target execution is unavailable")?
+        .execution;
+    if target_execution.conversation_id != session {
+        bail!("Interaction target selection changed");
+    }
+    if let Some((engine, body)) = route {
+        target_execution.harness = engine.harness();
+        target_execution.body = Some(body.clone());
+        target_execution.native_session = None;
+    }
+    if source.origin.message_id.is_none()
+        && let Some(native) = target_execution.native_session.as_deref()
+    {
+        super::conversation_inputs::select_return_on(
+            tx,
+            source.human_id,
+            native,
+            &source.event_id,
+        )?;
     }
     let instruction_id =
         Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("{id}:{session}").as_bytes()).to_string();
@@ -278,6 +327,7 @@ pub(super) fn admit_on(
         human_id: source.human_id,
         target_session: session,
         target,
+        target_execution: Some(target_execution),
         sequence,
         relation,
         requests,
@@ -286,7 +336,7 @@ pub(super) fn admit_on(
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
         local_turn: None,
-        native_thread: native,
+        native_thread: if route.is_none() { native } else { None },
         native_turn: None,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
@@ -311,17 +361,246 @@ pub(super) fn admit_on(
     Ok((instruction, true))
 }
 
-pub(super) fn recover_on(conn: &Connection, id: &str, human: i64, instance: &str) -> Result<bool> {
+pub(super) fn transport_on(
+    tx: &Connection,
+    id: &str,
+    human: i64,
+    local_turn: i64,
+    phase: crate::interaction::TransportPhase,
+    native_turn: Option<&str>,
+) -> Result<crate::interaction::Instruction> {
+    use crate::interaction::{Instruction, TransportPhase as P};
+    let (doc,old):(String,String)=tx.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let mut instruction: Instruction = serde_json::from_str(&doc)?;
+    let old = P::try_from(old.as_str())?;
+    let valid = old == phase
+        || matches!(
+            (old, phase),
+            (
+                P::Queued,
+                P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
+            ) | (
+                P::Submitting | P::Steering,
+                P::Accepted | P::Rejected | P::Uncertain
+            ) | (P::Uncertain, P::Accepted | P::Rejected)
+        );
+    if !valid {
+        return Err(anyhow!(
+            "Interaction transport cannot skip admission or replay uncertainty"
+        ));
+    }
+    let binding: Option<(i64, i64, Option<String>)> = tx
+        .query_row(
+            "SELECT session_id,from_user_id,native_thread_id FROM turns WHERE id=?",
+            [local_turn],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let (session, owner, native) = binding.context("Interaction execution missing")?;
+    if session != instruction.target_session
+        || owner != human
+        || instruction
+            .local_turn
+            .is_some_and(|previous| previous != local_turn)
+    {
+        return Err(anyhow!("Interaction execution ownership changed"));
+    }
+    if matches!(phase, P::Submitting | P::Steering) {
+        let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.id=?1 AND u.tg_user_id=?2 AND u.allowed=1)",params![session,human],|r|r.get(0))?;
+        if !allowed {
+            return Err(anyhow!("Interaction execution is no longer admitted"));
+        }
+    }
+    if phase == P::Accepted && (native.is_none() || native_turn.is_none_or(str::is_empty)) {
+        return Err(anyhow!(
+            "Native acceptance requires exact thread and turn evidence"
+        ));
+    }
+    if old == P::Accepted
+        && (instruction.native_thread != native
+            || instruction.native_turn.as_deref() != native_turn)
+    {
+        return Err(anyhow!("Accepted interaction execution is immutable"));
+    }
+    instruction.phase = phase;
+    instruction.local_turn = Some(local_turn);
+    if native.is_some() {
+        instruction.native_thread = native;
+    }
+    if let Some(turn) = native_turn {
+        instruction.native_turn = Some(turn.to_owned());
+    }
+    tx.execute(
+        "UPDATE interaction_instructions SET phase=?2,doc=?3 WHERE id=?1",
+        params![id, phase.as_str(), serde_json::to_string(&instruction)?],
+    )?;
+    if phase == P::Accepted {
+        super::topic_publications::accepted_on(tx, &instruction)?;
+    }
+    Ok(instruction)
+}
+
+pub(super) fn instruction_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+) -> Result<Option<crate::interaction::Instruction>> {
+    let raw:Option<(String,String)>=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    raw.map(|(doc, phase)| {
+        let mut instruction: crate::interaction::Instruction = serde_json::from_str(&doc)?;
+        instruction.phase = phase.as_str().try_into()?;
+        Ok(instruction)
+    })
+    .transpose()
+}
+
+pub(super) fn target_execution_allowed_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+) -> Result<bool> {
+    target_execution_matches_on(conn, input, None)
+}
+
+fn target_execution_matches_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+    native: Option<&str>,
+) -> Result<bool> {
+    let Some(selected) = input.target_execution.as_ref() else {
+        return Ok(true);
+    };
+    Ok(
+        super::execution::binding_on(conn, input.target, input.human_id)?.is_some_and(|current| {
+            let current = current.execution;
+            current.conversation_id == selected.conversation_id
+                && current.revision == selected.revision
+                && (current.harness == selected.harness
+                    || (selected.harness.is_portable()
+                        && selected.body.is_some()
+                        && native.is_none()))
+                && selected
+                    .native_session
+                    .as_ref()
+                    .is_none_or(|id| current.native_session.as_ref() == Some(id))
+                && native.is_none_or(|observed| {
+                    current
+                        .native_session
+                        .as_deref()
+                        .is_none_or(|id| id == observed)
+                })
+        }),
+    )
+}
+
+pub(super) fn routed_native_allowed_on(
+    conn: &Connection,
+    local: i64,
+    native: &str,
+) -> Result<bool> {
+    let root: Option<String> = conn
+        .query_row(
+            "SELECT value FROM bot_state WHERE key=?1",
+            [format!("execution_root:{local}")],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = root else {
+        return Ok(true);
+    };
+    let Some(id) = serde_json::from_str::<Option<String>>(&raw)? else {
+        return Ok(true);
+    };
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_instructions WHERE id=?1 AND phase='queued'",
+        [&id],
+        |row| row.get(0),
+    )?;
+    target_execution_matches_on(conn, &serde_json::from_str(&raw)?, Some(native))
+}
+
+pub(super) fn queued_root_allowed_on(
+    conn: &Connection,
+    id: &str,
+    request: &TurnRequest,
+    session: i64,
+) -> Result<bool> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
+         WHERE i.id=?1 AND i.session_id=?2 AND i.phase='queued' AND s.human_id=?3",
+        params![id, session, request.from_user_id], |row| row.get(0),
+    ).optional()?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let input: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+    Ok(input.target == request.session_key && target_execution_allowed_on(conn, &input)?)
+}
+
+pub(super) fn recover_on(
+    conn: &Connection,
+    id: &str,
+    human: i64,
+    instance: &str,
+    paired: bool,
+    telegram_update: Option<i64>,
+) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
     let Some(doc) = doc else {
         return Ok(false);
     };
     let mut instruction: Instruction = serde_json::from_str(&doc)?;
+    if !target_execution_allowed_on(conn, &instruction)? {
+        return Ok(false);
+    }
+    let mut epoch = None;
+    if instruction
+        .target_execution
+        .as_ref()
+        .is_some_and(|binding| binding.harness.is_portable())
+    {
+        let source = super::routing::source_on(conn, id, human)?;
+        if source.update_id.is_some() {
+            let command: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
+                 WHERE update_id=?1 AND instance_id=?2 AND status='processing'
+                 AND json_extract(payload_json,'$.direct_human_text')=1
+                 AND json_extract(payload_json,'$.message.from.id')=?3",
+                    params![telegram_update, instance, human],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if !command
+                .as_deref()
+                .is_some_and(|command| command.split_whitespace().eq(["/interaction", "retry", id]))
+            {
+                return Ok(false);
+            }
+            epoch =
+                super::routed_portable::telegram_original_epoch(conn, &source, instruction.target)?;
+            if epoch.as_deref()
+                != Some(super::stopping::admission_epoch_on(conn, instruction.target)?.as_str())
+                || super::stopping::fenced_on(conn, instruction.target)?
+                || super::maintenance_writer_held_on(conn, instruction.target)?
+            {
+                return Ok(false);
+            }
+        } else if !paired
+            && instruction
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            && source.channel == "conversation"
+            && super::conversation_inputs::read_on(conn, &source.event_id, human)?.paired_actor
+        {
+            bail!("Only the paired human can requeue this retained original");
+        }
+    }
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
     instruction.native_turn = None;
-    instruction.admission_epoch = None;
+    instruction.admission_epoch = epoch;
     conn.execute(
         "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
         params![id, serde_json::to_string(&instruction)?, instance],
@@ -403,9 +682,13 @@ impl Store {
                 migration?;
             }
         }
-        self.conn.lock().expect("store mutex poisoned").execute(
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        super::routed_portable::recover_on(&tx, &self.instance_id)?;
+        tx.execute(
             "UPDATE interaction_instructions SET phase=CASE WHEN phase='queued' THEN 'retained_unsent' ELSE 'uncertain' END WHERE instance_id!=?1 AND phase IN ('queued','submitting','steering')",[&self.instance_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -442,19 +725,58 @@ impl Store {
         Ok(result)
     }
 
+    pub(crate) fn interaction_admit_portable_topic(
+        &self,
+        source: &crate::interaction::SourceInput,
+        target: SessionKey,
+        route: (
+            crate::interaction::ForegroundEngine,
+            &crate::interaction::MatrixDestination,
+        ),
+    ) -> Result<(crate::interaction::Instruction, bool)> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let result = admit_selected_on(
+            &tx,
+            source,
+            target,
+            crate::interaction::RequestRelation::New,
+            &self.instance_id,
+            None,
+            Some(route),
+        )?;
+        if result.1 {
+            // Once the canonical instruction exists, Telegram dispatch has
+            // finished. A restart must consult the instruction's own phase.
+            let update = source.update_id.context("Missing Telegram original")?;
+            anyhow::ensure!(
+                tx.execute(
+                    "UPDATE incoming_updates SET status='handled',updated_at=?2
+                     WHERE update_id=?1 AND instance_id=?3 AND status='processing'",
+                    params![update, now_string(), self.instance_id],
+                )? == 1,
+                "Portable topic no longer owns this Telegram dispatch"
+            );
+        }
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub(crate) fn interaction_target_execution_allowed(
+        &self,
+        input: &crate::interaction::Instruction,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        target_execution_allowed_on(&conn, input)
+    }
+
     pub fn interaction_instruction(
         &self,
         id: &str,
         human: i64,
     ) -> Result<Option<crate::interaction::Instruction>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let raw:Option<(String,String)>=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        raw.map(|(doc, phase)| {
-            let mut instruction: crate::interaction::Instruction = serde_json::from_str(&doc)?;
-            instruction.phase = phase.as_str().try_into()?;
-            Ok(instruction)
-        })
-        .transpose()
+        instruction_on(&conn, id, human)
     }
 
     /// Reuse an immutable accepted routed execution when its exact physical
@@ -584,76 +906,9 @@ impl Store {
         phase: crate::interaction::TransportPhase,
         native_turn: Option<&str>,
     ) -> Result<crate::interaction::Instruction> {
-        use crate::interaction::{Instruction, TransportPhase as P};
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let (doc,old):(String,String)=tx.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        let mut instruction: Instruction = serde_json::from_str(&doc)?;
-        let old = P::try_from(old.as_str())?;
-        let valid = old == phase
-            || matches!(
-                (old, phase),
-                (
-                    P::Queued,
-                    P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
-                ) | (
-                    P::Submitting | P::Steering,
-                    P::Accepted | P::Rejected | P::Uncertain
-                ) | (P::Uncertain, P::Accepted | P::Rejected)
-            );
-        if !valid {
-            return Err(anyhow!(
-                "Interaction transport cannot skip admission or replay uncertainty"
-            ));
-        }
-        let binding: Option<(i64, i64, Option<String>)> = tx
-            .query_row(
-                "SELECT session_id,from_user_id,native_thread_id FROM turns WHERE id=?",
-                [local_turn],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        let (session, owner, native) = binding.context("Interaction execution missing")?;
-        if session != instruction.target_session
-            || owner != human
-            || instruction
-                .local_turn
-                .is_some_and(|previous| previous != local_turn)
-        {
-            return Err(anyhow!("Interaction execution ownership changed"));
-        }
-        if matches!(phase, P::Submitting | P::Steering) {
-            let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.id=?1 AND u.tg_user_id=?2 AND u.allowed=1)",params![session,human],|r|r.get(0))?;
-            if !allowed {
-                return Err(anyhow!("Interaction execution is no longer admitted"));
-            }
-        }
-        if phase == P::Accepted && (native.is_none() || native_turn.is_none_or(str::is_empty)) {
-            return Err(anyhow!(
-                "Native acceptance requires exact thread and turn evidence"
-            ));
-        }
-        if old == P::Accepted
-            && (instruction.native_thread != native
-                || instruction.native_turn.as_deref() != native_turn)
-        {
-            return Err(anyhow!("Accepted interaction execution is immutable"));
-        }
-        instruction.phase = phase;
-        instruction.local_turn = Some(local_turn);
-        if native.is_some() {
-            instruction.native_thread = native;
-        }
-        if let Some(turn) = native_turn {
-            instruction.native_turn = Some(turn.to_owned());
-        }
-        tx.execute(
-            "UPDATE interaction_instructions SET phase=?2,doc=?3 WHERE id=?1",
-            params![id, phase.as_str(), serde_json::to_string(&instruction)?],
-        )?;
-        if phase == P::Accepted {
-            super::topic_publications::accepted_on(&tx, &instruction)?;
-        }
+        let instruction = transport_on(&tx, id, human, local_turn, phase, native_turn)?;
         tx.commit()?;
         Ok(instruction)
     }
@@ -680,10 +935,15 @@ impl Store {
         Ok(true)
     }
 
-    pub fn interaction_recover(&self, id: &str, human: i64) -> Result<bool> {
+    pub fn interaction_recover(
+        &self,
+        id: &str,
+        human: i64,
+        telegram_update: Option<i64>,
+    ) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let changed = recover_on(&tx, id, human, &self.instance_id)?;
+        let changed = recover_on(&tx, id, human, &self.instance_id, false, telegram_update)?;
         tx.commit()?;
         Ok(changed)
     }
@@ -1051,9 +1311,9 @@ mod tests {
                 .phase,
             P::Uncertain
         );
-        assert!(!store.interaction_recover(&unknown.id, 100).unwrap());
-        assert!(store.interaction_recover(&unsent.id, 100).unwrap());
-        assert!(!store.interaction_recover(&unsent.id, 100).unwrap());
+        assert!(!store.interaction_recover(&unknown.id, 100, None).unwrap());
+        assert!(store.interaction_recover(&unsent.id, 100, None).unwrap());
+        assert!(!store.interaction_recover(&unsent.id, 100, None).unwrap());
         let accepted = store
             .interaction_transport(
                 &unknown.id,

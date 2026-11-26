@@ -447,6 +447,36 @@ def status_report(status, rollout, children, now):
     return '⚠️ Native activity unavailable'
 
 
+def portable_activity(database, chat, topic, human, now):
+    """Read active portable work from Gateway's existing ownership journal."""
+    row = database.execute('''SELECT t.id,t.execution_harness,t.started_at,t.native_thread_id,
+        (SELECT count(*) FROM interaction_instructions i
+         WHERE i.session_id=s.id AND i.phase='queued'
+           AND i.instance_id=(SELECT instance_id FROM app_instance_lock WHERE key='main')
+           AND json_extract(i.doc,'$.target_execution.harness')=t.execution_harness
+           AND json_extract(i.doc,'$.local_turn') IS NULL) AS waiting
+        FROM sessions s JOIN turns t ON t.session_id=s.id
+        JOIN interaction_instructions active ON active.session_id=s.id
+          AND json_extract(active.doc,'$.local_turn')=t.id
+          AND active.instance_id=(SELECT instance_id FROM app_instance_lock WHERE key='main')
+          AND active.phase IN ('queued','submitting')
+        WHERE s.chat_id=? AND s.thread_id=? AND s.creator_user_id=? AND t.from_user_id=?
+          AND t.execution_harness IN ('claude','antigravity','goose') AND t.status='running'
+        ORDER BY t.id DESC LIMIT 1''', (chat, topic, human, human)).fetchone()
+    if row is None:
+        return None
+    engine = {'claude': 'Claude Code', 'antigravity': 'Antigravity', 'goose': 'Goose'}[row['execution_harness']]
+    started = timestamp(row['started_at'])
+    elapsed = max(0, int(now-started)) if started is not None else 0
+    duration = f'{elapsed // 60}m' if elapsed >= 60 else f'{elapsed}s'
+    phase = 'working' if row['native_thread_id'] else 'starting'
+    text = f'⏳ {engine} · {phase} · {duration}'
+    if row['waiting']:
+        text += f" · {row['waiting']} waiting"
+    return {'turn': f"portable:{row['id']}", 'started': started, 'text': text,
+            'visible': elapsed >= 30}
+
+
 def goal_line(goal):
     """Literal native metadata, never inferred work or model-generated summaries."""
     if not goal:
@@ -1290,6 +1320,8 @@ def run(args):
     lock = open(state / 'observer.lock', 'a', opener=lambda p, f: os.open(p, f, 0o600))
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     bridge = readonly(config['db_path'])
+    portable_supported = any(column['name'] == 'execution_harness'
+                             for column in bridge.execute("PRAGMA table_info(turns)"))
     if args.restore_topic_markers:
         try:
             markers = TopicMarkers(telegram_transport(config), state / 'topic-markers.json')
@@ -1338,6 +1370,29 @@ def run(args):
                     tid = topic['codex_thread_id']
                     key = f"{topic['chat_id']}:{topic['thread_id']}"
                     known.add(key)
+                    now = time.time()
+                    portable = (portable_activity(bridge, topic['chat_id'], topic['thread_id'],
+                                                  topic['creator_user_id'], now)
+                                if portable_supported else None)
+                    if portable:
+                        latest = latest_input(bridge, topic['chat_id'], topic['thread_id'])
+                        position = {'exchange': None, 'input_id': latest['message_id'] if latest else None}
+                        quiet = latest and latest['at'] is not None and now - latest['at'] < 30
+                        pending = pending_requests(bridge, topic['chat_id'], topic['thread_id'], topic['creator_user_id'])
+                        merge = merge_requests(bridge, topic['chat_id'], topic['thread_id'], topic['creator_user_id'])
+                        text = None
+                        if portable['visible'] and not quiet:
+                            text = with_pending(with_merge(portable['text'], merge), pending)
+                        # The Gateway answers explicit /status for routed portable topics.
+                        observations.append({'status': 'active', 'visible': bool(text), 'working': True, 'command': False})
+                        topic_observations[key] = {
+                            'native': tid, 'human': topic['creator_user_id'], 'observed_at': now,
+                            'execution': 'working', 'goal_state': 'unavailable', 'work_started_at': portable['started'],
+                        }
+                        if publisher:
+                            publications.append((key, topic['chat_id'], topic['thread_id'], portable['turn'],
+                                                 text, now, None, position, pending_markup(pending), tid))
+                        continue
                     command = command_activity(bridge, topic['chat_id'], topic['thread_id'], time.time())
                     row = native_db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0', (tid,)).fetchone()
                     if not row and not command:

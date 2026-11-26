@@ -5,6 +5,7 @@ import json
 
 
 TOOL = "mcp__matrix__daimon_status"
+CONTROLLER = "mcp__gateway__interaction_controller"
 DMK = ["mcp__hmk__dmk_recall", "mcp__hmk__hmk_recall"]
 FOUNDATION = "mcp__matrix_foundation__fixture_read"
 ANSWER = "The selected Matrix body reported integrity ok."
@@ -15,6 +16,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def admitted(self):
+        phase, submission = self.server.journey.row(
+            "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
+            (self.server.current,),
+        )[0]
+        assert phase == "provider_exposed"
+        return json.loads(submission)
+
     def do_POST(self):
         try:
             assert self.path.startswith("/v1/messages")
@@ -24,6 +33,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             system = json.dumps(data["system"], ensure_ascii=False)
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
+            if getattr(self.server, "session_instructions", None):
+                assert self.server.session_instructions in system
+            if getattr(self.server, "paired_human", False):
+                assert "The Gateway authenticated that sender as the human paired with this daimon." in system
+                assert "The Claude subscription account is a service credential and does not identify the sender." in system
             memory = getattr(self.server, "dmk_record", None)
             skill = getattr(self.server, "skill_name", None)
             foundation = getattr(self.server, "foundation_marker", None)
@@ -32,6 +46,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             foundation_tools += [f"mcp__matrix_foundation__{name}" for name in extra_foundation]
             host_tools = getattr(self.server, "host_tools", [])
             expected = [TOOL] + (DMK if memory else []) + (["Skill"] if skill else []) + foundation_tools + host_tools
+            controller = getattr(self.server, "controller", False)
+            if controller:
+                expected.append(CONTROLLER)
             by_name = {tool["name"]: tool for tool in data["tools"]}
             if extra_foundation:
                 expected = [name for name in expected if name not in foundation_tools]
@@ -42,6 +59,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert all(not by_name[name].get("defer_loading") for name in (DMK if memory else []))
             assert sorted(by_name) == sorted(expected), sorted(by_name)
             steps = [(DMK[0], memory, self.server.dmk_marker) if memory else (TOOL, {}, self.server.body)]
+            if controller:
+                steps.append((CONTROLLER, {"operation": "capabilities", "arguments": {}},
+                              "telecodex.interaction-controller/v1"))
+                steps.append((CONTROLLER, {"operation": "candidates",
+                                           "arguments": {"mode": "inventory", "selectors": []}},
+                              "observer_candidate_inventory"))
             if skill:
                 steps.append(("Skill", {"skill": skill}, self.server.skill_marker))
             if foundation:
@@ -51,16 +74,24 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             if host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
-                    ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && printf 'Native shell %s.' 'readback marker'"},
+                    ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && fixture-shared-command"},
                      "Native shell readback marker."),
                 ]
+            if getattr(self.server, "mixed", False):
+                marker = self.server.mixed_worker_reply
+                destination = {"selector": "Alpha", "relation": "new", "requests": []}
+                dispatch = {"operation": "dispatch", "arguments": {
+                    "input_ref": self.server.current, "destinations": [destination],
+                }}
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
+                    (CONTROLLER, dispatch, '"new_admission":true'),
+                    (CONTROLLER, dispatch, '"new_admission":false'),
+                    (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
+                ]
             assert self.server.original in json.dumps(data["messages"])
-            phase, submission = self.server.journey.row(
-                "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
-                (self.server.current,),
-            )[0]
-            assert phase == "provider_exposed"
-            assert json.loads(submission)["native_session_id"]
+            submission = self.admitted()
+            assert submission["native_session_id"]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
             previous = getattr(self.server, "previous_original", None)
@@ -68,8 +99,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 item for message in data["messages"] if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
-            if hasattr(self.server, "old_skill_marker"):
-                assert json.loads(submission)["native_session_id"] != self.server.previous_session
+            if self.server.current == getattr(self.server, "interrupted_id", None):
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "A delayed synthetic response."}
+                reason = "end_turn"
+            elif hasattr(self.server, "old_skill_marker"):
+                assert submission["native_session_id"] != self.server.previous_session
                 messages = json.dumps(data["messages"])
                 assert self.server.old_skill_marker not in messages and REVOKED_ANSWER not in messages
                 if not result:
@@ -86,8 +121,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert not result
                 assert self.server.dmk_marker not in json.dumps(data["messages"])
                 assert ANSWER not in json.dumps(data["messages"])
-                assert json.loads(submission)["native_session_id"] != self.server.previous_session
-                assert json.loads(submission)["native_session_scope"] != self.server.previous_scope
+                assert submission["native_session_id"] != self.server.previous_session
+                assert submission["native_session_scope"] != self.server.previous_scope
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
@@ -95,16 +130,30 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
                 assert ANSWER in json.dumps(data["messages"])
-                assert json.loads(submission)["native_session_id"] == self.server.previous_session
+                assert submission["native_session_id"] == self.server.previous_session
                 block = {"type": "text", "text": ""}
-                delta = {"type": "text_delta", "text": "I retained the first turn."}
+                delta = {"type": "text_delta", "text": getattr(self.server, "followup_answer", "I retained the first turn.")}
                 reason = "end_turn"
             else:
                 assert prior <= len(steps) and len(result) == prior
                 if prior:
                     entry = next(item for item in result if item["tool_use_id"] == f"toolu_fixture_{prior-1}")
                     assert entry.get("is_error") is not True
-                    assert steps[prior - 1][2] in json.dumps(data["messages"])
+                    payload = json.dumps(entry["content"], ensure_ascii=False) if isinstance(
+                        entry["content"], (dict, list)) else entry["content"]
+                    expected_result = steps[prior - 1][2]
+                    if getattr(self.server, "mixed", False) and prior in (2, 3):
+                        if isinstance(entry["content"], list):
+                            payload = "".join(item.get("text", "") for item in entry["content"])
+                        assert expected_result in payload
+                        if prior == 2:
+                            self.server.journey.wait(lambda: self.server.journey.instructions(7)
+                                and self.server.journey.instructions(7)[0][1] == "accepted")
+                            self.server.journey.answer_worker(7, self.server.mixed_worker_reply)
+                            self.server.journey.wait(lambda: self.server.journey.row(
+                                "SELECT count(*) FROM interaction_results") == [(1,)])
+                    else:
+                        assert expected_result in payload
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:

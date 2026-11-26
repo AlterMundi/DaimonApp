@@ -74,6 +74,11 @@ try:
         if(route.startsWith('interaction/inputs?'))return{binding:'b'.repeat(64),entry_binding,csrf:'fixture',more:false,
           items:fixtureInputs.map(({entry_binding,...receipt},index)=>({...receipt,sequence:index+1,native_binding_current:true})),
           ...(route.includes('draft=text')?{conversation_draft:{...await draftRead(),owner:'a'.repeat(64)}}:{})};
+        if(route.includes('/trace/claude-reply?offset=')){
+          const [id, offsetText]=route.split('interaction/inputs/')[1].split('/trace/claude-reply?offset=');
+          const offset=Number(offsetText),text=fixtureFullReply.slice(offset,offset+2048);
+          return {id,source:'claude-reply',text,offset,next_offset:offset+text.length<fixtureFullReply.length?offset+text.length:null};
+        }
         if(route.startsWith('interaction/inputs/')){
           const receipt=fixtureInputs.find(input=>route.endsWith(input.id));
           if(!receipt)throw Error('No fixture receipt');
@@ -107,7 +112,7 @@ try:
      field=frame.locator('#conversation-message');assert field.input_value()=='Draft before reload ñ 🧭'
      assert frame.evaluate('fixtureInputs.length')==0
     assert synced.value.json()['text']=='Draft before reload ñ 🧭'
-    other=browser.new_page(viewport={'width':width,'height':800});other.goto(child_origin+'/?view=conversation&client=standalone')
+    other=browser.new_page(viewport={'width':width,'height':800});other.goto(child_origin+'/?view=conversation&client=standalone&target=claude')
     other.wait_for_function('!!window.Conversation');other.evaluate(mount)
     assert other.locator('#conversation-message').input_value()=='Draft before reload ñ 🧭'
     assert other.evaluate('fixtureInputs.length')==0
@@ -122,17 +127,17 @@ try:
     frame.get_by_role('button',name='Use other draft').click()
     assert field.input_value()=='Other client edits'
     page.unroute('**/fixture-draft')
-    assert frame.locator('#conversation-target').is_hidden()
-    other.get_by_label('Talk to').select_option('claude')
+    assert frame.locator('#conversation-target').count()==0
+    assert other.get_by_label('Talk to').count()==0
     other.locator('#conversation-message').fill('Private Claude fixture original')
     other.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     other.wait_for_function('fixtureInputs.length===1')
     retained=other.evaluate('fixtureInputs[0]')
-    assert retained['target']=='claude' and retained['text']=='Private Claude fixture original'
+    assert 'target' not in retained and retained['text']=='Private Claude fixture original'
     assert not ({'files','reply','playback','visual'} & set(retained))
     card=other.locator(f'[data-input-id="{retained["id"]}"]')
-    other.evaluate("fixtureInputs[0].phase='claude_unconfirmed'; fixtureUI.refresh(true)")
-    status=card.get_by_text('Claude Code received the message. A reply could not be confirmed.')
+    other.evaluate("fixtureInputs[0].target='claude'; fixtureInputs[0].phase='claude_unconfirmed'; fixtureUI.refresh(true)")
+    status=card.get_by_text("Claude Code’s reply could not be confirmed. Your message is saved.")
     status.wait_for()
     other.evaluate('window.fixtureHoldInputStatus=true')
     card.get_by_role('button',name='Check status').click()
@@ -156,11 +161,23 @@ try:
     assert card.get_by_text('Private Claude fixture reply',exact=True).count()==0
     assert card.evaluate('(element)=>element.nextElementSibling.dataset.claudeReplyTo')==retained['id']
     record=other.locator('[data-source-id="fixture-matrix_visibility"]')
-    assert record.count()==1 and record.is_hidden()
-    other.get_by_label('Show Matrix records').check()
-    assert record.is_visible()
-    other.get_by_label('Show Matrix records').uncheck()
-    assert record.is_hidden()
+    assert record.count()==1
+    other.locator('#conversation-message').fill('Direct Claude fixture original')
+    other.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    other.wait_for_function('fixtureInputs.length===2')
+    direct=other.evaluate('''()=>{
+      const original=fixtureInputs.at(-1);
+      window.fixtureFullReply='A piece of the direct reply. '.repeat(180)+'End of direct reply.';
+      original.target='claude';
+      original.phase='claude_replied';
+      original.claude_reply={text:fixtureFullReply.slice(0,2048),message_id:original.id,next_offset:2048};
+      fixtureUI.refresh(true);
+      return original.id;
+    }''')
+    direct_reply=other.locator(f'[data-claude-reply-to="{direct}"]')
+    direct_reply.get_by_role('button',name='Read full reply').click()
+    direct_reply.get_by_text('End of direct reply.',exact=False).wait_for()
+    assert direct_reply.get_by_role('button',name='Read full reply').is_hidden()
     other.close()
     page.wait_for_function("messages.some(m=>m.type==='ready')",timeout=5000)
     frame.evaluate('window.fixtureHoldAck=true')

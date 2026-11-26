@@ -18,6 +18,37 @@ handoff; a web-only change does not restart native work. Preserve paused/blocked
 goals and uncertain inputs. Never clear journals or replay a command to manufacture
 convergence. Reuse actual outcomes after a failed verifier.
 
+## Gateway harness updates
+
+Compose the candidate from the serving Gateway source and the qualified harness
+delta. Retain the serving profile's unrelated capabilities and the previous
+compatible binary and profile. Record the exact binary, worker, native runtime and
+configuration selected for each harness. Gateway owns the journal and the
+selected worker commands. A worker update uses this existing Gateway selection.
+TeleDaimon can stay on its current qualified transport release when its Gateway
+interface and profile are compatible.
+
+Stage the adapter from the same source revision as the binary, including the
+shared files imported from its parent directory. Qualify the packaged worker
+from its release directory, and record its module digests with the binary.
+Reuse the existing service selector with its exact predecessor available for
+rollback. Avoid accumulating one service override per release.
+
+Run `daimon-gateway --preflight CONFIG` on the staged binary and the exact
+candidate profile as the receiving service user. This validates the Gateway
+configuration and reads the selected Reports record from the existing journal
+using the candidate's own decoder. It starts no service or provider turn.
+If the predecessor has a selected Reports record, require that the candidate
+reports it readable. Preserve the existing record and reconcile the reader on
+failure. This check caught the difference between a standalone branch and the
+receiving composition's Reports cadence and change-source support.
+
+Use the existing collector-preserving cutover and retain the observed worker and
+projection outcomes in the same deployment checkpoint. Apply the private
+[foreground acceptance procedure](interaction.md#qualify-a-private-matrix-foreground-route)
+for each newly selected harness. A staged binary and a live functional exchange
+have separate evidence.
+
 For collector-preserving listener replacement, snapshot every owned goal's
 identity, revision, pause state and accounting, but enumerate turns only for
 currently loaded owned threads (`thread/loaded/list`, then `thread/turns/list`).

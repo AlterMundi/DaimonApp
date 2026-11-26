@@ -82,13 +82,17 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const paired = ownerDefault || request.message.content === 'Synthetic private tool grant.';
                 assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
                 assert.equal(options.systemPrompt.append.includes(
-                  'The paired human wrote the current user message in Interaction.'), paired);
+                  'The paired human wrote the current user message.'), paired);
+                assert.equal(options.systemPrompt.append.includes(
+                  'The Claude subscription account is a service credential and does not identify the sender.'), paired);
                 assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
                 assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
                 const expectedTools = ownerDefault
                   ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
                   : paired ? ['Bash', 'Read'] : [];
                 assert.deepEqual(options.tools, expectedTools);
+                assert.equal(options.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
+                  options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
                 yield { type: 'result', subtype: 'success', is_error: false,

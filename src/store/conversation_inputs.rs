@@ -1,7 +1,9 @@
 //! Original authenticated conversation inputs, independent of Telegram updates.
 //! Capturing text is not native acceptance; uncertain transport is never replayed.
+mod portable;
 use super::*;
 use anyhow::bail;
+pub(super) use portable::portable_controller_input_on;
 use serde::{Deserialize, Serialize};
 
 /// Untrusted client media progress attached to one original, never hearing proof.
@@ -89,8 +91,12 @@ pub struct ConversationInput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix: Option<PrivateMatrixSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) portable: Option<portable::Selection>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) private_matrix_host_access: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) paired_actor: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_matrix_origin: Option<PrivateMatrixOrigin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +135,12 @@ pub struct ConversationInput {
     pub phase: String,
     pub local_turn: Option<i64>,
     pub retired: bool,
+}
+
+enum SelectedRoute {
+    PairedOriginal,
+    Signed(PrivateMatrixSelection, bool),
+    Portable(portable::Selection),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,7 +374,11 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     let mut input: ConversationInput = serde_json::from_str(&doc)?;
     input.phase = phase;
     input.local_turn = local_turn;
-    input.retired = retired;
+    input.retired = if input.portable.is_some() {
+        !portable::current_on(conn, &input)?
+    } else {
+        retired
+    };
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
@@ -484,8 +500,8 @@ fn trace_original_on(
 }
 
 pub(super) fn eligible_on(conn: &Connection, input: &ConversationInput) -> Result<()> {
-    if input.private_matrix.is_some() {
-        bail!("Private Matrix text belongs to its retained destination");
+    if input.private_matrix.is_some() || input.portable.is_some() {
+        bail!("Original belongs to its selected harness delivery path");
     }
     if input.foreground_dialogue.is_some() && input.foreground_delegation.is_none() {
         bail!("Foreground conversation has not been delegated as work");
@@ -507,6 +523,27 @@ pub(super) fn eligible_binding_on(conn: &Connection, input: &ConversationInput) 
     {
         bail!("Original conversation input binding or admission generation retired");
     }
+    validate_source_attachments(conn, input)
+}
+
+/// An already admitted worker instruction carries its own immutable routing
+/// receipt. Its direct portable source still has to belong to the live owner,
+/// generation and admission epoch, even after the integrating turn settles.
+pub(super) fn eligible_dispatched_source_on(
+    conn: &Connection,
+    input: &ConversationInput,
+    writer: &str,
+) -> Result<()> {
+    if input.portable.is_none() {
+        return eligible_on(conn, input);
+    }
+    if !portable::admitted_on(conn, input, writer)? {
+        bail!("Portable source binding or admission generation retired");
+    }
+    validate_source_attachments(conn, input)
+}
+
+fn validate_source_attachments(conn: &Connection, input: &ConversationInput) -> Result<()> {
     crate::files::attachments(
         std::path::Path::new(conn.path().context("File storage unavailable")?),
         &input.files,
@@ -591,7 +628,10 @@ impl Store {
             UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=NEW.id AND phase IN ('preparing','retained','queued','awaiting_target'); END;
             CREATE TRIGGER IF NOT EXISTS conversation_focus_session_deleted AFTER DELETE ON sessions BEGIN
             UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=OLD.id AND phase IN ('preparing','retained','queued','awaiting_target'); END;")?;
-        conn.execute("UPDATE conversation_inputs SET phase=CASE WHEN phase IN ('sending','steering') THEN 'uncertain' WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('retained','queued','sending','steering','preparing')",[&self.instance_id])?;
+        let recovery = conn.unchecked_transaction()?;
+        portable::recover_retired_writer(&recovery, &self.instance_id)?;
+        recovery.execute("UPDATE conversation_inputs SET phase=CASE WHEN phase IN ('sending','steering') THEN 'uncertain' WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('retained','queued','sending','steering','preparing')",[&self.instance_id])?;
+        recovery.commit()?;
         Ok(())
     }
 
@@ -771,9 +811,24 @@ impl Store {
         visual: Option<crate::visual::VisualSelection>,
         playback: Option<ConversationPlayback>,
         files: Vec<crate::files::FileReference>,
+        paired_actor: bool,
     ) -> Result<(ConversationInput, bool)> {
-        self.capture_original(
-            human, entry, binding, id, text, None, true, reply, visual, playback, None, files,
+        self.capture_original_mode(
+            human,
+            entry,
+            binding,
+            id,
+            text,
+            None,
+            true,
+            reply,
+            visual,
+            playback,
+            None,
+            files,
+            None,
+            None,
+            paired_actor.then_some(SelectedRoute::PairedOriginal),
         )
     }
 
@@ -823,7 +878,7 @@ impl Store {
             Vec::new(),
             None,
             None,
-            Some((selection, host_access)),
+            Some(SelectedRoute::Signed(selection, host_access)),
         )
     }
 
@@ -1340,12 +1395,17 @@ impl Store {
         files: Vec<crate::files::FileReference>,
         foreground_dialogue: Option<String>,
         tribu: Option<(crate::interaction::TribuSource, usize)>,
-        private_matrix: Option<(PrivateMatrixSelection, bool)>,
+        portable_route: Option<SelectedRoute>,
     ) -> Result<(ConversationInput, bool)> {
-        let (private_matrix, private_matrix_host_access) = private_matrix
-            .map_or((None, false), |(selection, access)| {
-                (Some(selection), access)
-            });
+        let (private_matrix, private_matrix_host_access, portable, paired_actor) =
+            match portable_route {
+                Some(SelectedRoute::Signed(selection, access)) => {
+                    (Some(selection), access, None, access)
+                }
+                Some(SelectedRoute::Portable(selection)) => (None, false, Some(selection), true),
+                Some(SelectedRoute::PairedOriginal) => (None, false, None, true),
+                None => (None, false, None, false),
+            };
         if let Some((source, max_pending)) = &tribu {
             source.validate(human)?;
             if source.input_id(entry) != id
@@ -1399,8 +1459,11 @@ impl Store {
             let input = read_on(&tx, id, human)?;
             if input.entry != entry
                 || input.tribu_source.as_ref() != tribu.as_ref().map(|(s, _)| s)
-                || input.private_matrix != private_matrix
-                || input.private_matrix_host_access != private_matrix_host_access
+                || !input.same_selected_route(
+                    private_matrix.as_ref(),
+                    private_matrix_host_access,
+                    portable.as_ref(),
+                )
                 || input.foreground_dialogue != foreground_dialogue
                 || input.visual != visual
                 || input.files != files
@@ -1480,7 +1543,9 @@ impl Store {
             epoch: super::stopping::admission_epoch_on(&tx, entry)?,
             text: text.into(),
             private_matrix,
+            portable,
             private_matrix_host_access,
+            paired_actor,
             private_matrix_origin: None,
             private_matrix_reply: None,
             tribu_source: tribu.map(|(source, _)| source),
@@ -1983,6 +2048,10 @@ impl Store {
         let original = trace_original_on(&conn, human, entry, id)?;
         let text = if source == "original" {
             original["text"].as_str().unwrap_or_default().to_owned()
+        } else if source == "claude-reply" && original["channel_kind"] == "conversation" {
+            read_on(&conn, id, human)?
+                .portable_reply(&conn)?
+                .context("No retained native result")?
         } else {
             let raw:String=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id WHERE i.id=?1 AND o.event_id=?2 AND o.human_id=?3 AND ((?4='conversation' AND o.channel='conversation') OR (?4='telegram' AND o.channel LIKE 'telegram:%' AND o.update_id=?5 AND o.origin_chat=?6 AND o.origin_thread=?7))",params![source,original["source_event"].as_str(),human,original["channel_kind"].as_str(),original["update_id"].as_i64(),entry.chat_id,entry.thread_id],|r|r.get(0))?;
             let instruction: Instruction = serde_json::from_str(&raw)?;
@@ -2099,17 +2168,16 @@ impl Store {
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
                 "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
-                "native_binding_current":input.native==native,
+                "native_binding_current":if input.portable.is_some() { !input.retired } else { input.native==native },
             });
             if let Some(dialogue) = &input.foreground_dialogue {
                 item["foreground_dialogue"] = serde_json::json!(dialogue);
             }
-            if input.private_matrix.is_some() {
+            if input.targets_claude() {
                 item["target"] = serde_json::json!("claude");
             }
-            if let Some(reply) = &input.private_matrix_reply {
-                item["claude_reply"] =
-                    serde_json::json!({"text":reply.text,"message_id":reply.event_id});
+            if let Some(reply) = input.reply_view(&conn)? {
+                item["claude_reply"] = reply;
             }
             items.push(item);
         }

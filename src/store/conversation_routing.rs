@@ -235,7 +235,7 @@ fn selected_destination_on(
     let (mut reference, focus, label) = destination_on(conn, human, entry, id)?;
     if let Some(row) = message {
         let selected: (String,String,String,Option<String>,String)=conn.query_row(
-            "SELECT m.native_thread,m.native_turn,m.item_id,m.phase,m.text FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.rowid=?1 AND t.session_id=?2 AND m.native_thread=?3 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final')",
+            "SELECT m.native_thread,m.native_turn,m.item_id,m.phase,m.text FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE m.rowid=?1 AND t.session_id=?2 AND t.execution_harness='codex' AND m.native_thread=?3 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final')",
             params![row,id,focus.native],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
         reference.source = format!("session:{id}/{row}");
         reference.revision = format!(
@@ -417,23 +417,34 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (session, native) = super::presentation::entry_on(&conn, human, entry)?;
         let binding = super::presentation::entry_binding(&conn, human, entry, session)?;
-        let mut q = conn.prepare("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.creator_user_id=?1 AND u.allowed=1 ORDER BY s.id LIMIT 129")?;
+        let mut q = conn.prepare("SELECT s.id,s.model,s.reasoning_effort FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.creator_user_id=?1 AND u.allowed=1 ORDER BY s.id LIMIT 129")?;
         let ids = q
-            .query_map([human], |r| r.get::<_, i64>(0))?
+            .query_map([human], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         if ids.len() > 128 {
             bail!("Session workspace exceeds qualified bound");
         }
         let mut items = Vec::new();
-        for id in ids {
+        let mut entry_runtime = Value::Null;
+        for (id, model, effort) in ids {
+            let runtime = json!({"harness":"codex","model":model,"effort":effort});
+            if id == session {
+                entry_runtime = runtime.clone();
+            }
             let Ok((reference, focus, label)) = destination_on(&conn, human, entry, id) else {
                 continue;
             };
             let latest: Option<i64>=conn.query_row(
-                "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final') ORDER BY m.rowid DESC LIMIT 1",
+                "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('commentary','final_answer','final') ORDER BY m.rowid DESC LIMIT 1",
                 params![id,focus.native],|r|r.get(0)).optional()?;
             let result_available: bool=conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('final_answer','final'))",
+                "SELECT EXISTS(SELECT 1 FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 AND COALESCE(m.phase,'final_answer') IN ('final_answer','final'))",
                 params![id,focus.native],|r|r.get(0))?;
             let latest_reply = latest
                 .map(|row| {
@@ -443,16 +454,16 @@ impl Store {
                 .transpose()?;
             items.push(
                 json!({"audio_key":format!("{}:{}",focus.target.chat_id,focus.target.thread_id),
-                "label":label,"destination":reference,"latest_reply":latest_reply,"result_available":result_available}),
+                "label":label,"runtime":runtime,"destination":reference,"latest_reply":latest_reply,"result_available":result_available}),
             );
         }
         let entry_latest: Option<i64>=conn.query_row(
-            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND m.native_thread=?2 ORDER BY m.rowid DESC LIMIT 1",
+            "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn WHERE t.session_id=?1 AND t.execution_harness='codex' AND m.native_thread=?2 ORDER BY m.rowid DESC LIMIT 1",
             params![session,native],|r|r.get(0)).optional()?;
         let entry_latest_reply=entry_latest.map(|row|super::presentation::source_on(&conn,human,entry,&format!("native:{row}")))
             .transpose()?.flatten().map(|source|json!({"source":source["id"],"revision":source["revision"],"context_only":true}));
         Ok(
-            json!({"schema":"daimon.session-destinations/v1","binding":binding,"entry_binding":[human,entry,session,native],"items":items,"entry_latest_reply":entry_latest_reply,
+            json!({"schema":"daimon.session-destinations/v1","binding":binding,"entry_binding":[human,entry,session,native],"items":items,"entry_runtime":entry_runtime,"entry_latest_reply":entry_latest_reply,
             "meaning":"Owned current destination references. Listing does not admit input, enroll routing or start work."}),
         )
     }
@@ -481,6 +492,7 @@ impl Store {
         for route in rows {
             if !super::stopping::fenced_on(&conn, route.target)?
                 && !super::maintenance_writer_held_on(&conn, route.target)?
+                && super::interaction::target_execution_allowed_on(&conn, &route)?
             {
                 available.push(route);
             }
@@ -496,6 +508,7 @@ impl Store {
         entry: SessionKey,
         id: &str,
         instruction: &str,
+        paired: bool,
     ) -> Result<(bool, SessionKey)> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
@@ -511,7 +524,14 @@ impl Store {
         {
             bail!("Selected work session is held");
         }
-        let changed = super::interaction::recover_on(&tx, instruction, human, &self.instance_id)?;
+        let changed = super::interaction::recover_on(
+            &tx,
+            instruction,
+            human,
+            &self.instance_id,
+            paired,
+            None,
+        )?;
         if changed {
             tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(?1,'conversation_route_recovery',?2,?3)",params![human,json!({"original":id,"instruction":instruction,"entry":entry,"target":selected.target,"kind":"explicit_known_unsent_recovery"}).to_string(),now_string()])?;
         }
@@ -770,8 +790,18 @@ impl Store {
         let relation = inherited
             .map(|f| RequestRelation::Amends(f.requests.clone()))
             .unwrap_or(RequestRelation::New);
-        let (instruction, fresh) =
-            super::interaction::admit_on(&tx, &source, target, relation, &self.instance_id)?;
+        let route = profile
+            .portable_route(target)
+            .map(|(engine, config)| (engine, &config.transport.source));
+        let (instruction, fresh) = super::interaction::admit_selected_on(
+            &tx,
+            &source,
+            target,
+            relation,
+            &self.instance_id,
+            None,
+            route,
+        )?;
         input.phase = "routed".into();
         input.routing = Some(ConversationRouting {
             target,

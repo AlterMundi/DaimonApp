@@ -523,13 +523,14 @@ fn portfolio_evidence(o: crate::store::SessionObservation, detailed: bool) -> se
         vec![]
     };
     serde_json::json!({"sampled_at":o.sampled_at,"native":o.native_thread,"execution":o.execution,
+        "latest_executions":o.latest_executions,
         "semantic":semantic,"pending_human_items":o.pending.pending_total,
         "actionable_human_items":o.pending.actionable_total,"human_items":pending,
         "human_items_bounded":detailed && o.pending.actionable_total>8,
         "presentation_gaps":o.presentation_gaps,"input_cut":o.input_cut,
         "last_local_turn":o.local_turn.map(|(id,state,at)|serde_json::json!({"id":id,"state":state,"at":at})),
         "last_native_item":o.native_item.map(|(turn,item,at)|serde_json::json!({"turn":turn,"item":item,"observed_at":at})),
-        "activity_scope":"Receiver-retained activity only; old or missing activity is not native idle. Source-check expiry requires reconciliation, not necessarily another synthesis."})
+        "activity_scope":"Latest Gateway attempt per harness, observed in the same owned conversation snapshot. Native goal and semantic evidence below describe their own source binding; an old generation, missing evidence or unconfirmed return does not establish native idle."})
 }
 
 async fn portfolio_inspection(
@@ -624,18 +625,39 @@ pub(super) fn tool_owner(
     Ok(())
 }
 
+pub(super) fn tool_owner_for_turn(
+    shared: &AppShared,
+    key: SessionKey,
+    human: i64,
+    request: &crate::execution::ToolInvocation,
+) -> Result<()> {
+    let cfg = routing::profile(shared)?;
+    if cfg.entry() != key || cfg.human_id != human {
+        bail!("Tool is outside the integrating conversation");
+    }
+    let execution = shared
+        .store
+        .controller_execution(request.local_turn, key, human)?;
+    if !execution.matches(request.harness, &request.native_session) {
+        bail!("Controller execution changed");
+    }
+    Ok(())
+}
+
 pub(super) fn tool_call(
     shared: Arc<AppShared>,
     key: SessionKey,
     human: i64,
     request: crate::execution::ToolInvocation,
+    closed: tokio_util::sync::CancellationToken,
 ) -> oneshot::Receiver<crate::execution::ToolReply> {
     let (send, recv) = oneshot::channel();
     tokio::spawn(async move {
         let result: Result<String> = async {
-            tool_owner(&shared,key,human,&request.native_session)?;
+            if closed.is_cancelled() {bail!("Observer invocation closed");}
+            tool_owner_for_turn(&shared,key,human,&request)?;
             if request.tool!="interaction_candidates" || request.namespace.is_some() || request.arguments.to_string().len()>4096 {bail!("Unsupported integrating tool");}
-            let args: CandidateToolArgs = serde_json::from_value(request.arguments)?;
+            let args: CandidateToolArgs = serde::Deserialize::deserialize(&request.arguments)?;
             let cfg=routing::profile(&shared)?;
             if args.selectors.len()>5 {bail!("Too many selected candidates");}
             let mut selected = vec![];
@@ -687,7 +709,8 @@ pub(super) fn tool_call(
                 _ => bail!("Use inventory, inspect or refresh with one to five selectors; support requires one selector"),
             };
             // The entry may have been rebound or revoked while source reads ran.
-            tool_owner(&shared,key,human,&request.native_session)?;
+            if closed.is_cancelled() {bail!("Observer invocation closed");}
+            tool_owner_for_turn(&shared,key,human,&request)?;
             Ok(text)
         }.await;
         let result = match result {

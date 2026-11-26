@@ -31,6 +31,7 @@ pub(super) fn binding_on(
                 revision,
                 harness: Harness::Codex,
                 native_session: if reset { None } else { native_session.clone() },
+                body: None,
             };
             // Existing Observer history may still contain an old Codex ID
             // after reset. It is evidence, never current execution authority.
@@ -68,6 +69,10 @@ impl Store {
                AND t.status='running' AND t.completed_at IS NULL AND t.execution_generation=g.generation",
             params![local, native], |row| row.get(0),
         ).optional()?.context("Codex turn binding changed before native session adoption")?;
+        anyhow::ensure!(
+            super::interaction::routed_native_allowed_on(&tx, local, native)?,
+            "Native writer differs from the selected routed execution"
+        );
         tx.execute(
             "UPDATE sessions SET codex_thread_id=?1,force_fresh_thread=0,updated_at=?2 WHERE id=?3",
             params![native, now_string(), session],
@@ -84,9 +89,11 @@ impl Store {
         &self,
         local: i64,
         selected_session: bool,
+        routed: Option<(&str, i64)>,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let valid: bool = conn.query_row(
+        let tx = conn.unchecked_transaction()?;
+        let valid: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
              JOIN conversation_entry_generations g ON g.session_id=t.session_id
              WHERE t.id=?1 AND t.status='running' AND t.completed_at IS NULL
@@ -97,6 +104,13 @@ impl Store {
             |row| row.get(0),
         )?;
         anyhow::ensure!(valid, "Codex native submission binding changed");
+        if let Some((id, human)) = routed {
+            anyhow::ensure!(
+                super::dialogue::dispatched_source_on(&tx, id, human, &self.instance_id)?,
+                "Routed original retired before Codex submission"
+            );
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -121,31 +135,45 @@ impl Store {
     ) -> Result<ExecutionBinding> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let binding = binding_on(&tx, key, human)?
+        let mut binding = binding_on(&tx, key, human)?
             .context("Controller conversation is no longer owned")?
             .execution;
-        let native: String = tx
+        let (harness, native): (String, String) = tx
             .query_row(
-                "SELECT t.native_thread_id FROM turns t
+                "SELECT t.execution_harness,t.native_thread_id FROM turns t
                  JOIN conversation_entry_generations g ON g.session_id=t.session_id
                  WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3
                    AND t.status='running' AND t.completed_at IS NULL
-                   AND t.execution_harness=?4 AND t.native_thread_id IS NOT NULL
-                   AND (t.execution_generation IS NULL OR t.execution_generation=g.generation)",
-                params![
-                    local,
-                    binding.conversation_id,
-                    human,
-                    binding.harness.name()
-                ],
-                |row| row.get(0),
+                   AND t.native_thread_id IS NOT NULL
+                   AND (t.execution_generation=g.generation
+                     OR (t.execution_harness='codex' AND t.execution_generation IS NULL))",
+                params![local, binding.conversation_id, human],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
             .context("Controller turn is no longer running")?;
-        anyhow::ensure!(
-            binding.matches(Harness::Codex, &native),
-            "Controller execution or native binding changed"
-        );
+        if harness == Harness::Codex.name() {
+            anyhow::ensure!(
+                binding.matches(Harness::Codex, &native),
+                "Controller execution or native binding changed"
+            );
+        } else {
+            binding.harness = super::conversation_inputs::portable_controller_input_on(
+                &tx,
+                local,
+                key,
+                human,
+                &self.instance_id,
+            )?
+            .portable
+            .context("Portable selection unavailable")?
+            .harness;
+            anyhow::ensure!(
+                binding.harness.name() == harness,
+                "Controller harness changed"
+            );
+            binding.native_session = Some(native);
+        }
         tx.commit()?;
         Ok(binding)
     }
@@ -217,7 +245,7 @@ mod tests {
         assert!(store.controller_execution(turn, key, 100).is_err());
         assert!(store.native_collection_submitting(turn, None).is_err());
         assert!(store.bind_codex_turn(turn, "first").is_err());
-        assert!(store.validate_codex_submission(turn, true).is_err());
+        assert!(store.validate_codex_submission(turn, true, None).is_err());
         assert!(store.native_collection_next().unwrap().is_none());
         assert!(
             store
@@ -257,9 +285,15 @@ mod tests {
         store
             .record_turn_native_thread(successor, "new-native")
             .unwrap();
-        assert!(store.validate_codex_submission(successor, true).is_err());
+        assert!(
+            store
+                .validate_codex_submission(successor, true, None)
+                .is_err()
+        );
         store.bind_codex_turn(successor, "new-native").unwrap();
-        store.validate_codex_submission(successor, true).unwrap();
+        store
+            .validate_codex_submission(successor, true, None)
+            .unwrap();
         let current = store.controller_execution(successor, key, 100).unwrap();
         assert_ne!(current.revision, reset.revision);
         assert!(current.matches(Harness::Codex, "new-native"));

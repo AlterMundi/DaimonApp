@@ -12,11 +12,13 @@ import os
 import re
 from pathlib import Path
 import shlex
+import signal
 import socketserver
+import sqlite3
 import subprocess
 import sys
 import time
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -24,6 +26,7 @@ import uuid
 import antigravity_foreground_io as foreground
 from claude_provider_fixture import ANSWER, REVOKED_ANSWER, ClaudeProvider
 from conversation_input_control_io import Inputs
+from conversation_routing_io import CanonicalRouting
 
 
 def matrix_fixture():
@@ -109,7 +112,8 @@ exec {shlex.quote(executable)} "$@"
     return ["/usr/bin/node", str(worker), "--profile", str(profile)]
 
 
-def qualify(engine, gateway, executable, scripts, *, interaction=False):
+def qualify(engine, gateway, executable, scripts, *, interaction=False, direct=False, mixed=False,
+            inverse=False, telegram_topic=False, signed_interrupt=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
@@ -174,9 +178,30 @@ operator.main()
             if engine != "claude":
                 memory, database = selected_memory(root, sys.executable, scripts, being, original["message_id"], engine)
                 initial_database = database.read_bytes()
-            journey = Inputs(gateway)
+            journey = CanonicalRouting(gateway) if mixed or inverse else Inputs(gateway)
             self.addCleanup(journey.close)
-            if os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+            if mixed or inverse:
+                journey.start()
+                for topic in (1, 7) if inverse else (7,):
+                    journey.admit("Fixture seed for the owned Codex conversation", topic=topic)
+                    journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
+                    journey.idle()
+                journey.stop()
+                if telegram_topic:
+                    with sqlite3.connect(journey.root / "state.sqlite") as db:
+                        db.execute("UPDATE sessions SET session_prompt=? WHERE thread_id=7",
+                                   ("Keep the selected design instructions.",))
+                targets = journey.target_config
+                if inverse:
+                    targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
+                journey.config.write_text(journey.config.read_text() + targets)
+                journey.routing = True
+            if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
+                if telegram_topic:
+                    adapter_config = journey.root / "telegram-adapter.toml"
+                    adapter_config.write_text(journey.config.read_text().replace(
+                        "[telegram]\n", "[telegram]\nexternal_polling=true\n", 1
+                    ))
                 gateway_config = re.sub(r'^(bot_token_file|api_base)=.*\n', '', journey.config.read_text(),
                                         flags=re.MULTILINE)
                 gateway_config = gateway_config.replace(
@@ -185,7 +210,8 @@ operator.main()
                     'api_base="http://127.0.0.1:1"\n',
                 )
                 journey.config.write_text(gateway_config)
-                (journey.root / "codex").write_text("#!/bin/sh\nexit 7\n")
+                if not (mixed or inverse):
+                    (journey.root / "codex").write_text("#!/bin/sh\nexit 7\n")
             profile = root / "worker.json"
             state = root / "native-state"
             state.mkdir(mode=0o700)
@@ -199,17 +225,83 @@ operator.main()
                     )[0][0]
                     super().do_POST()
 
-            handler = InteractionProvider if interaction else (
-                ClaudeProvider if engine == "claude" else foreground.Provider)
+            class DirectProvider(ClaudeProvider):
+                def admitted(self):
+                    if inverse:
+                        ident, phase, session, scope, prompt = self.server.journey.row(
+                            "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
+                            "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                            "WHERE s.event_id=? AND t.execution_harness='claude' AND t.status='running'",
+                            (self.server.human_original,),
+                        )[0]
+                        assert phase == "submitting"
+                        assert self.server.original in prompt
+                        if telegram_topic:
+                            assert prompt == self.server.original
+                        else:
+                            assert '"original_human_author":100' in prompt
+                        self.server.current = ident
+                        self.server.exposures.append(ident)
+                        if getattr(self.server, "hold", None):
+                            self.server.interrupted_id = ident
+                            self.server.exposed.set()
+                            if not self.server.hold.wait(10):
+                                raise AssertionError("Fixture did not release the blocked request")
+                        return {"native_session_id":session, "native_session_scope":scope}
+                    phase, session, scope = self.server.journey.row(
+                        "SELECT c.phase,t.native_thread_id,t.execution_native_scope "
+                        "FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
+                        "WHERE c.id=? AND t.execution_harness='claude' AND t.status='running'",
+                        (self.server.current,),
+                    )[0]
+                    if phase != "sending":
+                        raise AssertionError("Direct original was released before journal exposure")
+                    self.server.exposures.append(self.server.current)
+                    if getattr(self.server, "hold", None):
+                        self.server.exposed.set()
+                        if not self.server.hold.wait(10):
+                            raise AssertionError("The bounded fixture never released this provider call")
+                    return {"native_session_id":session, "native_session_scope":scope}
+
+            class RoutedProvider(foreground.Provider):
+                def admitted(self):
+                    ident, phase, native, prompt = self.server.journey.row(
+                        "SELECT i.id,i.phase,t.native_thread_id,t.prompt "
+                        "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                        "WHERE s.event_id=? AND t.execution_harness=? AND t.status='running'",
+                        (self.server.human_original, self.server.engine),
+                    )[0]
+                    assert phase == "submitting" and native
+                    assert self.server.original in prompt
+                    assert '"original_human_author":100' in prompt
+                    self.server.current = ident
+                    self.server.exposures.append(ident)
+
+            if engine == "claude":
+                handler = DirectProvider if direct else InteractionProvider if interaction else ClaudeProvider
+            else:
+                handler = RoutedProvider if inverse else foreground.Provider
             with ThreadingHTTPServer(("127.0.0.1", 0), handler) as provider:
                 provider.journey = journey
                 provider.calls = []
+                provider.exposures = []
                 provider.failure = None
                 provider.mode = "accepted"
                 provider.engine = engine
                 provider.model = {"antigravity": "fixture", "goose": "gpt-4o-mini",
                                   "claude": "claude-sonnet-4-5"}[engine]
                 provider.body = body
+                provider.paired_human = telegram_topic or (direct and not inverse)
+                if telegram_topic:
+                    provider.session_instructions = "Keep the selected design instructions."
+                provider.controller = direct and not inverse
+                provider.inverse_paired = inverse and engine == "claude" and (
+                    telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_PAIRED") == "1"
+                )
+                provider.mixed = mixed
+                provider.mixed_worker_reply = "Codex worker fixture result from the original request."
                 if engine == "claude":
                     provider.display_name = "Fixture CompAII · claude@fixture"
                 provider.tool_prefix = "" if engine == "antigravity" else "matrix__"
@@ -302,9 +394,21 @@ for await (const line of createInterface({ input: process.stdin })) {
                     provider.host_file.write_text("Native file readback marker.")
                     provider.host_tools = ["Read", "Bash"]
                     config["hostTools"] = provider.host_tools
+                if inverse and engine == "claude":
+                    provider.host_file = root / "host-tools-fixture.txt"
+                    provider.host_file.write_text("Native file readback marker.")
+                    provider.host_tools = ["Read", "Bash"] if provider.inverse_paired else []
+                    config["hostTools"] = ["Read", "Bash"]
+                if config.get("hostTools") and "Bash" in config["hostTools"]:
+                    host_bin = root / "owner-bin"
+                    host_bin.mkdir()
+                    helper = host_bin / "fixture-shared-command"
+                    helper.write_text("#!/bin/sh\nprintf 'Native shell %s.' 'readback marker'\n")
+                    helper.chmod(0o700)
+                    config["hostToolDirectory"] = str(host_bin)
                 profile.write_text(json.dumps(config))
                 original_host = ""
-                if interaction:
+                if interaction and not direct:
                     sender_source, sender = self._start_sender(root, fixture, service, capabilities, body)
                     original_host = f"""
 [interaction.claude_foreground.interaction_origin]
@@ -312,9 +416,12 @@ command={json.dumps([*sender,"--we-origin",body])}
 source={{kind="body",being_ref="{being}",embodiment_id="{sender_source["embodiment_id"]}"}}
 timeout_seconds=5
 """
+                if signed_interrupt == "before":
+                    command = ["/bin/sh", "-c", 'sleep 60; exec "$@"', "--", *command]
                 journey.config.write_text(journey.config.read_text() + f"""
 [interaction.{engine}_foreground]
 worker_command={json.dumps(command)}
+interaction_direct={str(direct or inverse).lower()}
 [interaction.{engine}_foreground.transport]
 command={json.dumps(host)}
 source={{kind="body", being_ref="{being}", embodiment_id="{body}"}}
@@ -325,11 +432,35 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if telegram_topic:
+                        adapter = subprocess.Popen(
+                            [gateway, "--tele-daimon-poll", str(adapter_config)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                        )
+                        try:
+                            self._telegram_topic_exchange(journey, provider, return_attempts, profile)
+                        finally:
+                            if adapter.poll() is None:
+                                adapter.send_signal(signal.SIGINT)
+                            _, errors = adapter.communicate(timeout=10)
+                        self.assertEqual(adapter.returncode, 0, errors)
+                        return
+                    if inverse:
+                        self._inverse_exchange(journey, provider, return_attempts, profile)
+                        if memory:
+                            self.assertEqual(database.read_bytes(), initial_database)
+                        return
+                    if direct:
+                        self._direct_exchange(journey, provider, return_attempts)
+                        return
                     if interaction:
                         self._interaction_exchange(journey, provider, fixture, body, return_attempts)
                         return
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
+                    if signed_interrupt:
+                        self._signed_interrupt(journey, provider, selected, return_attempts)
+                        return
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
                     self.assertEqual(reply["phase"], "delivered", reply)
@@ -407,6 +538,427 @@ timeout_seconds=5
             self.addCleanup(worker.join)
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
+
+        def _signed_interrupt(self, journey, provider, selected, return_attempts):
+            provider.mode = "held"
+            provider.arrived, provider.release = Event(), Event()
+            ident = selected["event_id"]
+            args = [journey.binary, "--control", str(journey.config),
+                    "matrix", engine, "run", json.dumps(selected)]
+            before = signed_interrupt == "before"
+            with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
+                try:
+                    if before:
+                        journey.wait(lambda: journey.row(
+                            "SELECT phase FROM interaction_matrix_requests WHERE source_event=?", (ident,)
+                        ) == [("starting",)])
+                    else:
+                        self.assertTrue(provider.arrived.wait(35), provider.failure)
+                    in_flight = journey.read("matrix", engine, "status", ident)["result"]
+                    self.assertEqual(in_flight["phase"], "starting" if before else "provider_exposed")
+                    self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                                     in_flight)
+                    other = "goose" if engine == "antigravity" else "antigravity"
+                    wrong = journey.read("matrix", other, "interrupt", ident)["result"]
+                    self.assertFalse(wrong["interruption_requested"])
+                    requested = journey.read("matrix", engine, "interrupt", ident)["result"]
+                    self.assertTrue(requested["interruption_requested"])
+                    stdout, errors = run.communicate(timeout=15)
+                    self.assertEqual(run.returncode, 0, errors)
+                finally:
+                    provider.release.set()
+                    if run.poll() is None:
+                        run.terminate()
+            outcome = json.loads(stdout)["result"]
+            self.assertEqual(outcome["phase"], "rejected" if before else "provider_uncertain", outcome)
+            self.assertEqual(outcome["result"]["reason"],
+                             "interrupted_before_submission" if before else "foreground_interrupted")
+            expected_calls = [] if before else [ident]
+            self.assertEqual(provider.calls, expected_calls)
+            self.assertEqual(return_attempts, [])
+            terminal = journey.read("matrix", engine, "interrupt", ident)["result"]
+            self.assertFalse(terminal["interruption_requested"])
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
+            self.assertEqual(provider.calls, expected_calls)
+            self.assertEqual(return_attempts, [])
+
+        def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
+            codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
+            native_turns = journey.native_turns
+            forwarded = journey.admit("/stop all", topic=7, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.has("Forwarded messages and attachments", 7))
+            journey.command("/retry 1", "to stop the current turn", topic=7)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
+                                         (str(forwarded),)), [(0,)])
+            self.assertEqual(journey.native_turns, native_turns)
+
+            selected = "  This text was written directly in the selected topic.  "
+            launcher = Path(json.loads(profile.read_text())["binary"])
+            startup = launcher.read_text()
+            launcher.write_text(startup.replace(
+                "#!/bin/sh\n", '#!/bin/sh\nif [ "$1" != auth ]; then sleep 11; fi\n', 1
+            ))
+            with journey.lock:
+                provider.original = selected
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(selected, topic=7)
+            self.assertEqual(str(update), provider.human_original)
+            journey.wait(lambda: journey.row(
+                "SELECT count(*) FROM turns WHERE execution_harness='claude' AND status='running'"
+            ) == [(1,)])
+            journey.command("/status", "Claude Code is working on a message.", topic=7)
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            launcher.write_text(startup)
+            self.assertIsNone(provider.failure)
+            self.assertFalse(journey.has("native submission has not started", 7))
+            delivered = [(message, payload) for message, payload in journey.messages if ANSWER in message["text"]]
+            self.assertEqual(len(delivered), 1)
+            message, payload = delivered[0]
+            self.assertEqual(payload["reply_parameters"]["message_id"], update)
+            self.assertNotIn("Worker instruction coverage was not reported", message["text"])
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.prompt FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(update),)), [("accepted", "claude", "completed", selected)])
+            self.assertEqual(journey.row("SELECT status FROM incoming_updates WHERE update_id=?", (update,)),
+                             [("handled",)])
+            self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"), codex)
+            self.assertEqual(journey.native_turns, native_turns)
+            self.assertEqual(len(set(provider.exposures)), 1)
+            calls = list(provider.calls)
+            provider.previous_original = selected
+            provider.previous_session = journey.row(
+                "SELECT native_thread_id FROM turns WHERE execution_harness='claude'"
+            )[0][0]
+            original = json.loads(journey.row("SELECT payload_json FROM incoming_updates WHERE update_id=?",
+                                              (update,))[0][0])
+            duplicate_polled = Event()
+            journey.before_poll_reply = lambda updates: (
+                duplicate_polled.set() if any(event["update_id"] == update for event in updates) else None
+            )
+            with journey.lock:
+                journey.updates.append(original)
+            self.assertTrue(duplicate_polled.wait(5))
+            journey.command("/retry 1", "to stop the current turn", topic=7)
+            self.assertEqual(provider.calls, calls)
+            self.assertEqual(journey.native_turns, native_turns)
+            self.assertEqual(return_attempts, [])
+
+            selected_profile = profile.read_text()
+            unavailable_profile = json.loads(selected_profile)
+            unavailable_profile["cliVersion"] = "0.0.0"
+            profile.write_text(json.dumps(unavailable_profile))
+            provider.original = "A fresh topic original for the known-unsent recovery check."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            def retained():
+                return journey.row(
+                    "SELECT i.id,i.phase FROM interaction_instructions i JOIN interaction_sources s "
+                    "ON s.id=i.input_id WHERE s.event_id=?", (str(update),))
+            journey.wait(lambda: retained() and retained()[0][1] == "retained_unsent")
+            instruction, _ = retained()[0]
+            self.assertEqual(provider.calls, calls)
+            profile.write_text(selected_profile)
+            command = "/interaction retry " + instruction
+            journey.admit(command, topic=1, message_fields={
+                "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}
+            })
+            journey.wait(lambda: journey.has("That saved input could not be recovered", 1))
+            self.assertEqual(retained(), [(instruction, "retained_unsent")])
+            self.assertEqual(provider.calls, calls)
+            journey.admit(command, topic=7)
+            journey.wait(lambda: provider.failure or retained() == [(instruction, "accepted")], seconds=30)
+            self.assertIsNone(provider.failure)
+            self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
+            self.assertEqual(journey.native_turns, native_turns)
+
+        def _inverse_exchange(self, journey, provider, return_attempts, profile):
+            answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
+            page = journey.read("presentation", "list", "0", "0")["result"]
+            previous_codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")
+            provider.original = "Please send this exact fixture work to Alpha."
+            def submit_original(text):
+                body = {"id":str(uuid.uuid4()),"binding":page["binding"],"text":text}
+                command = "submit-human" if provider.inverse_paired else "submit"
+                response = journey.read("input", command, json.dumps(body))["result"]
+                self.assertTrue(response["new_input"])
+                opposite = "submit" if provider.inverse_paired else "submit-human"
+                receipt = journey.read("input", opposite, json.dumps(body))["result"]
+                self.assertFalse(receipt["new_input"])
+                retained = journey.row("SELECT json_extract(doc,'$.paired_actor') FROM conversation_inputs WHERE id=?",
+                                       (body["id"],))
+                self.assertEqual(retained, [(1 if provider.inverse_paired else None,)])
+                return body
+
+            def select_memory_for(body):
+                if engine == "claude":
+                    return
+                target_id = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0][0]
+                source_id = uuid.uuid5(uuid.NAMESPACE_URL, "telecodex:interaction:conversation:" + body["id"])
+                instruction_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{target_id}")
+                contents = json.loads(profile.read_bytes())
+                contents["selectedMemory"]["inputId"] = str(instruction_id)
+                profile.write_text(json.dumps(contents))
+
+            original = submit_original(provider.original)
+            select_memory_for(original)
+            provider.human_original = original["id"]
+            journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                             (original["id"],)) == [("accepted",)])
+            selection = {"input_ref":original["id"],"destinations":[
+                {"selector":"Alpha","relation":"new","requests":[]} ]}
+            first = journey.call("route-inverse-first", "dispatch", selection)["results"][0]
+            repeated = journey.call("route-inverse-repeat", "dispatch", selection)["results"][0]
+            self.assertTrue(first["new_admission"])
+            self.assertFalse(repeated["new_admission"])
+            self.assertEqual(first["instruction"], repeated["instruction"])
+            instruction = first["instruction"]
+            journey.wait(lambda: provider.failure or journey.row(
+                "SELECT phase FROM interaction_instructions WHERE id=?", (instruction,)
+            ) in ([("accepted",)], [("uncertain",)], [("rejected",)], [("retained_unsent",)]),seconds=30)
+            self.assertIsNone(provider.failure)
+            self.assertEqual(journey.row("SELECT phase FROM interaction_instructions WHERE id=?",
+                                         (instruction,)), [("accepted",)])
+            self.assertEqual(provider.calls, [instruction] * (4 if provider.inverse_paired else 2))
+            self.assertFalse(journey.worker_packets)
+            self.assertFalse(return_attempts)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+            rows = journey.row("SELECT r.body,t.execution_harness FROM interaction_results r "
+                               "JOIN turns t ON t.id=r.local_turn")
+            self.assertEqual(rows, [(answer, engine)])
+            self.assertEqual(journey.row("SELECT native_turn FROM interaction_results"),
+                             [(f"gateway:{engine}:{instruction}",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_deliveries"), [(1,)])
+            presentation = journey.call("route-inverse-result", "conversation", {})
+            self.assertIn(answer, json.dumps(presentation))
+            result = next(row for row in presentation["presentation"]["items"]
+                          if row["kind"] == "worker_result" and answer in row["preview"])
+            part = journey.call("route-inverse-result-part", "conversation_part",
+                                {"source":result["id"],"revision":result["revision"]})
+            self.assertIn(answer, json.dumps(part))
+            self.assertTrue(part["native_binding_current"])
+            self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
+                             previous_codex)
+            history = journey.call("route-inverse-history", "target_inputs", {"selector":"Alpha"})["inputs"]
+            self.assertTrue(any(row["instruction"] == instruction for row in history))
+
+            extra_turns = 0
+            extra_results = 0
+            if engine != "claude":
+                provider.original = "#Alpha Read the explicitly selected fixture memory."
+                explicit = {"id":str(uuid.uuid4()),"binding":page["binding"],"text":provider.original}
+                provider.human_original = explicit["id"]
+                select_memory_for(explicit)
+                response = journey.read("input", "submit", json.dumps(explicit))["result"]
+                self.assertTrue(response["new_input"])
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT count(*) FROM interaction_results") == [(2,)])
+                self.assertIsNone(provider.failure)
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,json_extract(i.doc,'$.target_execution.harness') "
+                    "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                    "WHERE s.event_id=?", (explicit["id"],)), [("accepted",engine)])
+                self.assertEqual(journey.row(
+                    "SELECT COUNT(DISTINCT native_thread_id) FROM turns "
+                    "WHERE execution_harness=? AND status='completed'", (engine,)), [(2,)])
+                extra_turns, extra_results = 1, 1
+            if provider.inverse_paired:
+                original_profile = profile.read_bytes()
+                profile_doc = json.loads(original_profile)
+                profile_doc["body"]["manifestHash"] = "e" * 64
+                profile.write_text(json.dumps(profile_doc))
+                try:
+                    held = submit_original("A paired fixture original with no provider exposure.")
+                    journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                                     (held["id"],)) == [("accepted",)])
+                    saved = journey.call("route-inverse-unsent", "dispatch",
+                                         {**selection, "input_ref":held["id"]})["results"][0]["instruction"]
+
+                    def attempt():
+                        return journey.row("SELECT phase,json_extract(doc,'$.local_turn') "
+                                           "FROM interaction_instructions WHERE id=?", (saved,))[0]
+
+                    journey.wait(lambda: attempt()[0] == "retained_unsent")
+                    first_attempt = attempt()
+                    retry = {"id":held["id"], "binding":page["binding"], "instruction":saved}
+                    journey.read("input", "retry", json.dumps(retry), ok=False)
+                    self.assertEqual(attempt(), first_attempt)
+                    journey.read("input", "retry-human", json.dumps(retry))
+                    journey.wait(lambda: attempt()[0] == "retained_unsent" and attempt() != first_attempt)
+                    self.assertEqual(provider.calls, [instruction] * 4)
+                    extra_turns = 2
+                finally:
+                    profile.write_bytes(original_profile)
+
+            provider.original = "Keep this routed fixture attempt if the Gateway stops."
+            lost = submit_original(provider.original)
+            select_memory_for(lost)
+            provider.human_original = lost["id"]
+            journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                             (lost["id"],)) == [("accepted",)])
+            provider.hold = Event()
+            provider.exposed = Event()
+            if engine != "claude":
+                provider.mode = "held"
+                provider.arrived = provider.exposed
+                provider.release = provider.hold
+            try:
+                submitted = journey.call("route-inverse-interrupt", "dispatch", {
+                    **selection, "input_ref":lost["id"],
+                })["results"][0]["instruction"]
+                self.assertTrue(provider.exposed.wait(12))
+                self.assertEqual(journey.row("SELECT phase FROM interaction_instructions WHERE id=?",
+                                             (submitted,)), [("submitting",)])
+                journey.process.kill()
+                journey.process.communicate(timeout=8)
+                journey.process = None
+            finally:
+                provider.hold.set()
+            with sqlite3.connect(journey.root / "state.sqlite") as db:
+                db.execute("UPDATE app_instance_lock SET heartbeat_at=datetime('now','-1 hour')")
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.status,s.busy FROM interaction_instructions i "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                "JOIN sessions s ON s.id=t.session_id WHERE i.id=?", (submitted,),
+            ), [("uncertain", "failed", 0)])
+            self.assertEqual(provider.exposures.count(submitted), 1)
+            self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness=?", (engine,)), [(2 + extra_turns,)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1 + extra_results,)])
+
+
+        def _direct_exchange(self, journey, provider, return_attempts):
+            page = journey.read("presentation", "list", "0", "0")["result"]
+            self.assertIs(page["can_select_claude"], True)
+            request = dict(binding=page["binding"], id=str(uuid.uuid4()), text=provider.original,
+                           target="claude")
+
+            def submit(original, *, fresh):
+                result = journey.read("input","submit-human",json.dumps(original))["result"]
+                self.assertIs(result["new_input"], fresh)
+                return result
+
+            def readback(original):
+                ident = original["id"]
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (ident,)
+                )[0][0] in ("claude_replied", "claude_rejected", "claude_unconfirmed", "retained_unsent", "uncertain"), seconds=30)
+                self.assertIsNone(provider.failure)
+                result = journey.read("input", "status", ident)["result"]
+                self.assertEqual(result["phase"], "claude_replied", result)
+                return result["claude_reply"]["text"]
+
+            journey.read("input","submit",json.dumps(request),ok=False)
+            self.assertEqual(journey.row("SELECT count(*) FROM conversation_inputs"), [(0,)])
+            provider.current = request["id"]
+            submit(request, fresh=True)
+            self.assertIn(ANSWER, readback(request))
+            if mixed:
+                self.assertEqual(provider.calls, [request["id"]] * 5)
+                self.assertEqual(len(journey.worker_packets["native-topic-7"]), 1)
+                instruction, phase, doc = journey.instructions(7)[0]
+                self.assertIn(phase, ("accepted", "completed"))
+                self.assertEqual(json.loads(doc)["text"], request["text"])
+                source = journey.row(
+                    "SELECT s.event_id,s.human_id,s.channel FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id WHERE i.id=?",
+                    (instruction,),
+                )
+                self.assertEqual(source, [(request["id"], 100, "conversation")])
+                self.assertEqual(journey.row(
+                    "SELECT r.native_thread,r.body FROM interaction_results r "
+                    "JOIN turns t ON t.id=r.local_turn WHERE t.execution_harness='codex'"
+                ), [("native-topic-7", provider.mixed_worker_reply)])
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+                self.assertFalse(return_attempts)
+                return
+            self.assertEqual(provider.calls, [request["id"]] * 4)
+            provider.previous_session = journey.row(
+                "SELECT t.native_thread_id FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
+                "WHERE c.id=? AND t.execution_harness='claude' AND t.status='completed'",
+                (request["id"],),
+            )[0][0]
+            journey.stop()
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(submit(request, fresh=False)["phase"], "claude_replied")
+            self.assertEqual(provider.calls, [request["id"]] * 4)
+            # Simulate first Codex initialization of this logical conversation.
+            # This uses the real generation triggers and performs no native work.
+            with sqlite3.connect(journey.root / "state.sqlite") as db:
+                db.execute(
+                    "UPDATE sessions SET codex_thread_id='fixture-codex-thread' WHERE chat_id=100 AND thread_id=1"
+                )
+            self.assertEqual(journey.read("presentation", "list", "0", "0")["result"]["binding"], request["binding"])
+            self.assertIs(journey.read("input", "status", request["id"])["result"]["retired"], False)
+
+            provider.previous_original = provider.original
+            provider.followup_answer = "I retained the first turn. " * 180 + "End of full reply."
+            provider.original = "What did this same conversation retain?"
+            followup = dict(request, id=str(uuid.uuid4()), text=provider.original)
+            provider.current = followup["id"]
+            provider.exposed = Event()
+            provider.hold = Event()
+            try:
+                submit(followup, fresh=True)
+                self.assertTrue(provider.exposed.wait(8))
+                self.assertEqual(submit(followup, fresh=False)["phase"], "sending")
+                self.assertEqual(journey.row("SELECT count(*) FROM turns WHERE execution_harness='claude'"), [(2,)])
+            finally:
+                provider.hold.set()
+            self.assertEqual(readback(followup), provider.followup_answer[:2048])
+            offset = 0
+            retained = []
+            while offset is not None:
+                part = journey.read("input", "trace-text", followup["id"], "claude-reply", str(offset))["result"]
+                retained.append(part["text"])
+                offset = part["next_offset"]
+            self.assertEqual("".join(retained), provider.followup_answer)
+            self.assertEqual(journey.row(
+                "SELECT t.assistant_text FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
+                "WHERE c.id=? AND t.execution_harness='claude' AND t.status='completed'",(followup["id"],)
+            ), [(provider.followup_answer,)])
+            self.assertEqual(provider.calls, [request["id"]] * 4 + [followup["id"]])
+            provider.original = "Fixture input whose provider result will remain unconfirmed."
+            interrupted = dict(request, id=str(uuid.uuid4()), text=provider.original)
+            provider.current = interrupted["id"]
+            provider.interrupted_id = interrupted["id"]
+            provider.exposed = Event()
+            provider.hold = Event()
+            try:
+                submit(interrupted, fresh=True)
+                self.assertTrue(provider.exposed.wait(8))
+                self.assertEqual(journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                             (interrupted["id"],)), [("sending",)])
+                # Crash this synthetic Gateway after durable exposure. Its
+                # replacement must recover the original without invoking Claude.
+                journey.process.kill()
+                journey.process.communicate(timeout=8)
+                journey.process = None
+            finally:
+                provider.hold.set()
+            with sqlite3.connect(journey.root / "state.sqlite") as db:
+                db.execute("UPDATE app_instance_lock SET heartbeat_at=datetime('now','-1 hour')")
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            self.assertEqual(submit(interrupted, fresh=False)["phase"], "uncertain")
+            self.assertEqual(journey.row(
+                "SELECT t.status,s.busy FROM conversation_inputs c JOIN turns t ON t.id=c.local_turn "
+                "JOIN sessions s ON s.id=t.session_id WHERE c.id=?", (interrupted["id"],)),
+                [("failed",0)])
+            self.assertEqual(provider.exposures.count(interrupted["id"]), 1)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_matrix_requests"), [(0,)])
+            self.assertEqual(return_attempts, [])
+            self.assertEqual(journey.telegram_methods, [])
+            self.assertEqual(journey.rpc, [])
 
         def _interaction_exchange(self, journey, provider, fixture, receiver, return_attempts):
             from fastapi.testclient import TestClient
@@ -563,10 +1115,21 @@ if __name__ == "__main__":
     if len(sys.argv) != (4 if engine == "claude" else 5):
         raise SystemExit("Supply the DMK scripts directory for Antigravity and Goose.")
     interaction = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION") == "1"
-    if interaction:
+    direct = engine == "claude" and os.environ.get("FOREGROUND_TEST_INTERACTION_DIRECT") == "1"
+    mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
+    telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
+    inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
+    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT") if engine != "claude" else None
+    if signed_interrupt not in {"1", "before"}:
+        signed_interrupt = None
+    if inverse and engine == "claude":
+        direct = True
+    if (interaction or direct or inverse) and not telegram_topic:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
+    if interaction or direct or inverse:
         sys.path.insert(0, str(foreground.ROOT))
     dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
-                            interaction=interaction))
+                            interaction=interaction, direct=direct, mixed=mixed, inverse=inverse,
+                            telegram_topic=telegram_topic, signed_interrupt=signed_interrupt))

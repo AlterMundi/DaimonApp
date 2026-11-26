@@ -175,6 +175,18 @@ session and generation records. The Observer and live controller check the
 same ownership and binding. An old thread retained while a conversation is
 reset remains historical evidence without conferring execution authority.
 
+Routed instructions retain their selected destination execution in the same
+journal as the original plan. A retry observes that exact plan. A queued
+instruction cannot follow a replaced native session or changed generation,
+even when a replacement later reuses the same opaque native ID. A first native
+session can materialize in the same generation. The local turn checks the
+selection when it is created, and established Codex turns keep their normal
+generation checks through native release. Historical instructions without this
+selection retain their existing transport behavior. If a rollout needs to restore a writer
+that predates target affinity, keep the upgraded instruction writer until
+unresolved pinned routes have settled or been retained outside the dispatch
+queue. The older writer cannot enforce the pinned destination.
+
 Controller handlers receive a Gateway tool invocation, with the harness,
 native session and native turn supplied by the receiving adapter. A tool's
 arguments cannot replace those coordinates. Match the owned execution before
@@ -196,11 +208,101 @@ when a new harness is selected for future work. Follow the
 [first-class harness contract](https://github.com/AlterMundi/daimon-matrix/issues/497#issuecomment-7182907326)
 for common dispatch, Observer and controller acceptance.
 
+### First-class harnesses in one Gateway
+
+The integrating role belongs to an owned Gateway conversation. Future turns
+select a receiving harness independently for each conversation. The Gateway
+retains each attempt against its original harness and conversation generation.
+A harness change for future turns leaves historical originals, native sessions,
+results, uncertain effects and goal accounting attributable to their source.
+Interaction and TeleDaimon are alternative ingress surfaces. Explicit Matrix
+messaging retains its own signed identity and receipts. A direct human turn
+carries the authenticated human actor to the selected adapter.
+
+| Area | Remaining Codex assumption | Shared contract |
+| --- | --- | --- |
+| Dispatch and routing | The current Codex native slot is stored on the session. Direct Claude admission has a specific route and the delegated-target writer expects a Codex thread. | Resolve a logical destination, pin its harness and generation before exposing the original, then use the selected adapter through the existing Gateway journal and worker. |
+| Controller | The entry role is configured by conversation, but tool authorization and several original/result readers still require the entry's Codex thread. | Gateway authorizes the exact running turn and logical role. Every adapter transports the same controller operations, including authorized dispatch and goal controls, with the same original, scope and receipt checks. |
+| Observer | Semantic refresh, source inspection and native goal status currently read the Codex native adapter. | Inventory and inspection read the same owner-scoped Gateway journal across harnesses. Native collectors contribute attributed evidence from their bound executions, with capability and freshness reported per source. |
+| Lifecycle and goals | Several goal and live-status controls assume a Codex app-server turn and native goal API. | Preserve exact cancellation and recovery receipts. Supply equivalent continuation and control where qualified, including an explicit capability state when a native action is unavailable. Keep the existing goal accounting and original ownership across harness choices. |
+| Identity, memory and resources | The Claude worker can mount selected resources, while Codex receives its operating context through its existing installation. | Resolve the signed body, approved shared DMK, skills, configuration and resource grants for each execution. Exercise actual reads and authorized writes through each receiving harness. The authenticated human identity comes from Gateway ingress, independently of the provider account. |
+
+The existing portfolio inventory and inspection expose the latest retained
+Gateway attempt per harness in each enrolled, owned conversation, with its
+generation and attempt phase. This evidence comes from the same snapshot as
+the rest of the card. It does not start an observer job, query a provider, or
+turn retained activity into a native goal or liveness claim.
+
+For a direct Claude turn in the configured integrating conversation, the
+native SDK catalog includes the shared `interaction_controller` tool. Install
+the selected Claude Agent SDK with its declared Zod 4 peer beside the SDK
+module. The worker broker uses the existing private turn pipes. Gateway exposes
+the tool for the selected role and verifies the original durable exposure,
+owner, harness, generation and native session before applying its common
+controller handlers. Start with `capabilities` to see the operations actually
+implemented for the running adapter. A signed Matrix-only foreground worker
+uses its own existing Matrix catalog and cannot acquire a Gateway controller
+from its message text.
+
+The direct integrating turn can inspect its retained human original through
+`inputs` and route that exact reference through `dispatch`. The existing planner
+atomically binds the original to the selected owned targets before native
+delivery. It uses the captured text and actor, and an identical plan retry
+reads the retained outcome. After admission the worker owns its execution and
+its attributed result. The integrating turn reads visible returns through the
+existing `conversation` and `conversation_part` readers. Selection of a different
+original, a rebind or an admission fence cannot extend this turn's authority.
+
+An owner can set the harness on an explicit target to Claude, Goose or
+Antigravity and enable direct routing on that harness's configured foreground
+worker. Gateway retains the harness and signed body on the target instruction
+and uses the existing queue and result journal. The direct routed entry
+accepts retained local conversation text.
+The configured Claude worker can use host tools when the original retains
+paired web authentication from capture. A Companion original and earlier
+originals without recorded actor authority retain the scoped catalog,
+including on retry. A fresh retry of known-unsent paired Claude work requires
+paired authentication. The paired submit and retry commands run on the local
+owner socket. Workers use their assigned catalog without an integrating
+controller.
+
+A paired Telegram original from the integrating conversation can also be
+routed to an owned portable topic. Gateway verifies its retained native
+acceptance and existing source identity. Following a Gateway restart, an
+exact native input receipt for the original entry can establish acceptance
+even while its native outcome is unconfirmed. Routing does not resubmit the
+entry turn. Telegram `/status` in an owner-selected portable topic reads
+the worker and waiting-message state from the canonical journal.
+
+The Goose and Antigravity proof profiles expose signed status and the
+owner-selected DMK read. Their observed adapters open a fresh native session
+for each admitted attempt. Gateway retains conversation and attempt history.
+Claude additionally supports resuming its prior native session under the same
+body and catalog scope. Existing Codex threads remain distinct from portable
+native sessions. Changing a target's configured harness or body leaves prior
+instructions attached to their recorded destination.
+
+Deploy the Gateway that supports ordinary paired submit and retry before
+updating the dashboard writer that uses those commands.
+
+Gateway records exposure before releasing the SDK prompt. The observed
+native result, acceptance, and canonical return reservations commit
+together. Interrupted preparation stays unsent. A lost outcome after
+exposure remains uncertain across restart and inspection. The conversation
+reader and target history use the retained result and request IDs.
+
+Qualify a mixed set of conversations with one harness on the integrating role
+and another on a worker. Inspect the worker, dispatch an existing retained
+human original, observe the useful attributed result, then repeat with the roles
+on different harnesses. Include authorization, cancellation and restart. A
+private Matrix exchange or a working provider reply establishes its own
+acceptance and leaves those mixed-harness checks open.
+
 ### Qualify a private Matrix foreground route
 
-Select a signed sibling body and the approved model account in the existing
-Gateway profile. For Claude or Goose, configure the chosen
-`interaction.claude_foreground` or `interaction.goose_foreground` section
+Select a signed sibling body and the approved model account or local provider
+in the existing Gateway profile. Configure `interaction.claude_foreground`,
+`interaction.goose_foreground` or `interaction.antigravity_foreground`
 with its authenticated Matrix transport and worker command. The sender and
 receiver must select the same private sibling conversation. Keep the provider
 credential and any approved memory selection in the receiving worker's
@@ -220,6 +322,13 @@ answer. Inspect the same original with
 Verify the provider result and read the signed reply as the sender in the
 original thread. A loopback fixture qualifies the adapter boundary. A live
 acceptance also requires the actual body, approved provider and sender readback.
+
+Use `daimon-gateway --control CONFIG matrix ENGINE interrupt EVENT_ID` to
+interrupt the selected foreground worker. The command requests interruption
+for that event and engine on the current Gateway. Inspect the original's
+status for the outcome. A stop after provider exposure retains uncertainty
+about provider work. It never resubmits the original or starts a signed return
+for the interrupted worker.
 
 After restart, use the retained event ID to read the prior outcome. A refusal
 before provider exposure is a known rejection. Missing evidence after the
@@ -412,6 +521,18 @@ different destination. Only deliberate top-level selectors route: quoted code,
 quoted hashtags and incidental mentions remain ordinary content. An explicit
 selector overrides inherited reply focus.
 
+For an existing work topic, set `harness = "claude"` on its target and enable
+the configured direct Claude worker. The topic keeps its logical session and
+retained Codex history. New messages use Claude's native session and the
+topic's saved session instructions. Both TeleDaimon and Gateway must carry the authored-text observation
+from the Bot API poll. Only direct text from the configured paired human
+starts a portable turn through that topic. Forwarded text and attachments stay
+in the ingress journal without opening a model turn. An older adapter cannot
+assert authored text. Use `/interaction retry <instruction>` as the paired
+human to recover an exact known-unsent instruction. The general Codex
+`/retry <turn>` does not replay portable work. Existing Stop controls and
+`/interrupt` remain scoped to their selected operations.
+
 ## Durable request state
 
 `interaction_sources` retains immutable source identity, original text, selected
@@ -495,7 +616,10 @@ no content-string deduplication or work replay repairs earlier copies.
 The native worker is explicitly told that an interaction controller is relaying
 an authenticated human input. The packet keeps controller guidance separate from
 the human-authored content and carries original author and source-message
-provenance. Direct work-topic input bypasses the routing adapter entirely. Relay does not impersonate a direct human
+provenance. Ordinary Codex work-topic input bypasses the routing adapter. An
+explicitly selected portable work topic uses the same canonical instruction
+and outbox, with the direct Telegram original and its original reply route.
+Relay does not impersonate a direct human
 intervention, and future integrator interpretations must remain separately
 attributed. Canonical worker answers also retain their own authorship.
 

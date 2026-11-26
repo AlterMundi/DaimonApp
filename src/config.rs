@@ -290,14 +290,18 @@ impl SearchMode {
 
 impl Config {
     pub fn load(path: PathBuf) -> Result<Self> {
-        Self::load_with_role(path, false)
+        Self::load_with_role(path, false, true)
     }
 
     pub fn load_gateway(path: PathBuf) -> Result<Self> {
-        Self::load_with_role(path, true)
+        Self::load_with_role(path, true, true)
     }
 
-    fn load_with_role(path: PathBuf, dedicated_gateway: bool) -> Result<Self> {
+    pub(crate) fn load_gateway_preflight(path: PathBuf) -> Result<Self> {
+        Self::load_with_role(path, true, false)
+    }
+
+    fn load_with_role(path: PathBuf, dedicated_gateway: bool, prepare: bool) -> Result<Self> {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         let mut config: Config = toml::from_str(&raw)
@@ -315,11 +319,11 @@ impl Config {
                 "Configure Telegram bot credentials only in TeleDaimon"
             );
         }
-        config.validate()?;
+        config.validate(prepare)?;
         Ok(config)
     }
 
-    fn validate(&mut self) -> Result<()> {
+    fn validate(&mut self, prepare: bool) -> Result<()> {
         if !(5..=3600).contains(&self.goal_recovery.interval_seconds)
             || !(1..=16).contains(&self.goal_recovery.batch_size)
         {
@@ -469,12 +473,17 @@ impl Config {
             if !tmp_dir.is_absolute() {
                 bail!("tmp_dir must be an absolute path");
             }
-            fs::create_dir_all(&tmp_dir)
-                .with_context(|| format!("failed to create tmp_dir {}", tmp_dir.display()))?;
-            *tmp_dir = normalize_path(
-                fs::canonicalize(&tmp_dir)
-                    .with_context(|| format!("failed to canonicalize {}", tmp_dir.display()))?,
-            );
+            if prepare {
+                fs::create_dir_all(&tmp_dir)
+                    .with_context(|| format!("failed to create tmp_dir {}", tmp_dir.display()))?;
+            }
+            if tmp_dir.try_exists()? {
+                anyhow::ensure!(tmp_dir.is_dir(), "tmp_dir must be a directory");
+                *tmp_dir =
+                    normalize_path(fs::canonicalize(&tmp_dir).with_context(|| {
+                        format!("failed to canonicalize {}", tmp_dir.display())
+                    })?);
+            }
         }
 
         if self.telegram.enabled && !self.telegram.external_polling {
@@ -779,21 +788,42 @@ mod tests {
         "#;
         let mut config: Config = toml::from_str(raw).unwrap();
         config.codex.binary = std::env::current_exe().unwrap();
-        config.validate().unwrap();
+        config.validate(true).unwrap();
         for mode in ["bounded", "unknown"] {
             let selected = raw.replace("mode = 'interaction'", &format!("mode = '{mode}'"));
             let result = toml::from_str::<Config>(&selected).and_then(|mut c| {
                 c.codex.binary = config.codex.binary.clone();
-                c.validate().map_err(serde::de::Error::custom)
+                c.validate(true).map_err(serde::de::Error::custom)
             });
             assert!(result.is_err());
         }
         let mut wrong_owner = config.clone();
         wrong_owner.tribu.as_mut().unwrap().human_id = 101;
-        assert!(wrong_owner.validate().is_err());
+        assert!(wrong_owner.validate(true).is_err());
         let mut wrong_entry = config;
         wrong_entry.tribu.as_mut().unwrap().topic_id = 7;
-        assert!(wrong_entry.validate().is_err());
+        assert!(wrong_entry.validate(true).is_err());
+    }
+
+    #[test]
+    fn gateway_preflight_leaves_an_uncreated_temp_directory_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let tmp = root.path().join("run-temp");
+        let config = root.path().join("gateway.toml");
+        fs::write(
+            &config,
+            format!(
+                "tmp_dir = {}\n[telegram]\nenabled = false\n[codex]\nbinary = {}\ndefault_cwd = {}\n",
+                serde_json::to_string(&tmp).unwrap(),
+                serde_json::to_string(&std::env::current_exe().unwrap()).unwrap(),
+                serde_json::to_string(&root.path()).unwrap(),
+            ),
+        )
+        .unwrap();
+        Config::load_gateway_preflight(config.clone()).unwrap();
+        assert!(!tmp.exists());
+        Config::load_gateway(config).unwrap();
+        assert!(tmp.is_dir());
     }
 
     #[test]

@@ -91,6 +91,15 @@ pub(super) fn relayed(input: &Instruction) -> bool {
     input.origin.chat_id != input.target.chat_id || input.origin.thread_id != input.target.thread_id
 }
 
+fn direct_portable_topic(input: &Instruction) -> bool {
+    input.origin.message_id.is_some()
+        && !relayed(input)
+        && input
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness.is_portable())
+}
+
 pub(super) fn session_inputs(
     shared: &AppShared,
     key: SessionKey,
@@ -211,6 +220,80 @@ fn route(message: &Message) -> ReturnRoute {
         thread_id: message.message_thread_id.unwrap_or(0),
         message_id: Some(message.message_id),
     }
+}
+
+pub(super) fn portable_topic(
+    shared: &AppShared,
+    key: SessionKey,
+) -> Option<(
+    crate::interaction::ForegroundEngine,
+    &crate::interaction::ForegroundConfig,
+)> {
+    let profile = shared.config.interaction.as_ref()?;
+    profile.portable_route(key)
+}
+
+pub(super) async fn handle_portable_topic(
+    app: &App,
+    message: &Message,
+    human: i64,
+    key: SessionKey,
+    direct_human_text: bool,
+    selected: (
+        crate::interaction::ForegroundEngine,
+        &crate::interaction::MatrixDestination,
+    ),
+) -> Result<()> {
+    if app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .map(|profile| profile.human_id)
+        != Some(human)
+    {
+        return Ok(());
+    }
+    let origin = route(message);
+    let Some(text) = message
+        .text
+        .as_deref()
+        .filter(|text| direct_human_text && text.len() <= 16 * 1024)
+    else {
+        notice(app.shared.clone(), origin, "Send a text message directly in this topic. Forwarded messages and attachments aren't supported here yet.".into());
+        return Ok(());
+    };
+    if text.trim_start().starts_with('/') {
+        notice(app.shared.clone(), origin, "Use /status to see whether this topic is working, /interrupt to stop the current turn, or /interaction to inspect a saved input.".into());
+        return Ok(());
+    }
+    let update = HUMAN_UPDATE_ID
+        .try_with(|id| *id)
+        .context("Topic message lacks its retained Telegram update")?;
+    let session = app
+        .shared
+        .store
+        .get_session(key)?
+        .context("Selected topic session is missing")?;
+    let source = SourceInput {
+        tribu_source: None,
+        transcription: None,
+        channel: format!("telegram:{}", app.shared.bot_id),
+        event_id: update.to_string(),
+        update_id: Some(update),
+        human_id: human,
+        target_sessions: vec![session.id],
+        origin,
+        text: text.to_owned(),
+    };
+    let (instruction, fresh) = app
+        .shared
+        .store
+        .interaction_admit_portable_topic(&source, key, selected)?;
+    if fresh {
+        dispatch(app, &instruction.id, human).await?;
+    }
+    Ok(())
 }
 
 pub(super) fn label(shared: &AppShared, key: SessionKey) -> String {
@@ -553,7 +636,11 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                 return Ok(true);
             }
             if *verb == "retry" {
-                if app.shared.store.interaction_recover(id, human)? {
+                if app
+                    .shared
+                    .store
+                    .interaction_recover(id, human, Some(update))?
+                {
                     dispatch(app, id, human).await?;
                     notice(
                         app.shared.clone(),
@@ -564,7 +651,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                     notice(
                         app.shared.clone(),
                         origin,
-                        "That input is not known-unsent; it was not replayed.".into(),
+                        "That saved input could not be recovered from this message.".into(),
                     );
                 }
                 return Ok(true);
@@ -667,6 +754,11 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
                 let previous: Vec<(SessionKey, Vec<String>)> =
                     serde_json::from_value(pending["inherited"].clone())?;
                 let target = matches[0];
+                anyhow::ensure!(
+                    cfg.portable_route(target).is_none(),
+                    "Use Conversation to route to this portable worker"
+                );
+
                 let record = app
                     .shared
                     .store
@@ -791,6 +883,14 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
         }
         return Ok(false);
     }
+    if cfg.portable_route(target).is_some() {
+        notice(
+            app.shared.clone(),
+            origin,
+            "Use Conversation to send to this worker.".into(),
+        );
+        return Ok(true);
+    }
     if body.is_empty() {
         let shared = app.shared.clone();
         let name = label(&shared, target);
@@ -895,6 +995,10 @@ async fn admit_message(
     text: &str,
     relation: RequestRelation,
 ) -> Result<()> {
+    anyhow::ensure!(
+        profile(&app.shared)?.portable_route(target).is_none(),
+        "Use Conversation to route to this portable worker"
+    );
     let session = app
         .shared
         .store
@@ -1061,7 +1165,12 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
     {
         let mut runs = shared.routing_runs.lock().expect("routing mutex poisoned");
         if let Some(run) = runs.get_mut(&i.target) {
-            if let Some(active) = &run.active {
+            if let Some(active) = &run.active
+                && !i
+                    .target_execution
+                    .as_ref()
+                    .is_some_and(|binding| binding.harness.is_portable())
+            {
                 Some(Some(active.clone()))
             } else {
                 run.pending.push(i.id.clone());
@@ -1083,10 +1192,28 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
 }
 
 pub(super) fn dispatch_allowed(shared: &Arc<AppShared>, i: &Instruction) -> Result<bool> {
+    dispatch_admission_allowed(shared, i, false)
+}
+
+pub(super) fn dispatch_admission_allowed(
+    shared: &Arc<AppShared>,
+    i: &Instruction,
+    local_started: bool,
+) -> Result<bool> {
     let current = shared.store.stop_admission_epoch(i.target)?;
-    if !shared
-        .store
-        .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
+    let cfg = profile(shared)?;
+    let configured = cfg
+        .portable_route(i.target)
+        .map(|(engine, route)| (engine.harness(), &route.transport.source));
+    let selected = i
+        .target_execution
+        .as_ref()
+        .and_then(|binding| binding.body.as_ref().map(|body| (binding.harness, body)));
+    if configured != selected
+        || (!local_started && !shared.store.interaction_target_execution_allowed(i)?)
+        || !shared
+            .store
+            .conversation_pin_dispatch_allowed(i.human_id, &i.id)?
         || i.admission_epoch.as_deref() != Some(current.as_str())
         || !shared
             .store
@@ -1134,7 +1261,7 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
         return Ok(());
     }
     let action = reserve_run(&app.shared, &i);
-    if !action.as_ref().is_some_and(|active| active.is_some()) {
+    if !direct_portable_topic(&i) && !action.as_ref().is_some_and(|active| active.is_some()) {
         let shared = app.shared.clone();
         let waiting = i.clone();
         tokio::spawn(async move {
@@ -1188,13 +1315,17 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = super::nexus::input_prompt(
-        shared,
-        source.update_id,
-        i.target,
-        i.human_id,
-        &packet(shared, i, None)?,
-    )?;
+    let prompt = if source.update_id.is_some() && direct_portable_topic(i) {
+        i.text.clone()
+    } else {
+        super::nexus::input_prompt(
+            shared,
+            source.update_id,
+            i.target,
+            i.human_id,
+            &packet(shared, i, None)?,
+        )?
+    };
     let epoch = i
         .admission_epoch
         .clone()
@@ -1348,12 +1479,15 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 let epoch = i.admission_epoch.clone();
                 let target = i.target;
                 let human = i.human_id;
+                let selected = i.clone();
+                let active_local = active.turn_id;
                 let update = source.update_id;
                 let input_id = i.id.clone();
                 crate::codex::SteerInputAdmission::Async(Arc::new(move || {
                     let shared = shared.clone();
                     let epoch = epoch.clone();
                     let input_id = input_id.clone();
+                    let selected = selected.clone();
                     Box::pin(async move {
                         if shared.store.heartbeat_workflow_delegation(human, target, &input_id)? {
                             bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
@@ -1379,6 +1513,13 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             bail!("Routed admission retired or held before native submission");
                         }
                         super::nexus::validate_input_target(&shared, update, target, human)?;
+                        anyhow::ensure!(
+                            shared.store.interaction_target_execution_allowed(&selected)?,
+                            "Routed target execution changed before native steering"
+                        );
+                        if selected.target_execution.is_some() {
+                            shared.store.validate_codex_submission(active_local, true, None)?;
+                        }
                         Ok(())
                     })
                 }))
@@ -1698,6 +1839,16 @@ pub(super) fn result(
     {
         notice(shared.clone(),i.origin,"An answer from earlier work was retained in the native conversation. It does not report addressing your routed input, which remains unresolved.".into());
     }
+    publish_results(&app, human, deliveries);
+    Ok(())
+}
+
+pub(super) fn publish_results(
+    app: &App,
+    human: i64,
+    deliveries: Vec<crate::interaction::Delivery>,
+) {
+    let shared = &app.shared;
     for delivery in deliveries {
         if super::session_requests::returned(app.clone(), &delivery, human).is_err() {
             tracing::warn!("Local dependency return retained without confirmed admission");
@@ -1709,7 +1860,6 @@ pub(super) fn result(
         }
         publish(shared.clone(), delivery, human);
     }
-    Ok(())
 }
 
 fn relevance(d: &crate::interaction::Delivery) -> &'static str {
@@ -1760,7 +1910,15 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
         } else {
             "\nWorker instruction coverage was not reported."
         };
-        let body = format!("#{}{}\n\n{}", name, qualification, d.body);
+        let direct_portable = d.origin.message_id.is_some()
+            && d.origin.chat_id == d.target.chat_id
+            && d.origin.thread_id == d.target.thread_id
+            && portable_topic(&shared, d.target).is_some();
+        let body = if direct_portable {
+            d.body.as_str().to_owned()
+        } else {
+            format!("#{}{}\n\n{}", name, qualification, d.body)
+        };
         let mut last = None;
         let mut complete = true;
         for (index, part) in split_text(&body, 3000).into_iter().enumerate() {

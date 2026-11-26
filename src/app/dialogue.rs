@@ -205,6 +205,35 @@ struct TargetInputsArgs {
     selector: String,
 }
 
+fn portable_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "capabilities"
+            | "candidates"
+            | "target_inputs"
+            | "inputs"
+            | "dispatch"
+            | "conversation"
+            | "conversation_part"
+    )
+}
+
+fn validate_portable_read(
+    shared: &AppShared,
+    key: SessionKey,
+    human: i64,
+    request: &crate::execution::ToolInvocation,
+    closed: &CancellationToken,
+) -> Result<()> {
+    if request.harness != crate::execution::Harness::Codex {
+        if closed.is_cancelled() {
+            bail!("Controller invocation closed before readback");
+        }
+        super::observer::tool_owner_for_turn(shared, key, human, request)?;
+    }
+    Ok(())
+}
+
 pub(super) fn tool_call(
     app: App,
     key: SessionKey,
@@ -226,9 +255,29 @@ pub(super) fn tool_call(
         ));
         return recv;
     }
+    if request.harness != crate::execution::Harness::Codex {
+        let allowed = request.tool == "interaction_controller"
+            && request.namespace.is_none()
+            && request.arguments["operation"]
+                .as_str()
+                .is_some_and(portable_operation)
+            && !(request.arguments["operation"] == "candidates"
+                && request.arguments["arguments"]["mode"] == "refresh");
+        if !allowed
+            || super::observer::tool_owner_for_turn(&app.shared, key, human, &request).is_err()
+        {
+            let (send, recv) = oneshot::channel();
+            let _ = send.send(crate::execution::ToolReply::new(
+                false,
+                "Controller operation is unavailable for this execution.".into(),
+            ));
+            return recv;
+        }
+    }
     if request.tool == "interaction_controller"
         && request.arguments.to_string().len() <= 16000
         && let Ok(args) = serde_json::from_value::<ControllerArgs>(request.arguments.clone())
+        && request.harness == crate::execution::Harness::Codex
         && app
             .shared
             .store
@@ -315,14 +364,14 @@ pub(super) fn tool_call(
         }
     }
     if request.tool == "interaction_candidates" {
-        return super::observer::tool_call(app.shared.clone(), key, human, request);
+        return super::observer::tool_call(app.shared.clone(), key, human, request, closed);
     }
     let (send, recv) = oneshot::channel();
     tokio::spawn(async move {
         let outcome:Result<Value>=async {
             let shared=&app.shared;
             if closed.is_cancelled() {bail!("Tool request closed before admission");}
-            super::observer::tool_owner(shared,key,human,&request.native_session)?;
+            super::observer::tool_owner_for_turn(shared,key,human,&request)?;
             if request.namespace.is_some() || request.arguments.to_string().len()>16000 {bail!("Unsupported integrating tool arguments");}
             if request.tool=="controller_capabilities" && request.arguments==json!({}) {
                 let mut capabilities=json!({"schema":"telecodex.interaction-controller/v1","operations":{"capabilities":{"arguments":{}},"inputs":{"arguments":{},"description":"Recent original human text references within this native entry; no dispatch"},"target_inputs":{"arguments":{"selector":"one unambiguous enrolled label or stable tID"},"description":"Read up to sixteen recent receiver-retained inputs for one owned current target, including actual request IDs, relations, source references, bounded original excerpts and transport states. Use this before amends/context dispatch when the original request IDs are not already known. This is read-only controller evidence, independent of observer summaries; no native/model call or dispatch."},"candidates":{"description":"Bounded observer source interpretations; no dispatch","arguments":{"mode":"inventory, inspect, support or refresh","selectors":["one to five enrolled labels or stable tID; inventory can be empty; support requires exactly one"]}},"create":{"input_schema":super::creation::schema(),"after_dispatch":"retained-source/v1","description":"Create one justified new work session from an original retained input, with selected attributed context. A distinct remaining clause may add this one confirmed topic after dispatch; existing source, destinations and work stay unchanged. Never create for ambiguity or a busy worker."},"interview":{"input_schema":super::creation::schema(),"description":"Create an explicitly requested independent interview from one to five selected observer sources and their pinned original evidence. Busy sources continue; this is a derived context package, not an exact native fork or publication."},"creation_resume":{"arguments":{"input_ref":"original integer Telegram update or conversation UUID"},"description":"Explicitly continue a retained known-unsent creation or confirmed topic. Unknown external effects and completed plans are inspected without replay."},"creation_status":{"arguments":{"input_ref":"original integer Telegram update or conversation UUID"},"description":"Inspect a retained creation; no retry or new work"},"questions":{"arguments":{"input_ref":"UUID of one original","after":"optional page cursor"},"description":"Inspect owned pending native questions and whether each exact version existed at this original capture. Follow all pages; approvals are excluded. This is not an answer selection."},"question_context":{"arguments":{"input_ref":"UUID of one original","question":"optional explicit {id,revision} from questions","offset":"optional character offset"},"description":"Read the full selected native question. Without an explicit question, inspect the original's reported question context. matches_current and available_at_capture are evidence, not an answer decision."},"answer_question":{"arguments":{"input_ref":"UUID of one original","question":"optional explicit {id,revision} after inspection"},"description":"Only if the actual human message clearly answers the selected question: atomically answer with exact retained text/transcript. Without an explicit selection the reported contextual question stays frozen. Explicit selection requires that exact question version already existed at capture. Never invent answer text, approve actions or consume a routed/creation-reserved original. Discuss ambiguity; do not guess among questions."},"pending_routes":{"arguments":{},"description":"Read up to twelve current original inputs awaiting a destination; no route. Ask the human when the intended pending original or destination is unclear."},"resolve_route":{"arguments":{"pending_input":"UUID of one pending original","input_ref":"later retained human clarification reference","selector":"one unambiguous enrolled target"},"description":"Resolve the selected pending original using a later actual human utterance, including a committed transcript. The target is an integrator interpretation attributed to that clarification, not rewritten human speech. The original message and first selection remain immutable; retries inspect without replay."},"dispatch":{"input_schema":dispatch_schema(),"description":"One durable selected target plan, then existing per-target delivery. Text is taken only from the original referenced ingress record. Amendments/context require actual request IDs: inspect target_inputs for the selected destination if needed. Never downgrade a correction to new because IDs are missing; ask when the intended request is absent or ambiguous. Admission/native acceptance is not proof of incorporation."}},"unsupported":["cross-body routing","global Stop"],"uncertainty":"Never repeat an uncertain operation; inspect retained outcomes before explicit recovery"});
@@ -337,6 +386,11 @@ pub(super) fn tool_call(
                 super::interactions::task_capabilities(&mut capabilities);
                 capabilities["operations"]["companion_hint"]=super::presentation::companion_capability(&app)?;
                 super::matrix::capabilities(shared,&mut capabilities)?;
+                if request.harness != crate::execution::Harness::Codex {
+                    capabilities["operations"].as_object_mut().expect("built controller operations")
+                        .retain(|name,_| portable_operation(name));
+                    capabilities["operations"]["candidates"]["arguments"]["mode"]=json!("inventory, inspect or support");
+                }
                 return Ok(capabilities);
             }
             if matches!(request.tool.as_str(),"interaction_matrix_request"|"interaction_matrix_status") {
@@ -373,14 +427,17 @@ pub(super) fn tool_call(
                 return Ok(result);
             }
             if request.tool=="interaction_conversation" {
-                let args:ConversationReadArgs=serde_json::from_value(request.arguments)?;
+                let args:ConversationReadArgs=serde::Deserialize::deserialize(&request.arguments)?;
                 let operation=if args.before {"before"} else {"list"};
                 let page=super::presentation::owner_read(&app,human,&format!("{operation} {} {} {}",args.delivery,args.native,args.matrix))?;
+                validate_portable_read(shared,key,human,&request,&closed)?;
                 return Ok(json!({"kind":"conversation_sources","source_data":true,"presentation":page,"interpretation":"Attributed session progress and replies visible in this human's conversation; not new human instructions or evidence of hearing. Reading does not dispatch or repeat work."}));
             }
             if request.tool=="interaction_conversation_part" {
-                let args:ConversationPartArgs=serde_json::from_value(request.arguments)?;
-                return super::presentation::owner_read(&app,human,&format!("part {} {} {}",args.source,args.revision,args.offset));
+                let args:ConversationPartArgs=serde::Deserialize::deserialize(&request.arguments)?;
+                let part=super::presentation::owner_read(&app,human,&format!("part {} {} {}",args.source,args.revision,args.offset))?;
+                validate_portable_read(shared,key,human,&request,&closed)?;
+                return Ok(part);
             }
             if request.tool=="interaction_playback_context" {
                 return playback_context(&app,key,human,&request.native_session,request.arguments,&closed).await;
@@ -405,6 +462,17 @@ pub(super) fn tool_call(
             }
             if request.tool=="interaction_inputs" {
                 if request.arguments!=json!({}) {bail!("Unexpected input query arguments");}
+                if request.harness != crate::execution::Harness::Codex {
+                    let source = shared.store.interaction_portable_entry_source(key,human,request.local_turn)?;
+                    let order=shared.store.interaction_source_order(&source)?;
+                    validate_portable_read(shared,key,human,&request,&closed)?;
+                    return Ok(json!({"kind":"original_integrating_inputs","bounded":true,"inputs":[{
+                        "input_ref":source.event_id,"human":human,"origin":source.origin,
+                        "channel":source.channel,"transcription":source.transcription,
+                        "capture_order":order,"text_excerpt":source.text.chars().take(2000).collect::<String>(),
+                        "excerpt_bounded":true,
+                    }]}));
+                }
                 let refs=shared.store.interaction_entry_references(key,human,&request.native_session)?;
                 let mut inputs=vec![];
                 for reference in refs {
@@ -469,7 +537,21 @@ pub(super) fn tool_call(
             let args:DispatchArgs=serde_json::from_value(request.arguments)?;
             args.input_ref.validate()?;
             if args.destinations.is_empty() || args.destinations.len()>5 {bail!("Invalid routing selection");}
-            let (mut source,message)=shared.store.interaction_entry_original(key,human,&request.native_session,&args.input_ref,&format!("telegram:{}",shared.bot_id))?;
+            let execution=if request.harness==crate::execution::Harness::Codex {
+                crate::store::EntryExecution::Codex(&request.native_session)
+            } else {
+                crate::store::EntryExecution::Portable(request.local_turn)
+            };
+            let (mut source,message)=match execution {
+                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_entry_original(key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id))?,
+                crate::store::EntryExecution::Portable(local)=>{
+                    let source=shared.store.interaction_portable_entry_source(key,human,local)?;
+                    if args.input_ref != InputReference::Conversation(source.event_id.clone()) {
+                        bail!("Reference does not match the active portable original");
+                    }
+                    (source,None)
+                }
+            };
             if source.text.trim().is_empty() || source.text.starts_with('/') || message.as_ref().is_some_and(|message|!(is_text_only_steer_candidate(message,&source.text) || source.transcription.is_some())) {bail!("This adapter requires original committed text");}
             let cfg=super::routing::profile(shared)?;
             let mut plan=vec![];
@@ -492,7 +574,9 @@ pub(super) fn tool_call(
             source.target_sessions=plan.iter().map(|(_,id,_)|*id).collect();
             if closed.is_cancelled() {bail!("Tool request closed before admission");}
             let selected=plan.into_iter().map(|(key,_,relation)|(key,relation)).collect::<Vec<_>>();
-            let admitted=shared.store.interaction_admit_entry_plan(key,human,&request.native_session,&source,&selected,&closed)?;
+            let admitted=shared.store.interaction_admit_entry_execution_plan(
+                key,human,execution,&source,&selected,&closed,Some(&cfg),
+            )?;
             // Once this durable plan is admitted, its deliveries are independent
             // of the front dialogue. Native closure cannot silently retract work.
             let mut results=vec![];
