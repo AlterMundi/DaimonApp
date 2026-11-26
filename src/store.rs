@@ -1373,13 +1373,8 @@ impl Store {
                  FROM turns t
                  JOIN sessions s ON s.id = t.session_id
                  WHERE t.id = ?1 AND s.chat_id = ?2 AND s.thread_id = ?3
-                   AND t.from_user_id=?4 AND t.execution_harness='codex'",
-                params![
-                    turn_id,
-                    session_key.chat_id,
-                    session_key.thread_id,
-                    from_user_id
-                ],
+                   AND t.execution_harness='codex'",
+                params![turn_id, session_key.chat_id, session_key.thread_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -2421,6 +2416,21 @@ mod tests {
         assert_eq!(retry.from_user_id, 200);
         assert_eq!(retry.prompt, "hello");
         assert!(retry.review_mode.is_none());
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE turns SET execution_harness='claude' WHERE id=?1",
+                [turn_id],
+            )
+            .unwrap();
+        assert!(
+            store
+                .retry_request_for_turn(turn_id, session.key, 200)
+                .unwrap()
+                .is_none()
+        );
     }
     #[test]
     fn human_interactions_recover_tasks_without_resurrecting_native_channels() {

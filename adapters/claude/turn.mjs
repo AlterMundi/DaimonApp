@@ -23,7 +23,7 @@ function catalogMatches(status, expected) {
 }
 
 async function connectedCatalog(native, expected, signal) {
-  const deadline = performance.now() + 5_000;
+  const deadline = performance.now() + 15_000;
   while (true) {
     const status = await native.mcpServerStatus();
     if (!Array.isArray(status) || status.some(server => (
