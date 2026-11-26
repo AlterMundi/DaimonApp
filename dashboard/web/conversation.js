@@ -448,7 +448,11 @@ window.Conversation = (() => {
         if(!anchor || anchor===box)continue;
         if(!groups.has(anchor))groups.set(anchor,[]);groups.get(anchor).push(box);attached.add(box);
       }
-      const ordered=chronological.filter(box=>!attached.has(box)).flatMap(box=>[box,...(groups.get(box)||[])]);
+      const claudeReplies=new Map(chronological.filter(box=>box.dataset.claudeReplyTo)
+        .map(box=>[box.dataset.claudeReplyTo,box]));
+      const ordered=chronological.filter(box=>!attached.has(box) && !box.dataset.claudeReplyTo)
+        .flatMap(box=>[box,...(groups.get(box)||[])])
+        .flatMap(box=>claudeReplies.has(box.dataset.inputId)?[box,claudeReplies.get(box.dataset.inputId)]:[box]);
       // Move existing nodes only: expanded text, media, focus and drafts stay intact.
       ordered.forEach((box,index)=>{if(timeline.children[index]!==box)timeline.insertBefore(box,timeline.children[index]||null);});
     }
@@ -750,18 +754,28 @@ window.Conversation = (() => {
       const reply=card.value.claude_reply;
       if(typeof reply?.text==="string"){
         if(!card.claudeBody){
-          const container=node("div",undefined,"input-claude-reply");
+          card.claudeBox=node("article",undefined,"reply claude-message");
           card.claudeBody=node("div",undefined,"reply-text");
-          container.append(node("strong","Claude Code"),card.claudeBody);
-          card.box.insertBefore(container,card.actions);
+          card.claudeBox.append(node("h3","Claude Code"),card.claudeBody);
+          card.claudeBox.dataset.claudeReplyTo=card.value.id;
         }
-        card.claudeBody.textContent=reply.text;
+        setReplyText(card.claudeBody,reply.text);
+        placeClaudeReply(card);
       }
       if(inputNeedsText(card)){
         card.check.hidden=false;card.check.textContent=card.originalText?"Continue reading":"Read full message";
       }else {
         card.check.textContent="Check status";
         card.check.hidden=readOnly || card.value.read_only===true || (["accepted","routed","answered","matrix_replied"].includes(card.value.phase) && (!!card.value.text || card.originalOffset===null || Array.from(card.value.preview||"").length<1000));
+      }
+    }
+    function placeClaudeReply(card){
+      if(!card.claudeBox || !card.box.parentNode)return;
+      if(timeline){
+        if(card.claudeBox.parentNode!==timeline)
+          placeInTimeline(card.claudeBox,`claude-reply:${card.value.id}`,card.value.received_at);
+      }else if(card.box.nextSibling!==card.claudeBox){
+        card.box.parentNode.insertBefore(card.claudeBox,card.box.nextSibling);
       }
     }
     async function readInputText(card,automatic=false){
@@ -823,10 +837,19 @@ window.Conversation = (() => {
     const compose = $("#conversation-compose"), draft = $("#conversation-message"), send = $("#conversation-send");
     const targetLabel=$("#conversation-target-label"), target=$("#conversation-target"), claudeOption=$("#conversation-target-claude");
     let claudeAvailable=false;
+    const matrixRecords=$("#conversation-matrix-records"), matrixRecordsLabel=$("#conversation-matrix-records-label");
+    const syncMatrixRecords=()=>{
+      const talkingToClaude=target?.value==="claude";
+      if(matrixRecordsLabel)matrixRecordsLabel.hidden=!talkingToClaude;
+      timeline?.classList.toggle("hide-matrix-records",talkingToClaude && !matrixRecords?.checked);
+    };
     if(target&&new URLSearchParams(location.search).get("target")==="claude")target.value="claude";
+    matrixRecords?.addEventListener("change",syncMatrixRecords);
+    syncMatrixRecords();
     target?.addEventListener("change",()=>{
       if(target.value==="claude"&&microphone?.ownsSend?.()){target.value="";return;}
       compose.dataset.target=target.value;
+      syncMatrixRecords();
     });
     const draftStatus=node('div',undefined,'conversation-tools composer-draft-notice'),draftNote=node('span'),draftPrimary=node('button'),draftOther=node('button','Use other draft');
     draftStatus.hidden=true;draftNote.setAttribute('role','status');draftPrimary.type=draftOther.type='button';
@@ -1162,6 +1185,7 @@ window.Conversation = (() => {
         const trace=node("details",undefined,"routing-trace"),traceSummary=node("summary","Show routing path"),traceState=node("p","","note"),traceContent=node("div"),traceRefresh=node("button","Refresh route");
         traceRefresh.type="button";traceState.setAttribute("role","status");trace.append(traceSummary,traceState,traceContent,traceRefresh);
         if(timeline){box.classList.add?.("human-message");box.append(node("h3","You"));}
+        box.dataset.inputId=value.id;
         const time=node("time",undefined,"message-time");
         box.append(text,status,actions,routeBox,imageButton,imageView,...(timeline?[]:[trace]),time);
         card = {box,text,time,actions,imageButton,imageView,status,check,retry,value,observed,continueButton,routeBox,select,routeButton,routeNote,trace,traceSummary,traceState,traceContent,traceRefresh,traceText:new Map()};
@@ -1290,6 +1314,7 @@ window.Conversation = (() => {
           placeInTimeline(card.box,`input:${card.value.id}`,received,followingLive);
         }else if(followingLive)timeline.scrollTop=timeline.scrollHeight;
       }else container.insertBefore(card.box, following || null);
+      placeClaudeReply(card);
       card.box.dataset.inputId=card.value.id;textObserver?.observe(card.box);queueText(card);
       graph?.input(card.value);
       inputActivity();
@@ -2010,6 +2035,7 @@ window.Conversation = (() => {
       sessionTitle(card,source,integrator ? "Conversation" : source.label);
       const matrix=source.kind==="matrix_inbox"||source.kind==="matrix_response";
       const visibility=source.kind==="matrix_visibility";
+      card.box.classList.toggle("matrix-visibility-record",visibility);
       const deliveryPhase=source.handling?.phase;
       const delivery=source.handling?.outcome;
       const sendingBeing=delivery?.author?.being_ref;
@@ -2084,6 +2110,7 @@ window.Conversation = (() => {
         if(claudeOption)claudeOption.disabled=!claudeAvailable;
         targetLabel.hidden=readOnly||(!claudeAvailable&&target.value!=="claude");
         compose.dataset.target=target.value;
+        syncMatrixRecords();
       }
       canBudgets=!readOnly && value.can_view_coordination===true;
       if(budgetView)budgetView.hidden=!canBudgets;

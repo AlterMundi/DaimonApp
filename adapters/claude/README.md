@@ -28,7 +28,9 @@ Launch `gateway-worker.mjs --profile <owner profile>` once for a selected
 foreground attempt. Gateway owns the process group, starts it with a cleared
 environment, and keeps both pipes open until the outcome. The worker's private,
 owner-owned profile selects the absolute SDK entry, Claude binary, working
-directory, home, Matrix observation command, CLI version, model and body.
+directory, home, Matrix observation command, CLI version, model and body. Use the
+Claude Code model alias `opus` to follow its current Opus selection. The
+optional `effort` is passed to the Agent SDK as a session option.
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
