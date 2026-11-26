@@ -71,8 +71,10 @@ async function main() {
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body'])
+    const resume = Object.hasOwn(first ?? {}, 'resume');
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body', ...(resume ? ['resume'] : [])])
       || first.schema !== VERSION || first.type !== 'start'
+      || (resume && first.resume !== true)
       || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
       || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
       || typeof first.text !== 'string' || !first.text.trim()
@@ -100,7 +102,7 @@ async function main() {
     });
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
-      input: { id: first.inputId, sessionId: first.sessionId, text: first.text },
+      input: { id: first.inputId, sessionId: first.sessionId, text: first.text, resume },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

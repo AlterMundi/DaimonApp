@@ -1,7 +1,7 @@
 //! An explicitly selected sibling original through the existing Gateway owner socket.
 use super::*;
 use crate::interaction::{ForegroundConfig, ForegroundEngine, InteractionConfig};
-use crate::store::{MatrixAuthor, WeOriginal, WePhase, WeSelection};
+use crate::store::{MatrixAuthor, WeAttempt, WeOriginal, WePhase, WeSelection};
 
 pub(super) async fn owner(
     app: &App,
@@ -85,7 +85,7 @@ pub(super) async fn run_selected(
     let execution = tokio::select! {
         biased;
         _ = app.shared.shutdown.cancelled() => Err(anyhow!("Gateway is shutting down")),
-        result = execute_worker(config, engine, &id, &attempt.session_id, &text, body, |native_session| {
+        result = execute_worker(config, engine, &id, &attempt, &text, body, |native_session| {
             exposed = store.we_transition(human, entry, &attempt,
                 WePhase::Starting, WePhase::ProviderExposed, json!({"native_session_id":native_session}))?;
             Ok(exposed)
@@ -226,7 +226,7 @@ async fn execute_worker(
     config: &ForegroundConfig,
     engine: ForegroundEngine,
     id: &str,
-    session: &str,
+    attempt: &WeAttempt,
     text: &str,
     body: Value,
     commit: impl FnOnce(&str) -> Result<bool>,
@@ -267,6 +267,7 @@ async fn execute_worker(
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
+    let session = &attempt.session_id;
     let mut command = Command::new(&config.worker_command[0]);
     command
         .args(&config.worker_command[1..])
@@ -287,12 +288,12 @@ async fn execute_worker(
                 .context("Missing native worker output")?,
         )
         .take(528_385);
-        send(
-            &mut input,
-            json!({"schema":schema,"type":"start","inputId":id,
-            "sessionId":session,"text":text,"body":body}),
-        )
-        .await?;
+        let mut start = json!({"schema":schema,"type":"start","inputId":id,
+            "sessionId":session,"text":text,"body":body});
+        if attempt.resume {
+            start["resume"] = json!(true);
+        }
+        send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
         if frame["type"] == "prepare_submission" {
@@ -365,7 +366,7 @@ async fn execute_worker(
     _config: &ForegroundConfig,
     _engine: ForegroundEngine,
     _id: &str,
-    _session: &str,
+    _attempt: &WeAttempt,
     _text: &str,
     _body: Value,
     _commit: impl FnOnce(&str) -> Result<bool>,

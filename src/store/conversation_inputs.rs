@@ -4379,6 +4379,147 @@ mod tests {
     }
 
     #[test]
+    fn private_claude_resumes_only_the_latest_confirmed_native_session_after_restart() {
+        use crate::interaction::{ForegroundEngine, MatrixDestination};
+        use crate::store::{MatrixAuthor, WeOriginal, WePhase};
+        use serde_json::json;
+        let (file, store, key, binding) = setup();
+        let body = |name: &str| MatrixDestination::Body {
+            being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            embodiment_id: format!("embodiment:{name}"),
+        };
+        let sender = body("sender");
+        let receiver = body("claude");
+        let source = MatrixAuthor {
+            being_ref: format!("dm:being:v1:{}", "A".repeat(43)),
+            embodiment_id: "embodiment:claude".into(),
+        };
+        let start = |store: &Store| {
+            let id = Uuid::now_v7().to_string();
+            let (input, _) = store
+                .conversation_private_matrix_capture(
+                    100,
+                    key,
+                    &binding,
+                    &id,
+                    "Synthetic input",
+                    &sender,
+                    &receiver,
+                )
+                .unwrap();
+            let selection = input.private_matrix.as_ref().unwrap();
+            let original = WeOriginal {
+                schema: "daimon-gateway.matrix-we-original/v1".into(),
+                event_id: Uuid::now_v7().to_string(),
+                author: "embodiment:sender".into(),
+                thread_id: selection.thread_id.clone(),
+                receipt_event_id: Uuid::now_v7().to_string(),
+                text: input.text.clone(),
+            };
+            assert!(
+                store
+                    .conversation_private_matrix_claim(100, key, &id)
+                    .unwrap()
+            );
+            store
+                .conversation_private_matrix_record_origin(
+                    100,
+                    key,
+                    &id,
+                    Some(PrivateMatrixOrigin {
+                        message_id: original.event_id.clone(),
+                        receipt_event_id: original.receipt_event_id.clone(),
+                        message_hash: "a".repeat(64),
+                    }),
+                )
+                .unwrap();
+            let attempt = store
+                .we_start(
+                    100,
+                    key,
+                    ForegroundEngine::Claude,
+                    source.clone(),
+                    json!({"fixture": "body"}),
+                    original.clone(),
+                    Some(&input),
+                )
+                .unwrap()
+                .unwrap();
+            let declare_exposure = || {
+                store.we_transition(
+                    100,
+                    key,
+                    &attempt,
+                    WePhase::Starting,
+                    WePhase::ProviderExposed,
+                    json!({"native_session_id": attempt.session_id}),
+                )
+            };
+            if attempt.resume {
+                // Simulate another Gateway taking the SQLite writer lease
+                // after selection but before this old worker's commit.
+                let conn = rusqlite::Connection::open(file.path()).unwrap();
+                conn.execute(
+                    "UPDATE app_instance_lock SET instance_id='successor' WHERE key='main'",
+                    [],
+                )
+                .unwrap();
+                assert!(!declare_exposure().unwrap());
+                conn.execute(
+                    "UPDATE app_instance_lock SET instance_id=?1 WHERE key='main'",
+                    [&store.instance_id],
+                )
+                .unwrap();
+            }
+            assert!(declare_exposure().unwrap());
+            (id, original, attempt)
+        };
+        let (id, original, attempt) = start(&store);
+        assert!(!attempt.resume);
+        let reply = WeOriginal {
+            schema: original.schema,
+            event_id: Uuid::now_v7().to_string(),
+            author: source.embodiment_id.clone(),
+            thread_id: original.thread_id,
+            receipt_event_id: Uuid::now_v7().to_string(),
+            text: "Synthetic reply".into(),
+        };
+        for (from, to, outcome) in [
+            (
+                WePhase::ProviderExposed,
+                WePhase::Returning,
+                json!({"text": reply.text}),
+            ),
+            (
+                WePhase::Returning,
+                WePhase::Delivered,
+                json!({"message_id": reply.event_id}),
+            ),
+        ] {
+            assert!(
+                store
+                    .we_transition(100, key, &attempt, from, to, outcome)
+                    .unwrap()
+            );
+        }
+        store
+            .conversation_private_matrix_record_reply(100, key, &id, reply)
+            .unwrap();
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (_, _, continuation) = start(&store);
+        assert!(continuation.resume);
+        assert_eq!(continuation.session_id, attempt.session_id);
+        // Lose the process after authorization. The next original must not
+        // reopen the transcript that may contain the interrupted turn.
+        drop(store);
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (_, _, successor) = start(&store);
+        assert!(!successor.resume);
+        assert_ne!(successor.session_id, continuation.session_id);
+    }
+
+    #[test]
     fn restart_retains_known_unsent_and_uncertain_inputs_without_rearming_them() {
         let (file, store, key, binding) = setup();
         let queued = Uuid::now_v7().to_string();

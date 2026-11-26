@@ -112,6 +112,8 @@ def qualify(engine, gateway, executable, scripts, *, interaction=False):
     parent = matrix_fixture()
 
     class SignedForeground(parent):
+        deliver_followup = interaction
+
         def _host_command(self, root, socket, service, capabilities):
             import daimon_matrix
             from daimon_matrix.client import CLIENT_CONFIG_SCHEMA_V3
@@ -370,6 +372,29 @@ timeout_seconds=5
                                  .json()["claude_reply"], result)
                 self.assertEqual(provider.calls, [provider.current] * 2)
                 self.assertEqual(len(return_attempts), 1)
+                first_event = provider.current
+                provider.previous_session = journey.row(
+                    "SELECT json_extract(submission,'$.native_session_id') FROM interaction_matrix_requests WHERE source_event=?",
+                    (first_event,),
+                )[0][0]
+                provider.previous_original = provider.original
+                provider.original = "What did we discuss in the first turn?"
+                provider.human_original = str(uuid.uuid4())
+                followup = {**request, "id": provider.human_original, "text": provider.original}
+                submitted = client.post("/api/interaction/inputs", json=followup, headers=headers)
+                self.assertEqual(submitted.status_code, 200, submitted.text)
+                journey.wait(lambda: bool(provider.failure) or journey.row(
+                    "SELECT phase FROM conversation_inputs WHERE id=?", (followup["id"],)
+                )[0][0] in {"matrix_replied", "retained_unsent", "uncertain"}, seconds=40)
+                self.assertIsNone(provider.failure)
+                status = client.get("/api/interaction/inputs/"+followup["id"], headers=headers).json()
+                self.assertEqual(status["phase"], "matrix_replied")
+                self.assertIn("I retained the first turn.", status["claude_reply"]["text"])
+                self.assertNotEqual(provider.current, first_event)
+                self.assertEqual(provider.calls, [first_event, first_event, provider.current])
+                self.assertEqual(len(return_attempts), 2)
+                self.assertEqual(journey.telegram_methods, [])
+                self.assertEqual(journey.rpc, [])
 
     result = unittest.TextTestRunner(verbosity=2).run(SignedForeground("test_exact_original_and_signed_same_thread_return"))
     return 0 if result.wasSuccessful() else 1

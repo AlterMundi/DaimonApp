@@ -122,6 +122,7 @@ impl Store {
                PRIMARY KEY(entry_session,human_id,message_id));"
         )?;
         let conn = self.conn.lock().expect("store mutex poisoned");
+        super::add_column_if_missing(&conn, "interaction_matrix_requests", "claude_input", "TEXT")?;
         super::add_column_if_missing(&conn, "interaction_matrix_inbox", "handling", "TEXT")?;
         super::add_column_if_missing(
             &conn,

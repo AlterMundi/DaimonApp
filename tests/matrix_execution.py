@@ -1793,6 +1793,8 @@ class AdapterTests(unittest.TestCase):
 
 
 class AuthenticatedWeHostTests(unittest.TestCase):
+    deliver_followup = False
+
     def test_exact_original_and_signed_same_thread_return(self):
         import socketserver
         import tempfile
@@ -1825,7 +1827,7 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         def deliver(payload, **kwargs):
             return_attempts.append(kwargs["correlation_id"])
             receipt = sdk.lane("legion", at_ms=now + 15).intake(payload)
-            if len(return_attempts) > 1:
+            if len(return_attempts) > 1 and not self.deliver_followup:
                 raise PeerTransportAmbiguous("outcome lost")
             return receipt
 

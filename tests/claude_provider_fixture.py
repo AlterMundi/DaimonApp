@@ -28,11 +28,20 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             assert json.loads(submission)["native_session_id"]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
+            previous = getattr(self.server, "previous_original", None)
             result = [
                 item for message in data["messages"] if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
             ]
-            if prior == 0:
+            if previous is not None:
+                assert prior == 2
+                assert previous in json.dumps(data["messages"])
+                assert ANSWER in json.dumps(data["messages"])
+                assert json.loads(submission)["native_session_id"] == self.server.previous_session
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "I retained the first turn."}
+                reason = "end_turn"
+            elif prior == 0:
                 assert not result
                 block = {"type": "tool_use", "id": "toolu_fixture", "name": TOOL, "input": {}}
                 delta = {"type": "input_json_delta", "partial_json": "{}"}
@@ -46,7 +55,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 delta = {"type": "text_delta", "text": ANSWER}
                 reason = "end_turn"
             message = {
-                "id": "msg_fixture", "type": "message", "role": "assistant", "content": [],
+                "id": f"msg_fixture_{prior}", "type": "message", "role": "assistant", "content": [],
                 "model": data["model"], "stop_reason": None, "stop_sequence": None,
                 "usage": {"input_tokens": 8, "output_tokens": 1},
             }

@@ -80,7 +80,8 @@ export async function runClaudeTurn({
       prompt: prompt(),
       options: {
         abortController, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
-        env: profile.env, model: profile.model, sessionId: input.sessionId,
+        env: profile.env, model: profile.model,
+        ...(input.resume ? { resume: input.sessionId } : { sessionId: input.sessionId }),
         ...(profile.effort ? { effort: profile.effort } : {}),
         maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
         settingSources: [], strictMcpConfig: true, tools: [], allowedTools,
@@ -126,7 +127,11 @@ export async function runClaudeTurn({
       }
       return { phase: 'uncertain', reason: 'claude_result_unqualified', sessionId: input.sessionId };
     }
-  } catch {
+  } catch (error) {
+    if (input.resume && !dispatched && error?.message ===
+        `Claude Code returned an error result: No conversation found with session ID: ${input.sessionId}`) {
+      return { phase: 'not_submitted', reason: 'claude_resume_session_missing' };
+    }
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
     release(false);

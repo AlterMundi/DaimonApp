@@ -62,9 +62,20 @@ observed Matrix `body`. The worker requires that body to match its private
 profile. After the identity and catalog checks, the worker emits
 `prepare_submission` with the native session identity. Gateway records that
 binding and exposure together in the existing journal before returning
-`submission_decision` with `committed: true`. Claude uses the allocated UUID
-as its native session ID. Status presents both identities, including retained
-exposures after a process restart.
+`submission_decision` with `committed: true`. A fresh Claude session uses the
+allocated UUID. For a private Interaction conversation, Gateway can send
+`resume: true` with the previous native session UUID. It selects that UUID
+in the canonical journal only when the last exposed turn in the same
+conversation and Matrix thread returned a signed reply that Interaction
+retained, with the same receiving body and manifest. The original still has
+its own input ID and submission decision. A previous exposure with an
+uncertain result starts a separate native session for the next new original.
+The same applies if Claude reports that the selected native session is missing
+before submission. A new original sent before the previous reply has been
+retained in Interaction starts its own session.
+Manual owner runs and existing unbound transcripts stay isolated. Deploy
+the Gateway and Claude worker from the same revision for resumed turns.
+Status presents both identities, including retained exposures after a restart.
 An absent, rejected or mismatched decision prevents prompt submission. The
 only terminal frame is `outcome`. A missing outcome after a recorded exposure
 keeps the attempt uncertain. A closed owner pipe cancels a running attempt.
@@ -162,6 +173,10 @@ that directs the native CLI only to the loopback Anthropic fixture. It checks
 the actual provider-facing catalog and one Matrix status read, the durable
 exposure decision, the signed return and the sender's original thread. The
 reply remains available after restarting Gateway without another provider call.
+Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
+a new original after restarting Gateway. The loopback provider checks for the
+first turn's prompt and reply in the resumed native session, and Interaction
+reads back the new signed reply.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
