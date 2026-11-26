@@ -293,6 +293,9 @@ conversations.
 The Goose and Antigravity proof profiles expose signed status and the
 owner-selected DMK read. Their observed adapters open a fresh native session
 for each admitted attempt. Gateway retains conversation and attempt history.
+These workers receive the attributed input and return ordinary answer text.
+Gateway associates the answer with the retained instruction. The worker does
+not need to generate the result declaration used by continuing work sessions.
 Claude additionally supports resuming its prior native session under the same
 body and catalog scope. Existing Codex threads remain distinct from portable
 native sessions. Changing a target's configured harness or body leaves prior

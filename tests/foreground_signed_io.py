@@ -280,6 +280,8 @@ operator.main()
                     assert phase == "submitting" and native
                     assert self.server.original in prompt
                     assert '"original_human_author":100' in prompt
+                    assert "Return a plain-language answer to the attributed input." in prompt
+                    assert "Return your answer followed by <daimon-result>" not in prompt
                     self.server.current = ident
                     self.server.exposures.append(ident)
 
