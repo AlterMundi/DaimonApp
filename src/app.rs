@@ -785,7 +785,9 @@ impl App {
             return Ok(());
         }
         if let Some((engine, profile)) = routing::portable_topic(&self.shared, topic_key) {
-            if is_foreign_bot_command(text, self.shared.bot_username().as_deref()) {
+            if !message.has_own_attachment()
+                && is_foreign_bot_command(text, self.shared.bot_username().as_deref())
+            {
                 return Ok(());
             }
             if direct_human_text

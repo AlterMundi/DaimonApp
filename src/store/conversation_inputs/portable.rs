@@ -328,6 +328,7 @@ impl Store {
              WHERE t.id<current.id AND t.from_user_id=?2 AND t.execution_harness=?3
                AND t.execution_generation=current.execution_generation AND
                   (t.native_thread_id IS NOT NULL OR t.execution_native_scope='resume_unavailable')
+               AND NOT (p.phase='claude_rejected' AND json_type(p.doc,'$.subscription_limit') IS 'object')
              ORDER BY t.id DESC LIMIT 1",params![local,input.human,target.harness.name()],
             |r| Ok(PreviousExecution{input_row:r.get(0)?,status:r.get(1)?,native_session:r.get(2)?,
                 scope:r.get(3)?,body:r.get(4)?})).optional()?;
@@ -394,8 +395,7 @@ impl Store {
         &self,
         input: &ConversationInput,
         local: i64,
-        reply: Option<&str>,
-        resume_unavailable: bool,
+        outcome: &Value,
     ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -404,8 +404,18 @@ impl Store {
             current.local_turn == Some(local) && current.portable.is_some(),
             "Portable result belongs to another attempt"
         );
+        let reply = outcome["text"]
+            .as_str()
+            .filter(|_| outcome["phase"] == "completed");
+        let limit = crate::interaction::SubscriptionLimit::from_worker(outcome)
+            .filter(|_| current.phase == "sending");
+        let refused =
+            limit.is_some() && crate::interaction::SubscriptionLimit::refused_before_work(outcome);
+        let resume_unavailable = outcome["phase"] == "not_submitted"
+            && outcome["reason"] == "claude_resume_session_missing";
         let (status, phase) = match (current.phase.as_str(), reply) {
             ("sending", Some(_)) => ("completed", "claude_replied"),
+            ("sending", None) if refused => ("failed", "claude_rejected"),
             ("sending", None) => ("failed", "claude_unconfirmed"),
             ("queued", None) => ("failed", "claude_rejected"),
             _ => bail!("Portable turn is already settled or unexposed"),
@@ -423,6 +433,10 @@ impl Store {
             "UPDATE conversation_inputs SET phase=?1 WHERE id=?2",
             params![phase, input.id],
         )?;
+        if let Some(limit) = limit {
+            tx.execute("UPDATE conversation_inputs SET doc=json_set(doc,'$.subscription_limit',json(?2)) WHERE id=?1",
+                params![input.id, serde_json::to_string(&limit)?])?;
+        }
         tx.execute("UPDATE sessions SET busy=0 WHERE id=?1", [current.session])?;
         tx.commit()?;
         Ok(())

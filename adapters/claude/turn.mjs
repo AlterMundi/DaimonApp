@@ -1,6 +1,9 @@
 // The foreground Claude adapter consumes one already selected Gateway input.
 // The caller owns the Matrix broker and the canonical request journal.
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { bodyMatches } from './matrix-broker.mjs';
 
@@ -23,13 +26,15 @@ async function attachmentBlocks(attachments) {
   let remaining = MAX_INLINE_IMAGE_BYTES;
   for (const { path, mime } of attachments) {
     if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mime)) continue;
-    const file = await open(path, 'r');
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size === 0 || stat.size > remaining) continue;
       const bytes = Buffer.alloc(stat.size);
       const { bytesRead } = await file.read({ buffer: bytes, offset: 0, length: stat.size, position: 0 });
-      if (bytesRead !== stat.size) continue;
+      if (bytesRead !== stat.size || createHash('sha256').update(bytes).digest('hex') !== basename(path)) {
+        throw new Error('Retained image bytes changed before submission');
+      }
       remaining -= bytesRead;
       blocks.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
     } finally {
@@ -132,8 +137,8 @@ export async function runClaudeTurn({
   let reason = 'matrix_identity_unverified';
   let observedLimit, throttle;
   let observedWork = false;
-  const throttled = () => ({ phase: 'subscription_limited', sessionId: input.sessionId,
-    limit: throttle, workObserved: observedWork });
+  const throttled = (terminalObserved) => ({ phase: 'subscription_limited', sessionId: input.sessionId,
+    limit: throttle, workObserved: observedWork, terminalObserved });
 
   async function* prompt() {
     if (!await ready || abortController.signal.aborted) return;
@@ -295,13 +300,13 @@ export async function runClaudeTurn({
         }
       }
       if (event.type !== 'result') continue;
-      if (throttle) return throttled();
       if (event.subtype === 'success' && event.is_error === false
           && event.session_id === input.sessionId
           && typeof event.result === 'string' && event.result.trim()
           && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES) {
         return { phase: 'completed', sessionId: input.sessionId, text: event.result };
       }
+      if (throttle) return throttled(event.is_error === true);
       const budgetExhausted = event.subtype === 'error_max_budget_usd'
         && event.is_error === true && event.session_id === input.sessionId;
       const reason = budgetExhausted ? 'claude_budget_exhausted' : 'claude_result_unqualified';
@@ -312,7 +317,7 @@ export async function runClaudeTurn({
         `Claude Code returned an error result: No conversation found with session ID: ${input.sessionId}`) {
       return { phase: 'not_submitted', reason: 'claude_resume_session_missing' };
     }
-    if (dispatched && throttle) return throttled();
+    if (dispatched && throttle) return throttled(false);
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
     clearTimeout(timer);
@@ -321,7 +326,7 @@ export async function runClaudeTurn({
     native?.close();
     stop.removeEventListener('abort', cancel);
   }
-  if (dispatched && throttle) return throttled();
+  if (dispatched && throttle) return throttled(false);
   return dispatched
     ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: input.sessionId }
     : { phase: 'not_submitted', reason: stop.aborted ? 'cancelled' : reason };

@@ -132,6 +132,8 @@ pub struct ConversationInput {
     pub focus: Option<ConversationFocus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<ConversationRouting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_limit: Option<crate::interaction::SubscriptionLimit>,
     pub phase: String,
     pub local_turn: Option<i64>,
     pub retired: bool,
@@ -1584,6 +1586,7 @@ impl Store {
                 "retained"
             }
             .into(),
+            subscription_limit: None,
             local_turn: None,
             retired: false,
         };
@@ -2172,7 +2175,7 @@ impl Store {
             )?;
             let mut item = serde_json::json!({
                 "received_at":received_at,"id":id,"sequence":sequence,"capture_order":capture,"ordering_unknown":capture.is_none(),"preview":input.text.chars().take(1000).collect::<String>(),
-                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
+                "phase":projected_phase_on(&conn,&input,&self.instance_id)?,"subscription_limit":input.subscription_limit,"local_turn":input.local_turn,"retired":input.retired,"files":input.files,"visual":input.visual,"voice":input.voice,"routing":input.routing,"playback":input.playback,"continuation":super::conversation_routing::continuation_on(&conn,human,entry,&input)?,
                 "clarifiable":input.phase=="awaiting_target" && eligible_on(&conn,&input).is_ok(),
                 "native_binding_current":if input.portable.is_some() { !input.retired } else { input.native==native },
             });

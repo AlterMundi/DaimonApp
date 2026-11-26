@@ -816,6 +816,12 @@ impl SubscriptionLimit {
         })
     }
 
+    pub(crate) fn refused_before_work(outcome: &serde_json::Value) -> bool {
+        outcome["phase"] == "subscription_limited"
+            && outcome["workObserved"].as_bool() == Some(false)
+            && outcome["terminalObserved"].as_bool() == Some(true)
+    }
+
     pub(crate) fn message(&self) -> String {
         let window = match self.window.as_deref() {
             Some("five_hour") => "5-hour usage limit",
