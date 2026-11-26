@@ -3,21 +3,20 @@
 import { bodyMatches } from './matrix-broker.mjs';
 
 const SERVER = 'matrix';
+const DMK_TOOLS = ['dmk_recall', 'hmk_recall'];
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const MAX_INPUT_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
 
-function catalogMatches(status, expectedTools) {
-  if (!Array.isArray(status) || status.length !== 1) return false;
-  const server = status[0];
-  if (server.name !== SERVER || server.source !== 'sdk' || server.status !== 'connected') {
-    return false;
-  }
-  if (!Array.isArray(server.tools) || server.tools.length !== expectedTools.length) {
-    return false;
-  }
-  const names = server.tools.map(({ name }) => name).sort();
-  return [...expectedTools].sort().every((name, index) => name === names[index]);
+function catalogMatches(status, expected) {
+  return Array.isArray(status) && status.length === expected.length
+    && expected.every(({ name, source, tools }) => {
+      const server = status.find(item => item.name === name);
+      if (server?.source !== source || server.status !== 'connected'
+          || !Array.isArray(server.tools) || server.tools.length !== tools.length) return false;
+      const names = server.tools.map(tool => tool.name).sort();
+      return [...tools].sort().every((tool, index) => tool === names[index]);
+    });
 }
 
 /**
@@ -63,6 +62,7 @@ export async function runClaudeTurn({
     if (abortController.signal.aborted) return;
     yield {
       type: 'user', uuid: input.id, session_id: input.sessionId, parent_tool_use_id: null,
+      client_composed: true,
       message: { role: 'user', content: input.text },
     };
   }
@@ -75,7 +75,13 @@ export async function runClaudeTurn({
       return { phase: 'not_submitted', reason: 'matrix_identity_mismatch' };
     }
     reason = 'claude_catalog_unverified';
-    const allowedTools = toolNames.map(name => `mcp__${SERVER}__${name}`);
+    const expected = [{ name: SERVER, source: 'sdk', tools: toolNames }];
+    const mcpServers = { [SERVER]: broker.server };
+    if (profile.sharedDmk) {
+      expected.push({ name: 'hmk', source: 'dynamic', tools: DMK_TOOLS });
+      mcpServers.hmk = profile.sharedDmk;
+    }
+    const allowedTools = expected.flatMap(({ name, tools }) => tools.map(tool => `mcp__${name}__${tool}`));
     native = query({
       prompt: prompt(),
       options: {
@@ -95,8 +101,8 @@ export async function runClaudeTurn({
           ].join(' '),
         },
         maxTurns: profile.maxTurns, maxBudgetUsd: profile.maxBudgetUsd,
-        settingSources: [], strictMcpConfig: true, tools: [], allowedTools,
-        mcpServers: { [SERVER]: broker.server }, permissionMode: 'dontAsk',
+        settingSources: [], settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
+        strictMcpConfig: true, tools: [], allowedTools, mcpServers, permissionMode: 'dontAsk',
         permissionPrompts: 'none', persistSession: profile.persistSession === true,
       },
     });
@@ -111,7 +117,7 @@ export async function runClaudeTurn({
         return { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' };
       }
     }
-    if (!catalogMatches(await native.mcpServerStatus(), toolNames)) {
+    if (!catalogMatches(await native.mcpServerStatus(), expected)) {
       return { phase: 'not_submitted', reason: 'claude_catalog_mismatch' };
     }
     reason = 'matrix_identity_unverified';

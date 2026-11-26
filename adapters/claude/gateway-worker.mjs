@@ -1,6 +1,8 @@
 // One foreground turn on a Gateway-owned pair of pipes.
 import { execFile } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -19,8 +21,9 @@ async function ownerProfile(path) {
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
+  const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
+      'cliVersion', 'model', ...effort, ...displayName, ...memory, 'maxBudgetUsd', 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
@@ -40,6 +43,33 @@ async function ownerProfile(path) {
     throw new Error('Invalid owner profile');
   }
   return value;
+}
+
+async function sharedDmkServer(profile, retainDirectory) {
+  if (!Object.hasOwn(profile, 'sharedDmk')) return undefined;
+  if (!closed(profile.sharedDmk, ['command', 'bindingFile', 'bodyRef'])) {
+    throw new Error('Invalid shared DMK selection');
+  }
+  const { command, bindingFile, bodyRef } = profile.sharedDmk;
+  if (!Array.isArray(command) || command.length < 2 || command.length > 8
+      || !command.every(value => typeof value === 'string' && value.length > 0 && value.length <= 4096)
+      || !isAbsolute(command[0]) || typeof bindingFile !== 'string' || !isAbsolute(bindingFile)
+      || typeof bodyRef !== 'string' || bodyRef.length < 1 || bodyRef.length > 240) {
+    throw new Error('Invalid shared DMK selection');
+  }
+  const bytes = await privateBytes(bindingFile, 16 * 1024);
+  const binding = JSON.parse(bytes);
+  if (binding?.schema !== 'hmk.deep-recall.binding/v1'
+      || binding.being_ref !== profile.body.beingRef || binding.body_ref !== bodyRef) {
+    throw new Error('Shared DMK differs from selected body or being');
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'daimon-claude-dmk-'));
+  retainDirectory(directory);
+  const snapshot = join(directory, 'binding.json');
+  await writeFile(snapshot, bytes, { mode: 0o600, flag: 'wx' });
+  return { type: 'stdio', command: '/usr/bin/env',
+    args: ['-i', 'PATH=/usr/bin:/bin', `HOME=${profile.home}`, ...command, '--binding', snapshot],
+    alwaysLoad: true };
 }
 
 async function providerEnvironment(profile, signal) {
@@ -72,6 +102,7 @@ async function main() {
   const timeout = setTimeout(() => stop.abort(), 125_000);
   stop.signal.addEventListener('abort', () => process.stdin.destroy(), { once: true });
   const input = frames(process.stdin);
+  let dmkDirectory;
   try {
     const profile = await ownerProfile(path);
     const first = (await input.next()).value;
@@ -100,6 +131,7 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
+    const sharedDmk = await sharedDmkServer(profile, directory => { dmkDirectory = directory; });
     const broker = createMatrixStatusBroker({
       command: profile.matrixStatusCommand, expectedBody,
       createSdkMcpServer, tool, signal: stop.signal,
@@ -111,7 +143,8 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        persistSession: true, maxTurns: 2,
+        sharedDmk,
+        persistSession: true, maxTurns: sharedDmk ? 6 : 2,
         maxBudgetUsd: profile.maxBudgetUsd, env,
       },
       async beforeSubmit(inputId, sessionId) {
@@ -132,6 +165,7 @@ async function main() {
   } finally {
     clearTimeout(timeout);
     process.stdin.destroy();
+    if (dmkDirectory) await rm(dmkDirectory, { recursive: true, force: true });
   }
 }
 

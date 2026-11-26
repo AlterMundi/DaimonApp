@@ -222,6 +222,18 @@ operator.main()
                 if memory:
                     config["selectedMemory"] = memory
                 command = configure_worker(engine, executable, root, state, profile, provider.server_port, config)
+                if interaction and scripts:
+                    python = os.environ.get("CLAUDE_TEST_DMK_PYTHON", sys.executable)
+                    selected, _ = selected_memory(root, python, scripts, being, provider.current, engine)
+                    config["sharedDmk"] = {
+                        "command": selected["command"][:-2],
+                        "bindingFile": selected["command"][-1],
+                        "bodyRef": selected["bodyRef"],
+                    }
+                    provider.dmk_marker = foreground.MARKER
+                    provider.dmk_record = {"action": "read", "pool": selected["pool"],
+                                           "record_uid": selected["recordUid"],
+                                           "expected_revision": selected["revision"]}
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction:
@@ -412,5 +424,7 @@ if __name__ == "__main__":
     if interaction:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
         sys.path.insert(0, str(foreground.ROOT))
-    raise SystemExit(qualify(engine, gateway, executable, Path(sys.argv[4]) if engine != "claude" else None,
+    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
+    scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
+    raise SystemExit(qualify(engine, gateway, executable, scripts,
                             interaction=interaction))

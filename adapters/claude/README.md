@@ -35,6 +35,19 @@ Set optional `displayName` to the owner-selected human-readable name for the
 verified Matrix body. The native system prompt identifies the harness and this
 display name. Device status and body coordinates still come from the authenticated
 Matrix broker. The prompt does not grant memory, tools or skills.
+
+`sharedDmk` selects the existing being-level DMK reader for normal private
+Claude turns. Set `command` to the installed DMK stdio reader invocation
+without `--binding`, `bindingFile` to the owner-local binding for this Claude
+body, and `bodyRef` to that binding's body reference. The binding may point to
+the same authorized DMK pools used by the Codex body. The worker checks the
+being and body in the owner-provisioned binding and opens those exact bytes
+for the native connector. It requires both DMK recall names in the effective
+tool catalog before releasing the original. Claude's own
+automatic memory and dreaming are disabled for this route.
+The worker submits signed text literally. The CLI does not expand file
+mentions or dispatch slash commands from Matrix originals.
+
 Select one authentication mode in the owner profile:
 
 - For a private Claude Code subscription, set `subscriptionEmail` to the exact
@@ -54,7 +67,8 @@ Source content cannot select these settings. See
 [Claude plan usage with the Agent SDK](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 Set `maxBudgetUsd` to the owner-approved SDK estimate for one invocation. The
-worker permits up to two agent turns for the one read tool and reply. The SDK
+worker permits up to two agent turns for the status-only route, or six with
+shared DMK for search and paged reads. The SDK
 estimate can overrun its limit, so applicable provider-side limits still control
 spend. [Anthropic authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use) ·
 [Agent SDK options](https://code.claude.com/docs/en/agent-sdk/typescript#options)
@@ -181,6 +195,8 @@ Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
 a new original after restarting Gateway. The loopback provider checks for the
 first turn's prompt and reply in the resumed native session, and Interaction
 reads back the new signed reply.
+Set `CLAUDE_TEST_DMK_SCRIPTS` and, if needed, `CLAUDE_TEST_DMK_PYTHON` to run
+that fixture with the native DMK stdio recall server over a disposable pool.
 
 For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with

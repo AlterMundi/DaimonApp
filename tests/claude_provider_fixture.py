@@ -5,6 +5,7 @@ import json
 
 
 TOOL = "mcp__matrix__daimon_status"
+DMK = ["mcp__hmk__dmk_recall", "mcp__hmk__hmk_recall"]
 ANSWER = "The selected Matrix body reported integrity ok."
 
 
@@ -21,7 +22,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             system = json.dumps(data["system"], ensure_ascii=False)
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
-            assert [tool["name"] for tool in data["tools"]] == [TOOL]
+            memory = getattr(self.server, "dmk_record", None)
+            assert sorted(tool["name"] for tool in data["tools"]) == sorted([TOOL, *DMK] if memory else [TOOL])
             assert self.server.original in json.dumps(data["messages"])
             phase, submission = self.server.journey.row(
                 "SELECT phase, submission FROM interaction_matrix_requests WHERE source_event=?",
@@ -46,14 +48,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 reason = "end_turn"
             elif prior == 0:
                 assert not result
-                block = {"type": "tool_use", "id": "toolu_fixture", "name": TOOL, "input": {}}
-                delta = {"type": "input_json_delta", "partial_json": "{}"}
+                block = {"type": "tool_use", "id": "toolu_fixture", "name": DMK[0] if memory else TOOL, "input": {}}
+                delta = {"type": "input_json_delta", "partial_json": json.dumps(memory or {})}
                 reason = "tool_use"
             else:
                 assert prior == 1 and len(result) == 1
                 assert result[0]["tool_use_id"] == "toolu_fixture"
                 assert result[0].get("is_error") is not True
-                assert self.server.body in json.dumps(result[0]["content"])
+                assert (self.server.dmk_marker if memory else self.server.body) in json.dumps(result[0]["content"])
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
                 reason = "end_turn"
