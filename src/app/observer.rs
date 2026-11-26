@@ -522,7 +522,7 @@ fn portfolio_evidence(o: crate::store::SessionObservation, detailed: bool) -> se
     } else {
         vec![]
     };
-    serde_json::json!({"sampled_at":o.sampled_at,"native":o.native_thread,
+    serde_json::json!({"sampled_at":o.sampled_at,"native":o.native_thread,"execution":o.execution,
         "semantic":semantic,"pending_human_items":o.pending.pending_total,
         "actionable_human_items":o.pending.actionable_total,"human_items":pending,
         "human_items_bounded":detailed && o.pending.actionable_total>8,
@@ -620,13 +620,7 @@ pub(super) fn tool_owner(
     if cfg.entry() != key || cfg.human_id != human {
         bail!("Tool is outside the integrating conversation");
     }
-    let observed = shared
-        .store
-        .interaction_observation(key, human)?
-        .context("Entry is no longer owned")?;
-    if observed.native_thread.as_deref() != Some(native) {
-        bail!("Entry native binding changed");
-    }
+    shared.store.validate_owned_binding(key, human, native)?;
     Ok(())
 }
 

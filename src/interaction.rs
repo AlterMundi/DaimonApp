@@ -112,11 +112,13 @@ pub(crate) enum ForegroundEngine {
 
 impl ForegroundEngine {
     pub(crate) fn name(self) -> &'static str {
+        use crate::execution::Harness;
         match self {
-            Self::Claude => "claude",
-            Self::Goose => "goose",
-            Self::Antigravity => "antigravity",
+            Self::Claude => Harness::Claude,
+            Self::Goose => Harness::Goose,
+            Self::Antigravity => Harness::Antigravity,
         }
+        .name()
     }
 }
 

@@ -39,6 +39,7 @@ pub use heartbeat::{
     HeartbeatCommand, HeartbeatInboxSource, HeartbeatProducerContract, HeartbeatPurpose,
     HeartbeatResources, HeartbeatReviewContract, HeartbeatReviewTask,
 };
+mod execution;
 mod interaction;
 mod interactions;
 mod live_context;
@@ -761,17 +762,12 @@ impl Store {
 
     /// Exact owner/native binding for owner-local lifecycle operations.
     pub fn validate_owned_binding(&self, key: SessionKey, human: i64, native: &str) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let valid: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
-             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
-             AND s.codex_thread_id=?4 AND s.force_fresh_thread=0)",
-            params![key.chat_id, key.thread_id, human, native],
-            |r| r.get(0),
-        )?;
-        if !valid {
-            anyhow::bail!("Selected session owner or native binding changed");
-        }
+        use crate::execution::Harness;
+        anyhow::ensure!(
+            self.execution_binding(key, human)?
+                .is_some_and(|binding| binding.matches(Harness::Codex, native)),
+            "Selected session owner or native binding changed"
+        );
         Ok(())
     }
 
@@ -1139,18 +1135,9 @@ impl Store {
         key: SessionKey,
         human: i64,
     ) -> Result<String> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.query_row(
-            "SELECT t.native_thread_id FROM turns t JOIN sessions s ON s.id=t.session_id
-            JOIN users u ON u.tg_user_id=s.creator_user_id
-            WHERE t.id=?1 AND t.from_user_id=?2 AND t.status='running' AND t.completed_at IS NULL
-            AND s.chat_id=?3 AND s.thread_id=?4 AND s.creator_user_id=?2 AND u.allowed=1
-            AND s.force_fresh_thread=0 AND s.codex_thread_id=t.native_thread_id",
-            params![local, human, key.chat_id, key.thread_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .context("Controller execution or native binding changed")
+        self.controller_execution(local, key, human)?
+            .native_session
+            .context("Controller execution has no native session")
     }
 
     pub fn record_turn_native_thread(&self, turn_id: i64, thread: &str) -> Result<()> {

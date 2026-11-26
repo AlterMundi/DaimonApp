@@ -12,6 +12,7 @@ pub struct ObservedDelivery {
 pub struct SessionObservation {
     pub sampled_at: String,
     pub session_id: i64,
+    pub(crate) execution: crate::execution::ExecutionBinding,
     pub native_thread: Option<String>,
     pub input_cut: i64,
     pub latest_input: Option<Instruction>,
@@ -33,13 +34,12 @@ impl Store {
     ) -> Result<Option<SessionObservation>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let binding: Option<(i64, Option<String>)> = tx.query_row(
-            "SELECT s.id,s.codex_thread_id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1",
-            params![key.chat_id,key.thread_id,human], |r| Ok((r.get(0)?,r.get(1)?)),
-        ).optional()?;
-        let Some((session_id, native_thread)) = binding else {
+        let Some(binding) = super::execution::binding_on(&tx, key, human)? else {
             return Ok(None);
         };
+        let execution = binding.execution;
+        let session_id = execution.conversation_id;
+        let native_thread = binding.legacy_native_session;
         let input: Option<(String, String)> = tx.query_row(
             "SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 ORDER BY i.sequence DESC LIMIT 1",
             params![session_id,human], |r| Ok((r.get(0)?,r.get(1)?)),
@@ -105,6 +105,7 @@ impl Store {
         Ok(Some(SessionObservation {
             sampled_at,
             session_id,
+            execution,
             native_thread,
             input_cut,
             latest_input,

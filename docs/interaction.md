@@ -164,6 +164,24 @@ have passed receiving acceptance and existing installations have a migration
 path. The MIT license retains the upstream copyright and Telecodex provenance.
 No separate repository or second durable store is required for the cutover.
 
+### Logical conversations and native execution
+
+Use the existing Gateway conversation ID to identify the owned conversation.
+An execution binding separately reports its harness, current native session
+if established, and conversation revision. Native IDs are opaque within the
+selected harness. A local conversation exists before a native session does.
+For Codex, the compatibility reader derives the binding from the existing
+session and generation records. The Observer and live controller check the
+same ownership and binding. An old thread retained while a conversation is
+reset remains historical evidence without conferring execution authority.
+
+The compatibility reader does not change routing or create a new native
+workspace. Subsequent adapters should feed the same Gateway binding and attempt
+lifecycle. Keep API projections and recovery keyed to the original execution
+when a new harness is selected for future work. Follow the
+[first-class harness contract](https://github.com/AlterMundi/daimon-matrix/issues/497#issuecomment-7182907326)
+for common dispatch, Observer and controller acceptance.
+
 ### Qualify a private Matrix foreground route
 
 Select a signed sibling body and the approved model account in the existing
