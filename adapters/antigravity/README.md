@@ -49,9 +49,11 @@ challenge is answered in a disposable native session without contacting the
 selected model endpoint. The final session uses the journal-selected UUID.
 The local SDK receives the exact original to materialize its native session.
 The gate holds that request while the worker verifies the native ID, Matrix
-binding and Gateway journal decision. The selected provider receives it only
-after that decision. Each subsequent provider request must carry the exact
-original and the same tool catalog. One follow-up
+binding and reachability of the selected loopback listener. A refused or timed-out
+connection before Gateway's submission decision is a known unsent turn.
+The connection check sends no HTTP request or original text. The selected
+provider receives the input only after Gateway's decision. Each subsequent
+provider request must carry the exact original and the same tool catalog. One follow-up
 is permitted after one approved observation. Failure after commit is
 uncertain and never triggers resubmission.
 

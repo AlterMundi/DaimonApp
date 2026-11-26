@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import socket
 import sys
 from threading import Event, Thread
 from uuid import uuid4
@@ -172,7 +173,7 @@ timeout_seconds=5
     j.wait_control_socket(j.socket)
     thread = str(uuid4())
 
-    def select(mode):
+    def select(mode, *, provider_port=None):
         selected = str(uuid4())
         original = dict(event_id=selected, author="fixture-sender", thread_id=thread, cursor=None)
         memory = dict(command=command, inputId=selected, pool="main", recordUid=RECORD,
@@ -180,6 +181,8 @@ timeout_seconds=5
         config = {**settings, "selectedMemory": memory}
         if mode == "mismatched":
             config["body"] = {**body, "incarnationId": "another-incarnation"}
+        if provider_port is not None:
+            config["providerPort"] = provider_port
         profile.write_text(json.dumps(config))
         provider.current = selected
         provider.mode = mode
@@ -188,14 +191,20 @@ timeout_seconds=5
     def run(original):
         return j.read("matrix", "antigravity", "run", json.dumps(original))["result"]
 
-    def attempt(mode):
-        original = select(mode)
+    def attempt(mode, *, provider_port=None):
+        original = select(mode, provider_port=provider_port)
         outcome = run(original)
         assert provider.failure is None, provider.failure
         return original, outcome
 
     _, refused = attempt("mismatched")
     assert refused["phase"] == "rejected" and provider.calls == [] and not effects.exists(), refused
+    with socket.socket() as offline:
+        offline.bind(("127.0.0.1", 0))
+        _, refused = attempt("offline", provider_port=offline.getsockname()[1])
+    assert refused["phase"] == "rejected", refused
+    assert refused["result"]["reason"] == "antigravity_provider_unavailable", refused
+    assert provider.calls == [] and not effects.exists(), refused
     first, delivered = attempt("accepted")
     assert delivered["phase"] == "delivered", delivered
     assert delivered["native_session_id"] == delivered["session_id"]
