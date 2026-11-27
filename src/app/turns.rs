@@ -1070,6 +1070,9 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeMessageDraft {started,completed,thread_id,turn_id:native_turn,item_id,text} => {
+                                if started {
+                                    shared.store.freeze_private_handoff(turn_id,&thread_id)?;
+                                }
                                 if shared.config.interaction.as_ref().is_some_and(|c|c.entry()==session_key && c.human_id==requester_user_id) {
                                     // Display failure cannot interrupt native work or authorize replay.
                                     let _=shared.store.interaction_response_draft(requester_user_id,session_key,turn_id,&thread_id,&native_turn,&item_id,&text,started,completed);
