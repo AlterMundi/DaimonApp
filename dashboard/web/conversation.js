@@ -883,10 +883,17 @@ window.Conversation = (() => {
     draftStatus.append(draftNote,draftPrimary,draftOther);
     const draftState=readOnly?undefined:window.ConversationSurface?.mountDraft?.({field:draft,api,
       busy:()=>posting||captureBusy||!!transcriptPreview,
-      async check(id){
+      async check(id,text){
         const owned=inputGeneration,selected=inputBinding;
-        const receipt=await api(`interaction/inputs/${encodeURIComponent(id)}`);
-        if(owned===inputGeneration&&selected===inputBinding)return draftReceipt(receipt);
+        const result=await api(`interaction/inputs/${encodeURIComponent(id)}`);
+        if(owned!==inputGeneration||!selected||selected!==inputBinding||result.id!==id||!result.phase)return;
+        const receipt=draftReceipt(result);
+        if(receipt.binding!==selected)return;
+        // The exact confirmed original may no longer be in the loaded history
+        // window. Project it before the draft receipt releases the composer.
+        if(!latestComposerId)latestComposerId=id;
+        inputCard({...receipt,text},++inputObservation,selected);
+        return receipt;
       },
       async retry(original){
         if(posting||captureBusy||!ready||original.binding!==binding||inputBinding!==binding)return;
@@ -896,7 +903,8 @@ window.Conversation = (() => {
         const receipt=draftReceipt(result);
         if(receipt.binding!==original.binding)return;
         hostSurface?.status(result);
-        inputCard(result,++inputObservation,original.binding);
+        if(!latestComposerId)latestComposerId=original.id;
+        inputCard({...receipt,text:original.text},++inputObservation,original.binding);
         return receipt;
       },
       show(state,primary,other){
