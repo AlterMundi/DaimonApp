@@ -13,7 +13,7 @@ from .provider import ProviderUnavailable
 from scripts.speech_render import RenderError
 
 
-def install(app,config,provider,authorize,origins,mission_host=None,*,dedicated_speech=False):
+def install(app,config,provider,authorize,origins,mission_host=None):
     store=AvatarWorkshop(config['state_dir'])
     app.state.avatar_workshop=store
     # Only the shipped MIT editor/modules are public. Account revisions never
@@ -88,8 +88,7 @@ def install(app,config,provider,authorize,origins,mission_host=None,*,dedicated_
         value=await call(request,store.voice_snapshot)
         profiles=configured_profiles(config)
         return {**value,'profiles':profiles,'profile_source':'receiving_configuration',
-                'audition_available':previews.available(await owner(request)),
-                'selection_scope':'next_live_conversation' if dedicated_speech else 'next_logical_conversation',
+                'audition_available':previews.available(await owner(request)),'selection_scope':'next_logical_conversation',
                 'message':None if profiles else 'OpenAI voice is not configured for this account.'}
 
     @app.post('/api/interaction/avatars/voice')

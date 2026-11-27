@@ -53,25 +53,15 @@ legacy streaming-transcription route and retain the separately qualified OpenAI
 transcription profile. This changes no native model or other conversation.
 
 The canonical stream emits validated mono24kHz PCM16 before response completion.
+Realtime inherits the read-aloud instruction from the session. The response
+does not repeat it or select a different voice. With no saved delivery
+override, the built-in voice uses the provider's default voice settings.
+OpenAI's maintained [speech route](https://developers.openai.com/api/docs/guides/text-to-speech)
+uses Realtime for this model.
 Verified cache hits reuse the exact completed source/voice identity without a
 global scan. Admission, prepared media, retention and unknown outcomes remain
 bounded as described below. Saved Live voices keep their own compatible WAV
 transport and history; do not silently replace them with this default.
-
-For stock voice delivery, select `provider: "openai-tts"` and a supported
-`gpt-4o-mini-tts` model in the same owner binding after confirming the selected
-project has access to `/v1/audio/speech`. Keep the existing paired credential
-and cache. Use a built-in voice and omit all tuning keys. In the dashboard,
-set `streaming_output`, `word_timestamps` and `live_response` to false for
-that binding. Ordinary Conversation reads use the stock voice even when a saved
-Live delivery profile exists. Avatar and Voice Studio retain their separate
-Live profiles. A shared voice name does not imply identical audio across models.
-
-The dedicated route sends the model, selected voice, spoken text and PCM format.
-It wraps the bounded provider PCM in the existing verified WAV response. A
-provider rejection is retained under the same render identity and does not
-trigger a fallback or a second synthesis. Keep the confirmed receiving profile
-selected when the configured project has no dedicated TTS access.
 
 ## Historical provider formats — retained recovery only
 
