@@ -544,6 +544,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn begin_update(&self, update_id: i64) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let changed = conn.execute(
