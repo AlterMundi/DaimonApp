@@ -230,6 +230,33 @@ def body_status(value, client, *, timeout=10):
     }
 
 
+def _legacy_we_pages(client, thread_id, cursor):
+    # A legacy daemon can filter by thread before applying its limit. Prefer
+    # that bounded read when no local intake cursor was supplied.
+    if cursor is None:
+        _, response = client.invoke("we.conversation.page", {"limit": 32, "thread_id": thread_id})
+        page = response.get("result", {}) if response.get("ok") is True else {}
+        if page.get("schema") != "dm.we.conversation-page/v1":
+            raise MatrixExecutionError("Same-being conversation unavailable")
+        yield page["entries"]
+        if not page["more"]:
+            return
+    for _ in range(16):
+        _, response = client.invoke(
+            "we.conversation.page", {"cursor": cursor, "limit": 4, "thread_id": thread_id}
+        )
+        page = response.get("result", {}) if response.get("ok") is True else {}
+        if page.get("schema") != "dm.we.conversation-page/v2":
+            raise MatrixExecutionError("Same-being conversation unavailable")
+        yield page["entries"]
+        if not page["more"]:
+            return
+        next_cursor = text(page["cursor"], 2048)
+        if next_cursor == cursor:
+            return
+        cursor = next_cursor
+
+
 def we_original(original, local_body, client):
     """Resolve one selected event and this body's semantic intake receipt."""
     closed(original, ("author", "cursor", "event_id", "thread_id"))
@@ -241,18 +268,27 @@ def we_original(original, local_body, client):
     cursor = original["cursor"]
     if cursor is not None:
         text(cursor, 2048)
+    selected = dict(event_id=event_id, author=author, thread_id=thread_id)
+    _, response = client.invoke("we.conversation.page", {"selected_original": selected})
+    if response.get("ok") is True:
+        page = response.get("result") or {}
+        if page.get("schema") != "dm.we.selected-original/v1":
+            raise MatrixExecutionError("Same-being conversation unavailable")
+        original = page.get("original")
+        if original is None:
+            raise MatrixExecutionError("Selected same-being original and intake receipt unavailable")
+        closed(original, ("author", "event_id", "receipt_event_id", "text", "thread_id"))
+        if any(original[k] != v for k, v in selected.items()):
+            raise MatrixExecutionError("Same-being conversation differs from selection")
+        return {**selected, "receipt_event_id": identifier(original["receipt_event_id"]),
+                "text": text(original["text"])}
+    if (response.get("error") or {}).get("code") != "invalid_params":
+        raise MatrixExecutionError("Same-being conversation unavailable")
+
     message = None
     receipt = None
-    # A fresh demo thread starts from an owner-selected cursor. Only the
-    # selected thread is read, with no durable frontier advancement.
-    for _ in range(16):
-        _, response = client.invoke(
-            "we.conversation.page", {"cursor": cursor, "limit": 4, "thread_id": thread_id}
-        )
-        page = response.get("result", {}) if response.get("ok") is True else {}
-        if page.get("schema") != "dm.we.conversation-page/v2":
-            raise MatrixExecutionError("Same-being conversation unavailable")
-        for entry in page["entries"]:
+    for entries in _legacy_we_pages(client, thread_id, cursor):
+        for entry in entries:
             if entry["thread_id"] != thread_id:
                 raise MatrixExecutionError("Same-being conversation differs from selection")
             if (entry["event_id"] == event_id and entry["kind"] == "message"
@@ -262,19 +298,7 @@ def we_original(original, local_body, client):
                     and entry["message_id"] == event_id and entry["outcome"] == "delivered"):
                 receipt = identifier(entry["event_id"])
         if message is not None and receipt is not None:
-            return {
-                "event_id": event_id,
-                "author": author,
-                "thread_id": thread_id,
-                "receipt_event_id": receipt,
-                "text": message,
-            }
-        if not page["more"]:
-            break
-        next_cursor = text(page["cursor"], 2048)
-        if next_cursor == cursor:
-            break
-        cursor = next_cursor
+            return {**selected, "receipt_event_id": receipt, "text": message}
     raise MatrixExecutionError("Selected same-being original and intake receipt unavailable")
 
 

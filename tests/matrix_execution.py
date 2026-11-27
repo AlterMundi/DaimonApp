@@ -44,6 +44,7 @@ from matrix_operator import send as operator_send
 from matrix_operator import we_baseline as operator_we_baseline
 from matrix_operator import we_conversation as operator_we_conversation
 from matrix_operator import we_origin as operator_we_origin
+from matrix_operator import we_original as operator_we_original
 from tests.test_execution_instruction import request
 
 from tests import test_dm025_client as client_fixtures
@@ -1793,6 +1794,32 @@ class AdapterTests(unittest.TestCase):
 
 
 class AuthenticatedWeHostTests(unittest.TestCase):
+    def test_legacy_selection_starts_with_the_requested_thread(self):
+        event_id, thread_id, receipt_id = (str(uuid.uuid4()) for _ in range(3))
+        selected = dict(event_id=event_id, thread_id=thread_id, author="sibling")
+        client = SimpleNamespace(invoke=None)
+        calls = []
+
+        def invoke(method, params):
+            self.assertEqual(method, "we.conversation.page")
+            calls.append(params)
+            if len(calls) == 1:
+                return None, {"ok": False, "error": {"code": "invalid_params"}}
+            return None, {"ok": True, "result": {
+                "schema": "dm.we.conversation-page/v1",
+                "more": False,
+                "entries": [
+                    {**selected, "kind": "message", "addressees": ["local"], "text": "Test"},
+                    {"thread_id": thread_id, "event_id": receipt_id, "kind": "receipt",
+                     "author": "local", "message_id": event_id, "outcome": "delivered"},
+                ],
+            }}
+
+        client.invoke = invoke
+        self.assertEqual(operator_we_original({**selected, "cursor": None}, "local", client),
+                         {**selected, "receipt_event_id": receipt_id, "text": "Test"})
+        self.assertEqual(calls, [{"selected_original": selected}, {"limit": 32, "thread_id": thread_id}])
+
     deliver_followup = False
 
     def test_exact_original_and_signed_same_thread_return(self):
