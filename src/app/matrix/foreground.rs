@@ -140,6 +140,7 @@ pub(super) async fn run_selected(
             workspace: None,
             history_seed: None,
             project_checkpoint: None,
+            require_recovery_context: false,
             text: &text,
             attachments: &[],
             body,
