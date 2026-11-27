@@ -16,6 +16,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
+    pub workspace: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
@@ -28,6 +29,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
 pub(in crate::app) struct WorkerSteering<'a> {
     app: &'a super::App,
     root: &'a crate::interaction::Instruction,
+    workspace: &'a std::path::Path,
     active: super::ActiveTurnSteerHandle,
     receiver: tokio::sync::mpsc::UnboundedReceiver<crate::codex::CodexSteerRequest>,
     sent: Vec<(
@@ -115,6 +117,7 @@ pub(in crate::app) async fn execute_worker(
         routed_human,
         routed_host_access,
         session_instructions,
+        workspace,
         history_seed,
         text,
         attachments,
@@ -172,6 +175,16 @@ pub(in crate::app) async fn execute_worker(
             }
             if let Some(instructions) = session_instructions {
                 start["sessionInstructions"] = json!(instructions);
+            }
+            if let Some(workspace) = workspace {
+                let path = workspace
+                    .to_str()
+                    .context("Selected Claude workspace is not UTF-8")?;
+                anyhow::ensure!(
+                    workspace.is_absolute() && path.len() <= 4096,
+                    "Invalid Claude workspace"
+                );
+                start["workspace"] = json!(path);
             }
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
@@ -234,6 +247,14 @@ pub(in crate::app) async fn execute_worker(
             let mut prepared = json!({"native_session_id":selected});
             if engine == ForegroundEngine::Claude {
                 prepared["native_session_scope"] = frame["sessionScope"].clone();
+                let requested = workspace.and_then(std::path::Path::to_str);
+                anyhow::ensure!(
+                    frame["workspace"].as_str() == requested,
+                    "Claude preparation omitted or changed the selected workspace"
+                );
+                if let Some(path) = requested {
+                    prepared["workspace"] = json!(path);
+                }
             }
             let committed = commit(prepared)?;
             if committed {
@@ -481,7 +502,8 @@ impl WorkerSteering<'_> {
                 self.app.shared.store.routed_claude_steer_allowed(
                     self.root,
                     self.active.turn_id,
-                    id
+                    id,
+                    self.workspace
                 )?,
                 "Claude steering admission changed"
             );
@@ -640,6 +662,7 @@ pub(super) async fn run_portable_turn(
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
+                workspace: None,
                 history_seed: None,
                 text: &input.text,
                 attachments: &[],
@@ -736,6 +759,7 @@ pub(super) async fn run_routed_portable(
             WorkerSteering {
                 app,
                 root: input,
+                workspace: session.cwd.as_path(),
                 active: super::ActiveTurnSteerHandle {
                     harness: Harness::Claude,
                     turn_id: local,
@@ -786,6 +810,8 @@ pub(super) async fn run_routed_portable(
                 routed_human: !direct_original,
                 routed_host_access: routed_host_access && !direct_original,
                 session_instructions: session.session_prompt.as_deref(),
+                workspace: (engine == ForegroundEngine::Claude && routed_host_access)
+                    .then_some(session.cwd.as_path()),
                 history_seed: history_seed.as_ref(),
                 text: &request.prompt,
                 attachments: &request.attachments,
@@ -799,7 +825,7 @@ pub(super) async fn run_routed_portable(
                     return Ok(false);
                 }
                 if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
-                    .is_some_and(|current| current.id == session.id && current.session_prompt == session.session_prompt)
+                    .is_some_and(|current| current.id == session.id && current.cwd == session.cwd && current.session_prompt == session.session_prompt)
                 {
                     return Ok(false);
                 }

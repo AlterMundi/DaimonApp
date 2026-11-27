@@ -449,11 +449,12 @@ async function main() {
   const input = frames(process.stdin);
   let scratch;
   try {
-    const profile = await ownerProfile(path);
+    let profile = await ownerProfile(path);
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
+    const workspace = first?.workspace;
     const historySeed = first?.historySeed;
     const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
       && typeof historySeed.source === 'string'
@@ -476,7 +477,10 @@ async function main() {
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
+      ...(workspace === undefined ? [] : ['workspace']),
       ...(historySeed === undefined ? [] : ['historySeed'])])
+      || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
+        || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
       || (historySeed !== undefined && (!fullAccess
         || (!exactQuote && (!closed(historySeed, ['turn', 'human', 'assistant'])
           || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
@@ -509,6 +513,24 @@ async function main() {
       throw new Error('Invalid foreground start');
     }
     const correlation = { schema: VERSION, inputId: first.inputId, sessionId: first.sessionId };
+    const profileCwd = profile.cwd;
+    async function directoryIdentity(directory) {
+      const info = await stat(directory, { bigint: true });
+      if (!info.isDirectory()) throw new Error('Selected Claude workspace is not a directory');
+      return `${info.dev}:${info.ino}`;
+    }
+    let selectedDirectory;
+    if (workspace !== undefined) {
+      try {
+        selectedDirectory = await directoryIdentity(workspace);
+      } catch {
+        await writeFrame(process.stdout, { ...correlation, type: 'outcome',
+          outcome: { phase: 'not_submitted', reason: 'claude_workspace_unavailable' },
+        }, stop.signal);
+        return;
+      }
+      profile = { ...profile, cwd: workspace };
+    }
     let env;
     try {
       env = await providerEnvironment(profile, stop.signal);
@@ -548,7 +570,12 @@ async function main() {
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
-      const current = await ownerProfile(path);
+      let current = await ownerProfile(path);
+      if (workspace !== undefined) {
+        if (current.cwd !== profileCwd
+          || await directoryIdentity(workspace).catch(() => undefined) !== selectedDirectory) return false;
+        current = { ...current, cwd: workspace };
+      }
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
       const [bytes, inventory, currentFoundation, currentGuidance, currentMessaging] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
@@ -679,6 +706,7 @@ async function main() {
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
           nativeSessionId: sessionId, sessionScope: scope,
+          ...(workspace === undefined ? {} : { workspace }),
           ...(steering ? { steering: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;

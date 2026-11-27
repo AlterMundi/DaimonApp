@@ -3277,6 +3277,8 @@ if engine == "claude":
     assert first["humanOriginal"] is False
     native = first["freshNativeSessionId"]
 preparation = dict(ids, type="prepare_submission", nativeSessionId=native)
+if "workspace" in first:
+    preparation["workspace"] = first["workspace"]
 if engine == "claude":
     preparation["sessionScope"] = "a" * 64
 if first["text"] == "wrong-native-id":
