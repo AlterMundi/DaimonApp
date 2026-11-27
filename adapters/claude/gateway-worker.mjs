@@ -72,8 +72,12 @@ async function ownerProfile(path) {
         || !closed(value.skillContinuity, ['layoutRevision',
           ...(Object.hasOwn(value.skillContinuity ?? {}, 'previousRevision') ? ['previousRevision'] : [])])
         || !Object.values(value.skillContinuity).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
-      || (messaging.length > 0 && (typeof value.matrixMessaging !== 'string'
-        || !isAbsolute(value.matrixMessaging)))
+      || (messaging.length > 0 && !(typeof value.matrixMessaging === 'string'
+        ? isAbsolute(value.matrixMessaging)
+        : closed(value.matrixMessaging, ['connection', 'objectToolSchemas'])
+          && typeof value.matrixMessaging.connection === 'string'
+          && isAbsolute(value.matrixMessaging.connection)
+          && value.matrixMessaging.objectToolSchemas === true))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -176,7 +180,9 @@ async function matrixFoundation(profile) {
 
 async function matrixMessaging(profile, fullAccess) {
   if (!fullAccess || !profile.matrixMessaging) return undefined;
-  const connectionBytes = await privateBytes(profile.matrixMessaging, 128 * 1024);
+  const selection = profile.matrixMessaging;
+  const objectToolSchemas = typeof selection !== 'string';
+  const connectionBytes = await privateBytes(objectToolSchemas ? selection.connection : selection, 128 * 1024);
   const { command } = JSON.parse(connectionBytes);
   const bindingFile = Array.isArray(command) ? command.at(-1) : undefined;
   const moduleArgs = ['-I', '-m', 'daimon_matrix.agent_chat', '--binding'];
@@ -242,7 +248,9 @@ async function matrixMessaging(profile, fullAccess) {
     throw new Error('Matrix messaging grant differs from the selected live body');
   }
   return {
-    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp']),
+    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp',
+      ...(objectToolSchemas ? ['--object-tool-schemas'] : [])]),
+    objectToolSchemas,
     tools: methods.map(method => method.replace('.', '_')),
     revision: createHash('sha256').update(connectionBytes).update(bindingBytes).update(clientBytes)
       .update(observerBytes).digest('hex'),
@@ -602,6 +610,7 @@ async function main() {
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
         && inventory.revision === skills.revision
+        && currentMessaging?.objectToolSchemas === messaging?.objectToolSchemas
         && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === activeScope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
