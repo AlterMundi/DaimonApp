@@ -140,8 +140,10 @@ same runtime directory. Existing shared-socket bindings are also supported.
 The worker checks the runtime, embodiment, incarnation and exact four
 messaging RPC methods. It registers the maintained stdio MCP only for
 paired host-access turns. It checks the precise native catalog before
-exposure and fingerprints the bound application as part of its authority
-scope. Setup and discovery do not read an inbox or send anything.
+exposure and rechecks the exact messaging binding before releasing input or
+accepting steering. Enabling the binding resumes the existing same-scope
+paired history, including sessions already indexed with a messaging
+fingerprint. Setup and discovery do not read an inbox or send anything.
 
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation

@@ -220,13 +220,14 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         source: { being_ref: body.beingRef, embodiment_id: body.embodimentId },
         observation: { socket: chatSocket, client_config: observerClient },
       }), { mode: 0o600 });
-      const messagingProfile = { ...profile, matrixMessaging,
+      const messagingProfile = { ...profile, skillContinuity, matrixMessaging,
         matrixStatusCommand: [...profile.matrixStatusCommand, '--binding', observerBinding, '--body-status'] };
       const refusedMessaging = ['messaging-foreign', 'messaging-foreign-socket', 'messaging-expired', 'messaging-broad-grant'];
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
         'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
-        'messaging-paired', 'messaging-paired-tribe', 'messaging-unpaired', ...refusedMessaging];
+        'messaging-paired', 'messaging-paired-tribe', 'messaging-paired-isolated',
+        'messaging-binding-changed', 'messaging-unpaired', ...refusedMessaging];
       let restrictedScope;
       let hostScope;
       // Native bootstrap with a synthetic key timed out offline.
@@ -249,6 +250,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         if (decision === 'messaging-paired-tribe') {
           await writeFile(chatBinding, JSON.stringify({ ...binding, socket: tribeSocket }));
         }
+        if (decision === 'messaging-binding-changed') await writeFile(chatBinding, JSON.stringify(binding));
         if (decision === 'messaging-foreign-socket') {
           await writeFile(chatClient, JSON.stringify(chatGrant));
           await writeFile(chatBinding, JSON.stringify({ ...binding, socket: foreignSocket }));
@@ -286,22 +288,23 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
           const pairedMessaging = decision.startsWith('messaging-paired');
-          const humanOriginal = pairedMessaging || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
+          const messagingChanged = decision === 'messaging-binding-changed';
+          const humanOriginal = pairedMessaging || messagingChanged || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
-            : pairedMessaging ? 'Synthetic paired chat tools.'
+            : pairedMessaging || messagingChanged ? 'Synthetic paired chat tools.'
             : decision === 'telegram-quoted-resume' ? 'Synthetic paired Telegram quote.'
             : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'
             : decision === 'workspace-selected' ? 'Synthetic selected workspace.'
             : decision === 'codex-seeded-resume' ? 'Synthetic prior Codex exchange.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected'].includes(decision) ? hostScope
-            : decision === 'companion-resume' ? restrictedScope : undefined;
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'messaging-paired-tribe'].includes(decision) ? hostScope
+            : ['companion-resume', 'messaging-paired-isolated'].includes(decision) ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
-            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume'].includes(decision) ? priorSessionId : nativeSessionId;
+            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'messaging-paired-tribe'].includes(decision) ? priorSessionId : nativeSessionId;
           const workspace = decision === 'updated-guidance-resume' ? root
             : ['workspace-selected', 'workspace-replaced'].includes(decision) ? alternateWorkspace
             : decision === 'workspace-missing' ? join(root, 'absent') : undefined;
@@ -338,6 +341,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             continue;
           }
           assert.match(first.sessionScope ?? JSON.stringify(first), /^[a-f0-9]{64}$/, decision);
+          if (decision === 'messaging-paired-tribe') assert.equal(first.sessionScope, hostScope);
           if (decision === 'disconnected') restrictedScope = first.sessionScope;
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
@@ -349,6 +353,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
           }
           if (decision === 'skill-changed-during-submission') await writeFile(skill, 'Temporary raced change.');
+          if (messagingChanged) await writeFile(chatBinding, JSON.stringify({ ...binding, socket: tribeSocket }));
           if (decision === 'workspace-replaced') {
             await rename(alternateWorkspace, join(root, 'prior-workspace'));
             await mkdir(alternateWorkspace);
