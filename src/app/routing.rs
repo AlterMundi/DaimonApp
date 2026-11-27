@@ -291,7 +291,7 @@ pub(super) async fn handle_portable_topic(
     {
         let commands = match selected.0 {
             crate::interaction::ForegroundEngine::Claude => {
-                "Use /status for activity, /goal for Claude's goal, /interrupt to stop the current turn, or /interaction to inspect a saved input."
+                "Use /status for activity, /goal for Claude's goal, /pwd or /cd for the workspace, /interrupt to stop the current turn, or /interaction to inspect a saved input."
             }
             _ => {
                 "Use /status to see whether this topic is working, /interrupt to stop the current turn, or /interaction to inspect a saved input."

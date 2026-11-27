@@ -55,6 +55,21 @@ verified Matrix body. The native system prompt identifies the harness and this
 display name. Device status and body coordinates still come from the authenticated
 Matrix broker. The prompt does not grant memory, tools or skills.
 
+Paired routed topics use the directory saved against the logical Gateway
+session. The Telegram `/pwd` and `/cd` commands read or change that same
+setting. The adapter verifies the directory and returns its selected path
+before Gateway commits submission. If the selection changes during
+preparation, the original is preserved without native submission. Peer
+context and the worker's input text never choose a working directory.
+
+The effective workspace is part of Claude's native history scope. Selecting
+the same path as the worker default preserves existing compatible history.
+Changing the directory can start a new native history in the same Gateway
+topic; the prior history remains recorded and the normal bounded context
+handoff applies where available. Private Matrix foreground turns use their
+configured default workspace. Deploy and roll back the matching Gateway
+binary and worker together.
+
 Set optional `bodyGuidanceFile` to the absolute path of an owner-private UTF-8
 file, at most 16 KiB. Select the receiving being's portable orientation and
 keep the canonical SOUL in its maintained source. The worker appends the file
