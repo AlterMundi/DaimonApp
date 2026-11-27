@@ -505,6 +505,8 @@ timeout_seconds=5
                                 self._telegram_dmk_write(journey, provider)
                             elif skill_refresh:
                                 self._telegram_skill_refresh(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF") == "1":
+                                self._telegram_codex_handoff(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -652,6 +654,28 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_codex_handoff(self, journey, provider):
+            codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
+            provider.expected_codex_handoff = {
+                "native": codex,
+                "original": "Fixture seed for the owned Codex conversation",
+                "reply": "Initial goal turn delivered.",
+            }
+            provider.original = "Continue our existing design from the Codex exchange."
+            provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            self.assertIsNone(provider.failure)
+            self.assertEqual(journey.row(
+                "SELECT i.id,i.phase,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(update),),
+            ), [(provider.current, "accepted", provider.codex_handoff_native)])
+            self.assertNotEqual(provider.codex_handoff_native, codex)
+            self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
+                             [(codex,)])
 
         def _telegram_skill_refresh(self, journey, provider):
             def submit(text):
