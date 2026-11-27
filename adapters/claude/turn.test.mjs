@@ -241,3 +241,83 @@ test('pinned Agent SDK observes the effective MCP catalog without releasing a pr
       await rm(root, { recursive: true });
     }
   });
+
+test('Claude sends steer on the existing input stream and correlates the native result by UUID', async () => {
+  const steer = { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Adjust the current work.' };
+  for (const consumedInRoot of [true, false, null]) {
+    const receipts = [];
+    let ready = false;
+    const steering = {
+      messages: (async function* () { yield steer; })(),
+      admit: async () => ready,
+      ready: async () => { ready = true; },
+      close() {},
+      result: async (ids, text) => { receipts.push([ids, text]); },
+    };
+    const result = {
+      type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId,
+    };
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      steering,
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async *[Symbol.asyncIterator]() {
+          assert.equal((await prompt.next()).value.uuid, input.id);
+          yield { type: 'assistant', session_id: input.sessionId, user_message_uuid: input.id };
+          const { value: next } = await prompt.next();
+          assert.deepEqual(next, {
+            type: 'user', uuid: steer.id, session_id: input.sessionId, parent_tool_use_id: null,
+            origin: { kind: 'human' }, client_composed: true, priority: 'next',
+            message: { role: 'user', content: steer.text },
+          });
+          yield { ...result, result: 'Unrelated reply.',
+            user_message_uuid: '66df791f-a4aa-4c7c-82c7-6878f545beb8' };
+          yield {
+            ...result, result: 'Root reply.',
+            user_message_uuids: consumedInRoot ? [input.id, steer.id] : [input.id],
+          };
+          if (consumedInRoot === false) yield {
+            ...result, result: 'Separate reply.', user_message_uuid: steer.id,
+          };
+        },
+        close() {},
+      }),
+    }));
+    assert.deepEqual(outcome, {
+      phase: 'completed', sessionId: input.sessionId, text: 'Root reply.', steerSubmitted: [steer.id],
+    });
+    assert.deepEqual(receipts, consumedInRoot === null
+      ? [] : [[[steer.id], consumedInRoot ? null : 'Separate reply.']]);
+  }
+});
+
+test('a steer refused before being yielded is never claimed as submitted', async () => {
+  const outcome = await runClaudeTurn(options({
+    beforeSubmit: () => true,
+    steering: {
+      messages: (async function* () {
+        yield { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Not admitted.' };
+      })(),
+      admit: async () => false,
+      ready: async () => {},
+      close() {},
+      result: () => assert.fail('Unsubmitted input cannot get a receipt'),
+    },
+    query: ({ prompt }) => ({
+      async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+      async mcpServerStatus() { return connected; },
+      async *[Symbol.asyncIterator]() {
+        assert.equal((await prompt.next()).value.uuid, input.id);
+        yield { type: 'assistant', session_id: input.sessionId, user_message_uuid: input.id };
+        assert.equal((await prompt.next()).done, true);
+        yield { type: 'result', subtype: 'success', is_error: false,
+          session_id: input.sessionId, user_message_uuid: input.id, result: 'Root reply.' };
+      },
+      close() {},
+    }),
+  }));
+  assert.deepEqual(outcome.steerSubmitted, []);
+  assert.equal(outcome.phase, 'completed');
+});

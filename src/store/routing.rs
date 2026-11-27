@@ -1,6 +1,7 @@
 //! Publication reservations and reply bindings for the interaction controller.
 use super::*;
 use crate::interaction::{Delivery, Instruction, ReturnRoute, worker_result};
+use std::collections::HashSet;
 
 pub(super) fn delivery_freshness(conn: &Connection, delivery: &Delivery) -> Result<(bool, bool)> {
     let mut current = delivery.declared;
@@ -120,10 +121,6 @@ pub(super) fn result_on(
         // answer addressed an instruction attached while it was running.
         return Ok(vec![]);
     }
-    let requests = claim
-        .as_ref()
-        .map(|c| c.requests.clone())
-        .unwrap_or_else(|| root.requests.clone());
     let covered = claim
         .as_ref()
         .map(|c| c.covered.clone())
@@ -138,11 +135,17 @@ pub(super) fn result_on(
             // after later instructions arrive. All reservations commit together.
             return Ok(vec![]);
         }
-    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 ORDER BY i.sequence DESC")?;
+    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 AND (?4 IS NULL OR json_extract(i.doc,'$.native_turn')=?4) ORDER BY i.sequence DESC")?;
     let inputs = query
-        .query_map(params![root.target_session, human, local_turn], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
+        .query_map(
+            params![
+                root.target_session,
+                human,
+                local_turn,
+                turn.starts_with("gateway:claude:").then_some(turn)
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(query);
     let inputs = inputs
@@ -154,6 +157,22 @@ pub(super) fn result_on(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
+    let requests = claim
+        .as_ref()
+        .map(|c| c.requests.clone())
+        .unwrap_or_else(|| {
+            if turn.starts_with("gateway:claude:") {
+                let mut seen = HashSet::new();
+                inputs
+                    .iter()
+                    .flat_map(|(input, _)| &input.requests)
+                    .filter(|request| seen.insert(*request))
+                    .cloned()
+                    .collect()
+            } else {
+                root.requests.clone()
+            }
+        });
     let mut selected = Vec::new();
     for request in requests {
         let mut candidates = Vec::new();

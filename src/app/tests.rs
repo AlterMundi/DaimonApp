@@ -926,6 +926,7 @@ async fn sends_plain_text_to_the_active_turn() {
             sender: turn_tx,
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
+                harness: crate::execution::Harness::Codex,
                 turn_id: 17,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
@@ -973,6 +974,7 @@ async fn check_rejected_steering(rejection: CodexSteerError) {
             sender: turn_tx,
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
+                harness: crate::execution::Harness::Codex,
                 turn_id: 17,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
@@ -1007,6 +1009,7 @@ async fn keeps_steering_pending_past_the_previous_timeout() {
             sender: turn_tx,
             cancel: Arc::new(StdMutex::new(None)),
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
+                harness: crate::execution::Harness::Codex,
                 turn_id: 17,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
