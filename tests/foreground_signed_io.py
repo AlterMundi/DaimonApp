@@ -488,6 +488,9 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
+                        self._exact_claude_quote(journey, provider, web=True)
+                        return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
                         self._conversation_attachments(journey, provider)
                         return
@@ -502,6 +505,8 @@ timeout_seconds=5
                         try:
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
+                            elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
+                                self._exact_claude_quote(journey, provider, web=False)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -898,6 +903,81 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _exact_claude_quote(self, journey, provider, *, web):
+            import hashlib
+
+            browser, destination = None, None
+            if web:
+                from conversation_cold_entry_http_io import Browser
+
+                browser = Browser(journey)
+                self.addCleanup(browser.provider.close)
+                self.addCleanup(browser.client.close)
+                destination = next(row["destination"]
+                                   for row in browser.get("/api/interaction/sessions")["sessions"]
+                                   if row["audio_key"] == "100:7")
+                provider.paired_human = False
+                provider.routed_paired_human = 100
+
+            def send(original, reply):
+                if browser:
+                    ident = provider.human_original = str(uuid.uuid4())
+                    browser.text(original, reply=reply, original_id=ident)
+                    return ident
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+                return str(journey.admit(original, topic=7, reply=reply))
+
+            def turn(original, answer, reply):
+                provider.original = original
+                provider.quote_response = answer
+                ident = send(original, reply)
+
+                def result():
+                    if browser:
+                        return next((row for row in browser.get("/api/interaction")["items"]
+                                     if row["kind"] == "worker_result" and row["preview"] == answer), None)
+                    return next((message for message, payload in journey.messages
+                                 if answer in message["text"]
+                                 and payload.get("reply_parameters", {}).get("message_id") == int(ident)), None)
+
+                journey.wait(lambda: provider.failure or result(), seconds=25)
+                self.assertIsNone(provider.failure)
+                journey.idle()
+                if browser:
+                    before = list(provider.calls)
+                    browser.text(original, reply=reply, original_id=ident)
+                    self.assertEqual(provider.calls, before)
+                receipt = journey.row(
+                    "SELECT i.phase,t.status,t.native_thread_id,r.id FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "JOIN interaction_results r ON r.local_turn=t.id WHERE s.event_id=?",
+                    (ident,),
+                )
+                self.assertEqual(len(receipt), 1)
+                phase, status, native, result_id = receipt[0]
+                self.assertEqual((phase, status), ("accepted", "completed"))
+                item = result()
+                if browser:
+                    selection = {"source": item["id"], "revision": item["revision"]}
+                    return selection, native, selection
+                selection = {
+                    "source": f"telegram-result:{result_id}",
+                    "revision": hashlib.sha256(answer.encode()).hexdigest(),
+                }
+                return item["message_id"], native, selection
+
+            proposal = "Use the copper clasp on the selected design."
+            older, native, selection = turn("What's your proposal for the clasp?", proposal, destination)
+            _, later_native, _ = turn("Propose a finish for the stand.",
+                                      "Use a blue finish on the stand.", destination)
+            self.assertEqual(later_native, native)
+            provider.expected_quote = {**selection, "assistant": proposal}
+            _, reply_native, _ = turn("Sí, adelante.", "I'll proceed with the copper clasp.", older)
+            self.assertEqual(reply_native, native)
+            self.assertEqual(len(provider.calls), 3)
 
         def _conversation_attachments(self, journey, provider):
             import base64
