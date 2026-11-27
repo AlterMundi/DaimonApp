@@ -544,7 +544,15 @@ pub(super) fn tool_call(
                 crate::store::EntryExecution::Portable(request.local_turn)
             };
             let (mut source,message)=match execution {
-                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_entry_original(key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id))?,
+                crate::store::EntryExecution::Codex(native)=>{
+                    let Ok(original)=shared.store.interaction_entry_original(
+                        key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id)
+                    ) else {
+                        return Ok(json!({"kind":"original_unavailable_in_this_conversation","admitted":false,
+                            "detail":"Dispatch requires a retained human original available to this conversation. For coordination based on a message sent in another topic, use the session-request capability in that topic under its original human instruction."}));
+                    };
+                    original
+                },
                 crate::store::EntryExecution::Portable(local)=>{
                     let source=shared.store.interaction_portable_entry_source(key,human,local)?;
                     if args.input_ref != InputReference::Conversation(source.event_id.clone()) {
