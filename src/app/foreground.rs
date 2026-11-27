@@ -808,7 +808,7 @@ pub(super) async fn run_routed_portable(
                 {
                     return Ok(false);
                 }
-                store.expose_routed_portable(input, local, &body, &prepared, routed_host_access)
+                store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())
             },
         ).await
     }.await.unwrap_or(Value::Null);

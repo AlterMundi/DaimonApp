@@ -455,6 +455,11 @@ async function main() {
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
     const historySeed = first?.historySeed;
+    const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
+      && typeof historySeed.source === 'string' && historySeed.source.startsWith('delivery:')
+      && UUID.test(historySeed.source.slice('delivery:'.length))
+      && typeof historySeed.revision === 'string' && /^[a-f0-9]{64}$/.test(historySeed.revision)
+      && typeof historySeed.assistant === 'string' && !!historySeed.assistant.trim();
     const attachments = first?.attachments;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
@@ -472,9 +477,9 @@ async function main() {
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
       ...(historySeed === undefined ? [] : ['historySeed'])])
       || (historySeed !== undefined && (!fullAccess
-        || !closed(historySeed, ['turn', 'human', 'assistant'])
-        || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
-        || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())
+        || (!exactQuote && (!closed(historySeed, ['turn', 'human', 'assistant'])
+          || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
+          || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())))
         || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
       || (routedHostAccess && !routedHuman)
       || (routedHuman && first.humanOriginal)
@@ -654,7 +659,7 @@ async function main() {
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
-        historySeed: !resume && !nativeGoalCommand ? historySeed : undefined },
+        historySeed: (!resume || exactQuote) && !nativeGoalCommand ? historySeed : undefined },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

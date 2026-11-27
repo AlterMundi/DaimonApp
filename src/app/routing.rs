@@ -1491,6 +1491,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
         && (source.tribu_source.is_some()
             || !source.telegram_files.is_empty()
             || native_claude_goal(&i.text)
+            || app.shared.store.routed_claude_preserves_quote(&source)?
             || app
                 .shared
                 .store
@@ -1506,8 +1507,8 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 .store
                 .interaction_files(&i.id, i.human_id)?
                 .is_empty());
-    // Attention work must wait for a fresh, separately reserved execution.
-    // Reuse the existing run queue; physical turn changes must not steer it.
+    // Inputs that need separate context preparation use the existing run queue.
+    // A physical turn change must not steer them as plain text.
     if needs_fresh_claude
         || app
             .shared
