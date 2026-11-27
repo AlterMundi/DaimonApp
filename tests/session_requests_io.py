@@ -133,6 +133,57 @@ def live_return(binary):
     finally:j.close()
 
 
+def private_draft_does_not_become_public(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare()
+        j.admit('#Alpha Consult Beta and return one answer.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        original = j.instructions(7)[0][0]
+        j.request()
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        thread = 'native-topic-8'
+        turn = j.runs[thread]
+        item = {'id': 'private-draft', 'type': 'agentMessage', 'phase': 'commentary'}
+        j.broadcast(thread, 'item/started', {'turnId': turn, 'item': item})
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': 'Private prefix.'})
+        entry_local = j.row(
+            "SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id "
+            "WHERE s.thread_id=8 AND t.status='running' ORDER BY t.id DESC LIMIT 1"
+        )[0][0]
+        j.wait(lambda: j.row('SELECT private_handoff FROM turns WHERE id=?', (entry_local,)) == [(1,)])
+        # Simulate an accepted human instruction joining after private output began.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute(
+                """INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id)
+                   SELECT 'fixture-later-human',human.input_id,entry.id,999,'accepted',
+                          json_set(human.doc,'$.local_turn',?),human.instance_id
+                   FROM interaction_instructions human JOIN sessions entry ON entry.thread_id=8
+                   WHERE human.id=?""",
+                (entry_local, original),
+            )
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': ' Later suffix.'})
+        j.broadcast(thread, 'item/completed',
+                    {'turnId': turn, 'item': {**item, 'text': 'Private prefix. Later suffix.'}})
+        j.wait(lambda: j.row("SELECT internal_handoff FROM interaction_native_messages "
+                             "WHERE item_id='private-draft'") == [(1,)])
+        assert not j.has('Private prefix.', 1)
+        page = j.read('presentation', 'list', '0', '0')['result']
+        assert all('Private prefix.' not in i.get('preview', '') for i in page['items'])
+        # The synthetic row represents audience state only. It has no request
+        # journal and must not enter the actual completion's coverage.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute("DELETE FROM interaction_instructions WHERE id='fixture-later-human'")
+        j.answer(8, 'The authorized dependency result.')
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        j.internal_delivery('The authorized dependency result.')
+        print('PASS in-progress private draft stays private after later human admission')
+    finally:
+        j.close()
+
+
 def direct_topic_request_and_return(binary):
     j = Sessions(binary, control=True)
     try:
@@ -377,6 +428,7 @@ def cancelled_caller(binary):
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     live_return(binary)
+    private_draft_does_not_become_public(binary)
     direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
     deferred_logical_completion(binary)
