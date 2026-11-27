@@ -1035,13 +1035,18 @@ impl Store {
     }
 
     pub fn clear_session_conversation(&self, key: SessionKey) -> Result<()> {
-        self.update_session_field(
-            key,
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
             "UPDATE sessions
              SET codex_thread_id = NULL, force_fresh_thread = 1, busy = 0, last_assistant_text = NULL, updated_at = ?3
              WHERE chat_id = ?1 AND thread_id = ?2",
             params![key.chat_id, key.thread_id, now_string()],
-        )
+        )?;
+        anyhow::ensure!(changed == 1, "Session not found for conversation reset");
+        session_requests::withdraw_local_requests_on(&tx, key)?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn set_session_cwd(&self, key: SessionKey, cwd: &Path) -> Result<()> {

@@ -150,7 +150,7 @@ fn coordination_root_on(
     parent: &Instruction,
 ) -> Result<Option<Instruction>> {
     let Some(author) = author_on(conn, &parent.input_id)? else {
-        return Ok(current_bound_turn_on(conn, parent)?.then(|| parent.clone()));
+        return Ok(Some(parent.clone()));
     };
     if author["kind"] != "session_request" {
         return Ok(None);
@@ -230,6 +230,12 @@ fn session_requests_on(
         Ok(call)
     })
     .collect()
+}
+
+pub(super) fn withdraw_local_requests_on(conn: &Connection, caller: SessionKey) -> Result<()> {
+    conn.execute("UPDATE interaction_session_requests SET phase='withdrawn' WHERE caller_chat=?1 AND caller_topic=?2 AND (phase='requested' OR (phase='returned' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(interaction_session_requests.doc,'$.return_instruction') AND i.phase IN ('queued','submitting','steering'))))",params![caller.chat_id,caller.thread_id])?;
+    conn.execute("UPDATE interaction_instructions SET phase='retained_unsent' WHERE phase='queued' AND input_id IN (SELECT a.input_id FROM interaction_session_authors a JOIN interaction_session_requests c ON json_extract(a.doc,'$.local_request')=c.id WHERE c.caller_chat=?1 AND c.caller_topic=?2 AND c.phase='withdrawn' AND json_extract(a.doc,'$.kind')='session_result')",params![caller.chat_id,caller.thread_id])?;
+    Ok(())
 }
 
 impl Store {
@@ -595,8 +601,7 @@ impl Store {
         let tx = conn.transaction()?;
         super::workflows::withdraw_on(&tx, caller)?;
         tx.execute("INSERT OR IGNORE INTO interaction_session_withdrawals SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND i.phase='accepted'",params![caller.chat_id,caller.thread_id])?;
-        tx.execute("UPDATE interaction_session_requests SET phase='withdrawn' WHERE caller_chat=?1 AND caller_topic=?2 AND (phase='requested' OR (phase='returned' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(interaction_session_requests.doc,'$.return_instruction') AND i.phase IN ('queued','submitting','steering'))))",params![caller.chat_id,caller.thread_id])?;
-        tx.execute("UPDATE interaction_instructions SET phase='retained_unsent' WHERE phase='queued' AND input_id IN (SELECT a.input_id FROM interaction_session_authors a JOIN interaction_session_requests c ON json_extract(a.doc,'$.local_request')=c.id WHERE c.caller_chat=?1 AND c.caller_topic=?2 AND c.phase='withdrawn' AND json_extract(a.doc,'$.kind')='session_result')",params![caller.chat_id,caller.thread_id])?;
+        withdraw_local_requests_on(&tx, caller)?;
         tx.commit()?;
         Ok(())
     }

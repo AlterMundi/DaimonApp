@@ -60,7 +60,8 @@ class Sessions(Routing):
         return super().handle_extra_rpc(m,send)
 
     def tool(self,topic,operation,arguments):
-        self.calls+=1;ident=f'local-call-{self.calls}';thread=f'native-topic-{topic}'
+        self.calls+=1;ident=f'local-call-{self.calls}'
+        thread=self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?',(topic,))[0][0]
         turn=self.runs[thread]
         send=next(send for selected,send in list(self.clients.values()) if selected==thread)
         send({'id':ident,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'callId':ident,'tool':'interaction_controller','namespace':None,'arguments':{'operation':operation,'arguments':arguments}}})
@@ -159,7 +160,8 @@ def general_continues_handoff(binary):
         j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
         j.answer(8, 'Owner-side result for onward coordination.')
         j.wait(lambda: len(j.instructions(1)) == 2 and j.instructions(1)[1][1] == 'accepted')
-        j.answer(1, 'General relays the verified owner result.')
+        j.answer(1, 'General relays the verified owner result.',
+                 thread=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')[0][0])
         j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
         j.answer(7, 'Char task completed with both handoffs.')
         j.wait(lambda: j.has('Char task completed with both handoffs.', 1))
