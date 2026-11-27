@@ -43,6 +43,18 @@ pub(super) fn tool_call(
                 if !owned.execution.matches(request.harness,&request.native_session){bail!("Caller native binding changed");}
                 None
             };
+            let active_inputs=|| -> Result<Vec<crate::interaction::Instruction>> {
+                if portable_local.is_some() {
+                    return Ok(app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect());
+                }
+                Ok(app.shared.store.interaction_turn_inputs(request.local_turn,human)?
+                    .into_iter().filter(|i| {
+                        i.target == key
+                            && i.phase == crate::interaction::TransportPhase::Accepted
+                            && i.native_thread.as_deref() == Some(&request.native_session)
+                            && i.native_turn.as_deref() == Some(&request.native_turn)
+                    }).collect())
+            };
             let args:Envelope=serde_json::from_value(request.arguments.clone())?;
             if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "coordination_inputs" | "session_requests" | "session_request") {
                 bail!("Operation is unavailable for this work session");
@@ -63,11 +75,7 @@ pub(super) fn tool_call(
                 "publish_tasks"|"human_tasks"|"human_task"|"withdraw_task"=>super::interactions::live_task_tool(&app,key,human,&request,&args.operation,args.arguments,&closed).await,
                 "companion_hint"=>super::presentation::companion_hint(&app,key,human,&request,args.arguments,&closed).await,
                 "inputs"|"coordination_inputs" if args.arguments==json!({})=>{
-                    let inputs=if portable_local.is_some() {
-                        app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect()
-                    } else {
-                        super::routing::session_inputs(&app.shared,key,human,&request.native_session,&request.native_turn)?
-                    };
+                    let inputs=active_inputs()?;
                     Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;Ok(json!({"instruction":i.id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"eligible_coordination_parent":app.shared.store.interaction_session_parent_eligible(&i.id,human)?,"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
                 }
                 "session_requests" if args.arguments==json!({})=>{
@@ -106,12 +114,7 @@ pub(super) fn tool_call(
                     }
                     // Validate the actual native execution as well as the durable
                     // parent. Caller-selected text never becomes human authorship.
-                    let current_parent = if portable_local.is_some() {
-                        args.parent_instruction == request.native_turn
-                    } else {
-                        super::routing::session_inputs(&app.shared,key,human,&request.native_session,&request.native_turn)?
-                            .iter().any(|i|i.id==args.parent_instruction)
-                    };
+                    let current_parent=active_inputs()?.iter().any(|i|i.id==args.parent_instruction);
                     if !current_parent { bail!("Parent is not in this active execution"); }
                     let (call,i,fresh)=app.shared.store.interaction_session_request_scoped(
                         key,human,&request.native_session,&request.native_turn,&args.parent_instruction,
