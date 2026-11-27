@@ -78,6 +78,15 @@ results and Telegram receipts retained during external operation are still
 readable. Submit one new selected original to verify embedded operation.
 Previously uncertain sends stay uncertain and are not replayed.
 
+Gateway also recovers originally selected routed results that were never sent to
+Telegram. It records the projection selection before trying the transport. If
+TeleDaimon refuses the first part before committing the operation, Gateway
+releases that part and tries it again on adapter readiness or normal projection
+recovery. A lost acknowledgement after commit keeps the part uncertain and
+prevents resend. Results that were never selected for Telegram are ineligible.
+The originating Conversation can read the retained result independently of
+both outcomes.
+
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission
 receipt. It advances only with the durable cursor supplied by Gateway. Before

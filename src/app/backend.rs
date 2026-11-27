@@ -30,6 +30,9 @@ impl Maintenance for App {
                 {
                     tracing::warn!("Retained topic publication recovery unconfirmed");
                 }
+                if routing::recover_telegram_deliveries(self.shared.clone()).is_err() {
+                    tracing::warn!("Known-unsent Telegram result recovery unconfirmed");
+                }
             }
             Recovery::NativeOutput => {
                 if self.shared.config.codex.shared_app_server
