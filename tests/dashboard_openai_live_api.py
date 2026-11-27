@@ -18,7 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from dashboard.companion import permitted
 from dashboard.live_transcription import wav_bytes
 from dashboard.openai_live import LiveCall, LiveUnavailable, session_spec
@@ -447,6 +447,48 @@ class Mounted(unittest.TestCase):
                     self.close(socket)
         self.assertEqual([v['type'] for v in native.sent],['session.close'])
         self.assertTrue(self.read()['finalization']['voice_usage_confirmed'])
+
+    def test_browser_departure_after_close_keeps_the_trusted_final_receipt(self):
+        disconnected=threading.Event()
+        sent=threading.Event()
+        detached=threading.Event()
+        receive=WebSocket.receive_text
+
+        async def receive_close(socket):
+            try:
+                return await receive(socket)
+            except WebSocketDisconnect:
+                disconnected.set()
+                raise
+
+        def send(client,event):
+            client.sent.append(event)
+            sent.set()
+
+        def detach(client):
+            client.detached=True
+            detached.set()
+
+        with patch.object(WebSocket,'receive_text',receive_close), patch.object(Client,'send',send), patch.object(Client,'detach',detach):
+            with self.socket() as socket:
+                native=self.start(socket)
+                socket.send_json({'type':'close','reason':'explicit_stop'})
+                self.assertEqual(socket.receive_json()['type'],'finishing')
+                self.assertTrue(sent.wait(2))
+                socket.close()
+                self.assertTrue(disconnected.wait(2))
+                native.events.put({'type':'session.closed','event_id':'late-closed','reason':'close_requested',
+                    'session':{'id':native.session_id},'usage':{'seconds':12}})
+                self.assertTrue(detached.wait(2))
+        self.assertEqual([v['type'] for v in native.sent],['session.close'])
+        self.assertEqual(self.read()['finalization']['usage_seconds'],12)
+
+    def test_browser_departure_before_close_does_not_submit_a_close(self):
+        with self.socket() as socket:
+            native=self.start(socket)
+            socket.close()
+        self.assertEqual(native.sent,[])
+        self.assertFalse(self.read().get('close_intent'))
 
     def test_optional_close_diagnostic_write_failure_cannot_block_stop(self):
         with patch.object(LiveCreations,'record_close_reason',side_effect=OSError('Synthetic diagnostic write failure')):
