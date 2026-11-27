@@ -888,6 +888,13 @@ timeout_seconds=5
             self.assertEqual(journey.native_turns, native_turns)
 
             if os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                # Admission precedes the terminal result. Remove the transcript
+                # only after the resumed worker has finished writing it.
+                journey.wait(lambda: journey.row(
+                    "SELECT t.status FROM turns t JOIN interaction_instructions i "
+                    "ON t.id=json_extract(i.doc,'$.local_turn') WHERE i.id=?",
+                    (instruction,),
+                ) == [("completed",)] and journey.has("I retained the first turn.", 7))
                 previous_native = provider.previous_session
                 fixture_home = Path(json.loads(profile.read_text())["configurationDirectory"])
                 native_files = list((fixture_home / "projects").rglob(previous_native + ".jsonl"))
@@ -899,9 +906,20 @@ timeout_seconds=5
                 provider.original = "Resume this design using the last retained context."
                 provider.human_original = str(journey.sequence + 1)
                 recovery_update = journey.admit(provider.original, topic=7)
-                journey.wait(lambda: provider.failure or
-                             journey.has("I recovered the retained design context.", 7), seconds=35)
+                def recovery():
+                    return journey.row(
+                        "SELECT i.phase,t.status,t.native_thread_id IS NOT NULL "
+                        "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                        "LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                        (str(recovery_update),),
+                    )
+
+                journey.wait(lambda: provider.failure or recovery() and
+                             recovery()[0][0] in ("accepted", "retained_unsent", "rejected", "uncertain")
+                             and recovery()[0][1] != "running", seconds=35)
                 self.assertIsNone(provider.failure)
+                self.assertEqual(recovery(), [("accepted", "completed", 1)])
+                journey.wait(lambda: journey.has("I recovered the retained design context.", 7))
                 del provider.expected_recovered_history
                 self.assertEqual(provider.calls[before_missing_resume:], [
                     journey.row("SELECT i.id FROM interaction_instructions i "
