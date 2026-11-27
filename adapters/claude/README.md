@@ -134,8 +134,12 @@ even when a Telegram reply points to one part of a split publication. It does
 not import the nested Telegram reply text. A prepared quote is revalidated
 before submission. An identified result whose text was withheld, exceeds the
 context bound, or belongs to a retired generation leaves the input retained.
-Other replies keep their existing path. Native goal commands and
-unpaired or peer inputs keep their existing submission path. Deploy and roll back the Gateway binary
+Other replies keep their existing path. A current canonical local-session
+result keeps the caller's Claude controller catalog so the worker can resume
+the requesting session. The controller can inspect the returned input and
+request status. The result carries attributed evidence and cannot authorize
+another local request. Native goal commands and unpaired or peer inputs keep
+their existing submission path. Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
 When the last eligible exchange came from the topic's current Codex thread,
@@ -440,6 +444,8 @@ switching its Telegram transport to external. Set
 result projection, native goal commands and a local session request. Add
 `FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to remove the fixture's prior native
 history and verify the same original reaches a successor with retained context.
+Add `FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RETURN=1` to verify a canonical Codex
+helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
