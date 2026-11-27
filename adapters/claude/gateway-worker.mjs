@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -204,10 +204,19 @@ async function matrixMessaging(profile, fullAccess) {
   const observer = JSON.parse(observerBytes);
   const observed = observer.observation;
   if (!observed?.client_config || typeof binding.socket !== 'string' || !isAbsolute(binding.socket)
-      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)
-      || await realpath(binding.socket) !== await realpath(observed.socket)
-      || !(await stat(observed.socket)).isSocket()) {
-    throw new Error('Matrix messaging and identity observation must use the same runtime socket');
+      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)) {
+    throw new Error('Matrix messaging and identity observation socket selections required');
+  }
+  const [messagingSocket, observationSocket] = await Promise.all([
+    realpath(binding.socket), realpath(observed.socket),
+  ]);
+  // Cluster serves the signed Tribe view alongside the base Matrix view under
+  // the same runtime writer. Keep both clients bound to that exact runtime.
+  const standaloneTribe = basename(observationSocket) === 'matrix.sock'
+    && messagingSocket === join(dirname(observationSocket), 'tribe.sock');
+  if ((messagingSocket !== observationSocket && !standaloneTribe)
+      || !(await stat(messagingSocket)).isSocket() || !(await stat(observationSocket)).isSocket()) {
+    throw new Error('Matrix messaging and identity observation must use the same runtime');
   }
   const observedClient = JSON.parse(await privateBytes(observed.client_config, 16 * 1024));
   const methods = ['messaging.delivery', 'messaging.inbox', 'messaging.reply', 'messaging.send'];

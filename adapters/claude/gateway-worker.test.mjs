@@ -36,6 +36,7 @@ test('worker sends one native input only after exact owner persistence decision'
     const root = await mkdtemp(join(tmpdir(), 'gateway-claude-worker-'));
     const observerServer = createServer();
     const foreignServer = createServer();
+    const tribeServer = createServer();
     const sdk = join(root, 'fixture.mjs');
     const cli = join(root, 'claude-fixture');
     const selection = join(root, 'profile.json');
@@ -202,13 +203,15 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const matrixMessaging = join(root, 'chat-connection.json');
       const chatBinding = join(root, 'chat-binding.json');
       const chatClient = join(root, 'chat-client.json');
-      const chatSocket = join(root, 'runtime.sock');
+      const chatSocket = join(root, 'matrix.sock');
+      const tribeSocket = join(root, 'tribe.sock');
       const foreignSocket = join(root, 'foreign.sock');
       const observerBinding = join(root, 'observer-binding.json');
       const observerClient = join(root, 'observer-client.json');
       observerServer.listen(chatSocket);
       foreignServer.listen(foreignSocket);
-      await Promise.all([once(observerServer, 'listening'), once(foreignServer, 'listening')]);
+      tribeServer.listen(tribeSocket);
+      await Promise.all([observerServer, foreignServer, tribeServer].map(server => once(server, 'listening')));
       const binding = { schema: 'dm.agent-chat.binding/v1', client_config: chatClient, socket: chatSocket };
       await writeFile(matrixMessaging, JSON.stringify({ command: [process.execPath, '-I', '-m', 'daimon_matrix.agent_chat', '--binding', chatBinding] }), { mode: 0o600 });
       await writeFile(chatBinding, JSON.stringify(binding), { mode: 0o600 });
@@ -233,7 +236,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
         'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
-        'messaging-paired', 'messaging-unpaired', ...refusedMessaging];
+        'messaging-paired', 'messaging-paired-tribe', 'messaging-unpaired', ...refusedMessaging];
       let restrictedScope;
       let hostScope;
       // Native bootstrap with a synthetic key timed out offline.
@@ -253,6 +256,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           await writeFile(selection, JSON.stringify(defaultProfile));
         }
         if (decision.startsWith('messaging-')) await writeFile(selection, JSON.stringify(messagingProfile));
+        if (decision === 'messaging-paired-tribe') {
+          await writeFile(chatBinding, JSON.stringify({ ...binding, socket: tribeSocket }));
+        }
         if (decision === 'messaging-foreign-socket') {
           await writeFile(chatClient, JSON.stringify(chatGrant));
           await writeFile(chatBinding, JSON.stringify({ ...binding, socket: foreignSocket }));
@@ -289,9 +295,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'messaging-paired', ...refusedMessaging].includes(decision);
+          const pairedMessaging = decision.startsWith('messaging-paired');
+          const humanOriginal = pairedMessaging || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
-            : decision === 'messaging-paired' ? 'Synthetic paired chat tools.'
+            : pairedMessaging ? 'Synthetic paired chat tools.'
             : decision === 'telegram-quoted-resume' ? 'Synthetic paired Telegram quote.'
             : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'
             : decision === 'workspace-selected' ? 'Synthetic selected workspace.'
@@ -367,7 +374,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
+          const completed = pairedMessaging || ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'messaging-unpaired'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
@@ -413,7 +420,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         }
       }
     } finally {
-      await Promise.all([observerServer, foreignServer].map(server =>
+      await Promise.all([observerServer, foreignServer, tribeServer].map(server =>
         new Promise(resolve => server.close(resolve))));
       await rm(root, { recursive: true, force: true });
     }

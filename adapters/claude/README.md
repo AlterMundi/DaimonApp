@@ -161,9 +161,12 @@ checks the selected context again before native submission.
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
 Provision it using the Claude embodiment's own messaging application and
-signed grant. The worker checks that the attachment contains exactly the
-four messaging RPC methods and that the client is bound to the selected
-embodiment and incarnation. It registers the maintained stdio MCP only for
+signed grant. For a standalone Cluster body with the signed Tribe application
+selected, use the attachment with the `daimon_matrix.agent_chat` launcher on
+`tribe.sock` and keep the identity observer on the sibling `matrix.sock` in the
+same runtime directory. Existing shared-socket bindings are also supported.
+The worker checks the runtime, embodiment, incarnation and exact four
+messaging RPC methods. It registers the maintained stdio MCP only for
 paired host-access turns. It checks the precise native catalog before
 exposure and fingerprints the bound application as part of its authority
 scope. Setup and discovery do not read an inbox or send anything.
