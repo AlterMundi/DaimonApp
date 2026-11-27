@@ -77,7 +77,8 @@ class Sessions(Routing):
         return args,result
 
     def defer(self,topic):
-        thread=f'native-topic-{topic}';turn=self.runs[thread];rows=self.instructions(topic)
+        thread=self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?',(topic,))[0][0]
+        turn=self.runs[thread];rows=self.instructions(topic)
         requests=sorted({r for row in rows for r in json.loads(row[2])['requests']})
         claim={'requests':requests,'covered':[row[0] for row in rows],'completed':[]}
         self.broadcast(thread,'item/completed',{'turnId':turn,'item':{'id':'deferred','type':'agentMessage','phase':'final_answer','text':'Independent work finished; selected dependency deferred.\n<daimon-result>'+json.dumps(claim)+'</daimon-result>'}})
@@ -158,6 +159,8 @@ def general_continues_handoff(binary):
             'selector': 'Beta', 'text': 'Confirm the owner-side state.'})
         assert ok, onward
         j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        j.defer(1)
+        j.wait(lambda: j.row("SELECT t.status FROM turns t JOIN sessions s ON t.session_id=s.id WHERE s.thread_id=1 ORDER BY t.id DESC LIMIT 1") == [('completed',)])
         j.answer(8, 'Owner-side result for onward coordination.')
         j.wait(lambda: len(j.instructions(1)) == 2 and j.instructions(1)[1][1] == 'accepted')
         j.answer(1, 'General relays the verified owner result.',
