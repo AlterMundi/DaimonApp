@@ -21,6 +21,34 @@ struct SendArgs {
     report_to_topic: bool,
 }
 
+pub(super) fn record_direct_parent(
+    shared: &AppShared,
+    caller: SessionKey,
+    human: i64,
+    local: i64,
+    physical: &str,
+    client: &str,
+) {
+    if shared
+        .config
+        .interaction
+        .as_ref()
+        .is_some_and(|profile| profile.human_id == human)
+        && super::routing::enrolled(shared, caller)
+        && let Err(error) = shared.store.interaction_record_direct_parent(
+            caller,
+            human,
+            local,
+            physical,
+            client,
+            shared.bot_id,
+        )
+    {
+        // A missing coordination reference must never fail accepted human input.
+        tracing::warn!(%error, local, "Could not retain direct dependency parent");
+    }
+}
+
 pub(super) fn tool_call(
     app: App,
     key: SessionKey,
@@ -47,7 +75,7 @@ pub(super) fn tool_call(
                 if portable_local.is_some() {
                     return Ok(app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect());
                 }
-                Ok(app.shared.store.interaction_turn_inputs(request.local_turn,human)?
+                Ok(app.shared.store.interaction_dependency_inputs(request.local_turn,human)?
                     .into_iter().filter(|i| {
                         i.target == key
                             && i.phase == crate::interaction::TransportPhase::Accepted
@@ -76,7 +104,7 @@ pub(super) fn tool_call(
                 "companion_hint"=>super::presentation::companion_hint(&app,key,human,&request,args.arguments,&closed).await,
                 "inputs"|"coordination_inputs" if args.arguments==json!({})=>{
                     let inputs=active_inputs()?;
-                    Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;Ok(json!({"instruction":i.id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"eligible_coordination_parent":app.shared.store.interaction_session_parent_eligible(&i.id,human)?,"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
+                    Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;let source=app.shared.store.interaction_source(&i.id,human)?;Ok(json!({"instruction":i.id,"source_channel":source.channel,"original_ingress_update":source.update_id,"source_message":source.origin,"source_event":source.event_id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"eligible_coordination_parent":app.shared.store.interaction_session_parent_eligible(&i.id,human)?,"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
                 }
                 "session_requests" if args.arguments==json!({})=>{
                     let requests=match portable_requests {Some(values)=>values,None=>app.shared.store.interaction_session_requests(key,human,&request.native_session)?};
@@ -102,7 +130,10 @@ pub(super) fn tool_call(
                     Ok(json!({"request":app.shared.store.interaction_session_selected(key,human,&request.native_session,id)?,"new_return_instruction":admitted,"requests":app.shared.store.interaction_session_requests(key,human,&request.native_session)?,"policy":"Only a retained completed canonical result was selected. Existing returns are inspection-only, including uncertain transmission. No helper work was replayed."}))
                 }
                 "session_request"=>{
-                    let args:SendArgs=serde_json::from_value(args.arguments)?;
+                    let Ok(args) = serde_json::from_value::<SendArgs>(args.arguments) else {
+                        return Ok(json!({"kind":"session_request_rejected","admitted":false,
+                            "reason":"Supply parent_instruction from coordination_inputs, a stable request_id, the destination and scoped text."}));
+                    };
                     let selector=args.selector.strip_prefix("/self#").or_else(||args.selector.strip_prefix('#')).unwrap_or(&args.selector);
                     let targets=if selector=="general" {vec![cfg.entry()]} else {cfg.resolve(selector)};
                     if targets.len()!=1{ return Ok(json!({"kind":"clarification_required","selector":args.selector,"candidates":targets,"admitted":false})); }
@@ -115,7 +146,10 @@ pub(super) fn tool_call(
                     // Validate the actual native execution as well as the durable
                     // parent. Caller-selected text never becomes human authorship.
                     let current_parent=active_inputs()?.iter().any(|i|i.id==args.parent_instruction);
-                    if !current_parent { bail!("Parent is not in this active execution"); }
+                    if !current_parent {
+                        return Ok(json!({"kind":"session_request_rejected","admitted":false,
+                            "reason":"The selected original has no accepted receipt in this native turn. Read coordination_inputs and select the current original."}));
+                    }
                     let (call,i,fresh)=app.shared.store.interaction_session_request_scoped(
                         key,human,&request.native_session,&request.native_turn,&args.parent_instruction,
                         &args.request_id,targets[0],&args.text,&closed,portable_local,Some(&cfg),args.report_to_topic)?;

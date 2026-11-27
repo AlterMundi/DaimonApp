@@ -245,9 +245,156 @@ impl Store {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
             "CREATE TABLE IF NOT EXISTS interaction_session_requests(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,caller_chat INTEGER NOT NULL,caller_topic INTEGER NOT NULL,parent_instruction TEXT NOT NULL,target_instruction TEXT NOT NULL UNIQUE,phase TEXT NOT NULL,doc TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS interaction_session_authors(input_id TEXT PRIMARY KEY REFERENCES interaction_sources(id),doc TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS interaction_session_withdrawals(parent_instruction TEXT PRIMARY KEY);"
+             CREATE TABLE IF NOT EXISTS interaction_session_withdrawals(parent_instruction TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS interaction_direct_parents(instruction TEXT PRIMARY KEY REFERENCES interaction_instructions(id) ON DELETE CASCADE);"
         )?;
         Ok(())
+    }
+
+    /// Observe a direct original at its native acceptance boundary. This enrolls
+    /// no conversation and queues no native input or public presentation.
+    pub fn interaction_record_direct_parent(
+        &self,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        use crate::interaction::{ReturnRoute, TransportPhase};
+
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let binding: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT s.id,s.codex_thread_id FROM sessions s
+                JOIN users u ON u.tg_user_id=s.creator_user_id
+                JOIN turns t ON t.session_id=s.id
+                WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+                AND u.allowed=1 AND s.force_fresh_thread=0 AND t.id=?4
+                AND t.from_user_id=?3 AND t.native_thread_id=s.codex_thread_id
+                AND t.status='running' AND t.completed_at IS NULL AND (t.review_json IS NULL OR t.review_json='null')",
+                params![caller.chat_id, caller.thread_id, human, local],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((session, native)) = binding else {
+            return Ok(());
+        };
+        if physical.is_empty()
+            || super::stopping::fenced_on(&tx, caller)?
+            || super::maintenance_writer_held_on(&tx, caller)?
+        {
+            return Ok(());
+        }
+        let epoch = current_epoch(&tx, human)?;
+        let mut source = SourceInput {
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: None,
+            channel: "conversation".into(),
+            event_id: String::new(),
+            update_id: None,
+            human_id: human,
+            target_sessions: vec![session],
+            origin: ReturnRoute {
+                chat_id: caller.chat_id,
+                thread_id: caller.thread_id,
+                message_id: None,
+            },
+            text: String::new(),
+        };
+        let telegram_prefix = format!("telegram:{}:{human}:", caller.chat_id);
+        if let Some(update) = client
+            .strip_prefix(&telegram_prefix)
+            .and_then(|id| id.parse::<i64>().ok())
+        {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT i.payload_json FROM incoming_updates i
+                    JOIN native_input_receipts n ON n.update_id=i.update_id
+                    JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+                    WHERE i.update_id=?1 AND i.turn_id=?2 AND n.native_thread=?3
+                    AND n.native_turn=?4 AND e.value=?5",
+                    params![update, local, native, physical, epoch],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(raw) = raw else { return Ok(()) };
+            let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+            let Some(message) = original.message.as_ref() else {
+                return Ok(());
+            };
+            if message.chat.id != caller.chat_id
+                || message.message_thread_id.unwrap_or_default() != caller.thread_id
+                || message
+                    .from
+                    .as_ref()
+                    .is_none_or(|user| user.id != human || user.is_bot)
+            {
+                return Ok(());
+            }
+            let Ok((text, transcription)) = super::voice::content_on(&tx, &original, human) else {
+                // Attachment-only direct messages have no text authority.
+                return Ok(());
+            };
+            source.channel = format!("telegram:{bot}");
+            source.event_id = update.to_string();
+            source.update_id = Some(update);
+            source.origin.message_id = Some(message.message_id);
+            source.text = text;
+            source.transcription = transcription;
+        } else if let Some(id) = client.strip_prefix("conversation:") {
+            let input = super::conversation_inputs::read_on(&tx, id, human)?;
+            if input.entry != caller
+                || input.session != session
+                || input.native != native
+                || input.local_turn != Some(local)
+                || input.phase != "accepted"
+                || input.routing.is_some()
+                || input.foreground_dialogue.is_some()
+                || input.tribu_source.is_some()
+                || !input.paired_actor
+            {
+                return Ok(());
+            }
+            super::conversation_inputs::eligible_on(&tx, &input)?;
+            source.event_id = input.id;
+            source.text = input.text;
+            source.transcription = input.voice.and_then(|voice| voice.transcription);
+        } else {
+            return Ok(());
+        }
+        if source.text.trim().is_empty() {
+            return Ok(());
+        }
+        let (mut parent, fresh) =
+            super::interaction::retain_direct_parent_on(&tx, &source, caller, &self.instance_id)?;
+        if fresh {
+            parent.phase = TransportPhase::Accepted;
+            parent.local_turn = Some(local);
+            parent.native_turn = Some(physical.into());
+            save_epoch(&tx, &mut parent, &epoch)?;
+            tx.execute(
+                "UPDATE interaction_instructions SET phase='accepted' WHERE id=?1",
+                [&parent.id],
+            )?;
+            tx.execute(
+                "INSERT INTO interaction_direct_parents VALUES(?1)",
+                [&parent.id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn interaction_dependency_inputs(
+        &self,
+        local: i64,
+        human: i64,
+    ) -> Result<Vec<Instruction>> {
+        self.turn_inputs(local, human, true)
     }
 
     pub fn interaction_author(&self, instruction: &str, human: i64) -> Result<Option<Value>> {
@@ -408,7 +555,7 @@ impl Store {
             update_id: None,
             human_id: human,
             target_sessions: vec![target_id],
-            origin: original.origin,
+            origin: original.origin.clone(),
             text: text.to_owned(),
         };
         let existing: Option<(String, String)> = tx
@@ -469,7 +616,7 @@ impl Store {
             report_to_topic,
             phase: "requested".into(),
         };
-        let mut author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human});
+        let mut author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
         if report_to_topic {
             author["report_to_topic"] = json!(true);
         }
