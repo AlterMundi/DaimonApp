@@ -468,7 +468,29 @@ window.Conversation = (() => {
       arrangeTimelineReplies();
       if(nearEnd)timeline.scrollTop=timeline.scrollHeight;
     }
-    let graphCursor=0;
+    let graphCursor=0, graphReading=false;
+    const inspectorDetails=$("#conversation-diagnostics"), routingDetails=$("#conversation-flow");
+    function routingGraphVisible() {
+      return graph && inspectorDetails?.open && routingDetails?.open;
+    }
+    for (const details of [inspectorDetails, routingDetails]) {
+      details?.addEventListener("toggle", () => { void refreshRoutingGraph(); });
+    }
+    async function refreshRoutingGraph() {
+      if (!routingGraphVisible() || graphReading) return;
+      graphReading=true;
+      const owned=inputGeneration;
+      const closed=[...inputs.values()].filter(card=>!card.trace.open);
+      try {
+        for(let n=0; n<Math.min(6,closed.length); n++){
+          if(owned!==inputGeneration || !routingGraphVisible()) break;
+          await readTrace(closed[graphCursor%closed.length]);
+          if(owned!==inputGeneration) return;
+          graphCursor=(graphCursor+1)%closed.length;
+        }
+        if(owned===inputGeneration && routingGraphVisible()) graph.flush();
+      } finally { graphReading=false; }
+    }
     const cards = new Map(),progressCards=new Map(),settledProgress=new Map(),replyAnchors=new Map();
     // Device-local audio attention, scoped to this conversation binding. No
     // transcript, labels, native work state or playback backlog is persisted.
@@ -2315,12 +2337,8 @@ window.Conversation = (() => {
         await refreshTelegram();
         void sound?.refresh({observeOnly:standalone || $("#conversation-diagnostics").open});
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
-        if(graph){
-          const closed=[...inputs.values()].filter(card=>!card.trace.open);
-          for(let n=0;n<Math.min(6,closed.length);n++)await readTrace(closed[(graphCursor+n)%closed.length]);
-          graphCursor=closed.length?(graphCursor+6)%closed.length:0;
-          graph.flush();
-        }
+        graph?.flush();
+        void refreshRoutingGraph();
         drainVoice();
       } catch (e) { failed(e); }
       finally { reading = false; $("#conversation-refresh").disabled = false; $("#conversation-older").disabled = false;
