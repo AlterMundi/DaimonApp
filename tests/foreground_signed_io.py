@@ -920,7 +920,9 @@ timeout_seconds=5
                 provider.paired_human = False
                 provider.routed_paired_human = 100
 
-            def send(original, reply):
+            def send(original, answer, reply):
+                provider.original = original
+                provider.quote_response = answer
                 if browser:
                     ident = provider.human_original = str(uuid.uuid4())
                     browser.text(original, reply=reply, original_id=ident)
@@ -929,11 +931,7 @@ timeout_seconds=5
                     provider.human_original = str(journey.sequence + 1)
                 return str(journey.admit(original, topic=7, reply=reply))
 
-            def turn(original, answer, reply):
-                provider.original = original
-                provider.quote_response = answer
-                ident = send(original, reply)
-
+            def finish(ident, original, answer, reply):
                 def result():
                     if browser:
                         return next((row for row in browser.get("/api/interaction")["items"]
@@ -946,9 +944,8 @@ timeout_seconds=5
                 self.assertIsNone(provider.failure)
                 journey.idle()
                 if browser:
-                    before = list(provider.calls)
-                    browser.text(original, reply=reply, original_id=ident)
-                    self.assertEqual(provider.calls, before)
+                    _, readback = browser.text(original, reply=reply, original_id=ident)
+                    self.assertIs(readback["new_input"], False)
                 receipt = journey.row(
                     "SELECT i.phase,t.status,t.native_thread_id,r.id FROM interaction_instructions i "
                     "JOIN interaction_sources s ON s.id=i.input_id "
@@ -970,12 +967,36 @@ timeout_seconds=5
                 return item["message_id"], native, selection
 
             proposal = "Use the copper clasp on the selected design."
-            older, native, selection = turn("What's your proposal for the clasp?", proposal, destination)
-            _, later_native, _ = turn("Propose a finish for the stand.",
-                                      "Use a blue finish on the stand.", destination)
+            question = "What's your proposal for the clasp?"
+            older, native, selection = finish(send(question, proposal, destination),
+                                              question, proposal, destination)
+            arrived, release = Event(), Event()
+            provider.quote_answer_gate = (arrived, release)
+            newer_original = "Propose a finish for the stand."
+            newer_answer = "Use a blue finish on the stand."
+            current = send(newer_original, newer_answer, destination)
+            approval = "Sí, adelante."
+            approval_answer = "I'll proceed with the copper clasp."
+            try:
+                self.assertTrue(arrived.wait(20), provider.failure)
+                pending = send(approval, approval_answer, older)
+
+                def queued():
+                    return journey.row(
+                        "SELECT i.phase,json_extract(i.doc,'$.local_turn') FROM interaction_instructions i "
+                        "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?",
+                        (pending,),
+                    ) == [("queued", None)]
+
+                journey.wait(queued, seconds=10)
+                self.assertEqual(len(provider.calls), 2)
+                provider.expected_quote = {**selection, "assistant": proposal}
+                provider.quote_answer_gate = None
+            finally:
+                release.set()
+            _, later_native, _ = finish(current, newer_original, newer_answer, destination)
             self.assertEqual(later_native, native)
-            provider.expected_quote = {**selection, "assistant": proposal}
-            _, reply_native, _ = turn("Sí, adelante.", "I'll proceed with the copper clasp.", older)
+            _, reply_native, _ = finish(pending, approval, approval_answer, older)
             self.assertEqual(reply_native, native)
             self.assertEqual(len(provider.calls), 3)
 
@@ -989,8 +1010,10 @@ timeout_seconds=5
                                if row["id"] == older["source"])
                 recovered_quote = {"source": current["id"], "revision": current["revision"]}
                 provider.expected_quote = {**recovered_quote, "assistant": proposal}
-                _, replacement, _ = turn(
-                    "Sí, retomá esa propuesta.", "I recovered the copper clasp proposal.", recovered_quote)
+                original = "Sí, retomá esa propuesta."
+                answer = "I recovered the copper clasp proposal."
+                _, replacement, _ = finish(send(original, answer, recovered_quote),
+                                           original, answer, recovered_quote)
                 self.assertNotEqual(replacement, native)
                 self.assertEqual(len(provider.calls), 4)
 

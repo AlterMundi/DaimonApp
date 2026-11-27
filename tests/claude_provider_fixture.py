@@ -228,6 +228,10 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": quote_response}
                 reason = "end_turn"
+                if gate := getattr(self.server, "quote_answer_gate", None):
+                    arrived, release = gate
+                    arrived.set()
+                    assert release.wait(12), "The fixture did not release the active provider turn"
             elif attachment:
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
