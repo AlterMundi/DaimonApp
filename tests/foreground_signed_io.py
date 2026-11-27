@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from threading import Event, Thread
+from datetime import datetime
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -552,7 +553,19 @@ timeout_seconds=5
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
                     if signed_interrupt:
-                        self._signed_interrupt(journey, provider, selected, return_attempts)
+                        competing = None
+                        if signed_interrupt == "crash":
+                            original_two = fixture.lane("legion", at_ms=service.clock()).converse(
+                                text="Another signed original for the same fixture entry.",
+                                addressees=[body],
+                                request_id=str(uuid.uuid4()),
+                                targets=fixture.canonical_targets(),
+                                ttl_ms=30_000,
+                                deliver=lambda _, payload: service.we_lane.intake(payload),
+                            )
+                            competing = dict(cursor=None, event_id=original_two["message_id"],
+                                             author=author, thread_id=original_two["thread_id"])
+                        self._signed_interrupt(journey, provider, selected, return_attempts, competing)
                         return
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
@@ -632,9 +645,13 @@ timeout_seconds=5
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
 
-        def _signed_interrupt(self, journey, provider, selected, return_attempts):
+        def _signed_interrupt(self, journey, provider, selected, return_attempts, competing=None):
             provider.mode = "held"
             provider.arrived, provider.release = Event(), Event()
+            cancelled = Event()
+            if engine == "claude":
+                provider.quote_response = "A late answer to the isolated signed original."
+                provider.quote_answer_gate = (provider.arrived, provider.release, cancelled)
             ident = selected["event_id"]
             args = [journey.binary, "--control", str(journey.config),
                     "matrix", engine, "run", json.dumps(selected)]
@@ -654,14 +671,59 @@ timeout_seconds=5
                     other = "goose" if engine == "antigravity" else "antigravity"
                     wrong = journey.read("matrix", other, "interrupt", ident)["result"]
                     self.assertFalse(wrong["interruption_requested"])
-                    requested = journey.read("matrix", engine, "interrupt", ident)["result"]
-                    self.assertTrue(requested["interruption_requested"])
+                    if signed_interrupt == "crash":
+                        rejected = subprocess.run(
+                            [*args[:-1], json.dumps(competing)], capture_output=True, text=True,
+                            timeout=8,
+                        )
+                        self.assertNotEqual(rejected.returncode, 0)
+                        self.assertIn("Foreground Matrix destination is at capacity",
+                                      rejected.stderr + rejected.stdout)
+                        self.assertEqual(journey.row(
+                            "SELECT count(*) FROM interaction_matrix_requests WHERE source_event=?",
+                            (competing["event_id"],),
+                        ), [(0,)])
+                        # The fixture owns this process. SIGKILL prevents the
+                        # foreground worker from settling through clean shutdown.
+                        journey.process.kill()
+                        journey.process.communicate(timeout=8)
+                        journey.process = None
+                    else:
+                        requested = journey.read("matrix", engine, "interrupt", ident)["result"]
+                        self.assertTrue(requested["interruption_requested"])
                     stdout, errors = run.communicate(timeout=15)
-                    self.assertEqual(run.returncode, 0, errors)
+                    if signed_interrupt != "crash":
+                        self.assertEqual(run.returncode, 0, errors)
                 finally:
+                    cancelled.set()
                     provider.release.set()
                     if run.poll() is None:
                         run.terminate()
+            if signed_interrupt == "crash":
+                # Use the real lease predicate with a shorter test-only limit.
+                # The old PID is confirmed dead; preserve its journal and lease.
+                heartbeat, = journey.row(
+                    "SELECT heartbeat_at FROM app_instance_lock WHERE key='main'"
+                )[0]
+                journey.extra_env = {**getattr(journey, "extra_env", {}),
+                                     "TELECODEX_INSTANCE_STALE_SECONDS": "1"}
+                expires = datetime.fromisoformat(heartbeat).timestamp() + 1
+                journey.wait(lambda: time.time() > expires, seconds=3)
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                outcome = journey.read("matrix", engine, "status", ident)["result"]
+                self.assertEqual(outcome["phase"], "provider_uncertain", outcome)
+                for key in ("input_id", "request_id", "session_id", "native_session_id", "thread_id"):
+                    self.assertEqual(outcome[key], in_flight[key], key)
+                self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                                 outcome)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(provider.calls, [ident])
+                self.assertEqual(return_attempts, [])
+                self.assertEqual(journey.telegram_methods, [])
+                self.assertEqual(journey.rpc, [])
+                return
+
             outcome = json.loads(stdout)["result"]
             self.assertEqual(outcome["phase"], "rejected" if before else "provider_uncertain", outcome)
             self.assertEqual(outcome["result"]["reason"],
@@ -2067,9 +2129,11 @@ if __name__ == "__main__":
     mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
     telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
     inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
-    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT") if engine != "claude" else None
-    if signed_interrupt not in {"1", "before"}:
+    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT")
+    if signed_interrupt not in {"1", "before", "crash"}:
         signed_interrupt = None
+    if signed_interrupt == "crash":
+        os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if inverse and engine == "claude":
         direct = True
     if (interaction or direct or inverse) and not telegram_topic:

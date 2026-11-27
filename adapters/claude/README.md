@@ -451,6 +451,14 @@ that directs the native CLI only to the loopback Anthropic fixture. It checks
 the actual provider-facing catalog and one Matrix status read, the durable
 exposure decision, the signed return and the sender's original thread. The
 reply remains available after restarting Gateway without another provider call.
+Set `FOREGROUND_TEST_SIGNED_INTERRUPT=crash` to kill only the fixture Gateway
+after the provider has received the original. While it is held, a different
+signed original must be refused at capacity before admission. The restarted
+Gateway must keep the same attempt and native session, report the exposed
+outcome as uncertain,
+and leave both the provider and signed return untouched on exact retry. The
+fixture disables Telegram, makes Codex unusable, and waits for the receiving
+writer lease with a shorter test-only expiry.
 Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
 a new original after restarting Gateway. The loopback provider checks for the
 first turn's prompt and reply in the resumed native session, and Interaction
