@@ -152,7 +152,7 @@ fn coordination_root_on(
     parent: &Instruction,
 ) -> Result<Option<Instruction>> {
     let Some(author) = author_on(conn, &parent.input_id)? else {
-        return Ok(Some(parent.clone()));
+        return Ok(current_bound_turn_on(conn, parent)?.then(|| parent.clone()));
     };
     if author["kind"] != "session_request" {
         return Ok(None);
