@@ -137,11 +137,26 @@ class Speech:
     def receiving_route(self):
         return getattr(self,'frozen_route',None) or speech_render.route(self.binding)
 
-    async def render(self, source):
+    async def render(self, source, *, before_synthesis=None):
         if self.capacity.locked():
             raise SpeechUnavailable('Speech preparation capacity is occupied')
         async with self.capacity:
             retention = getattr(self, 'media_retention', None)
+            completed = None
+            if before_synthesis is not None:
+                # A protected original can create durable state even on a cache
+                # hit. Compare the binding alone so a time cutoff cannot change
+                # this decision while reading or reserving audio.
+                protected = retention and retention.matches_source_binding(source)
+                if not getattr(self, 'frozen_route', None) and not protected:
+                    config_bytes = speech_render.private_bytes(self.binding, 16384)
+                    route = self.receiving_route()
+                    payload = speech_request(source, route['language'])
+                    completed = await retain_io(speech_render.read_completed_wav, route, payload)
+                    if speech_render.private_bytes(self.binding, 16384) != config_bytes:
+                        raise SpeechUnavailable('Speech receiving binding changed')
+                if completed is None:
+                    await before_synthesis()
             original = await retain_io(retention.begin, source, 'assistant', 'audio/wav', speech_render.MAX_AUDIO) if retention else None
             fallback = None
             try:
@@ -150,7 +165,7 @@ class Speech:
                     payload = speech_request(source, route['language'])
                     _, _, ident = speech_render.render_plan(route, payload)
                     fallback = Path(route['cache_root']) / ident
-                data, result = await self._render(source)
+                data, result = completed if completed is not None else await self._render(source)
                 if original:
                     await retain_io(original.append, data)
                     await retain_io(original.finish, complete=True)

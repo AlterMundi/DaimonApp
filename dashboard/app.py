@@ -1412,15 +1412,19 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 lookahead = speech_part(following, part_bound)['next_offset']
         except (ProviderUnavailable, OSError, ValueError, KeyError, SpeechUnavailable, RenderError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
-        await authorize_async(request)
+        async def authorize_synthesis():
+            await authorize_async(request)
+
+        # Stream is a transport preference. A trusted saved Live choice keeps
+        # its exact existing buffered voice before any attempt.
+        buffered_choice = getattr(engine, 'frozen_route', None) is not None and not engine.streaming
+        streaming = body.get('stream') and not buffered_choice
+        if streaming:
+            await authorize_synthesis()
         from .voice_admission import admit_voice, VoiceAdmissionError
         try:admit_voice(request.scope)
         except VoiceAdmissionError as error:raise HTTPException(409, str(error)) from None
-        # Stream is a transport preference. A trusted saved Live choice keeps
-        # its exact existing buffered voice, before any attempt, rather than
-        # streaming the default route or retrying after a provider failure.
-        buffered_choice = getattr(engine, 'frozen_route', None) is not None and not engine.streaming
-        if body.get('stream') and not buffered_choice:
+        if streaming:
             if not engine.streaming or selected.get('kind')=='native_question':
                 raise HTTPException(409,'Streaming speech unavailable; use the ordinary reader')
             async def audio_frames():
@@ -1445,7 +1449,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 'X-Presentation-Text-Sha256':hashlib.sha256(selected['text'].encode()).hexdigest(),
                 'X-Presentation-Prefetch':'true','X-Audio-Encoding':('pcm_s16le' if engine.receiving_route()['provider']=='openai-realtime' else 'mp3'),'X-Playback-Observation':'not_observed'})
         try:
-            data, rendered = await engine.render(selected)
+            data, rendered = await engine.render(selected, before_synthesis=authorize_synthesis)
             # Retained text, bindings and correction state are rechecked after synthesis.
             latest = await run_in_threadpool(provider.presentation_part, body['source'], body['revision'], body['offset'])
             if latest != canonical:

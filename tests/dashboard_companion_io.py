@@ -677,6 +677,38 @@ class Companion(unittest.TestCase):
         self.assertEqual(self.client.post('/api/interaction/audio',json={**self.body,'text':'unowned words'},headers=self.headers).status_code,409)
         self.assertEqual(len(self.speech.calls),0)
 
+    def test_completed_wav_skips_only_the_generation_authorization(self):
+        self.web_only()
+        identity={'contract':'dm.home-session/v1','origin':self.config['origin'],
+                  'expires':int(time.time())+3600,
+                  'actor':{'kind':'human','ref':'human:telegram:100'}}
+        headers={'Origin':self.config['origin'],'Cookie':'__Host-home='+'h'*43}
+        with patch('dashboard.home_auth.identity_response',return_value=identity):
+            access=self.client.get('/api/interaction/access',headers=headers)
+        self.assertEqual(access.status_code,200)
+        headers['X-Dashboard-CSRF']=access.json()['csrf']
+        def audio():
+            return self.client.post('/api/interaction/audio',json=self.body,headers=headers)
+        with patch('dashboard.home_auth.identity_response',return_value=identity) as current:
+            original=audio()
+            self.assertEqual(original.status_code,200,original.text)
+            self.assertEqual(current.call_count,3)
+            self.assertEqual(len(self.speech.calls),1)
+            current.reset_mock()
+            cached=audio()
+            self.assertEqual(cached.status_code,200,cached.text)
+            self.assertEqual(cached.content,original.content)
+            self.assertEqual(current.call_count,2)
+            self.assertEqual(len(self.speech.calls),1)
+        with patch('dashboard.home_auth.identity_response',side_effect=[identity,ValueError()]) as current:
+            self.assertEqual(audio().status_code,401,'Revocation before buffered delivery withholds the WAV')
+            self.assertEqual(current.call_count,2)
+        self.provider.source['text']='An exact new cold source.'
+        with patch('dashboard.home_auth.identity_response',side_effect=[identity,ValueError()]) as current:
+            self.assertEqual(audio().status_code,401,'Revocation before synthesis prevents the provider call')
+            self.assertEqual(current.call_count,2)
+        self.assertEqual(len(self.speech.calls),1)
+
     def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
         from unittest.mock import AsyncMock
         from dashboard.speech import Speech
@@ -691,7 +723,7 @@ class Companion(unittest.TestCase):
         self.config['speech_openai']={'binding':str(binding),'incremental_segments':True}
         self.client.close();self.client=self.client_for()
         engines=[]
-        async def render(engine,source):
+        async def render(engine,source,*,before_synthesis=None):
             engines.append(engine)
             return b'qualified synthetic audio',{'audio_sha256':'c'*64}
         with patch.object(Speech,'render',render):
@@ -785,7 +817,7 @@ class Companion(unittest.TestCase):
         self.assertEqual(caps['voice_services_only'],'openai')
         self.assertFalse(caps['previous_can_stream_speech']);self.assertFalse(caps['can_previous_live_result'])
         engines=[]
-        async def render(engine,source):
+        async def render(engine,source,*,before_synthesis=None):
             engines.append(engine);return b'synthetic audio',{'audio_sha256':'c'*64}
         with patch.object(Speech,'render',render):
             denied=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'current'},headers=self.headers)
@@ -812,7 +844,7 @@ class Companion(unittest.TestCase):
         engines=[]
         self.provider.source['text']='A complete sentence with Unicode 🙂. '*50
         rendered_parts=[]
-        async def render(engine,source):
+        async def render(engine,source,*,before_synthesis=None):
             engines.append(engine);rendered_parts.append(source);return b'synthetic audio',{'audio_sha256':'c'*64}
         with patch('dashboard.voice_studio.configured_profiles',return_value=[profile]),patch.object(Speech,'render',render):
             response=self.client.post('/api/interaction/audio',json={**self.body,'speech_provider':'openai'},headers=self.headers)

@@ -1,11 +1,13 @@
 """Scoped original-audio producer: real bytes, cancellation, caps and cleanup."""
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -78,11 +80,68 @@ class Originals(unittest.TestCase):
             self.assertEqual(len(f.calls),1)
             self.assertEqual(self.receipts()[0]['speaker'],'assistant')
             self.assertEqual((self.retention.root/hashlib.sha256(data).hexdigest()).read_bytes(),data)
+            gate=AsyncMock()
+            cached,receipt=asyncio.run(speech.render(self.source,before_synthesis=gate))
+            self.assertEqual(cached,data)
+            self.assertTrue(receipt['cache_hit'])
+            self.assertEqual(len(f.calls),1)
+            gate.assert_awaited_once()
+            self.assertEqual((self.retention.root/hashlib.sha256(cached).hexdigest()).read_bytes(),cached)
             self.retention.config['max_bytes']=1
             with patch.object(speech,'_render',new=AsyncMock()) as render:
                 with self.assertRaises(RetentionUnavailable):asyncio.run(speech.render(self.source))
                 self.assertEqual(render.await_count,0)
         finally:f.tearDown()
+    def test_denied_cached_speech_does_not_create_a_protected_original(self):
+        f=fixture.Render();f.setUp()
+        try:
+            speech=Speech({'binding':str(f.binding)})
+            asyncio.run(speech.render(self.source))
+            speech.media_retention=self.retention
+            for since in (self.retention.since, datetime.now(timezone.utc)+timedelta(days=1)):
+                self.retention.since=since
+                gate=AsyncMock(side_effect=PermissionError)
+                with self.assertRaises(PermissionError):
+                    asyncio.run(speech.render(self.source,before_synthesis=gate))
+                gate.assert_awaited_once()
+                self.assertEqual(list(self.retention.root.iterdir()),[])
+            self.assertEqual(len(f.calls),1)
+        finally:f.tearDown()
+
+    def test_cancelled_cache_reader_retains_its_slot_until_disk_work_stops(self):
+        f=fixture.Render();f.setUp()
+        entered=threading.Event()
+        release=threading.Event()
+        gate=AsyncMock()
+        def held_cache(*args):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Cache reader was not released')
+            return None
+        async def cancel_read():
+            speech=Speech({'binding':str(f.binding)})
+            speech.capacity=asyncio.Semaphore(1)
+            task=asyncio.create_task(speech.render(self.source,before_synthesis=gate))
+            self.assertTrue(await asyncio.to_thread(entered.wait,1))
+            task.cancel()
+            await asyncio.sleep(0)
+            try:
+                self.assertTrue(speech.capacity.locked())
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertFalse(speech.capacity.locked())
+        try:
+            with patch.object(speech_render,'read_completed_wav',side_effect=held_cache):
+                asyncio.run(cancel_read())
+            gate.assert_not_awaited()
+            self.assertEqual(f.calls,[])
+        finally:
+            release.set()
+            f.tearDown()
+
     def test_cancel_after_wav_generated_preserves_same_cached_original(self):
         f=fixture.Render();f.setUp()
         try:

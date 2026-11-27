@@ -466,6 +466,43 @@ def render_plan(binding, request):
     return config, fields, ident
 
 
+def _receipt(state, ident, request, config):
+    if (not isinstance(state, dict) or state.get('schema') != 'telecodex.speech-render/v1'
+            or state.get('identity_sha256') != ident or state.get('phase') not in ('rendered', 'audio_expired')
+            or state.get('text_sha256') != sha(request['text'].encode())
+            or state.get('voice') != config['voice'] or state.get('language') != config['language']):
+        raise RenderError('retained-render-outcome-no-automatic-retry')
+    return state
+
+
+def _read_rendered_wav(audio_file, state_file, state):
+    data = private_bytes(audio_file, MAX_AUDIO)
+    if sha(data) != state['audio_sha256'] or audio_info(data) != state['format']:
+        raise RenderError('retained-render-integrity-failed')
+    state['last_used_at'] = time.time()
+    write_state(state_file, state)
+    return data, result(state, audio_file, True)
+
+
+def read_completed_wav(binding, request):
+    """Read an exact completed WAV. A miss cannot start synthesis."""
+    config, _, ident = render_plan(binding, request)
+    job = Path(config['cache_root']) / ident
+    if not job.exists() and not job.is_symlink():
+        return None
+    job = render_job(config, ident)
+    state_file, audio_file = job / 'state.json', job / 'audio.wav'
+    with lock(job / '.lock'):
+        if not state_file.exists() and not state_file.is_symlink():
+            if audio_file.exists() or audio_file.is_symlink():
+                raise RenderError('orphan-render-no-automatic-retry')
+            return None
+        state = _receipt(json.loads(private_bytes(state_file, 32768)), ident, request, config)
+        if state['phase'] == 'audio_expired':
+            return None
+        return _read_rendered_wav(audio_file, state_file, state)
+
+
 def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None):
     config, fields, ident = render_plan(binding, request)
     job = render_job(config, ident)
@@ -473,25 +510,15 @@ def render(binding, request, *, cancel=None, allow_regenerate=True, on_pcm=None)
     with lock(job / '.lock'):
         generation = 1
         if state_file.exists() or state_file.is_symlink():
-            state = json.loads(private_bytes(state_file, 32768))
-            if (not isinstance(state, dict) or state.get('schema') != 'telecodex.speech-render/v1'
-                    or state.get('identity_sha256') != ident or state.get('phase') not in ('rendered', 'audio_expired')
-                    or state.get('text_sha256') != sha(request['text'].encode())
-                    or state.get('voice') != config['voice'] or state.get('language') != config['language']):
-                raise RenderError('retained-render-outcome-no-automatic-retry')
+            state = _receipt(json.loads(private_bytes(state_file, 32768)), ident, request, config)
             if state['phase'] == 'rendered':
-                data = private_bytes(audio_file, MAX_AUDIO)
-                info = audio_info(data)
-                if sha(data) != state['audio_sha256'] or info != state['format']:
-                    raise RenderError('retained-render-integrity-failed')
-                state['last_used_at'] = time.time()
-                write_state(state_file, state)
+                data, receipt = _read_rendered_wav(audio_file, state_file, state)
                 if on_pcm:
                     with wave.open(io.BytesIO(data), 'rb') as cached:
                         if cached.getparams()[:3] != (1, 2, 24000):
                             raise RenderError('cached-pcm-format-mismatch')
                         while part := cached.readframes(16384):on_pcm(part)
-                return result(state, audio_file, True)
+                return receipt
             if not allow_regenerate:raise RenderError('audition-preview-expired-no-automatic-regeneration')
             # This is a known completed render whose disposable payload expired,
             # not an uncertain provider request. Only this new render call may

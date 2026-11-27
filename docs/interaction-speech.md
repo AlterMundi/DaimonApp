@@ -291,7 +291,11 @@ rendering performs one inventory/prune/reservation pass under the existing
 budget lock, without calling the provider. Protected payloads and active writers'
 maximum sizes remain accounted. A verified cache hit checks only its own source,
 private payload, format and digest, then refreshes last use; it cannot allocate
-new audio and does not scan unrelated receipts. Age expiry is opportunistic on
+new audio and does not scan unrelated receipts. The buffered endpoint
+authorizes before selecting the source and before delivering it. If the
+cache-only lookup misses, it also obtains fresh authorization before
+generation. Protected original storage and streaming keep their existing
+pre-effect authorization. Age expiry is opportunistic on
 new generation or explicit cleanup, not a scheduled wall-clock deletion. The
 same cleanup can be explicitly run with:
 

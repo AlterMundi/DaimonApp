@@ -50,9 +50,15 @@ class MediaRetention:
         self.root = private_directory(config['directory'])
         sync_directory(self.root.parent)
 
-    def selected(self, source):
+    def matches_source_binding(self, source):
         binding = source.get('entry_binding')
         c = self.config
+        return (isinstance(binding, list) and len(binding) == 4
+                and binding[0] == c['human_id']
+                and binding[1] == {'chat_id': c['chat_id'], 'thread_id': c['topic_id']}
+                and binding[3] == c['native_thread'])
+
+    def selected(self, source):
         committed = (source.get('voice') or {}).get('transcription', {}).get('committed_at')
         if committed:
             try:
@@ -62,10 +68,7 @@ class MediaRetention:
                 return False
         elif datetime.now(timezone.utc) < self.since:
             return False
-        return (isinstance(binding, list) and len(binding) == 4
-                and binding[0] == c['human_id']
-                and binding[1] == {'chat_id': c['chat_id'], 'thread_id': c['topic_id']}
-                and binding[3] == c['native_thread'])
+        return self.matches_source_binding(source)
 
     @storage_error
     def begin(self, source, speaker, mime, bound):
