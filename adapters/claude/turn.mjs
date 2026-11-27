@@ -192,6 +192,10 @@ export async function runClaudeTurn({
       expected.push({ name: 'matrix_foundation', source: 'dynamic', tools: profile.matrixFoundation.tools });
       mcpServers.matrix_foundation = profile.matrixFoundation.server;
     }
+    if (profile.matrixMessaging) {
+      expected.push({ name: 'matrix_chat', source: 'dynamic', tools: profile.matrixMessaging.tools });
+      mcpServers.matrix_chat = profile.matrixMessaging.server;
+    }
     if (profile.controller) {
       expected.push({ name: 'gateway', source: 'sdk', tools: ['interaction_controller'] });
       mcpServers.gateway = profile.controller;

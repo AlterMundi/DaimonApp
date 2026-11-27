@@ -19,7 +19,7 @@ const VERSION = 'daimon-gateway.claude-turn/v2';
 const HOST_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'NotebookEdit'];
 const exec = promisify(execFile);
 
-function turnScope(profile, bytes, skills, foundation, hostTools, fullAccess, controller, sessionInstructions) {
+function turnScope(profile, bytes, skills, foundation, hostTools, fullAccess, controller, sessionInstructions, messaging) {
   const selector = profile.sharedDmk;
   return createHash('sha256')
     .update(JSON.stringify([
@@ -32,6 +32,7 @@ function turnScope(profile, bytes, skills, foundation, hostTools, fullAccess, co
       ...(fullAccess ? [{ controller }] : []),
       ...(hostTools.includes('Bash') && profile.hostToolDirectory ? [profile.hostToolDirectory] : []),
       ...(sessionInstructions ? [{ sessionInstructions }] : []),
+      ...(messaging ? [{ messaging: messaging.revision }] : []),
     ]))
     .update(bytes)
     .digest('hex');
@@ -48,12 +49,14 @@ async function ownerProfile(path) {
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const skillAnchor = Object.hasOwn(value ?? {}, 'skillResumeAnchor') ? ['skillResumeAnchor'] : [];
+  const skillContinuity = Object.hasOwn(value ?? {}, 'skillContinuity') ? ['skillContinuity'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
+  const messaging = Object.hasOwn(value ?? {}, 'matrixMessaging') ? ['matrixMessaging'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...foundation, ...hostTools,
+      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...skillContinuity, ...foundation, ...messaging, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
@@ -65,6 +68,12 @@ async function ownerProfile(path) {
         || value.skillResumeAnchor.length < 2 || value.skillResumeAnchor.length > 16
         || new Set(value.skillResumeAnchor).size !== value.skillResumeAnchor.length
         || !value.skillResumeAnchor.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
+      || (skillContinuity.length > 0 && (!skills.length
+        || !closed(value.skillContinuity, ['layoutRevision',
+          ...(Object.hasOwn(value.skillContinuity ?? {}, 'previousRevision') ? ['previousRevision'] : [])])
+        || !Object.values(value.skillContinuity).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
+      || (messaging.length > 0 && (typeof value.matrixMessaging !== 'string'
+        || !isAbsolute(value.matrixMessaging)))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -165,6 +174,71 @@ async function matrixFoundation(profile) {
   return { server: nativeStdio(profile.home, command), tools, revision };
 }
 
+async function matrixMessaging(profile, fullAccess) {
+  if (!fullAccess || !profile.matrixMessaging) return undefined;
+  const connectionBytes = await privateBytes(profile.matrixMessaging, 128 * 1024);
+  const { command } = JSON.parse(connectionBytes);
+  const bindingFile = Array.isArray(command) ? command.at(-1) : undefined;
+  if (!Array.isArray(command) || command.length < 3 || command.length > 32
+      || !command.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 8192)
+      || !isAbsolute(command[0]) || command.at(-2) !== '--binding' || !isAbsolute(bindingFile)
+      || command.filter(arg => arg === '--binding').length !== 1) {
+    throw new Error('Invalid native Matrix messaging connection');
+  }
+  const bindingBytes = await privateBytes(bindingFile, 16 * 1024);
+  const binding = JSON.parse(bindingBytes);
+  if (binding.schema !== 'dm.agent-chat.binding/v1'
+      || typeof binding.client_config !== 'string' || !isAbsolute(binding.client_config)) {
+    throw new Error('Invalid native Matrix messaging binding');
+  }
+  const clientBytes = await privateBytes(binding.client_config, 16 * 1024);
+  const { schema, expected_server, capability, runtime_id } = JSON.parse(clientBytes);
+  const observerArgs = profile.matrixStatusCommand;
+  const observerIndex = observerArgs.indexOf('--binding');
+  if (observerIndex < 1 || observerArgs.lastIndexOf('--binding') !== observerIndex
+      || !observerArgs.includes('--body-status')) {
+    throw new Error('Messaging requires an authenticated Matrix observation binding');
+  }
+  const observerBytes = await privateBytes(observerArgs[observerIndex + 1], 32 * 1024);
+  const observer = JSON.parse(observerBytes);
+  const observed = observer.observation;
+  if (!observed?.client_config || typeof binding.socket !== 'string' || !isAbsolute(binding.socket)
+      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)
+      || await realpath(binding.socket) !== await realpath(observed.socket)
+      || !(await stat(observed.socket)).isSocket()) {
+    throw new Error('Matrix messaging and identity observation must use the same runtime socket');
+  }
+  const observedClient = JSON.parse(await privateBytes(observed.client_config, 16 * 1024));
+  const methods = ['messaging.delivery', 'messaging.inbox', 'messaging.reply', 'messaging.send'];
+  const now = Date.now();
+  const timed = capability?.schema === 'dm.local.capability/v1';
+  const validity = timed ? capability : capability?.validity;
+  const valid = Number.isSafeInteger(validity?.not_before_ms) && validity.not_before_ms <= now
+    && (timed ? Number.isSafeInteger(validity.not_after_ms) && now < validity.not_after_ms
+      : capability?.schema === 'dm.local.capability/v2'
+        && closed(validity, ['mode', 'not_before_ms']) && validity.mode === 'until-revoked');
+  if (schema !== 'dm.local.client-config/v3'
+      || observedClient.schema !== schema
+      || observer.source?.being_ref !== profile.body.beingRef
+      || observer.source?.embodiment_id !== profile.body.embodimentId
+      || typeof runtime_id !== 'string' || runtime_id !== observedClient.runtime_id
+      || expected_server?.embodiment_id !== profile.body.embodimentId
+      || expected_server?.incarnation_id !== profile.body.incarnationId
+      || !['body_ref', 'embodiment_id', 'incarnation_id', 'principal_id'].every(name =>
+        typeof expected_server?.[name] === 'string'
+        && expected_server[name] === observedClient.expected_server?.[name])
+      || !valid || capability?.status !== 'active' || !Array.isArray(capability.methods)
+      || JSON.stringify([...capability.methods].sort()) !== JSON.stringify(methods)) {
+    throw new Error('Matrix messaging grant differs from the selected live body');
+  }
+  return {
+    server: nativeStdio(profile.home, [...command, 'mcp']),
+    tools: methods.map(method => method.replace('.', '_')),
+    revision: createHash('sha256').update(connectionBytes).update(bindingBytes).update(clientBytes)
+      .update(observerBytes).digest('hex'),
+  };
+}
+
 async function probeFoundation(server, body, cwd, signal) {
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
   const child = spawn(server.command, server.args, { cwd, signal: deadline, stdio: ['pipe', 'pipe', 'ignore'] });
@@ -191,10 +265,42 @@ async function probeFoundation(server, body, cwd, signal) {
   }
 }
 
+function skillFrontmatter(bytes, digest) {
+  const text = bytes.toString('utf8');
+  // Preserve unknown native metadata verbatim. Only the conventional
+  // metadata.version string is ignored. Malformed headers stay revision-bound.
+  if (!/^\uFEFF?---/.test(text)) return null;
+  const header = /^---\r?\n([\s\S]*?)^---[ \t]*(?:\r?\n|$)/m.exec(text);
+  if (!header || header.index !== 0) return digest;
+  const lines = header[1].split(/\r?\n/);
+  const validScalar = value => /^"(?:[^"\\]|\\.)*"$/.test(value)
+    || /^'(?:[^']|'')*'$/.test(value)
+    || /^[A-Za-z0-9_./@%+()][^\r\n]*$/.test(value);
+  let metadata = false;
+  const topKeys = new Set();
+  const metadataKeys = new Set();
+  for (const [index, line] of lines.entries()) {
+    if (!line) continue;
+    const field = /^( {2})?([A-Za-z0-9_-]+):(?: (.+))?$/.exec(line);
+    if (!field) return header[1];
+    const [, indent, key, value] = field;
+    const keys = indent ? metadataKeys : topKeys;
+    if (keys.has(key) || (indent && !metadata)) return header[1];
+    keys.add(key);
+    if (!indent) metadata = key === 'metadata' && value === undefined;
+    if (value === undefined ? !!indent || !metadata : !validScalar(value)) return header[1];
+    if (indent && key === 'version' && /^"[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?"$/.test(value)) {
+      lines[index] = '  version: "<semver>"';
+    }
+  }
+  return lines.join('\n');
+}
+
 async function sharedSkillInventory(root) {
-  if (!root) return { names: [], revision: null };
+  if (!root) return { names: [], revision: null, layoutRevision: null };
   const names = [];
   const revision = createHash('sha256');
+  const layout = createHash('sha256');
   for (const name of (await readdir(root)).sort()) {
     if (name.startsWith('.')) continue;
     const file = join(root, name, 'SKILL.md');
@@ -207,13 +313,18 @@ async function sharedSkillInventory(root) {
     const bytes = await readFile(path);
     const digest = createHash('sha256').update(bytes).digest('hex');
     revision.update(JSON.stringify([name, path, digest]));
+    layout.update(JSON.stringify([name, path, skillFrontmatter(bytes, digest)]));
     names.push(`${SKILL_NAMESPACE}:${name}`);
   }
   if (!names.length) throw new Error('Selected shared skills directory is empty');
-  return { names, revision: revision.digest('hex') };
+  return { names, revision: revision.digest('hex'), layoutRevision: layout.digest('hex') };
 }
 
 function skillScopeRevision(profile, inventory) {
+  const continuity = profile.skillContinuity;
+  if (continuity && continuity.layoutRevision === inventory.layoutRevision) {
+    return continuity.previousRevision ?? 'skill-layout/v1:' + inventory.layoutRevision;
+  }
   const anchor = profile.skillResumeAnchor;
   return anchor?.includes(inventory.revision) ? anchor[0] : inventory.revision;
 }
@@ -326,8 +437,8 @@ async function main() {
   if (flag === '--skill-resume-anchor' && extra.length === 0) {
     const profile = await ownerProfile(path);
     if (!profile.sharedSkillsDirectory) throw new Error('Shared skill selection required');
-    const { revision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
-    process.stdout.write(JSON.stringify({ revision }) + '\n');
+    const { revision, layoutRevision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
+    process.stdout.write(JSON.stringify({ revision, layoutRevision }) + '\n');
     return;
   }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
@@ -396,9 +507,9 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
-    const [binding, skills, foundation, guidance] = await Promise.all([
+    const [binding, skills, foundation, guidance, messaging] = await Promise.all([
       sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory), matrixFoundation(profile),
-      bodyGuidance(profile, fullAccess),
+      bodyGuidance(profile, fullAccess), matrixMessaging(profile, fullAccess),
     ]);
     if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
@@ -418,21 +529,21 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions);
+    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions, messaging);
     const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
-      const [bytes, inventory, currentFoundation, currentGuidance] = await Promise.all([
+      const [bytes, inventory, currentFoundation, currentGuidance, currentMessaging] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
-        bodyGuidance(current, fullAccess),
+        bodyGuidance(current, fullAccess), matrixMessaging(current, fullAccess),
       ]);
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
         && inventory.revision === skills.revision
-        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -539,12 +650,12 @@ async function main() {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
-        sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, hostTools, controller,
+        sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, matrixMessaging: messaging, hostTools, controller,
         fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,
-          maxTurns: sharedDmk || sharedSkills || foundation || hostTools.length || controller ? 6 : 2,
+          maxTurns: sharedDmk || sharedSkills || foundation || messaging || hostTools.length || controller ? 6 : 2,
         }),
         env,
       },

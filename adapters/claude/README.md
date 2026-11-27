@@ -65,17 +65,33 @@ do not change the authorization scope or replace native history. Repository
 guidance remains a separate owner selection. This field grants no resource,
 tool or route and performs no memory or inbox preload.
 
-For a compatible skill update, `--skill-resume-anchor <owner profile>`
-prints the exact installed inventory revision. The optional private
-`skillResumeAnchor` accepts an ordered list of exact inventory revisions.
-Its first revision names the existing native scope. Include a reviewed
-successor only when all installed package changes preserve the effective
-skill and tool grants. The inventory includes skill names, resolved paths
-and SHA-256 of every SKILL.md. An unlisted revision retains its own separate
-scope. The worker rechecks the actual digest before and after recording
-submission. Use separate scopes for permission changes or a confidentiality
-withdrawal. Verify a real resumed turn and a read of the new installed skill
-before reporting receiving adoption.
+Use `--skill-resume-anchor <owner profile>` to read the exact installed inventory
+revision and its layout revision. For owner-managed packages, set
+`skillContinuity.layoutRevision` to the reviewed layout. Body text and the
+conventional quoted `metadata.version` change across compatible releases without
+forking a new session. The layout includes names, resolved paths, and all other
+frontmatter, including native tool and context settings. A different layout
+does not inherit this compatibility. The worker still checks the complete
+inventory digest at the submission boundary.
+
+When adopting the feature for a retained native session, set
+`skillContinuity.previousRevision` to the exact verified inventory value that
+named its existing scope. A new profile can omit that field. Older
+`skillResumeAnchor` entries remain supported for explicitly reviewed exact
+inventory revisions outside the selected layout. The other scope inputs,
+including the body binding, memory and tools, continue to partition native
+history. Verify a resumed turn and the new installed skill before reporting
+receiving adoption.
+
+For paired work, optional `matrixMessaging` selects the owner-private
+`connection.json` returned by the existing Matrix chat attachment installer.
+Provision it using the Claude embodiment's own messaging application and
+signed grant. The worker checks that the attachment contains exactly the
+four messaging RPC methods and that the client is bound to the selected
+embodiment and incarnation. It registers the maintained stdio MCP only for
+paired host-access turns. It checks the precise native catalog before
+exposure and fingerprints the bound application as part of its authority
+scope. Setup and discovery do not read an inbox or send anything.
 
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation
