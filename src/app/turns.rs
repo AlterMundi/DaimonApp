@@ -380,7 +380,8 @@ pub(super) async fn process_turn(
         shared.store.merge_link(id, turn_id)?;
     }
     if let Some(id) = queued.stop_resume.as_deref() {
-        shared.store.stop_resume_event(
+        super::stopping::record_resume_event(
+            &shared,
             id,
             session.key,
             "resume_submitting",
@@ -1019,7 +1020,7 @@ pub(super) async fn process_turn(
                                 shared.store.native_collection_rejected(turn_id)?;
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Rejected{local_turn:turn_id})?;}
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Rejected,None)?;}
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_rejected",Some(turn_id),None)?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,"resume_rejected",Some(turn_id),None)?;}
 
                                 for id in shared.store.merge_local(turn_id)? {
                                     if shared.store.merge_leg(&id)?["phase"]=="submitting" {shared.store.merge_phase(&id,"rejected","Native explicitly rejected merge turn/start")?;}
@@ -1074,7 +1075,7 @@ pub(super) async fn process_turn(
                                     }
                                 }
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
 
                                 shared.store.merge_input_accepted(turn_id,&native_id)?;
                                 shared.store.nexus_input_accepted(turn_id,&native_id)?;
@@ -1278,7 +1279,7 @@ pub(super) async fn process_turn(
                                     let _=shared.store.goal_retry_native_terminal(requester_user_id,session_key,&native,&native_id,&status);
                                 }
                                 shared.goal_recovery_wakeup.notify_one();
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,&format!("resume_turn_{status}"),Some(turn_id),Some(&native_id))?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,&format!("resume_turn_{status}"),Some(turn_id),Some(&native_id))?;}
 
                                 shared.store.merge_terminal(turn_id,&native_id,&status)?;
                                 if !shared.store.nexus_local_requests(turn_id)?.is_empty() { shared.store.nexus_terminal(turn_id,&native_id,&status)?; }

@@ -166,6 +166,7 @@ pub(super) async fn command(
         }
         op.phase = "released".into();
         app.shared.store.stop_save(&op, &previous)?;
+        wake_created_topic_inputs(app, &op);
         return Ok(public_status(app, &op));
     }
     if args == "status" {
@@ -606,12 +607,33 @@ async fn resume(app: &App, human: i64, id: &str) -> Result<Value> {
             Ok(false) => "resume_unchanged",
             Err(_) => "resume_unconfirmed",
         };
-        app.shared
-            .store
-            .stop_resume_event(id, t.key, phase, None, None)?;
+        record_resume_event(&app.shared, id, t.key, phase, None, None)?;
     }
     op = app.shared.store.stop_read(human, id)?;
     Ok(public_status(app, &op))
+}
+
+pub(super) fn record_resume_event(
+    shared: &AppShared,
+    operation: &str,
+    target: SessionKey,
+    phase: &str,
+    local: Option<i64>,
+    native: Option<&str>,
+) -> Result<()> {
+    let released = shared
+        .store
+        .stop_resume_event(operation, target, phase, local, native)?;
+    telegram_ingress::wake_released_topics(shared, &released);
+    Ok(())
+}
+
+fn wake_created_topic_inputs(app: &App, operation: &StopOperation) {
+    for target in &operation.targets {
+        if let Err(error) = telegram_ingress::release_created_topic(app, target.key) {
+            tracing::warn!(%error, "Created topic inputs remain retained after Stop release");
+        }
+    }
 }
 async fn resume_target(app: &App, human: i64, t: &StopTarget, id: &str) -> Result<bool> {
     app.shared.store.stop_binding(human, t)?;

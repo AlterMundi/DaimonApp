@@ -1160,6 +1160,18 @@ binds the new topic without sending a model prompt. Use the owner creation
 status and resume controls for a confirmed topic or known-unsent command.
 Use `creation status-update UPDATE_ID` to find the direct command's operation ID.
 An unconfirmed Telegram call requires the existing receipt reconciliation.
+Once Telegram confirms a new topic, ordinary messages received during workspace
+setup remain in the canonical ingress journal before native submission. The
+same topic dispatcher releases them in Telegram update order after the setup
+commit, including after a Gateway restart. A changed owner or Stop epoch
+retires the retained original. An interrupted native dispatch keeps its
+existing uncertainty instead of entering this recovery path.
+For a controller-created topic, the first scheduling attempt for the original
+creation instruction precedes the release. Its exact transport phase remains
+inspectable. After restart, the interaction journal keeps known-unsent and
+uncertain instructions distinct. Releasing later Telegram input never
+retries that initial instruction. To check ready-topic input after a separate
+maintenance hold is removed, use the owner `creation resume ID` control.
 The topic row stores the result
 for both Codex and Claude. Gateway records the permanent folder separately
 from the execution directory. `/pwd` displays both. Renames and explicit checkout selection keep

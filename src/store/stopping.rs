@@ -225,7 +225,7 @@ impl Store {
         phase: &str,
         local: Option<i64>,
         native: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Vec<SessionKey>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let doc: String = conn.query_row(
             "SELECT document FROM stop_operations WHERE id=?",
@@ -239,10 +239,10 @@ impl Store {
             .find(|t| t.key == key)
             .context("Resume target missing")?;
         if phase == "resume_queued" && t.phase != "resume_intent" {
-            return Ok(());
+            return Ok(vec![]);
         }
         if phase == "resume_accepted" && t.phase.starts_with("resume_turn_") {
-            return Ok(());
+            return Ok(vec![]);
         }
         if let Some(local) = local {
             if t.resume_turn.is_some_and(|old| old != local) {
@@ -285,13 +285,21 @@ impl Store {
             }
             .into();
         } else {
-            op.phase = current;
+            op.phase = current.clone();
         }
         conn.execute(
             "UPDATE stop_operations SET phase=?,document=? WHERE id=?",
             params![op.phase, serde_json::to_string(&op)?, id],
         )?;
-        Ok(())
+        Ok(
+            if current == "resuming"
+                && matches!(op.phase.as_str(), "resumed" | "resumed_with_failures")
+            {
+                op.targets.into_iter().map(|target| target.key).collect()
+            } else {
+                vec![]
+            },
+        )
     }
     pub fn stop_metadata(&self, human: i64) -> Result<Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
@@ -385,14 +393,20 @@ mod tests {
         store.stop_save(&op, "stopped").unwrap();
         assert!(store.stop_fenced(key).unwrap());
         store.stop_validate_resume(&op.id, key, 100).unwrap();
-        store
-            .stop_resume_event(&op.id, key, "resume_queued", None, None)
-            .unwrap();
+        assert!(
+            store
+                .stop_resume_event(&op.id, key, "resume_queued", None, None)
+                .unwrap()
+                .is_empty()
+        );
         assert!(store.stop_fenced(key).unwrap());
         assert_eq!(store.stop_read(100, &op.id).unwrap().phase, "resuming");
-        store
-            .stop_resume_event(&op.id, key, "resume_accepted", Some(99), Some("physical"))
-            .unwrap();
+        assert_eq!(
+            store
+                .stop_resume_event(&op.id, key, "resume_accepted", Some(99), Some("physical"))
+                .unwrap(),
+            vec![key]
+        );
         assert!(!store.stop_fenced(key).unwrap());
         assert_eq!(store.stop_read(100, &op.id).unwrap().phase, "resumed");
         store

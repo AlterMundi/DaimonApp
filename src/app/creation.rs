@@ -404,8 +404,19 @@ async fn execute_claimed(
         .await
         .err()
         .map(|_| "Native delivery unconfirmed; inspect retained input, do not replay");
+    let transport_phase = shared
+        .store
+        .interaction_instruction(&instruction.id, human)?
+        .map(|current| current.phase);
+    if let Err(error) = shared
+        .store
+        .release_controller_creation(id, human)
+        .and_then(|()| telegram_ingress::release_created_topic(app, target))
+    {
+        tracing::warn!(%id, %error, "Created topic updates remain retained");
+    }
     Ok(
-        json!({"kind":"created_destination","operation":shared.store.interaction_creation(id,human)?,"selector":format!("t{topic}"),"instruction":instruction.id,"dispatch_error":error,"incorporation":"Creation and transport acceptance do not establish worker incorporation or completion"}),
+        json!({"kind":"created_destination","operation":shared.store.interaction_creation(id,human)?,"selector":format!("t{topic}"),"instruction":instruction.id,"transport_phase":transport_phase,"dispatch_error":error,"incorporation":"Creation and transport acceptance do not establish worker incorporation or completion"}),
     )
 }
 
@@ -562,6 +573,9 @@ async fn bind_direct_topic(app: &App, human: i64, operation: &Value, id: &str) -
     let folder = app.allocate_topic_workspace(root, name, key, human)?;
     app.apply_independent_topic_workspace(&mut template, folder.clone());
     app.initialize_topic_session_with_folder(key, human, &template, Some(&folder), Some(id))?;
+    if let Err(error) = telegram_ingress::release_created_topic(app, key) {
+        tracing::warn!(%id, %error, "Created topic updates remain retained");
+    }
     for (chat, thread, text) in [
         (chat, Some(topic), "New conversation ready.".to_owned()),
         (
@@ -604,6 +618,16 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
         "Creation belongs to another entry"
     );
     if *verb == "status" && tail.is_empty() {
+        return Ok(op);
+    }
+    if *verb == "resume" && tail.is_empty() && op["phase"] == "ready" {
+        let topic = op["topic"].as_i64().context("Missing confirmed topic")?;
+        let target = SessionKey::new(cfg.chat_id, Some(topic));
+        anyhow::ensure!(
+            app.shared.store.session_creator(target)? == human,
+            "Topic owner changed"
+        );
+        telegram_ingress::release_created_topic(app, target)?;
         return Ok(op);
     }
     anyhow::ensure!(
