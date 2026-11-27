@@ -175,10 +175,45 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
             |r| r.get(0),
         )
         .optional()?;
-    Ok(matches!(
-        (author["kind"].as_str(), phase.as_deref()),
-        (Some("session_request"), Some("requested")) | (Some("session_result"), Some("returned"))
-    ))
+    if author["kind"] == "session_request" {
+        return Ok(phase.as_deref() == Some("requested"));
+    }
+    if author["kind"] != "session_result" || phase.as_deref() != Some("returned") {
+        return Ok(false);
+    }
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+        params![call, human],
+        |row| row.get(0),
+    )?;
+    let request: SessionRequest = serde_json::from_str(&raw)?;
+    if request.return_instruction.as_deref() != Some(i.id.as_str()) {
+        return Ok(false);
+    }
+    for id in [&request.parent_instruction, &request.target_instruction] {
+        let execution = instruction_on(conn, id, human)?;
+        if execution.target_execution.is_some() && !current_bound_turn_on(conn, &execution)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turns t
+            JOIN sessions s ON s.id=t.session_id
+            JOIN conversation_entry_generations g ON g.session_id=s.id
+            WHERE t.id=?1 AND t.session_id=?2 AND t.native_thread_id=?3
+              AND t.execution_generation=g.generation AND s.force_fresh_thread=0
+              AND t.status IN ('running','completed'))",
+        params![
+            instruction.local_turn,
+            instruction.target_session,
+            instruction.native_thread
+        ],
+        |row| row.get(0),
+    )? && super::interaction::target_execution_allowed_on(conn, instruction)?)
 }
 
 // The retained human parent can grant the recipient its paired host tools.
@@ -816,6 +851,9 @@ impl Store {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.target_execution.is_some() && !current_bound_turn_on(&tx, &helper)? {
+            return Ok(None);
+        }
         let route = local_claude_route(config, call.caller)?;
         let result_text = if route.is_some() {
             let end = d
