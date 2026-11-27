@@ -103,7 +103,7 @@ async function api(route, body) {
     // A reply revision and offset identify a read, with no work submission.
     const sourceRead = !body && route.startsWith("interaction/part?");
     const sourceDelays=[350,1000,2500];
-    let sharedVerified=false,sourceAttempts=0;
+    let sharedVerified=false,sourceAttempts=0,bodyRetried=false;
     async function retrySourceRead() {
       if(!sourceRead || controller.signal.aborted || sourceAttempts>=sourceDelays.length)return false;
       await new Promise(resolve=>setTimeout(resolve,sourceDelays[sourceAttempts++]));
@@ -137,7 +137,10 @@ async function api(route, body) {
       let value;
       try { value = await response.json(); }
       catch (cause) {
-        if(response.ok && ["SyntaxError","TypeError"].includes(cause.name) && await retrySourceRead())continue;
+        if(response.ok && !bodyRetried && ["SyntaxError","TypeError"].includes(cause.name) && await retrySourceRead()){
+          bodyRetried=true;
+          continue;
+        }
         const error = new Error(sourceRead
           ? "Couldn't load this message. Try reading again."
           : "Server response unavailable. Check current state before retrying.");
