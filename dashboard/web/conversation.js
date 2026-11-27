@@ -2428,7 +2428,7 @@ window.Conversation = (() => {
         }
       }
     }
-    async function requestAudio(source,offset,controller){
+    async function requestAudio(source,offset,controller,onBufferedPart){
       const deadline=setTimeout(()=>controller.abort(),145000),speechProvider=conversationServices==='openai'?'openai':undefined;
       try{
         const response = await fetch("api/interaction/audio", {method:"POST",credentials:"same-origin",
@@ -2447,15 +2447,13 @@ window.Conversation = (() => {
           if(!canStreamSpeech || !window.SpeechStream?.available() || !["mp3","pcm_s16le"].includes(encoding))throw Error("Unexpected streaming audio");
           const nextHeader=response.headers.get("x-presentation-next-offset"),next=nextHeader===""?null:Number(nextHeader),end=Number(response.headers.get("x-presentation-end-offset"));
           if(!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end)throw Error("Invalid stream boundary");
-          const device=window.navigator;
-          const bufferedPcm=encoding==="pcm_s16le" && (device.userAgentData?.mobile===true
-            || /Android|iPhone|iPad|iPod/i.test(device.userAgent||"")
-            || device.platform==="MacIntel" && device.maxTouchPoints>1);
+          const bufferedPcm=encoding==="pcm_s16le";
           const streaming=window.SpeechStream.open(response,controller.signal,{bufferedPcm});
           const metadata={streaming,next,end,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:true};
           if(!bufferedPcm)return metadata;
-          // Give the phone's media element one verified part. Provider gaps and
-          // delayed browser timers must not drain the player mid-part.
+          // Play one verified PCM part through the media element. Transport
+          // gaps and delayed browser timers cannot drain it mid-part.
+          onBufferedPart?.(next);
           const completed=await streaming.done;
           if(controller.signal.aborted)throw new DOMException("Audio preparation ended", "AbortError");
           if(!completed.complete || !completed.blob?.size)throw Error("Audio stopped before it was ready. The reply is still available to read.");
@@ -2481,15 +2479,15 @@ window.Conversation = (() => {
         return {blob,next,end,lookahead,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
       }finally{clearTimeout(deadline);}
     }
-    function prefetchNext(selected){
-      if(!selected.prefetch || voiceSuspended || captureBusy || active!==selected || queuedPreparations.size || sessionMuted(selected.source))return;
+    function prefetchNext(selected,next=selected.next,ready=selected.prefetch){
+      if(!ready || voiceSuspended || captureBusy || active!==selected || queuedPreparations.size || sessionMuted(selected.source))return;
       if(selected.source.kind!=="integrator_live"){
-        if(selected.next===null)return;
+        if(next===null)return;
         const prepare=offset=>{
           const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
           waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return waiting;
         };
-        if(!prefetched)prefetched=prepare(selected.next);
+        if(!prefetched)prefetched=prepare(next);
         // Only finalized WAV Live readings advertise the second exact boundary.
         // Two future preparations share the existing server's two slots; no
         // guessed offsets, recursive expansion or retry of an unknown attempt.
@@ -2543,7 +2541,9 @@ window.Conversation = (() => {
       requestAbort = prepared?.controller||new AbortController();
       const controller = requestAbort;playbackLabels();
       try {
-        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller)};
+        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller,next=>{
+          if(source.kind!=="integrator_live" && enabled && playbackAllowed())prefetchNext(selected,next,true);
+        })};
         if(result.error)throw result.error;
         const {blob,...metadata}=result.value;
         if(active!==selected || generation!==owned)return;

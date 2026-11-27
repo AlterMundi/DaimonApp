@@ -484,15 +484,14 @@ revision and access are rechecked before every emitted frame. The existing
 original-audio retention stores those exact PCM bytes with explicit format MIME;
 it does not fabricate a WAV header for an unfinished capture.
 
-The canonical browser player schedules PCM directly through Web Audio without a
-transcode, waiting for120ms of received audio (or known completion), with at most
-half a second scheduled ahead and three prepared players. Each stream remains
-bounded to8MiB including its eventual WAV header,16MiB wire and145seconds. Pause,
-seek, mute, source teardown and cancellation use the existing Conversation player
-controls. Cancellation stops that reader/provider process and never retries.
-A completed verified PCM stream can supply a WAV from the same bytes for existing
-playback recovery. User-gesture unlocking is separate from provider completion;
-a browser refusing output offers the existing Play action rather than hanging.
+Canonical Conversation accumulates each bounded PCM part through the same
+authenticated stream. It checks sequence, format and terminal hash, then plays
+one WAV through the browser media element. No user-agent heuristic chooses the
+player. An authenticated continuation header can start one exact next part
+during preparation, using the existing two synthesis slots. The same source
+and revision stay attached to the player, and cancellation closes the reader
+without retry. Delivery gaps can delay the start of a part, but cannot drain
+it as it plays. Native live voice has its own playback path.
 Saved GPT-Live voice readings keep their frozen nonstreaming route until their
 own progressive adapter is qualified; enabling the default stream cannot
 silently read a selected voice through the default voice. A progressive transport
@@ -771,13 +770,13 @@ readers already have no recognizer or fallback; preserving old model names in
 those retained receipts does not activate a provider. Do not clear uncertain
 attempts or rewrite old source IDs to hide incomplete recognition.
 
-`tests/conversation_pcm_browser.py` exercises the real canonical shell and player
-with controlled Spanish source parts and finite PCM transport. It checks exact
-source offsets, nonzero browser output for each part and next-part preparation
-before the current part ends. The existing180ms within-reply pacing remains;
-measured source qualification produced roughly245ms between parts including
-playback scheduling. This is a software continuity check, not provider latency
-or physical hearing acceptance. `tests/pcm_speech_browser.py` separately covers
+`tests/conversation_pcm_browser.py` exercises the real canonical shell with a
+ten-part batch of short and long Spanish source parts and varied PCM delivery
+delays. It checks exact offsets and nonzero browser output, reports the first
+request-to-output time and p95 for intra-part elapsed time and inter-part gaps,
+and checks the continuation is requested before the current part ends. This
+qualifies browser continuity under controlled transport. Provider output may
+already contain pauses, and the fixture cannot verify physical hearing. `tests/pcm_speech_browser.py` separately covers
 pause silence, resume, cancellation, prepared-player bounds and exact-byte WAV
 recovery. Neither fixture opens a microphone or calls a provider.
 
