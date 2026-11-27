@@ -2294,6 +2294,17 @@ impl App {
         key: SessionKey,
         human: i64,
     ) -> Result<PathBuf> {
+        self.reserve_topic_workspace(root, title, key, human, None)
+    }
+
+    fn reserve_topic_workspace(
+        &self,
+        root: &Path,
+        title: &str,
+        key: SessionKey,
+        human: i64,
+        existing_session: Option<i64>,
+    ) -> Result<PathBuf> {
         let mut label = String::new();
         for ch in title.chars() {
             if label.len() + ch.len_utf8() > 96 {
@@ -2307,28 +2318,45 @@ impl App {
         }
         let label = label.trim_matches([' ', '_', '-']);
         let label = if label.is_empty() { "Topic" } else { label };
-        let (path, claim) =
-            if let Some((path, claim)) = self.shared.store.topic_folder_claim(key, human)? {
-                anyhow::ensure!(
-                    path.parent() == Some(root),
-                    "Topic folder is outside its retained root"
-                );
-                (path, claim)
-            } else {
-                let path = root.join(format!("{label}--{}-{}", key.chat_id, key.thread_id));
-                match fs::symlink_metadata(&path) {
-                    Ok(_) => bail!("The new topic folder is already in use"),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("Could not inspect the topic folder"),
-                }
+        let (path, claim) = if let Some((path, claim)) =
+            self.shared
+                .store
+                .topic_folder_claim_for(key, human, existing_session)?
+        {
+            anyhow::ensure!(
+                path.parent() == Some(root),
+                "Topic folder is outside its retained root"
+            );
+            (path, claim)
+        } else {
+            let path = root.join(format!("{label}--{}-{}", key.chat_id, key.thread_id));
+            match fs::symlink_metadata(&path) {
+                Ok(_) => bail!("The new topic folder is already in use"),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("Could not inspect the topic folder"),
+            }
+            if existing_session.is_none() {
                 self.ensure_session(key, human)?;
-                let claim = self.shared.store.reserve_topic_folder(key, human, &path)?;
-                (path, claim)
-            };
+            }
+            let claim =
+                self.shared
+                    .store
+                    .reserve_topic_folder(key, human, &path, existing_session)?;
+            (path, claim)
+        };
         anyhow::ensure!(
             path.to_str().is_some_and(|value| value.len() <= 4096),
             "Allocated topic workspace path is too long"
         );
+        if let Some(expected) = existing_session {
+            anyhow::ensure!(
+                self.shared
+                    .store
+                    .topic_folder_claim_for(key, human, Some(expected))?
+                    == Some((path.clone(), claim.clone())),
+                "Topic ownership or binding changed during adoption"
+            );
+        }
         creation::publish_workspace_folder(root, &path, &claim)?;
         Ok(path)
     }

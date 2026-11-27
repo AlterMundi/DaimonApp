@@ -24,6 +24,9 @@ pub(super) async fn telegram_command(
     if args.starts_with("input submit-human ") || args.starts_with("input retry-human ") {
         bail!("Paired Conversation input controls require the local owner socket");
     }
+    if args.starts_with("topics workspace ") {
+        bail!("Topic workspace controls require the local owner socket");
+    }
     if let Some(selected) = args.strip_prefix("matrix ")
         && matrix::foreground_command(selected).is_some()
     {
@@ -46,6 +49,9 @@ pub(super) async fn command(
     }
     if let Some(days) = args.strip_prefix("topics list ") {
         return app.shared.store.topic_inventory(human, days.parse()?);
+    }
+    if let Some(selected) = args.strip_prefix("topics workspace ") {
+        return creation::workspace_owner_command(app, human, selected);
     }
     if args == "topics publications" {
         return app.shared.store.topic_publication_inventory(human);

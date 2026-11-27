@@ -683,6 +683,51 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
     .await
 }
 
+pub(super) fn workspace_owner_command(app: &App, human: i64, args: &str) -> Result<Value> {
+    let cfg = app
+        .shared
+        .config
+        .interaction
+        .as_ref()
+        .context("Interaction is unavailable")?;
+    anyhow::ensure!(cfg.human_id == human, "Topic workspace owner mismatch");
+    let parts: Vec<_> = args.split_whitespace().collect();
+    let (topic, expected) = match parts.as_slice() {
+        ["status", topic] => (topic.parse::<i64>()?, None),
+        ["adopt", topic, session] => (topic.parse::<i64>()?, Some(session.parse::<i64>()?)),
+        _ => bail!("Expected topics workspace status TOPIC or adopt TOPIC SESSION_ID"),
+    };
+    anyhow::ensure!(topic > 0, "A specific topic is required");
+    let key = SessionKey::new(cfg.chat_id, Some(topic));
+    let store = &app.shared.store;
+    store.conversation_request_binding(human, key)?;
+    let current = store
+        .get_session(key)?
+        .context("Topic session is unavailable")?;
+    if let Some(id) = expected {
+        anyhow::ensure!(id == current.id, "Topic session changed before adoption");
+        let root = cfg
+            .topic_workspace_root
+            .as_deref()
+            .context("No conversation folder root selected")?;
+        let root = App::validate_independent_topic_workspace(root)?;
+        let title = current.session_title.as_deref().unwrap_or("Topic");
+        app.reserve_topic_workspace(&root, title, key, human, Some(id))?;
+    }
+    let session = store
+        .get_session(key)?
+        .context("Topic session is unavailable")?;
+    anyhow::ensure!(session.id == current.id, "Topic session changed");
+    store.conversation_request_binding(human, key)?;
+    let claim = store.topic_folder_claim(key, human)?;
+    let folder_ready = claim.as_ref().is_some_and(|(path, marker)| {
+        workspace_marker_matches(path, marker).is_ok_and(|matches| matches)
+    });
+    Ok(json!({"topic":topic,"session_id":session.id,
+        "conversation_folder":claim.map(|(path,_)| path),
+        "folder_ready":folder_ready,"working_directory":session.cwd}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

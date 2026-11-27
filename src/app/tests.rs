@@ -1181,6 +1181,125 @@ async fn topic_dispatch_releases_a_retained_original_once_in_the_committed_works
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn owned_existing_topic_adopts_one_folder_without_moving_native_work() {
+    let (mut app, _db) = sample_app();
+    let root = tempfile::tempdir().unwrap();
+    let checkout = tempfile::tempdir().unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "topic_workspace_root": root.path()
+        }))
+        .unwrap(),
+    );
+    let key = SessionKey::new(100, Some(13));
+    let stored = app.ensure_session(key, 100).unwrap();
+    let store = &app.shared.store;
+    store.set_session_cwd(key, checkout.path()).unwrap();
+    store
+        .set_session_codex_thread(key, "older-native-thread")
+        .unwrap();
+    store
+        .set_explicit_session_title(key, "Char Design")
+        .unwrap();
+    let before = store.conversation_request_binding(100, key).unwrap();
+    let selected = format!("adopt 13 {}", stored.id);
+    assert!(creation::workspace_owner_command(&app, 101, &selected).is_err());
+    assert!(creation::workspace_owner_command(&app, 100, "adopt 13 1000").is_err());
+    assert!(
+        stopping::telegram_command(&app, 100, &format!("topics workspace {selected}"), None)
+            .await
+            .is_err()
+    );
+    store.set_session_busy(key, true).unwrap();
+    assert!(creation::workspace_owner_command(&app, 100, &selected).is_err());
+    store.set_session_busy(key, false).unwrap();
+    let adopted = creation::workspace_owner_command(&app, 100, &selected).unwrap();
+    assert_eq!(adopted["folder_ready"], true);
+    assert_eq!(
+        adopted["working_directory"],
+        serde_json::json!(checkout.path())
+    );
+    assert_eq!(
+        adopted["conversation_folder"],
+        serde_json::json!(
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join("Char Design--100-13")
+        )
+    );
+    assert_eq!(
+        store.conversation_request_binding(100, key).unwrap(),
+        before
+    );
+    store.set_explicit_session_title(key, "Redesigned").unwrap();
+    assert_eq!(
+        creation::workspace_owner_command(&app, 100, &selected).unwrap(),
+        adopted
+    );
+
+    let interrupted = SessionKey::new(100, Some(14));
+    let session = app.ensure_session(interrupted, 100).unwrap();
+    let reserved = root.path().canonicalize().unwrap().join("Topic--100-14");
+    store
+        .reserve_topic_folder(interrupted, 100, &reserved, Some(session.id))
+        .unwrap();
+    store.set_session_busy(interrupted, true).unwrap();
+    assert!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).is_err()
+    );
+    assert!(!reserved.exists());
+    store.set_session_busy(interrupted, false).unwrap();
+    assert_eq!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).unwrap()
+            ["folder_ready"],
+        true
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn topic_workspace_adoption_defers_to_confirmed_creation() {
+    let (mut app, _db) = sample_app();
+    let root = tempfile::tempdir().unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "topic_workspace_root": root.path()
+        }))
+        .unwrap(),
+    );
+    let source = SessionKey::new(100, Some(12));
+    let target = SessionKey::new(100, Some(13));
+    app.ensure_session(source, 100).unwrap();
+    let provisional = app.ensure_session(target, 100).unwrap();
+    let input = serde_json::from_value(serde_json::json!({
+        "update_id": 41, "direct_human_text": true, "message": {
+            "message_id": 41, "message_thread_id": 12,
+            "from": {"id": 100, "first_name": "Human", "is_bot": false},
+            "chat": {"id": 100, "type": "private"}, "text": "/topic Design"}
+    }))
+    .unwrap();
+    let store = &app.shared.store;
+    store.admit_update(&input).unwrap();
+    let (op, _) = store
+        .prepare_direct_topic(source, 100, 41, ("Design", false), 100, Some(root.path()))
+        .unwrap()
+        .unwrap();
+    let id = op["id"].as_str().unwrap();
+    store.interaction_creation_start(id, 100).unwrap();
+    store.interaction_creation_topic(id, 100, 13).unwrap();
+    assert!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 13 {}", provisional.id))
+            .is_err()
+    );
+    assert!(store.topic_folder(target, 100).unwrap().is_none());
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
 #[tokio::test]
 async fn sends_plain_text_to_the_active_turn() {
     let (app, _db) = sample_app();
