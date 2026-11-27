@@ -151,8 +151,29 @@ background memory, suggestions and provider retries in that test profile.
 
 Use the subscription the owner selects. Alibaba's
 [Qwen Code setup](https://www.alibabacloud.com/help/en/model-studio/qwen-code)
-distinguishes the Singapore Coding Plan, Token Plan and standard API
-credentials. Bailian CLI can be installed as a tool for the harness. The Qwen
-Code adapter completed one isolated interactive prompt through the international
-Qwen Token Plan using `qwen4-max`. Gateway topic routing and signed body
-acceptance remain separate from the adapter qualification.
+distinguishes Singapore Token Plan, Coding Plan and standard API credentials.
+Qwen Code 0.28.7 completed one isolated ACP prompt through the Singapore Token
+Plan using `qwen4-max`. Gateway topic routing and signed body acceptance remain
+separate from the adapter qualification.
+
+### Model Studio tools through Bailian
+
+Bailian (`bailian-cli`, executable `bl`) is a tool for Qwen Code and other
+harnesses. Install the pinned release in the receiving tools environment.
+Select the existing Token Plan credential through the owner-local secret
+binding and put it in `DASHSCOPE_API_KEY` only for the Bailian process.
+Use an isolated profile with both `BAILIAN_BASE_URL` and
+`DASHSCOPE_BASE_URL` set to
+`https://token-plan.ap-southeast-1.maas.aliyuncs.com` for the Singapore plan.
+In 2.14.0, the first variable alone did not appear as the selected base in
+`bl auth status --output json`. Verify `authenticated`, `api_key.source`
+and `api_key.base_url` without emitting the masked key. Keep credentials
+out of the tool arguments, repository, project environment and transcript.
+
+Receiving qualification with Bailian 2.14.0 confirmed one bounded real
+`text chat` response from `qwen4-max` using the selected subscription key
+and endpoint. A local auth-status response only checks configuration.
+Each additional capability has its own model and plan eligibility.
+Model Studio account operations may require separate console or OpenAPI
+authentication, as documented in the
+[Bailian installation guide](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/cli/installation).
