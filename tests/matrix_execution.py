@@ -1794,6 +1794,7 @@ class AdapterTests(unittest.TestCase):
 
 class AuthenticatedWeHostTests(unittest.TestCase):
     deliver_followup = False
+    after_return_intake = None
 
     def test_exact_original_and_signed_same_thread_return(self):
         import socketserver
@@ -1827,6 +1828,8 @@ class AuthenticatedWeHostTests(unittest.TestCase):
         def deliver(payload, **kwargs):
             return_attempts.append(kwargs["correlation_id"])
             receipt = sdk.lane("legion", at_ms=now + 15).intake(payload)
+            if self.after_return_intake is not None:
+                self.after_return_intake()
             if len(return_attempts) > 1 and not self.deliver_followup:
                 raise PeerTransportAmbiguous("outcome lost")
             return receipt

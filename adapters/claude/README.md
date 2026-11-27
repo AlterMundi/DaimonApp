@@ -458,7 +458,11 @@ Gateway must keep the same attempt and native session, report the exposed
 outcome as uncertain,
 and leave both the provider and signed return untouched on exact retry. The
 fixture disables Telegram, makes Codex unusable, and waits for the receiving
-writer lease with a shorter test-only expiry.
+writer lease with a shorter test-only expiry. With
+`FOREGROUND_TEST_SIGNED_INTERRUPT=return-crash`, kill Gateway after the signed
+reply is retained by the sender but before Gateway receives the acknowledgment.
+After restart, the journal must retain the same send ID with an uncertain return
+and the sender must still have exactly one signed reply in the original thread.
 Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
 a new original after restarting Gateway. The loopback provider checks for the
 first turn's prompt and reply in the resumed native session, and Interaction

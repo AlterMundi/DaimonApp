@@ -552,6 +552,9 @@ timeout_seconds=5
                         return
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
+                    if signed_interrupt == "return-crash":
+                        self._signed_return_crash(journey, provider, selected, return_attempts, fixture, body)
+                        return
                     if signed_interrupt:
                         competing = None
                         if signed_interrupt == "crash":
@@ -700,17 +703,7 @@ timeout_seconds=5
                     if run.poll() is None:
                         run.terminate()
             if signed_interrupt == "crash":
-                # Use the real lease predicate with a shorter test-only limit.
-                # The old PID is confirmed dead; preserve its journal and lease.
-                heartbeat, = journey.row(
-                    "SELECT heartbeat_at FROM app_instance_lock WHERE key='main'"
-                )[0]
-                journey.extra_env = {**getattr(journey, "extra_env", {}),
-                                     "TELECODEX_INSTANCE_STALE_SECONDS": "1"}
-                expires = datetime.fromisoformat(heartbeat).timestamp() + 1
-                journey.wait(lambda: time.time() > expires, seconds=3)
-                journey.start()
-                journey.wait_control_socket(journey.socket)
+                self._restart_after_signed_crash(journey)
                 outcome = journey.read("matrix", engine, "status", ident)["result"]
                 self.assertEqual(outcome["phase"], "provider_uncertain", outcome)
                 for key in ("input_id", "request_id", "session_id", "native_session_id", "thread_id"):
@@ -739,6 +732,69 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _restart_after_signed_crash(self, journey):
+            # Use the real lease predicate with a shorter test-only limit.
+            # The old PID is confirmed dead; preserve its journal and lease.
+            heartbeat, = journey.row(
+                "SELECT heartbeat_at FROM app_instance_lock WHERE key='main'"
+            )[0]
+            journey.extra_env = {**getattr(journey, "extra_env", {}),
+                                 "TELECODEX_INSTANCE_STALE_SECONDS": "1"}
+            expires = datetime.fromisoformat(heartbeat).timestamp() + 1
+            journey.wait(lambda: time.time() > expires, seconds=3)
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+
+        def _signed_return_crash(self, journey, provider, selected, return_attempts, fixture, body):
+            retained, release = Event(), Event()
+
+            def hold_ack():
+                retained.set()
+                assert release.wait(12), "The fixture never released the signed return"
+
+            def received_replies():
+                return [row["event_id"] for row in fixture.ledger_a.conversation_evidence()
+                        if row["subject"] == "communication"
+                        and row["origin"]["embodiment_id"] == body
+                        and row["payload"]["intent"]["thread_id"] == selected["thread_id"]
+                        and ANSWER in row["payload"]["body"]["text"]]
+
+            self.after_return_intake = hold_ack
+            ident = selected["event_id"]
+            args = [journey.binary, "--control", str(journey.config),
+                    "matrix", engine, "run", json.dumps(selected)]
+            with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
+                try:
+                    self.assertTrue(retained.wait(20), provider.failure)
+                    returning = journey.read("matrix", engine, "status", ident)["result"]
+                    self.assertEqual(returning["phase"], "returning", returning)
+                    self.assertEqual(return_attempts, [returning["result"]["send_id"]])
+                    message = received_replies()
+                    self.assertEqual(len(message), 1)
+                    journey.process.kill()
+                    journey.process.communicate(timeout=8)
+                    journey.process = None
+                    run.communicate(timeout=10)
+                finally:
+                    release.set()
+                    if run.poll() is None:
+                        run.terminate()
+
+            self._restart_after_signed_crash(journey)
+            outcome = journey.read("matrix", engine, "status", ident)["result"]
+            self.assertEqual(outcome["phase"], "return_uncertain", outcome)
+            for key in ("input_id", "request_id", "session_id", "native_session_id", "thread_id"):
+                self.assertEqual(outcome[key], returning[key], key)
+            self.assertEqual(outcome["result"]["send_id"], returning["result"]["send_id"])
+            self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                             outcome)
+            self.assertEqual(received_replies(), message)
+            self.assertEqual(return_attempts, [outcome["result"]["send_id"]])
+            self.assertIsNone(provider.failure)
+            self.assertEqual(provider.calls, [ident] * 2)
+            self.assertEqual(journey.telegram_methods, [])
+            self.assertEqual(journey.rpc, [])
 
         def _telegram_codex_handoff(self, journey, provider):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
@@ -2130,9 +2186,11 @@ if __name__ == "__main__":
     telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
     inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
     signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT")
-    if signed_interrupt not in {"1", "before", "crash"}:
+    if signed_interrupt not in {"1", "before", "crash", "return-crash"}:
         signed_interrupt = None
-    if signed_interrupt == "crash":
+    if signed_interrupt == "return-crash" and engine != "claude":
+        raise SystemExit("The signed return crash fixture requires Claude")
+    if signed_interrupt in {"crash", "return-crash"}:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if inverse and engine == "claude":
         direct = True
