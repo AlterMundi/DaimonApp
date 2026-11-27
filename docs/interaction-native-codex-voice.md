@@ -1710,3 +1710,14 @@ the existing owner-scoped visit status and revision-fenced event reader. A
 newer visit from another window does not replace that transcript. Retry reads
 the same failed visit; incomplete snapshots and changed owners stay out of
 Conversation. Ordinary earlier-history paging keeps its own cursor.
+
+
+### Storage reserved by replaced transports
+
+An ended native Live visit with an exact same-owner successor and a confirmed
+successor provider call releases its unused source-event reservation. The old
+source file remains read-only, its actual bytes still count against the store,
+and its receipt retains space for native work and late trusted final usage.
+An incomplete replacement or unconfirmed successor creation retains the full
+reservation. This accounting does not close either provider session, change
+the storage bounds, or delete source material.
