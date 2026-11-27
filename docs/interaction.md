@@ -1380,8 +1380,8 @@ The standalone client presents saved human inputs, integrating-session commentar
 and canonical answers in one chronological stream. Receive/observation timestamps
 come from the existing input and native journals; refresh updates existing cards
 rather than adding another copy. The routing graph and full trace remain separate
-inspection tools. Older inputs and replies remain accessible from their existing
-paging controls. Commentary is attributed progress, never a final answer or proof
+inspection tools. Conversation opens directly on its recent timeline and updates
+it automatically. Commentary is attributed progress, never a final answer or proof
 of task completion. Worker commentary is exposed only when the original native observation retained a web return selection; switching to a direct topic never enrolls later direct progress into the web chat. Real provider duplex voice acceptance remains unfinished.
 
 

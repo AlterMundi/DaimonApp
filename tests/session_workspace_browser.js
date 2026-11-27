@@ -680,10 +680,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
 
  if(publicCase){
   await page.locator('#conversation-timeline').getByText('Una corrección guardada.',{exact:true}).waitFor();
-  assert.equal(await page.locator('#conversation-timeline .timeline-history').count(),0,'Voice history tools do not occupy the current reading area');
-  await page.locator('#conversation-history-menu > summary').click();
-  await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
-  await page.locator('#conversation-timeline').getByText('Una respuesta anterior.',{exact:true}).waitFor();
+  assert.equal(await page.locator('#conversation-history-menu').count(),0);
+  assert.equal(await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).count(),0);
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reading source history never opens voice');
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','Public Live never replaces the default');
   await page.locator('#conversation-message').fill('Keep this draft while I compare voices.');
@@ -754,11 +752,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   await page.locator('#conversation-message').fill('My draft survives voice history reading.');
   await page.screenshot({path:path.join(output,'codex-history-desktop.png')});
-  assert.equal(await page.locator('#conversation-timeline .timeline-history').count(),0,'Voice history tools do not occupy the current reading area');
-  await page.locator('#conversation-history-menu > summary').click();
-  await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
-  await page.getByText('Earlier retained voice source 1',{exact:true}).waitFor({state:'visible'});
-  assert.equal(await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).isVisible(),false);
+  assert.equal(await page.locator('#conversation-history-menu').count(),0);
+  assert.equal(await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).count(),0);
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'History reading opens no voice connection');
   assert.equal(posts.length,0,'History reading admits no new input');
   assert.equal(await page.locator('#conversation-message').inputValue(),'My draft survives voice history reading.');

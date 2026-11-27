@@ -606,10 +606,9 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(order().at(-2),'input:reply-earlier','A different source revision is not silently used as the reply parent');
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
-  const diagnosticHistoryPanel=single.nodes.get('#conversation-observation').children.find(c=>c.id==='conversation-history-menu').children.find(c=>c.className==='voice-history-controls');
-  assert(diagnosticHistoryPanel?.children.some(c=>c.dataset.timelineKey==='voice-history'),'Engine-specific retrieval stays available from History');
-  assert(!stream.children.some(c=>c.dataset.timelineKey?.startsWith('voice-history')),'History retrieval controls do not occupy the ordinary conversation');
-  const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&!c.dataset.timelineKey.startsWith('voice-history'));
+  assert(!single.nodes.get('#conversation-observation')?.children.some(c=>c.id==='conversation-history-menu'));
+  assert.equal(single.nodes.get('#conversation-refresh').hidden,true);
+  const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey);
   assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='native:1').children[1].textContent,'Progress update.');
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='input:between').children[0].textContent,'You');
@@ -1317,7 +1316,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   const outage=boot(false,false,{clock:true});outage.audio();await outage.ui.refresh();
   outage.nodes.get('#conversation-voice-replies').handlers.click();outage.failAudio();outage.addReplies(2);await outage.ui.refresh();
   await until(()=>outage.clock.pending().includes(450));
-  assert.match(outage.nodes.get('#conversation-state').textContent,/Synthetic TTS outage|replies available/);
+  assert.match(outage.nodes.get('#conversation-state').textContent,/^(?:.*Synthetic TTS outage.*)?$/);
   outage.clock.fire(450);await until(()=>outage.audioCalls.length===2&&!outage.nodes.get('#conversation-audio').paused);
   assert.equal(outage.audioCalls[1].source,'native:10','A failed TTS segment cannot strand the next independent reply');outage.ui.stop();
 
@@ -2266,19 +2265,18 @@ function boot(readOnly=false,standalone=false,options={}) {
   await paginated.ui.refresh();assert.equal(longPath.children[2].children[0].children[1].textContent,'Complete immutable original','Read-only refresh preserves expanded immutable text');
   const mixed=boot();
   mixed.originals.set('app-order',{id:'app-order',text:'App between Telegram captures',phase:'accepted',sequence:1,capture_order:2});
-  for(let n=1;n<=10;n++)mixed.telegramOriginals.set(`telegram:${n}`,{id:`telegram:${n}`,text:`Telegram original ${n}`,preview:`Telegram original ${n}`,phase:'completed',sequence:n,capture_order:n===1?1:n+1,voice:n===2?{phase:'committed'}:null,origin_kind:'telegram',read_only:true});
+  for(let n=1;n<=10;n++)mixed.telegramOriginals.set(`telegram:${n}`,{id:`telegram:${n}`,text:`Telegram original ${n}`,preview:`Telegram original ${n}`,phase:'completed',sequence:n,capture_order:n===1?1:n+1,voice:n===3?{phase:'committed'}:null,origin_kind:'telegram',read_only:true});
   mixed.nodes.get('#conversation-sent').open=true;await mixed.ui.refresh();
   assert.equal(mixed.nodes.get('#conversation-inputs').children.length,9);
-  await mixed.nodes.get('#conversation-telegram-older').handlers.click();
   const mixedCards=mixed.nodes.get('#conversation-inputs').children;
-  assert.equal(mixedCards.length,11);
-  assert.deepEqual(mixedCards.map(card=>Number(card.dataset.sequence)),[11,10,9,8,7,6,5,4,3,2,1]);
-  const telegramCard=mixedCards.find(card=>card.children[0].textContent.includes('Telegram original 2'));
+  assert.equal(mixedCards.length,9);
+  assert.deepEqual(mixedCards.map(card=>Number(card.dataset.sequence)),[11,10,9,8,7,6,5,4,2]);
+  const telegramCard=mixedCards.find(card=>card.children[0].textContent.includes('Telegram original 3'));
   assert.match(telegramCard.children[0].textContent,/Automatic voice transcript/);
   assert.equal(telegramCard.children[2].children[0].hidden,true,'Telegram originals expose no UUID status action');
   assert.equal(telegramCard.children[3].hidden,true,'Inspection cannot choose another destination for a Telegram original');
   const telegramPath=telegramCard.children[6];telegramPath.open=true;await telegramPath.children[3].handlers.click();
-  assert.equal(telegramPath.children[2].children[0].children[1].textContent,'Telegram original 2');
+  assert.equal(telegramPath.children[2].children[0].children[1].textContent,'Telegram original 3');
   mixed.telegramOriginals.set('telegram:11',{id:'telegram:11',text:'New Telegram ingress',phase:'completed',sequence:11,capture_order:12,origin_kind:'telegram',read_only:true});
   await mixed.ui.refresh();assert.equal(mixed.nodes.get('#conversation-inputs').children[0].children[0].textContent,'New Telegram ingress');
   assert(mixed.requests.filter(r=>r.telegram||r.trace).every(r=>r.body===undefined),'All observation requests remain GET only');

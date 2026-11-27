@@ -547,9 +547,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 
 
 /* Independent conversation. A living presence, readable chat, one voice action. */
-.timeline-history { display:none; position:sticky; top:0; z-index:1; background:var(--bg); padding-block:4px; }
-.timeline-history:has(button:not([hidden])) { display:flex; }
-.timeline-history button { min-height:44px; font-size:14px; }
 #conversation-companion { display:flex; flex-wrap:wrap; align-items:center; gap:20px; min-width:0; }
 #conversation-companion pre { flex:none; margin:0; font:12px/1.05 ui-monospace,monospace; color:var(--accent); transform-origin:50% 50%; }
 #conversation-companion pre[data-fallback="true"] { white-space:normal; overflow-wrap:anywhere; max-width:100%; }
@@ -1465,7 +1462,8 @@ html body.conversation-surface #conversation {flex:1;min-height:0;display:flex;f
 html body.conversation-surface #conversation-timeline {position:relative;inset:auto;flex:1;min-height:60px;height:auto;max-height:none;overflow:auto;}
 html body.conversation-surface #conversation-compose {position:relative;inset:auto;flex:none;width:100%;max-width:none;margin:8px 0 0;box-sizing:border-box;}
 html body.conversation-surface #conversation-observation {flex:none;margin:0;font-size:12px;}
-html body.conversation-surface #conversation-observation:has(#conversation-state:empty) {display:none;}
+html body.conversation-surface #conversation-observation:has(#conversation-state:empty),
+.standalone-conversation #conversation-observation:has(#conversation-state:empty) {display:none;}
 html body.conversation-surface #conversation-dock {row-gap:0;}
 html body.conversation-surface #feedback:empty {display:none;}
 
@@ -1477,8 +1475,4 @@ html body.conversation-surface #feedback:empty {display:none;}
 #conversation-settings-open { min-width:44px; min-height:44px; padding:8px; }
 #conversation-settings .conversation-tools { justify-content:space-between; }
 #conversation-settings-title { margin:0; }
-#conversation-history-menu { display:none; }
-#conversation-history-menu:has(button:not([hidden])) { display:block; }
-#conversation-history-menu summary { cursor:pointer; color:var(--muted); }
-#conversation-history-menu:not([open]) > :not(summary) { display:none; }
 .pending-panel :is(#conversation-request-cards,#conversation-task-cards,#internal-request-cards,#internal-task-cards) { display:none; }
