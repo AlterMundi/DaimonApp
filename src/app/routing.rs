@@ -21,7 +21,13 @@ pub(super) fn begin(shared: &Arc<AppShared>, queued: &QueuedTurn) -> Result<Opti
             .conversation_pinned_instruction(queued.request.from_user_id, id)
             .unwrap_or(false)
     });
-    if (!enrolled(shared, queued.request.session_key) && !pinned)
+    let attributed_entry = queued.interaction.is_some()
+        && shared
+            .config
+            .interaction
+            .as_ref()
+            .is_some_and(|cfg| cfg.entry() == queued.request.session_key);
+    if (!enrolled(shared, queued.request.session_key) && !pinned && !attributed_entry)
         || shared.config.interaction.as_ref().map(|c| c.human_id)
             != Some(queued.request.from_user_id)
     {

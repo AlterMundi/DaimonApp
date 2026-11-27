@@ -179,8 +179,8 @@ topic_id=8
     def instructions(self, topic):
         return self.row('SELECT i.id,i.phase,i.doc FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=? ORDER BY i.sequence', (topic,))
 
-    def answer(self, topic, text, *, covered=None, item='answer', finish=True):
-        thread = f'native-topic-{topic}'
+    def answer(self, topic, text, *, covered=None, item='answer', finish=True, thread=None):
+        thread = thread or f'native-topic-{topic}'
         turn = self.runs[thread]
         rows = self.instructions(topic)
         ids = [r[0] for r in rows] if covered is None else covered

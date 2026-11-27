@@ -2484,7 +2484,24 @@ impl Store {
         if super::workflows::native_only_on(&conn, local)? {
             return Ok(false);
         }
-        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t LEFT JOIN sessions s ON s.id=t.session_id JOIN conversation_returns p ON p.native_thread=COALESCE(t.native_thread_id,s.codex_thread_id) AND p.human_id=t.from_user_id WHERE t.id=?1 AND p.source_input LIKE 'telegram:%')",[local],|r|r.get(0))?)
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t LEFT JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_returns p ON p.native_thread=COALESCE(t.native_thread_id,s.codex_thread_id)
+                AND p.human_id=t.from_user_id
+             WHERE t.id=?1 AND p.source_input LIKE 'telegram:%' AND t.private_handoff=0
+               AND (NOT EXISTS (
+                 SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id
+                 WHERE i.session_id=t.session_id AND json_extract(i.doc,'$.local_turn')=t.id
+               ) OR EXISTS (
+                 SELECT 1 FROM interaction_direct_parents direct
+                 JOIN interaction_instructions i ON i.id=direct.instruction
+                 JOIN interaction_sources src ON src.id=i.input_id
+                 WHERE i.session_id=t.session_id AND json_extract(i.doc,'$.local_turn')=t.id
+                   AND i.phase='accepted' AND src.human_id=t.from_user_id
+                   AND p.source_input='telegram:'||src.update_id
+               )))",
+            [local], |r|r.get(0),
+        )?)
     }
 
     pub fn conversation_turn_return(&self, local_turn: i64) -> Result<bool> {
