@@ -409,20 +409,13 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         if config.get('activity_state_dir'):
             paths.append(Path(config['activity_state_dir']) / 'topics.json')
         alert_reads = dict(session).get('scope') is None or dict(session).get('alerts_access') is True
-        alert_subscribe=getattr(alerts,'subscribe',None) if alert_reads else None
-        def subscribe(notify):
-            closers=[app.state.native_history.subscribe(notify)]
-            try:
-                if alert_subscribe:closers.append(alert_subscribe(notify))
-            except BaseException:
-                for close in closers:close()
-                raise
-            def close():
-                for closer in closers:closer()
-            return close
+        subscriptions = {'conversation': app.state.native_history.subscribe}
+        alert_subscribe = getattr(alerts, 'subscribe', None) if alert_reads else None
+        if alert_subscribe:
+            subscriptions['alerts'] = alert_subscribe
         async def stream():
             checked = time.monotonic()
-            async for changed in changes(paths, subscribe=subscribe):
+            async for changed in changes(paths, subscriptions=subscriptions):
                 if await request.is_disconnected():
                     break
                 try:
@@ -434,7 +427,10 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
                 except HTTPException:
                     yield 'event: expired\ndata: {}\n\n'
                     break
-                yield 'data: {}\n\n' if changed else ': keepalive\n\n'
+                if changed:
+                    yield f'data: {json.dumps({"changes": sorted(changed)})}\n\n'
+                else:
+                    yield ': keepalive\n\n'
         return StreamingResponse(stream(), media_type='text/event-stream',
             headers={'Cache-Control':'no-store', 'X-Accel-Buffering':'no'})
 

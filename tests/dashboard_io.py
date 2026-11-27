@@ -278,16 +278,17 @@ class DashboardHTTP(unittest.TestCase):
         self.assertEqual(self.client.get('/api/interaction/events').status_code,401)
         self.login()
         self.provider.receiver={'db_path':str(Path(self.tmp.name)/'source.db')}
-        async def events(paths, subscribe=None):
+        async def events(paths, subscriptions):
             self.assertEqual(paths,[Path(self.tmp.name)/'source.db'])
-            self.assertTrue(subscribe is None or callable(subscribe))
-            yield True
-            yield False
+            self.assertEqual(set(subscriptions),{'conversation'})
+            self.assertTrue(callable(subscriptions['conversation']))
+            yield {'conversation'}
+            yield set()
         with patch('dashboard.live.changes',events):
             response=self.client.get('/api/interaction/events')
         self.assertEqual(response.status_code,200)
         self.assertEqual(response.headers['x-accel-buffering'],'no')
-        self.assertEqual(response.text,'data: {}\n\n: keepalive\n\n')
+        self.assertEqual(response.text,'data: {"changes": ["conversation"]}\n\n: keepalive\n\n')
         self.assertEqual(self.provider.calls,[])
 
     def test_public_live_browser_transport_is_served_as_an_asset(self):
