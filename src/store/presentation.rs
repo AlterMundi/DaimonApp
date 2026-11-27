@@ -1959,6 +1959,131 @@ mod tests {
     }
 
     #[test]
+    fn claude_telegram_quote_uses_the_receipt_and_canonical_body() {
+        use crate::store::routed_portable::{
+            TelegramQuote, claude_telegram_quote_on, telegram_reply_message_on,
+        };
+        let (_file, store, entry, worker, instruction, body) = setup();
+        let conn = store.conn.lock().unwrap();
+        let (delivery, result): (String, String) = conn
+            .query_row(
+                "SELECT id,result_id FROM interaction_deliveries WHERE human_id=100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE turns SET status='completed' WHERE session_id=?1",
+            [worker.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_delivery_parts(delivery_id,part,text,message_id)
+          VALUES(?1,0,'Receipt fragment',17)",
+            [&delivery],
+        )
+        .unwrap();
+        let source = SourceInput {
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: None,
+            channel: "telegram:fixture".into(),
+            event_id: "31".into(),
+            update_id: Some(31),
+            human_id: 100,
+            target_sessions: vec![worker.id],
+            origin: ReturnRoute {
+                chat_id: entry.chat_id,
+                thread_id: entry.thread_id,
+                message_id: Some(32),
+            },
+            text: "Yes, do that.".into(),
+        };
+        conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at)
+          VALUES(31,?1,'processing','fixture','2026-11-27')", [json!({"message":{
+              "message_id":32,"message_thread_id":entry.thread_id,"chat":{"id":entry.chat_id},"from":{"id":100},
+              "reply_to_message":{"message_id":17,"text":"Untrusted nested copy"}
+          }}).to_string()]).unwrap();
+        assert_eq!(telegram_reply_message_on(&conn, &source).unwrap(), Some(17));
+        let TelegramQuote::Selected(seed) =
+            claude_telegram_quote_on(&conn, &source, instruction.target, 17).unwrap()
+        else {
+            panic!("An owned result with a confirmed receipt must resolve");
+        };
+        assert_eq!(seed["source"], format!("telegram-result:{result}"));
+        assert_eq!(seed["assistant"], body.trim_end());
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, entry, 17).unwrap(),
+            TelegramQuote::Unrelated
+        );
+        let mut other_topic = source.clone();
+        other_topic.origin.thread_id = 99;
+        assert!(
+            telegram_reply_message_on(&conn, &other_topic)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 17).unwrap(),
+            TelegramQuote::Unrelated
+        );
+
+        conn.execute(
+            "INSERT INTO interaction_delivery_parts(delivery_id,part,text,message_id) VALUES(?1,1,?2,18)",
+            params![delivery, format!("#Worker: {}", crate::interaction::WITHHELD_RESULT_NOTICE)],
+        ).unwrap();
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, instruction.target, 18).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        let local: i64 = conn
+            .query_row(
+                "SELECT local_turn FROM interaction_results WHERE id=?1",
+                [&result],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let publication: i64 = conn.query_row(
+            "INSERT INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+             VALUES(?1,?2,100,'portable_report',?3,?4,'sent','fixture') RETURNING id",
+            params![local,worker.id,&result,body.trim_end()], |row| row.get(0),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO topic_publication_parts(publication,part,body,phase,message_id)
+                      VALUES(?1,0,'First part','sent',21)",
+            [publication],
+        )
+        .unwrap();
+        other_topic.origin.thread_id = instruction.target.thread_id;
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 21).unwrap(),
+            TelegramQuote::Selected(seed)
+        );
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",
+            [worker.id],
+        )
+        .unwrap();
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, instruction.target, 17).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 21).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        drop(conn);
+        // The busy-path classifier must still reserve a separate run for a
+        // known quote even if its content is now unavailable.
+        assert!(
+            store
+                .routed_claude_preserves_quote(&source, instruction.target)
+                .unwrap()
+        );
+        assert!(!store.routed_claude_preserves_quote(&source, entry).unwrap());
+    }
+
+    #[test]
     fn canonical_part_reads_committed_state_while_writer_is_held() {
         let (_file, store, entry, _, _, _) = setup();
         let list = store

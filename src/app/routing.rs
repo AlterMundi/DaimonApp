@@ -1485,7 +1485,10 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
         && (source.tribu_source.is_some()
             || !source.telegram_files.is_empty()
             || native_claude_goal(&i.text)
-            || app.shared.store.routed_claude_preserves_quote(&source)?
+            || app
+                .shared
+                .store
+                .routed_claude_preserves_quote(&source, i.target)?
             || app
                 .shared
                 .store
@@ -2013,8 +2016,9 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
         };
         let name = label(&shared, d.target);
         let pending = render_markdown_to_html(&format!(
-            "#{}: this earlier result does not report incorporating your correction. Its canonical text remains retained for inspection.",
-            name
+            "#{}: {}",
+            name,
+            crate::interaction::WITHHELD_RESULT_NOTICE
         ));
         let qualification = if d.declared {
             ""
