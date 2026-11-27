@@ -826,3 +826,8 @@ deleted to regain capacity. For newly enabled child readers,4096entries bounds
 receipt payloads to128MiB plus bounded directory/lock overhead, separately from
 the64MiB disposable audio budget. Existing irreplaceable receipts remain protected
 when changing a limit; measured receiving occupancy must be recorded.
+
+The byte inventory opens speech receipts for potential audio payloads and
+active renders. It uses each existing render lock to confirm inactivity before
+skipping receipt-only jobs. Completed WAV and MP3 payloads, active reservations
+and uncertain effects keep their existing accounting and ownership checks.
