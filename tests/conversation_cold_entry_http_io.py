@@ -71,8 +71,8 @@ class Browser:
         self.headers['authorization']='Bearer '+r.json()['session_token']
         r=self.client.get('/api/interaction/inputs',headers=self.headers);assert r.status_code==200,r.text
         self.binding=r.json()['binding'];self.headers['x-dashboard-csrf']=r.json()['csrf']
-    def text(self,text,reply=None,playback=None):
-        body={'id':str(uuid.uuid4()),'binding':self.binding,'text':text}
+    def text(self,text,reply=None,playback=None,*,original_id=None):
+        body={'id':original_id or str(uuid.uuid4()),'binding':self.binding,'text':text}
         if reply:body['reply']=reply
         if playback:body['playback']=playback
         r=self.client.post('/api/interaction/inputs',json=body,headers=self.headers);assert r.status_code==200,r.text

@@ -252,9 +252,10 @@ operator.main()
                             assert prompt == self.server.attachment["caption"]
                         else:
                             assert self.server.original in prompt
-                        if telegram_topic and not getattr(self.server, "attachment", None):
-                            assert prompt == self.server.original
-                        elif not telegram_topic:
+                        if telegram_topic and not getattr(self.server, "routed_paired_human", None):
+                            if not getattr(self.server, "attachment", None):
+                                assert prompt == self.server.original
+                        else:
                             assert '"original_human_author":100' in prompt
                         self.server.current = ident
                         self.server.exposures.append(ident)
@@ -662,10 +663,42 @@ timeout_seconds=5
                 "original": "Fixture seed for the owned Codex conversation",
                 "reply": "Initial goal turn delivered.",
             }
+            web_roundtrip = os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1"
+
+            def selected_browser():
+                from conversation_cold_entry_http_io import Browser
+
+                browser = Browser(journey)
+                self.addCleanup(browser.provider.close)
+                self.addCleanup(browser.client.close)
+                workspace = browser.get("/api/interaction/sessions")
+                destination = next(row["destination"] for row in workspace["sessions"]
+                                   if row["audio_key"] == "100:7")
+                return browser, destination
+
             provider.original = "Continue our existing design from the Codex exchange."
-            provider.human_original = str(journey.sequence + 1)
-            update = journey.admit(provider.original, topic=7)
-            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            if web_roundtrip:
+                browser, destination = selected_browser()
+                provider.paired_human = False
+                provider.routed_paired_human = 100
+                provider.human_original = str(uuid.uuid4())
+                update, _ = browser.text(provider.original, reply=destination,
+                                         original_id=provider.human_original)
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT i.phase,t.status FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (update,),
+                ) == [("accepted", "completed")], seconds=30)
+                self.assertIsNone(provider.failure)
+                journey.wait(lambda: any(
+                    ANSWER in item.get("preview", "")
+                    for item in browser.get("/api/interaction")["items"]
+                ), seconds=20)
+            else:
+                provider.human_original = str(journey.sequence + 1)
+                update = journey.admit(provider.original, topic=7)
+                journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
             self.assertIsNone(provider.failure)
             self.assertEqual(journey.row(
                 "SELECT i.id,i.phase,t.native_thread_id FROM interaction_sources s "
@@ -700,21 +733,48 @@ timeout_seconds=5
             checkpoint.touch(mode=0o600, exist_ok=False)
             checkpoint.write_text("Synthetic design checkpoint at revision two.")
 
+            browser = None
+            destination = None
+            if web_roundtrip:
+                journey.routing = True
+                browser, destination = selected_browser()
+
             def native_start(original):
                 offset = len(journey.rpc)
-                journey.admit(original, topic=7)
+                if browser:
+                    original_id, _ = browser.text(original, reply=destination)
+                else:
+                    journey.admit(original, topic=7)
+
                 def matching():
                     return [r["params"] for r in journey.rpc[offset:] if r.get("method") == "turn/start"
-                            and any(i.get("text") == original for i in r["params"].get("input", []))]
+                            and any(original in i.get("text", "") for i in r["params"].get("input", []))]
                 journey.wait(matching, seconds=25)
                 self.assertEqual(len(matching()), 1)
                 request = matching()[0]
                 self.assertEqual(request["threadId"], codex)
                 self.assertEqual(len(request["input"]), 1)
+                if browser:
+                    self.assertNotIn(claude_prompt, request["input"][0]["text"])
+                    self.assertNotIn(ANSWER, request["input"][0]["text"])
+                    item = "codex-return-" + original_id
+                    answer = "Owned Codex answer for " + original
+                    journey.answer_worker(7, answer, item=item)
+                    journey.wait(lambda: journey.row(
+                        "SELECT count(*) FROM interaction_results WHERE native_thread=? AND body=?",
+                        (codex, answer),
+                    ) == [(1,)], seconds=20)
+                    self.assertEqual(browser.status(original_id)["phase"], "routed")
+                    journey.wait(lambda: any(
+                        item.get("preview") == answer for item in browser.get("/api/interaction")["items"]
+                    ), seconds=20)
+                else:
+                    self.assertEqual(request["input"][0]["text"], original)
                 journey.idle()
                 return request.get("additionalContext") or {}
 
-            context = native_start("Continue the design back in Codex.")
+            original = "Yes, go ahead." if browser else "Continue the design back in Codex."
+            context = native_start(original)
             fragments = [value for key, value in sorted(context.items())
                          if key.startswith("gateway.history.") and key != "gateway.history.source"]
             self.assertTrue(fragments, "The resumed Codex turn received no Claude context")
