@@ -29,14 +29,17 @@ pub(super) fn record_native_message_on(
     // A return binding can belong to an earlier human turn on this native
     // thread. It does not authorize progress from an internal-only execution.
     let internal_only: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id WHERE json_extract(i.doc,'$.local_turn')=?1)
-         AND NOT EXISTS(SELECT 1 FROM interaction_instructions i WHERE json_extract(i.doc,'$.local_turn')=?1 AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id))",
-        [local_turn], |r|r.get(0),
+        &format!(
+            "SELECT ({}) FROM turns t WHERE t.id=?1",
+            super::presentation::ONLY_INTERNAL_HANDOFF
+        ),
+        [local_turn],
+        |row| row.get(0),
     )?;
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO interaction_native_messages
-             (native_thread,native_turn,item_id,local_turn,phase,text,observed_at,presentation_input)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,(SELECT p.source_input FROM conversation_returns p
+             (native_thread,native_turn,item_id,local_turn,phase,text,observed_at,internal_handoff,presentation_input)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,(SELECT p.source_input FROM conversation_returns p
                JOIN conversation_inputs c ON c.id=p.source_input AND c.human_id=p.human_id
                JOIN turns t ON t.id=?4 WHERE p.native_thread=?1 AND p.human_id=t.from_user_id AND ?8=0 AND t.execution_harness='codex'))",
         params![thread, turn, item, local_turn, phase, text, now_string(),internal_only],
@@ -175,12 +178,18 @@ fn admit_selected_with_origin_on(
         &source.event_id,
         source.update_id,
     )?;
-    if (source.text.trim().is_empty() && source.telegram_files.is_empty())
-        || (!source.telegram_files.is_empty()
-            && (source.update_id.is_none()
-                || !route.is_some_and(|(engine, _)| {
-                    engine == crate::interaction::ForegroundEngine::Claude
-                })))
+    let claude =
+        route.is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+    let conversation_original = (source.channel == "conversation")
+        .then(|| super::conversation_inputs::read_on(tx, &source.event_id, source.human_id))
+        .transpose()?;
+    if (source.text.trim().is_empty()
+        && source.telegram_files.is_empty()
+        && !(claude
+            && conversation_original
+                .as_ref()
+                .is_some_and(|input| !input.files.is_empty())))
+        || (!source.telegram_files.is_empty() && (source.update_id.is_none() || !claude))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -265,9 +274,8 @@ fn admit_selected_with_origin_on(
         }
     }
     let mut source_epoch = parent_epoch.map(str::to_owned);
-    if source.channel == "conversation" {
-        let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
-        if route.is_some() {
+    if let Some(original) = conversation_original {
+        if route.is_some() && !claude {
             anyhow::ensure!(
                 original.files.is_empty() && original.visual.is_none(),
                 "The routed portable worker requires a text original"
@@ -738,6 +746,18 @@ impl Store {
                     "ALTER TABLE interaction_native_messages ADD COLUMN presentation_input TEXT;",
                 )?;
             }
+            add_column_if_missing(
+                &conn,
+                "turns",
+                "private_handoff",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "interaction_native_messages",
+                "internal_handoff",
+                "INTEGER",
+            )?;
             let returns:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('interaction_native_messages') WHERE name='native_return_sources')",[],|r|r.get(0))?;
             if !returns {
                 conn.execute_batch(
@@ -770,6 +790,21 @@ impl Store {
             "UPDATE interaction_instructions SET phase=CASE WHEN phase='queued' THEN 'retained_unsent' ELSE 'uncertain' END WHERE instance_id!=?1 AND phase IN ('queued','submitting','steering')",[&self.instance_id],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Keep an attributed-only execution private once native output starts.
+    /// A later human steer cannot grant access to its cumulative drafts.
+    pub fn freeze_private_handoff(&self, local: i64, thread: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            &format!(
+                "UPDATE turns AS t SET private_handoff=1 WHERE t.id=?1
+                AND t.native_thread_id=?2 AND t.private_handoff=0 AND ({})",
+                super::presentation::ONLY_INTERNAL_HANDOFF
+            ),
+            params![local, thread],
+        )?;
         Ok(())
     }
 

@@ -514,11 +514,66 @@ impl Store {
         Ok(deliveries)
     }
 
+    pub(crate) fn interaction_ready_telegram_deliveries(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        project_entry: bool,
+    ) -> Result<Vec<Delivery>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut query = conn.prepare(
+            "SELECT d.doc FROM interaction_public_deliveries d
+             JOIN users u ON u.tg_user_id=d.human_id AND u.allowed=1
+             WHERE d.human_id=?1 AND d.phase='reserved'
+               AND json_extract(d.doc,'$.telegram_publication_selected')=1
+               AND NOT EXISTS(SELECT 1 FROM interaction_delivery_parts p WHERE p.delivery_id=d.id)
+               AND (json_type(d.doc,'$.origin.message_id')='integer' OR
+                    (?2 AND json_extract(d.doc,'$.origin.chat_id')=?3
+                        AND json_extract(d.doc,'$.origin.thread_id')=?4))
+             ORDER BY d.rowid LIMIT 32",
+        )?;
+        let docs = query.query_map(
+            params![human, project_entry, entry.chat_id, entry.thread_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        docs.map(|doc| Ok(serde_json::from_str(&doc?)?)).collect()
+    }
+
+    /// Release the first reservation only when the relay attested that the
+    /// operation never crossed its commit boundary.
+    pub(crate) fn interaction_first_part_not_submitted(
+        &self,
+        id: &str,
+        human: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE interaction_deliveries SET phase='reserved',
+               doc=json_set(doc,'$.phase','reserved','$.telegram_publication_selected',1)
+             WHERE id=?1 AND human_id=?2 AND instance_id=?3 AND phase='sending'
+               AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?3)
+               AND message_id IS NULL
+               AND (SELECT count(*) FROM interaction_delivery_parts p WHERE p.delivery_id=?1)=1
+               AND EXISTS(SELECT 1 FROM interaction_delivery_parts p WHERE p.delivery_id=?1
+                          AND p.part=0 AND p.message_id IS NULL)",
+            params![id, human, self.instance_id],
+        )? == 1;
+        if changed {
+            tx.execute(
+                "DELETE FROM interaction_delivery_parts WHERE delivery_id=?1 AND part=0",
+                [id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// This transaction is the last check before transmission may begin.
     pub fn interaction_begin_delivery(&self, id: &str, human: i64) -> Result<Option<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
-        let raw:Option<String>=tx.query_row("SELECT d.doc FROM interaction_public_deliveries d JOIN users u ON u.tg_user_id=d.human_id WHERE d.id=?1 AND d.human_id=?2 AND u.allowed=1 AND d.phase='reserved' AND NOT EXISTS(SELECT 1 FROM interaction_delivery_parts p WHERE p.delivery_id=d.id)",params![id,human],|r|r.get(0)).optional()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let raw:Option<String>=tx.query_row("SELECT d.doc FROM interaction_public_deliveries d JOIN users u ON u.tg_user_id=d.human_id WHERE d.id=?1 AND d.human_id=?2 AND u.allowed=1 AND d.phase='reserved' AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?3) AND NOT EXISTS(SELECT 1 FROM interaction_delivery_parts p WHERE p.delivery_id=d.id)",params![id,human,self.instance_id],|r|r.get(0)).optional()?;
         let Some(raw) = raw else {
             return Ok(None);
         };
@@ -526,7 +581,8 @@ impl Store {
         (d.current, d.correction_pending) = delivery_freshness(&tx, &d)?;
         d.phase = "preparing".into();
         tx.execute(
-            "UPDATE interaction_deliveries SET phase='preparing',doc=?2,instance_id=?3 WHERE id=?1",
+            "UPDATE interaction_deliveries SET phase='preparing',
+                doc=json_set(?2,'$.telegram_publication_selected',1),instance_id=?3 WHERE id=?1",
             params![id, serde_json::to_string(&d)?, self.instance_id],
         )?;
         tx.commit()?;
@@ -574,17 +630,21 @@ impl Store {
         human: i64,
         message: Option<i64>,
     ) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let phase: String = conn.query_row(
-            "SELECT phase FROM interaction_deliveries WHERE id=?1 AND human_id=?2",
-            params![id, human],
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let phase: String = tx.query_row(
+            "SELECT phase FROM interaction_deliveries WHERE id=?1 AND human_id=?2
+             AND (instance_id=?3 OR ?4)
+             AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?3)",
+            params![id, human, self.instance_id, message.is_some()],
             |r| r.get(0),
         )?;
         if matches!(phase.as_str(), "delivered" | "withheld") {
             return Ok(());
         }
         if phase == "preparing" && message.is_none() {
-            conn.execute("UPDATE interaction_deliveries SET phase='reserved' WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM interaction_delivery_parts WHERE delivery_id=?1)",[id])?;
+            tx.execute("UPDATE interaction_deliveries SET phase='reserved' WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM interaction_delivery_parts WHERE delivery_id=?1)",[id])?;
+            tx.commit()?;
             return Ok(());
         }
         if !matches!(phase.as_str(), "sending" | "uncertain") {
@@ -593,13 +653,13 @@ impl Store {
             ));
         }
         let confirmed_phase = if let Some(message) = message {
-            let received:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_delivery_parts WHERE delivery_id=?1 AND message_id=?2)",params![id,message],|r|r.get(0))?;
+            let received:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_delivery_parts WHERE delivery_id=?1 AND message_id=?2)",params![id,message],|r|r.get(0))?;
             if !received {
                 return Err(anyhow!(
                     "Result completion requires a retained part receipt"
                 ));
             }
-            let raw: String = conn.query_row(
+            let raw: String = tx.query_row(
                 "SELECT doc FROM interaction_deliveries WHERE id=?",
                 [id],
                 |r| r.get(0),
@@ -613,7 +673,8 @@ impl Store {
         } else {
             "uncertain"
         };
-        conn.execute("UPDATE interaction_deliveries SET phase=?2,message_id=COALESCE(?3,message_id) WHERE id=?1",params![id,confirmed_phase,message])?;
+        tx.execute("UPDATE interaction_deliveries SET phase=?2,message_id=COALESCE(?3,message_id) WHERE id=?1",params![id,confirmed_phase,message])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -628,8 +689,8 @@ impl Store {
         pending_text: &str,
     ) -> Result<Option<(Delivery, String)>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
-        let raw:Option<String>=tx.query_row("SELECT doc FROM interaction_public_deliveries WHERE id=?1 AND human_id=?2 AND phase IN ('preparing','sending') AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?2 AND allowed=1)",params![id,human],|r|r.get(0)).optional()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let raw:Option<String>=tx.query_row("SELECT doc FROM interaction_public_deliveries WHERE id=?1 AND human_id=?2 AND phase IN ('preparing','sending') AND instance_id=?3 AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?2 AND allowed=1) AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?3)",params![id,human,self.instance_id],|r|r.get(0)).optional()?;
         let Some(raw) = raw else {
             return Ok(None);
         };
@@ -651,6 +712,24 @@ impl Store {
         Ok(Some((d, selected)))
     }
 
+    pub(crate) fn interaction_can_publish_part(
+        &self,
+        id: &str,
+        human: i64,
+        part: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM interaction_public_deliveries d
+              JOIN users u ON u.tg_user_id=d.human_id AND u.allowed=1
+              JOIN interaction_delivery_parts p ON p.delivery_id=d.id AND p.part=?3 AND p.message_id IS NULL
+              WHERE d.id=?1 AND d.human_id=?2 AND d.phase='sending' AND d.instance_id=?4
+                AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?4))",
+            params![id, human, part, self.instance_id],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn interaction_part_receipt(
         &self,
         id: &str,
@@ -659,10 +738,11 @@ impl Store {
         message: i64,
     ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (raw, phase): (String, String) = tx.query_row(
-            "SELECT doc,phase FROM interaction_deliveries WHERE id=?1 AND human_id=?2",
-            params![id, human],
+            "SELECT doc,phase FROM interaction_deliveries WHERE id=?1 AND human_id=?2
+             AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?3)",
+            params![id, human, self.instance_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         if !matches!(phase.as_str(), "sending" | "uncertain") {
@@ -1406,6 +1486,121 @@ mod tests {
             "reserved"
         );
         assert!(s.interaction_begin_delivery(&id, 100).unwrap().is_some());
+    }
+
+    #[test]
+    fn telegram_recovery_uses_only_selected_proven_unsent_parts() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let conversation = target(&store, 7);
+        let a = admit(&store, &conversation, 1, R::New);
+        let b = admit(&store, &conversation, 2, R::New);
+        let local_a = accept(&store, &conversation, &a);
+        let local_b = accept(&store, &conversation, &b);
+        let selected = reserve(&store, &conversation, &a, local_a, "selected");
+        let unselected = reserve(&store, &conversation, &b, local_b, "unselected");
+        let entry = SessionKey::new(100, Some(1));
+        let ready = || {
+            store
+                .interaction_ready_telegram_deliveries(100, entry, true)
+                .unwrap()
+                .into_iter()
+                .map(|delivery| delivery.id)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(ready().is_empty());
+        assert!(
+            store
+                .interaction_begin_delivery(&selected.id, 100)
+                .unwrap()
+                .is_some()
+        );
+        assert!(ready().is_empty());
+        assert!(
+            store
+                .interaction_reserve_part(&selected.id, 100, 0, "first", "pending")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .interaction_first_part_not_submitted(&selected.id, 100)
+                .unwrap()
+        );
+        assert_eq!(ready(), vec![selected.id.clone()]);
+        assert!(
+            store
+                .interaction_begin_delivery(&selected.id, 100)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .interaction_reserve_part(&selected.id, 100, 0, "first", "pending")
+                .unwrap()
+                .is_some()
+        );
+        store
+            .interaction_finish_delivery(&selected.id, 100, None)
+            .unwrap();
+        assert!(
+            !store
+                .interaction_first_part_not_submitted(&selected.id, 100)
+                .unwrap()
+        );
+        assert!(ready().is_empty());
+        assert_eq!(
+            store
+                .interaction_delivery(&unselected.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "reserved"
+        );
+        assert!(
+            store
+                .interaction_begin_delivery(&unselected.id, 100)
+                .unwrap()
+                .is_some()
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE app_instance_lock SET instance_id='fixture-replacement' WHERE key='main'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE interaction_deliveries SET instance_id='fixture-replacement' WHERE id=?1",
+                [&unselected.id],
+            )
+            .unwrap();
+        }
+        assert!(
+            store
+                .interaction_reserve_part(&unselected.id, 100, 0, "stale", "pending")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !store
+                .interaction_can_publish_part(&unselected.id, 100, 0)
+                .unwrap()
+        );
+        assert!(
+            store
+                .interaction_finish_delivery(&unselected.id, 100, None)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .interaction_delivery(&unselected.id, 100)
+                .unwrap()
+                .unwrap()
+                .phase,
+            "preparing"
+        );
     }
 
     #[test]

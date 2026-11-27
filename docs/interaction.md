@@ -78,6 +78,15 @@ results and Telegram receipts retained during external operation are still
 readable. Submit one new selected original to verify embedded operation.
 Previously uncertain sends stay uncertain and are not replayed.
 
+Gateway also recovers originally selected routed results that were never sent to
+Telegram. It records the projection selection before trying the transport. If
+TeleDaimon refuses the first part before committing the operation, Gateway
+releases that part and tries it again on adapter readiness or normal projection
+recovery. A lost acknowledgement after commit keeps the part uncertain and
+prevents resend. Results that were never selected for Telegram are ineligible.
+The originating Conversation can read the retained result independently of
+both outcomes.
+
 TeleDaimon's polling loop depends on two Gateway operations. It reads the
 retained next offset and submits a Telegram original for a durable admission
 receipt. It advances only with the durable cursor supplied by Gateway. Before
@@ -311,6 +320,32 @@ Claude additionally supports resuming its prior native session under the same
 body and catalog scope. Existing Codex threads remain distinct from portable
 native sessions. Changing a target's configured harness or body leaves prior
 instructions attached to their recorded destination.
+
+### Qualify a newly provisioned embodiment
+
+Run the same receiving checks for each selected harness. Use a disposable
+test topic and synthetic content, and record the effective adapter version
+and observed outcome by capability:
+
+- Verify the signed body and paired human, the loaded body and repository
+  guidance, and the selected skill revisions. Exercise the actual shared DMK
+  and tool grants.
+- Submit a direct topic message and then an original from the integrating
+  conversation. Check where each canonical reply lands, including Telegram when
+  selected. Exercise attributed progress separately from the final answer.
+- Where the adapter exposes the controller, use its named target catalog and
+  stable selectors to send one ordinary cross-topic request from a human
+  original. Verify admission and the correlated return, including an immutable
+  retry. Internal dependencies and explicitly selected topic publications keep
+  their respective audiences.
+- Where the adapter supports continuation, resume the same native session after
+  an ordinary orientation or skill update and verify access to a known prior
+  fact. Record any fresh-only limit as an adapter capability gap.
+
+These checks use the provisioned body and its own grants. An existing Claude
+session or a passing Gateway-only fixture cannot qualify another body or
+harness. Keep unsupported operations visible in the adapter's reported
+capabilities.
 
 Deploy the Gateway that supports ordinary paired submit and retry before
 updating the dashboard writer that uses those commands.
@@ -1278,7 +1313,26 @@ with its own role-specific capabilities. `inputs` identifies accepted inputs in
 that actual native execution. `session_request` selects an original human parent,
 a stable caller request ID, one existing unambiguous topic and at most 16,000
 bytes of session-authored text. It does not copy a transcript or create a topic.
-`session_requests` inspects the latest sixteen retained dependencies.
+Worker `capabilities` pairs each target's display title with its stable
+selector. Use the selector in the tool call, including for titles with spaces.
+For ordinary coordination, including sending an existing report to another
+topic for its work, omit `report_to_topic`. This works across harnesses.
+If Gateway returns `topic_report_destination_unsupported` with
+`admitted: false` for an intended internal handoff, correct the call in the
+same turn with the original request ID and omit that flag.
+`session_requests` inspects the latest sixteen retained dependencies and
+reports each helper's transport phase and linked native turn status. A handoff
+retained before its first local turn after a writer rollover is no longer in
+the active queue. Under the existing owner authority, recover its frozen request
+with `daimon-gateway --control CONFIG input handoff-recover LOCAL_REQUEST_ID`.
+This resumes the same attributed handoff only while its original admission
+generation and target remain valid. An uncertain handoff is inspection-only.
+A helper can coordinate with one further topic through `session_request` using
+the active attributed instruction as its parent. Our general conversation uses
+`coordination_inputs` to discover that parent. This preserves session authorship,
+uses the same four-request budget as the original human instruction, and
+returns the result through each originating session. Looping back to the root,
+further chains and public topic reports are excluded from this continuation.
 
 Runtime context names the selected worker topic and instructs it to distinguish
 its task from integrator-only clauses in the unchanged human message. This is
@@ -1315,6 +1369,15 @@ The companion lane and unattested parents keep the scoped tool set. The
 recipient receives the request as session-authored context and cannot use it to
 authorize a second dependency. Gateway checks the retained parent independently
 of the helper's text.
+
+When a paired human explicitly requests visible progress in a selected Claude
+topic, `session_request` can set `report_to_topic`. The completed answer uses
+the same working native history as paired direct turns in that topic. Only the
+selected canonical result is available in the topic's Conversation and Telegram
+projection. The dependency input and private sibling handoffs remain internal.
+The report freezes its destination and keeps its separate internal return.
+Telegram revalidates corrections and authorization before each attempted part.
+An uncertain send is left in its original queue record.
 
 A local dependency is a single level: another session's request or result cannot
 serve as a human parent. An accepted original human instruction can authorize at

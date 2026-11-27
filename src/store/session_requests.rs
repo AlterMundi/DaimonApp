@@ -15,6 +15,8 @@ pub struct SessionRequest {
     pub target_instruction: String,
     pub epoch: String,
     pub return_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_to_topic: bool,
     pub phase: String,
 }
 
@@ -175,22 +177,107 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
             |r| r.get(0),
         )
         .optional()?;
-    Ok(matches!(
-        (author["kind"].as_str(), phase.as_deref()),
-        (Some("session_request"), Some("requested")) | (Some("session_result"), Some("returned"))
-    ))
+    if author["kind"] == "session_request" && phase.as_deref() == Some("requested") {
+        let parent: String = conn.query_row(
+            "SELECT parent_instruction FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+            params![call,human], |r| r.get(0),
+        )?;
+        let parent = instruction_on(conn, &parent, human)?;
+        return Ok(coordination_root_on(conn, human, &parent)?.is_some());
+    }
+    if author["kind"] != "session_result" || phase.as_deref() != Some("returned") {
+        return Ok(false);
+    }
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+        params![call, human],
+        |row| row.get(0),
+    )?;
+    let request: SessionRequest = serde_json::from_str(&raw)?;
+    if request.return_instruction.as_deref() != Some(i.id.as_str()) {
+        return Ok(false);
+    }
+    for id in [&request.parent_instruction, &request.target_instruction] {
+        let execution = instruction_on(conn, id, human)?;
+        if execution.target_execution.is_some() && !current_bound_turn_on(conn, &execution)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
-// The retained human parent can grant the recipient its paired host tools.
-// The helper remains session-authored and cannot itself become a parent.
+fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turns t
+            JOIN sessions s ON s.id=t.session_id
+            JOIN conversation_entry_generations g ON g.session_id=s.id
+            WHERE t.id=?1 AND t.session_id=?2 AND t.native_thread_id=?3
+              AND t.execution_generation=g.generation AND s.force_fresh_thread=0
+              AND t.status IN ('running','completed'))",
+        params![
+            instruction.local_turn,
+            instruction.target_session,
+            instruction.native_thread
+        ],
+        |row| row.get(0),
+    )? && super::interaction::target_execution_allowed_on(conn, instruction)?)
+}
+
+pub(super) fn controller_parent_eligible_on(
+    conn: &Connection,
+    human: i64,
+    parent: &Instruction,
+) -> Result<bool> {
+    let Some(author) = author_on(conn, &parent.input_id)? else {
+        return Ok(true);
+    };
+    if author["kind"] == "session_result" {
+        return paired_result_parent_on(conn, parent);
+    }
+    Ok(coordination_root_on(conn, human, parent)?.is_some()
+        && paired_request_parent_on(conn, parent)?)
+}
+
+// One local helper may coordinate onward under its original human instruction.
+fn coordination_root_on(
+    conn: &Connection,
+    human: i64,
+    parent: &Instruction,
+) -> Result<Option<Instruction>> {
+    let Some(author) = author_on(conn, &parent.input_id)? else {
+        return Ok(Some(parent.clone()));
+    };
+    if author["kind"] != "session_request" {
+        return Ok(None);
+    }
+    let root: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+         WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+         AND NOT EXISTS (SELECT 1 FROM interaction_session_withdrawals
+                         WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+            params![parent.id, human],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(root) = root else { return Ok(None) };
+    let root = instruction_on(conn, &root, human)?;
+    Ok((author_on(conn, &root.input_id)?.is_none()
+        && root.admission_epoch == parent.admission_epoch
+        && current_bound_turn_on(conn, &root)?
+        && current_bound_turn_on(conn, parent)?)
+    .then_some(root))
+}
+
+// Paired tools can be inherited only from the retained human source.
 pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
     let human = child.human_id;
     let parent: Option<String> = conn
         .query_row(
             "SELECT parent_instruction FROM interaction_session_requests
-             WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
-               AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
-                              WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+         WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+         AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
+                        WHERE parent_instruction=interaction_session_requests.parent_instruction)",
             params![child.id, human],
             |row| row.get(0),
         )
@@ -198,12 +285,49 @@ pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -
     let Some(parent) = parent else {
         return Ok(false);
     };
-    let parent = instruction_on(conn, &parent, human)?;
-    if parent.admission_epoch != child.admission_epoch
-        || author_on(conn, &parent.input_id)?.is_some()
+    let immediate = instruction_on(conn, &parent, human)?;
+    let Some(parent) = coordination_root_on(conn, human, &immediate)? else {
+        return Ok(false);
+    };
+    paired_source_on(conn, &parent, child)
+}
+
+pub(super) fn paired_result_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
+    if !session_input_allowed_on(conn, &child.id, child.human_id)? {
+        return Ok(false);
+    }
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+             WHERE human_id=?1 AND phase='returned'
+             AND json_extract(doc,'$.return_instruction')=?2",
+            params![child.human_id, child.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(parent) = parent else {
+        return Ok(false);
+    };
+    let parent = instruction_on(conn, &parent, child.human_id)?;
+    if parent.target != child.target
+        || !parent.target_execution.as_ref().is_some_and(|selection| {
+            selection.harness == crate::execution::Harness::Claude
+                && child.target_execution.as_ref() == Some(selection)
+        })
     {
         return Ok(false);
     }
+    let Some(root) = coordination_root_on(conn, child.human_id, &parent)? else {
+        return Ok(false);
+    };
+    paired_source_on(conn, &root, child)
+}
+
+fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction) -> Result<bool> {
+    if parent.admission_epoch != child.admission_epoch {
+        return Ok(false);
+    }
+    let human = child.human_id;
     let source = super::routing::source_on(conn, &parent.id, human)?;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
@@ -237,6 +361,12 @@ fn session_requests_on(
         Ok(call)
     })
     .collect()
+}
+
+pub(super) fn withdraw_local_requests_on(conn: &Connection, caller: SessionKey) -> Result<()> {
+    conn.execute("UPDATE interaction_session_requests SET phase='withdrawn' WHERE caller_chat=?1 AND caller_topic=?2 AND (phase='requested' OR (phase='returned' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(interaction_session_requests.doc,'$.return_instruction') AND i.phase IN ('queued','submitting','steering'))))",params![caller.chat_id,caller.thread_id])?;
+    conn.execute("UPDATE interaction_instructions SET phase='retained_unsent' WHERE phase='queued' AND input_id IN (SELECT a.input_id FROM interaction_session_authors a JOIN interaction_session_requests c ON json_extract(a.doc,'$.local_request')=c.id WHERE c.caller_chat=?1 AND c.caller_topic=?2 AND c.phase='withdrawn' AND json_extract(a.doc,'$.kind')='session_result')",params![caller.chat_id,caller.thread_id])?;
+    Ok(())
 }
 
 impl Store {
@@ -461,7 +591,7 @@ impl Store {
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<(SessionRequest, Instruction, bool)> {
         self.interaction_session_request_scoped(
-            caller, human, native, turn, parent, client, target, text, closed, None, None,
+            caller, human, native, turn, parent, client, target, text, closed, None, None, false,
         )
     }
 
@@ -479,6 +609,7 @@ impl Store {
         closed: &tokio_util::sync::CancellationToken,
         portable_local: Option<i64>,
         config: Option<&crate::interaction::InteractionConfig>,
+        report_to_topic: bool,
     ) -> Result<(SessionRequest, Instruction, bool)> {
         if caller == target
             || text.trim().is_empty()
@@ -515,16 +646,24 @@ impl Store {
             || withdrawn
             || p.target != caller
             || p.native_thread.as_deref() != Some(native)
-            || author_on(&tx, &p.input_id)?.is_some()
         {
             return Err(anyhow!(
                 "Local request has no current accepted human parent"
             ));
         }
+        let root = coordination_root_on(&tx, human, &p)?
+            .context("Local coordination needs a current human original or its first helper")?;
+        let onward = root.id != p.id;
+        anyhow::ensure!(
+            !onward || (target != root.target && !report_to_topic),
+            "An onward handoff cannot target its origin or publish to a topic"
+        );
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,
         // independently of the interview model's output or role prompt.
-        if !interview_target_allowed_on(&tx, human, p.target_session, target)? {
+        if !interview_target_allowed_on(&tx, human, p.target_session, target)?
+            || (onward && !interview_target_allowed_on(&tx, human, root.target_session, target)?)
+        {
             return Err(anyhow!(
                 "An interview cannot activate its pinned source work"
             ));
@@ -554,6 +693,21 @@ impl Store {
             |r| r.get(0),
         )?;
         let original: SourceInput = serde_json::from_str(&raw)?;
+        if report_to_topic {
+            anyhow::ensure!(
+                route.is_some()
+                    && caller.chat_id == target.chat_id
+                    && original.channel == "conversation"
+                    && original.tribu_source.is_none(),
+                "A selected topic report requires a paired local Claude request"
+            );
+            let original = super::conversation_inputs::read_on(&tx, &original.event_id, human)?;
+            anyhow::ensure!(
+                original.paired_actor
+                    && super::conversation_inputs::eligible_binding_on(&tx, &original).is_ok(),
+                "A selected topic report requires a current paired human original"
+            );
+        }
         let id = Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
             format!(
@@ -583,8 +737,10 @@ impl Store {
             )
             .optional()?;
         let count: i64 = tx.query_row(
-            "SELECT count(*) FROM interaction_session_requests WHERE parent_instruction=?",
-            [parent],
+            "SELECT count(*) FROM interaction_session_requests
+             WHERE parent_instruction=?1 OR parent_instruction IN (
+                 SELECT target_instruction FROM interaction_session_requests WHERE parent_instruction=?1)",
+            [&root.id],
             |r| r.get(0),
         )?;
         if existing.is_none() && count >= 4 {
@@ -605,6 +761,7 @@ impl Store {
             if call.caller_native != native
                 || call.caller_turn != turn
                 || call.target_instruction != i.id
+                || call.report_to_topic != report_to_topic
             {
                 return Err(anyhow!("Local request identity is immutable"));
             }
@@ -627,9 +784,13 @@ impl Store {
             target_instruction: i.id.clone(),
             epoch: epoch.into(),
             return_instruction: None,
+            report_to_topic,
             phase: "requested".into(),
         };
-        let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
+        let mut author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
+        if report_to_topic {
+            author["report_to_topic"] = json!(true);
+        }
         if route.is_some() {
             crate::interaction::local_claude_packet(&i, &author)?;
         }
@@ -696,9 +857,83 @@ impl Store {
         session_requests_on(&conn, caller, human)
     }
 
+    pub(crate) fn interaction_session_parent_eligible(&self, id: &str, human: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let parent = instruction_on(&conn, id, human)?;
+        Ok(coordination_root_on(&conn, human, &parent)?.is_some())
+    }
+
     pub fn interaction_session_input_allowed(&self, id: &str, human: i64) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         session_input_allowed_on(&conn, id, human)
+    }
+
+    /// Requeue an admitted, known-unsent handoff without changing its source,
+    /// destination, dependency budget or original admission generation.
+    pub(crate) fn interaction_session_recover_unsent(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<(Instruction, bool)> {
+        use crate::interaction::TransportPhase as Phase;
+
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (raw, phase): (String, String) = tx
+            .query_row(
+                "SELECT doc,phase FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+                params![id, human],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("Owned local handoff unavailable")?;
+        let call: SessionRequest = serde_json::from_str(&raw)?;
+        let mut helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.phase != Phase::RetainedUnsent || phase != "requested" {
+            return Ok((helper, false));
+        }
+
+        let parent = instruction_on(&tx, &call.parent_instruction, human)?;
+        let viable: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t
+                JOIN sessions s ON s.id=t.session_id
+                JOIN users u ON u.tg_user_id=s.creator_user_id
+                JOIN conversation_entry_generations g ON g.session_id=s.id
+                WHERE t.id=?1 AND t.session_id=?2 AND t.native_thread_id=?3
+                  AND t.status IN ('running','completed') AND t.execution_generation=g.generation
+                  AND u.tg_user_id=?4 AND u.allowed=1 AND s.force_fresh_thread=0)",
+            params![
+                parent.local_turn,
+                parent.target_session,
+                call.caller_native,
+                human
+            ],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            viable
+                && parent.phase == Phase::Accepted
+                && parent.target == call.caller
+                && parent.admission_epoch.as_deref() == Some(&call.epoch)
+                && helper.admission_epoch.as_deref() == Some(&call.epoch)
+                && current_epoch(&tx, human)? == call.epoch
+                && !super::stopping::fenced_on(&tx, call.caller)?
+                && !super::stopping::fenced_on(&tx, helper.target)?
+                && !super::maintenance_writer_held_on(&tx, helper.target)?
+                && super::interaction::target_execution_allowed_on(&tx, &parent)?
+                && super::interaction::target_execution_allowed_on(&tx, &helper)?
+                && coordination_root_on(&tx, human, &parent)?.is_some()
+                && session_input_allowed_on(&tx, &helper.id, human)?
+                && helper.local_turn.is_none()
+                && helper.native_turn.is_none(),
+            "The original local handoff is no longer eligible for recovery"
+        );
+        helper.phase = Phase::Queued;
+        tx.execute(
+            "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
+            params![helper.id, serde_json::to_string(&helper)?, self.instance_id],
+        )?;
+        tx.commit()?;
+        Ok((helper, true))
     }
 
     /// Withdraw future dependency continuations synchronously with scoped controls.
@@ -707,8 +942,7 @@ impl Store {
         let tx = conn.transaction()?;
         super::workflows::withdraw_on(&tx, caller)?;
         tx.execute("INSERT OR IGNORE INTO interaction_session_withdrawals SELECT i.id FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND i.phase='accepted'",params![caller.chat_id,caller.thread_id])?;
-        tx.execute("UPDATE interaction_session_requests SET phase='withdrawn' WHERE caller_chat=?1 AND caller_topic=?2 AND (phase='requested' OR (phase='returned' AND EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.id=json_extract(interaction_session_requests.doc,'$.return_instruction') AND i.phase IN ('queued','submitting','steering'))))",params![caller.chat_id,caller.thread_id])?;
-        tx.execute("UPDATE interaction_instructions SET phase='retained_unsent' WHERE phase='queued' AND input_id IN (SELECT a.input_id FROM interaction_session_authors a JOIN interaction_session_requests c ON json_extract(a.doc,'$.local_request')=c.id WHERE c.caller_chat=?1 AND c.caller_topic=?2 AND c.phase='withdrawn' AND json_extract(a.doc,'$.kind')='session_result')",params![caller.chat_id,caller.thread_id])?;
+        withdraw_local_requests_on(&tx, caller)?;
         tx.commit()?;
         Ok(())
     }
@@ -815,7 +1049,13 @@ impl Store {
         {
             return Ok(None);
         }
+        if coordination_root_on(&tx, human, &parent)?.is_none() {
+            return Ok(None);
+        }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.target_execution.is_some() && !current_bound_turn_on(&tx, &helper)? {
+            return Ok(None);
+        }
         let route = local_claude_route(config, call.caller)?;
         let result_text = if route.is_some() {
             let end = d
@@ -1046,7 +1286,7 @@ mod tests {
                     "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
         }))
         .unwrap();
-        let send = |id, text| {
+        let send = |id, text, report_to_topic| {
             store.interaction_session_request_scoped(
                 caller.key,
                 100,
@@ -1059,11 +1299,15 @@ mod tests {
                 &Default::default(),
                 None,
                 Some(&profile),
+                report_to_topic,
             )
         };
         let oversized = "任".repeat(CLAUDE_LOCAL_TEXT_BYTES / 3 + 1);
-        assert!(send("oversized", &oversized).is_err());
-        let (_, delivered, fresh) = send("context", "A scoped context handoff").unwrap();
+        assert!(send("oversized", &oversized, false).is_err());
+        if !paired {
+            assert!(send("companion", "Must stay private", true).is_err());
+        }
+        let (_, delivered, fresh) = send("context", "A scoped context handoff", paired).unwrap();
         let authorship = store
             .interaction_author(&delivered.id, 100)
             .unwrap()
@@ -1113,21 +1357,41 @@ mod tests {
         };
         let (local, host_access) = begin(&delivered);
         assert_eq!(host_access, paired);
+        let native = Uuid::now_v7().to_string();
+        let prepared = json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
+        let body = json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
+        assert!(
+            store
+                .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .routed_portable_session_requests(target.key, 100, &native, &delivered.id, local)
+                .is_ok(),
+            paired
+        );
+        let onward_owner = setup(&store, 9);
+        let onward = store.interaction_session_request_scoped(
+            target.key,
+            100,
+            &native,
+            &delivered.id,
+            &delivered.id,
+            "onward",
+            onward_owner.key,
+            "A second scoped lookup",
+            &Default::default(),
+            Some(local),
+            Some(&profile),
+            false,
+        );
+        assert_eq!(onward.is_ok(), paired);
+        let text = format!(
+            "Worked on the rig\n<daimon-result>{}</daimon-result>",
+            json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
+        );
         if later {
-            let native = Uuid::now_v7().to_string();
-            let prepared =
-                json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
-            let body =
-                json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
-            assert!(
-                store
-                    .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
-                    .unwrap()
-            );
-            let text = format!(
-                "Worked on the rig\n<daimon-result>{}</daimon-result>",
-                json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
-            );
             let partial = format!(
                 "Work remains open\n<daimon-result>{}</daimon-result>",
                 json!({"requests":delivered.requests, "covered":[delivered.id], "completed":[]})
@@ -1147,7 +1411,7 @@ mod tests {
                     .is_none()
             );
             for (key, scope, allowed) in [("wrong-scope", "b", false), ("same-scope", "a", true)] {
-                let (_, next, _) = send(key, "Continue existing work").unwrap();
+                let (_, next, _) = send(key, "Continue existing work", false).unwrap();
                 let (next_local, _) = begin(&next);
                 let selected =
                     json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
@@ -1183,7 +1447,86 @@ mod tests {
             }
             return;
         }
+        let deliveries = store
+            .finish_routed_portable(
+                &delivered,
+                local,
+                &json!({"phase":"completed", "sessionId":native, "text":text}),
+            )
+            .unwrap();
+        assert_eq!(deliveries[0].internal, Some(true));
+        let report = store.topic_publication_claim(target.key, 100).unwrap();
+        assert_eq!(report.is_some(), paired);
+        if let Some(report) = report {
+            assert_eq!(report.kind, "portable_report");
+            assert_eq!(report.body, "Worked on the rig");
+            store
+                .topic_publication_parts(report.id, &[report.body, "Second part".into()])
+                .unwrap();
+            assert!(store.topic_publication_reserve(report.id, 0).unwrap());
+            store
+                .topic_publication_receipt(report.id, 0, None, false)
+                .unwrap();
+            let (_, stale, _) = send("superseded", "Report before correction", true).unwrap();
+            let (stale_local, _) = begin(&stale);
+            assert!(
+                store
+                    .expose_routed_portable(&stale, stale_local, &json!({}), &prepared, true, None)
+                    .unwrap()
+            );
+
+            let correction = Uuid::now_v7().to_string();
+            store
+                .conversation_input_capture_files(
+                    100,
+                    caller.key,
+                    &binding,
+                    &correction,
+                    "New human correction",
+                    None,
+                    None,
+                    None,
+                    vec![],
+                    true,
+                )
+                .unwrap();
+            let mut source = store.interaction_source(&instruction.id, 100).unwrap();
+            source.event_id = correction;
+            source.text = "New human correction".into();
+            store
+                .interaction_admit(
+                    &source,
+                    caller.key,
+                    RequestRelation::Amends(instruction.requests.clone()),
+                )
+                .unwrap();
+
+            let stale_text = format!(
+                "Superseded work\n<daimon-result>{}</daimon-result>",
+                json!({
+                    "requests":stale.requests, "covered":[stale.id], "completed":stale.requests,
+                })
+            );
+            let result = store
+                .finish_routed_portable(
+                    &stale,
+                    stale_local,
+                    &json!({"phase":"completed","sessionId":native,"text":stale_text}),
+                )
+                .unwrap();
+            assert_eq!(result[0].internal, Some(true));
+            assert!(!store.topic_publication_reserve(report.id, 1).unwrap());
+            store.topic_publication_finish(report.id).unwrap();
+            assert!(
+                store
+                    .topic_publication_claim(target.key, 100)
+                    .unwrap()
+                    .is_none()
+            );
+        }
         if paired {
+            let (_, delivered, _) = send("revoked", "Retire before exposure", true).unwrap();
+            let (local, _) = begin(&delivered);
             store
                 .conn
                 .lock()
@@ -1208,6 +1551,213 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn owner_recovers_only_the_known_unsent_admitted_handoff() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let s = Store::open(file.path(), &[100], &defaults).unwrap();
+        let a = setup(&s, 7);
+        let b = setup(&s, 8);
+        let p = parent(&s, &a);
+        let (call, helper, _) = s
+            .interaction_session_request(
+                a.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &p.id,
+                "recover-me",
+                b.key,
+                "A retained handoff",
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        // Emulate the existing writer rollover: transport changes, original stays frozen.
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent' WHERE id=?1",
+                [&helper.id],
+            )
+            .unwrap();
+        assert!(s.interaction_session_recover_unsent(101, &call.id).is_err());
+        let (recovered, changed) = s.interaction_session_recover_unsent(100, &call.id).unwrap();
+        assert!(changed);
+        assert_eq!(recovered.id, helper.id);
+        assert_eq!(recovered.input_id, helper.input_id);
+        assert_eq!(recovered.admission_epoch, helper.admission_epoch);
+        assert_eq!(recovered.phase, P::Queued);
+        assert!(
+            !s.interaction_session_recover_unsent(100, &call.id)
+                .unwrap()
+                .1
+        );
+
+        for phase in ["uncertain", "cancelled", "accepted"] {
+            s.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE interaction_instructions SET phase=?2 WHERE id=?1",
+                    params![helper.id, phase],
+                )
+                .unwrap();
+            assert!(
+                !s.interaction_session_recover_unsent(100, &call.id)
+                    .unwrap()
+                    .1
+            );
+        }
+
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent' WHERE id=?1",
+                [&helper.id],
+            )
+            .unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO bot_state(key,value) VALUES('stop_admission_epoch:100','later')",
+                [],
+            )
+            .unwrap();
+        assert!(s.interaction_session_recover_unsent(100, &call.id).is_err());
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM bot_state WHERE key='stop_admission_epoch:100'",
+                [],
+            )
+            .unwrap();
+        s.clear_session_conversation(a.key).unwrap();
+        assert!(
+            !s.interaction_session_recover_unsent(100, &call.id)
+                .unwrap()
+                .1
+        );
+    }
+
+    #[test]
+    fn same_owner_coordination_can_continue_once_and_return_through_both_topics() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let a = setup(&s, 7);
+        let b = setup(&s, 8);
+        let c = setup(&s, 9);
+        let p = parent(&s, &a);
+        let closed = tokio_util::sync::CancellationToken::new();
+        let send =
+            |caller: &SessionRecord, turn: &str, parent: &Instruction, client: &str, target| {
+                s.interaction_session_request(
+                    caller.key,
+                    100,
+                    caller.codex_thread_id.as_deref().unwrap(),
+                    turn,
+                    &parent.id,
+                    client,
+                    target,
+                    "Attributed coordination",
+                    &closed,
+                )
+            };
+        let (_, first, _) = send(&a, "parent-turn", &p, "first", b.key).unwrap();
+        accept(&s, &b, &first, "first-turn");
+        assert!(send(&b, "first-turn", &first, "cycle", a.key).is_err());
+        let (_, second, _) = send(&b, "first-turn", &first, "onward", c.key).unwrap();
+        assert_eq!(
+            s.interaction_author(&second.id, 100).unwrap().unwrap()["parent_instruction"],
+            first.id
+        );
+        for client in ["third", "fourth"] {
+            assert!(send(&b, "first-turn", &first, client, c.key).is_ok());
+        }
+        assert!(send(&a, "parent-turn", &p, "exhausted", c.key).is_err());
+
+        let delivery = result(&s, &c, &second);
+        let second_turn = format!("helper-turn-{}", second.id);
+        assert!(send(&c, &second_turn, &second, "too-deep", a.key).is_err());
+        let returned = s
+            .interaction_session_return(&delivery.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(returned.target, b.key);
+        assert_eq!(returned.requests, first.requests);
+
+        let local = accept(&s, &b, &returned, "return-turn");
+        let text = format!(
+            "Coordinated result\n<daimon-result>{}</daimon-result>",
+            json!({"requests":first.requests,"covered":[first.id,returned.id],"completed":first.requests})
+        );
+        let delivery = s
+            .interaction_record_result(
+                &returned.id,
+                100,
+                local,
+                "native-8",
+                "return-turn",
+                "coordinated-result",
+                &text,
+                false,
+            )
+            .unwrap()
+            .remove(0);
+        let final_return = s
+            .interaction_session_return(&delivery.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_return.target, a.key);
+        assert_eq!(final_return.requests, p.requests);
+    }
+
+    #[test]
+    fn codex_dependency_return_does_not_inherit_a_paired_claude_controller() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let caller = setup(&store, 7);
+        let helper = setup(&store, 8);
+        let parent = parent(&store, &caller);
+        let (_, child, _) = store
+            .interaction_session_request(
+                caller.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &parent.id,
+                "question",
+                helper.key,
+                "Check this result.",
+                &Default::default(),
+            )
+            .unwrap();
+        let reply = result(&store, &helper, &child);
+        let profile = serde_json::from_value(json!({
+            "human_id":100,"chat_id":100,"topic_id":1,
+            "targets":[{"topic_id":7,"name":"Design","harness":"claude"}],
+            "claude_foreground":{"interaction_direct":true,"worker_command":["/fixture/claude"],
+                "transport":{"command":["/fixture/matrix"],"timeout_seconds":5,
+                    "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
+        }))
+        .unwrap();
+        let returned = store
+            .interaction_session_return_scoped(&reply.id, 100, &profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            returned.target_execution.as_ref().unwrap().harness,
+            crate::execution::Harness::Claude,
+        );
+        let conn = store.conn.lock().unwrap();
+        assert!(session_input_allowed_on(&conn, &returned.id, 100).unwrap());
+        assert!(!paired_result_parent_on(&conn, &returned).unwrap());
+        assert!(!controller_parent_eligible_on(&conn, 100, &returned).unwrap());
     }
 
     #[test]

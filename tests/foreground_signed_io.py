@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 from threading import Event, Thread
+from datetime import datetime
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -192,6 +193,11 @@ operator.main()
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
+            adapter_recovery = telegram_topic and os.environ.get(
+                "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
+            if adapter_recovery:
+                journey.config.write_text(journey.config.read_text().replace(
+                    "[interaction]\n", "[interaction]\ntelegram_entry_projection=true\n", 1))
             if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 if telegram_topic:
                     adapter_config = journey.root / "telegram-adapter.toml"
@@ -223,6 +229,22 @@ operator.main()
 
             class DirectProvider(ClaudeProvider):
                 def admitted(self):
+                    if expected := getattr(self.server, "returned_dependency", None):
+                        ident, phase, native, scope, prompt = self.server.journey.row(
+                            "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
+                            "FROM interaction_session_requests r JOIN interaction_instructions i "
+                            "ON i.id=json_extract(r.doc,'$.return_instruction') "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                            "WHERE r.phase='returned' AND t.status='running'"
+                        )[0]
+                        assert phase == "submitting"
+                        assert native == expected["native"], "Returned result started a different native session"
+                        assert scope == expected["scope"], "Returned result used a different tool scope"
+                        assert expected["text"] in prompt
+                        assert '"kind":"session_result"' in prompt
+                        self.server.current = ident
+                        self.server.exposures.append(ident)
+                        return {"native_session_id": native, "native_session_scope": scope}
                     if inverse:
                         ident, phase, session, scope, prompt = self.server.journey.row(
                             "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
@@ -232,13 +254,14 @@ operator.main()
                             (self.server.human_original,),
                         )[0]
                         assert phase == "submitting"
-                        if getattr(self.server, "attachment", None):
+                        if getattr(self.server, "attachment", None) and not getattr(self.server, "routed_paired_human", None):
                             assert prompt == self.server.attachment["caption"]
                         else:
                             assert self.server.original in prompt
-                        if telegram_topic and not getattr(self.server, "attachment", None):
-                            assert prompt == self.server.original
-                        elif not telegram_topic:
+                        if telegram_topic and not getattr(self.server, "routed_paired_human", None):
+                            if not getattr(self.server, "attachment", None):
+                                assert prompt == self.server.original
+                        else:
                             assert '"original_human_author":100' in prompt
                         self.server.current = ident
                         self.server.exposures.append(ident)
@@ -341,7 +364,8 @@ operator.main()
                                            "record_uid": selected["recordUid"],
                                            "expected_revision": selected["revision"]}
                     provider.worker_profile = profile
-                if interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1":
+                skill_refresh = telegram_topic and os.environ.get("FOREGROUND_TEST_TELEGRAM_SKILL_REFRESH") == "1"
+                if skill_refresh or (interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1"):
                     shared = root / "shared-agent-skills"
                     skill = shared / "fixture-skill"
                     skill.mkdir(parents=True)
@@ -349,8 +373,8 @@ operator.main()
                     provider.skill_marker = "Readback from the shared skill directory."
                     provider.skill_file = skill / "SKILL.md"
                     provider.skill_file.write_text(
-                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n---\n"
-                        + provider.skill_marker
+                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n"
+                        'metadata:\n  version: "1.0.0"\n---\n' + provider.skill_marker
                     )
                     config["sharedSkillsDirectory"] = str(shared)
                 if interaction and os.environ.get("FOREGROUND_TEST_FOUNDATION") == "1":
@@ -438,6 +462,13 @@ for await (const line of createInterface({ input: process.stdin })) {
                             " && printf 'Native DMK write accepted.'"
                         )
                 profile.write_text(json.dumps(config))
+                if skill_refresh:
+                    anchor = json.loads(subprocess.check_output(
+                        [*command[:-2], "--skill-resume-anchor", str(profile)],
+                        text=True, timeout=5,
+                    ))
+                    config["skillContinuity"] = {"layoutRevision": anchor["layoutRevision"]}
+                    profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
                     sender_source, sender = self._start_sender(root, fixture, service, capabilities, body)
@@ -463,6 +494,21 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if adapter_recovery:
+                        self._claude_adapter_recovery(journey, provider, adapter_config)
+                        return
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_GOAL") == "1":
+                        self._conversation_goal(journey, provider)
+                        return
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
+                        self._exact_claude_quote(journey, provider, web_profile=profile)
+                        return
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
+                        self._conversation_attachments(journey, provider)
+                        return
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1":
+                        self._telegram_codex_handoff(journey, provider)
+                        return
                     if telegram_topic:
                         adapter = subprocess.Popen(
                             [gateway, "--tele-daimon-poll", str(adapter_config)],
@@ -471,6 +517,8 @@ timeout_seconds=5
                         try:
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
+                            elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
+                                self._exact_claude_quote(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -479,6 +527,10 @@ timeout_seconds=5
                                 self._telegram_cancel(journey, provider)
                             elif dmk_write:
                                 self._telegram_dmk_write(journey, provider)
+                            elif skill_refresh:
+                                self._telegram_skill_refresh(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF") == "1":
+                                self._telegram_codex_handoff(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -500,8 +552,23 @@ timeout_seconds=5
                         return
                     selected = dict(cursor=None, event_id=original["message_id"], author=author,
                                     thread_id=original["thread_id"])
+                    if signed_interrupt == "return-crash":
+                        self._signed_return_crash(journey, provider, selected, return_attempts, fixture, body)
+                        return
                     if signed_interrupt:
-                        self._signed_interrupt(journey, provider, selected, return_attempts)
+                        competing = None
+                        if signed_interrupt == "crash":
+                            original_two = fixture.lane("legion", at_ms=service.clock()).converse(
+                                text="Another signed original for the same fixture entry.",
+                                addressees=[body],
+                                request_id=str(uuid.uuid4()),
+                                targets=fixture.canonical_targets(),
+                                ttl_ms=30_000,
+                                deliver=lambda _, payload: service.we_lane.intake(payload),
+                            )
+                            competing = dict(cursor=None, event_id=original_two["message_id"],
+                                             author=author, thread_id=original_two["thread_id"])
+                        self._signed_interrupt(journey, provider, selected, return_attempts, competing)
                         return
                     reply = journey.read("matrix", engine, "run", json.dumps(selected))["result"]
                     self.assertIsNone(provider.failure)
@@ -581,9 +648,13 @@ timeout_seconds=5
             self.addCleanup(server.shutdown)
             return self._host_command(directory, socket, sender, capabilities)
 
-        def _signed_interrupt(self, journey, provider, selected, return_attempts):
+        def _signed_interrupt(self, journey, provider, selected, return_attempts, competing=None):
             provider.mode = "held"
             provider.arrived, provider.release = Event(), Event()
+            cancelled = Event()
+            if engine == "claude":
+                provider.quote_response = "A late answer to the isolated signed original."
+                provider.quote_answer_gate = (provider.arrived, provider.release, cancelled)
             ident = selected["event_id"]
             args = [journey.binary, "--control", str(journey.config),
                     "matrix", engine, "run", json.dumps(selected)]
@@ -603,14 +674,49 @@ timeout_seconds=5
                     other = "goose" if engine == "antigravity" else "antigravity"
                     wrong = journey.read("matrix", other, "interrupt", ident)["result"]
                     self.assertFalse(wrong["interruption_requested"])
-                    requested = journey.read("matrix", engine, "interrupt", ident)["result"]
-                    self.assertTrue(requested["interruption_requested"])
+                    if signed_interrupt == "crash":
+                        rejected = subprocess.run(
+                            [*args[:-1], json.dumps(competing)], capture_output=True, text=True,
+                            timeout=8,
+                        )
+                        self.assertNotEqual(rejected.returncode, 0)
+                        self.assertIn("Foreground Matrix destination is at capacity",
+                                      rejected.stderr + rejected.stdout)
+                        self.assertEqual(journey.row(
+                            "SELECT count(*) FROM interaction_matrix_requests WHERE source_event=?",
+                            (competing["event_id"],),
+                        ), [(0,)])
+                        # The fixture owns this process. SIGKILL prevents the
+                        # foreground worker from settling through clean shutdown.
+                        journey.process.kill()
+                        journey.process.communicate(timeout=8)
+                        journey.process = None
+                    else:
+                        requested = journey.read("matrix", engine, "interrupt", ident)["result"]
+                        self.assertTrue(requested["interruption_requested"])
                     stdout, errors = run.communicate(timeout=15)
-                    self.assertEqual(run.returncode, 0, errors)
+                    if signed_interrupt != "crash":
+                        self.assertEqual(run.returncode, 0, errors)
                 finally:
+                    cancelled.set()
                     provider.release.set()
                     if run.poll() is None:
                         run.terminate()
+            if signed_interrupt == "crash":
+                self._restart_after_signed_crash(journey)
+                outcome = journey.read("matrix", engine, "status", ident)["result"]
+                self.assertEqual(outcome["phase"], "provider_uncertain", outcome)
+                for key in ("input_id", "request_id", "session_id", "native_session_id", "thread_id"):
+                    self.assertEqual(outcome[key], in_flight[key], key)
+                self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                                 outcome)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(provider.calls, [ident])
+                self.assertEqual(return_attempts, [])
+                self.assertEqual(journey.telegram_methods, [])
+                self.assertEqual(journey.rpc, [])
+                return
+
             outcome = json.loads(stdout)["result"]
             self.assertEqual(outcome["phase"], "rejected" if before else "provider_uncertain", outcome)
             self.assertEqual(outcome["result"]["reason"],
@@ -626,6 +732,237 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _restart_after_signed_crash(self, journey):
+            # Use the real lease predicate with a shorter test-only limit.
+            # The old PID is confirmed dead; preserve its journal and lease.
+            heartbeat, = journey.row(
+                "SELECT heartbeat_at FROM app_instance_lock WHERE key='main'"
+            )[0]
+            journey.extra_env = {**getattr(journey, "extra_env", {}),
+                                 "TELECODEX_INSTANCE_STALE_SECONDS": "1"}
+            expires = datetime.fromisoformat(heartbeat).timestamp() + 1
+            journey.wait(lambda: time.time() > expires, seconds=3)
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+
+        def _signed_return_crash(self, journey, provider, selected, return_attempts, fixture, body):
+            retained, release = Event(), Event()
+
+            def hold_ack():
+                retained.set()
+                assert release.wait(12), "The fixture never released the signed return"
+
+            def received_replies():
+                return [row["event_id"] for row in fixture.ledger_a.conversation_evidence()
+                        if row["subject"] == "communication"
+                        and row["origin"]["embodiment_id"] == body
+                        and row["payload"]["intent"]["thread_id"] == selected["thread_id"]
+                        and ANSWER in row["payload"]["body"]["text"]]
+
+            self.after_return_intake = hold_ack
+            ident = selected["event_id"]
+            args = [journey.binary, "--control", str(journey.config),
+                    "matrix", engine, "run", json.dumps(selected)]
+            with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
+                try:
+                    self.assertTrue(retained.wait(20), provider.failure)
+                    returning = journey.read("matrix", engine, "status", ident)["result"]
+                    self.assertEqual(returning["phase"], "returning", returning)
+                    self.assertEqual(return_attempts, [returning["result"]["send_id"]])
+                    message = received_replies()
+                    self.assertEqual(len(message), 1)
+                    journey.process.kill()
+                    journey.process.communicate(timeout=8)
+                    journey.process = None
+                    run.communicate(timeout=10)
+                finally:
+                    release.set()
+                    if run.poll() is None:
+                        run.terminate()
+
+            self._restart_after_signed_crash(journey)
+            outcome = journey.read("matrix", engine, "status", ident)["result"]
+            self.assertEqual(outcome["phase"], "return_uncertain", outcome)
+            for key in ("input_id", "request_id", "session_id", "native_session_id", "thread_id"):
+                self.assertEqual(outcome[key], returning[key], key)
+            self.assertEqual(outcome["result"]["send_id"], returning["result"]["send_id"])
+            self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"],
+                             outcome)
+            self.assertEqual(received_replies(), message)
+            self.assertEqual(return_attempts, [outcome["result"]["send_id"]])
+            self.assertIsNone(provider.failure)
+            self.assertEqual(provider.calls, [ident] * 2)
+            self.assertEqual(journey.telegram_methods, [])
+            self.assertEqual(journey.rpc, [])
+
+        def _telegram_codex_handoff(self, journey, provider):
+            codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
+            provider.expected_codex_handoff = {
+                "native": codex,
+                "original": "Fixture seed for the owned Codex conversation",
+                "reply": "Initial goal turn delivered.",
+            }
+            web_roundtrip = os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1"
+
+            def selected_browser():
+                from conversation_cold_entry_http_io import Browser
+
+                browser = Browser(journey)
+                self.addCleanup(browser.provider.close)
+                self.addCleanup(browser.client.close)
+                workspace = browser.get("/api/interaction/sessions")
+                destination = next(row["destination"] for row in workspace["sessions"]
+                                   if row["audio_key"] == "100:7")
+                return browser, destination
+
+            provider.original = "Continue our existing design from the Codex exchange."
+            if web_roundtrip:
+                browser, destination = selected_browser()
+                provider.paired_human = False
+                provider.routed_paired_human = 100
+                provider.human_original = str(uuid.uuid4())
+                update, _ = browser.text(provider.original, reply=destination,
+                                         original_id=provider.human_original)
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT i.phase,t.status FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (update,),
+                ) == [("accepted", "completed")], seconds=30)
+                self.assertIsNone(provider.failure)
+                journey.wait(lambda: any(
+                    ANSWER in item.get("preview", "")
+                    for item in browser.get("/api/interaction")["items"]
+                ), seconds=20)
+            else:
+                provider.human_original = str(journey.sequence + 1)
+                update = journey.admit(provider.original, topic=7)
+                journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=30)
+            self.assertIsNone(provider.failure)
+            self.assertEqual(journey.row(
+                "SELECT i.id,i.phase,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(update),),
+            ), [(provider.current, "accepted", provider.codex_handoff_native)])
+            self.assertNotEqual(provider.codex_handoff_native, codex)
+            self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
+                             [(codex,)])
+            if os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP") != "1":
+                return
+
+            claude_prompt = provider.original
+            calls_before_switch = list(provider.calls)
+            journey.idle()
+            journey.stop()
+            config = journey.config.read_text()
+            selected = 'name="Alpha"\nharness="claude"'
+            self.assertIn(selected, config)
+            folder_root = journey.root / "conversation-folders"
+            folder_root.mkdir(mode=0o700)
+            config = config.replace("[interaction]\n",
+                "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
+            journey.config.write_text(config.replace(selected, 'name="Alpha"', 1))
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            session = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0][0]
+            adopted = journey.read("topics", "workspace", "adopt", "7", str(session))["result"]
+            self.assertTrue(adopted["folder_ready"])
+            checkpoint = Path(adopted["conversation_folder"]) / "CONTINUITY.md"
+            checkpoint.touch(mode=0o600, exist_ok=False)
+            checkpoint.write_text("Synthetic design checkpoint at revision two.")
+
+            browser = None
+            destination = None
+            if web_roundtrip:
+                journey.routing = True
+                browser, destination = selected_browser()
+
+            def native_start(original):
+                offset = len(journey.rpc)
+                if browser:
+                    original_id, _ = browser.text(original, reply=destination)
+                else:
+                    journey.admit(original, topic=7)
+
+                def matching():
+                    return [r["params"] for r in journey.rpc[offset:] if r.get("method") == "turn/start"
+                            and any(original in i.get("text", "") for i in r["params"].get("input", []))]
+                journey.wait(matching, seconds=25)
+                self.assertEqual(len(matching()), 1)
+                request = matching()[0]
+                self.assertEqual(request["threadId"], codex)
+                self.assertEqual(len(request["input"]), 1)
+                if browser:
+                    self.assertNotIn(claude_prompt, request["input"][0]["text"])
+                    self.assertNotIn(ANSWER, request["input"][0]["text"])
+                    item = "codex-return-" + original_id
+                    answer = "Owned Codex answer for " + original
+                    journey.answer_worker(7, answer, item=item)
+                    journey.wait(lambda: journey.row(
+                        "SELECT count(*) FROM interaction_results WHERE native_thread=? AND body=?",
+                        (codex, answer),
+                    ) == [(1,)], seconds=20)
+                    self.assertEqual(browser.status(original_id)["phase"], "routed")
+                    journey.wait(lambda: any(
+                        item.get("preview") == answer for item in browser.get("/api/interaction")["items"]
+                    ), seconds=20)
+                else:
+                    self.assertEqual(request["input"][0]["text"], original)
+                journey.idle()
+                return request.get("additionalContext") or {}
+
+            original = "Yes, go ahead." if browser else "Continue the design back in Codex."
+            context = native_start(original)
+            fragments = [value for key, value in sorted(context.items())
+                         if key.startswith("gateway.history.") and key != "gateway.history.source"]
+            self.assertTrue(fragments, "The resumed Codex turn received no Claude context")
+            self.assertTrue(all(f["kind"] == "untrusted" and f["name"] == "gateway_history" for f in fragments))
+            seed = json.loads("".join(f["value"] for f in fragments))
+            self.assertEqual(seed["ownedExchanges"]["human"], claude_prompt)
+            self.assertIn(ANSWER, seed["ownedExchanges"]["assistant"])
+            self.assertEqual(seed["ownedExchanges"]["nativeThread"], provider.codex_handoff_native)
+            self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
+            later = native_start("Continue normally in Codex.")
+            self.assertFalse(any(key.startswith("gateway.history.") for key in later))
+            self.assertEqual(provider.calls, calls_before_switch)
+
+        def _telegram_skill_refresh(self, journey, provider):
+            def submit(text):
+                provider.original = text
+                provider.human_original = str(journey.sequence + 1)
+                update = journey.admit(text, topic=7)
+                self.assertEqual(str(update), provider.human_original)
+
+                def accepted():
+                    return journey.row(
+                        "SELECT i.id,t.native_thread_id,t.execution_native_scope FROM interaction_sources s "
+                        "JOIN interaction_instructions i ON i.input_id=s.id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                        "WHERE s.event_id=? AND i.phase='accepted' AND t.status='completed'",
+                        (str(update),),
+                    )
+
+                journey.wait(lambda: provider.failure or accepted(), seconds=30)
+                self.assertIsNone(provider.failure)
+                return accepted()[0]
+
+            first_prompt = "Load the first version of the shared skill and finish this turn."
+            first, native, scope = submit(first_prompt)
+            calls_per_turn = 3 + len(provider.host_tools)
+            self.assertEqual(provider.calls, [first] * calls_per_turn)
+            provider.skill_marker = "Readback from version two of the shared skill."
+            provider.skill_file.write_text(provider.skill_file.read_text()
+                .replace('"1.0.0"', '"1.1.0"')
+                .replace("Readback from the shared skill directory.", provider.skill_marker))
+            provider.refreshed_skill = {"native": native, "scope": scope, "previous_prompt": first_prompt}
+            provider.calls.clear()
+            second, resumed, refreshed_scope = submit("Load the updated shared skill in this same topic.")
+            self.assertEqual(provider.calls, [second] * calls_per_turn)
+            self.assertEqual((resumed, refreshed_scope), (native, scope))
+            self.assertNotEqual(first, second)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])
 
         def _telegram_dmk_write(self, journey, provider):
             provider.original = "Read the selected fixture memory and save one synthetic record."
@@ -695,6 +1032,353 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _claude_adapter_recovery(self, journey, provider, adapter_config):
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            teledaimon = journey.root / "teledaimon"
+            teledaimon.symlink_to(Path(journey.binary).resolve())
+
+            def start_adapter():
+                return subprocess.Popen([str(teledaimon), str(adapter_config)], text=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+            def stop_adapter(process):
+                if process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+                _, errors = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, errors)
+
+            def result(answer):
+                provider.original = "Request a fixture reply while testing Telegram delivery."
+                provider.human_original = str(uuid.uuid4())
+                provider.quote_response = answer
+                browser.text(provider.original, reply=destination, original_id=provider.human_original)
+                journey.wait(lambda: provider.failure or any(
+                    row.get("preview") == answer for row in browser.get("/api/interaction")["items"]
+                ), seconds=25)
+                self.assertIsNone(provider.failure)
+                rows = journey.row(
+                    "SELECT d.id FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id "
+                    "WHERE r.body=? AND json_extract(d.doc,'$.origin.thread_id')=1", (answer,))
+                self.assertEqual(len(rows), 1)
+                return rows[0][0]
+
+            def delivery(id):
+                return journey.row(
+                    "SELECT d.phase,count(p.part),max(p.message_id) FROM interaction_deliveries d "
+                    "LEFT JOIN interaction_delivery_parts p ON p.delivery_id=d.id WHERE d.id=? GROUP BY d.id",
+                    (id,),
+                )
+
+            gateway_pid = journey.process.pid
+            ready_answer = "This Claude answer was retained while Telegram was unavailable."
+            ready = result(ready_answer)
+            journey.wait(lambda: journey.row(
+                "SELECT phase FROM interaction_deliveries WHERE id=? "
+                "AND json_extract(doc,'$.telegram_publication_selected')=1", (ready,),
+            ) == [("reserved",)], seconds=8)
+            self.assertEqual(delivery(ready), [("reserved", 0, None)])
+            self.assertFalse(journey.has(ready_answer, 1))
+
+            adapter = start_adapter()
+            try:
+                journey.wait(lambda: adapter.poll() is not None or
+                             (delivery(ready) and delivery(ready)[0][0] == "delivered"), seconds=12)
+                self.assertIsNone(adapter.poll())
+                self.assertEqual(delivery(ready)[0][:2], ("delivered", 1))
+                first_receipt = delivery(ready)
+                self.assertTrue(first_receipt[0][2])
+                lost_answer = "This Claude answer has a deliberately lost Telegram acknowledgement."
+                journey.before_send_message_reply = lambda payload: (
+                    False if lost_answer in payload["text"] else None)
+                lost = result(lost_answer)
+                journey.wait(lambda: delivery(lost) == [("uncertain", 1, None)], seconds=10)
+            finally:
+                stop_adapter(adapter)
+
+            polls = journey.telegram_methods.count("getUpdates")
+            adapter = start_adapter()
+            try:
+                journey.wait(lambda: journey.telegram_methods.count("getUpdates") > polls, seconds=12)
+                following = result("This is a new Claude answer after Telegram returned.")
+                journey.wait(lambda: delivery(following) and delivery(following)[0][0] == "delivered",
+                             seconds=15)
+                self.assertEqual(delivery(ready), first_receipt)
+                self.assertEqual(delivery(lost), [("uncertain", 1, None)])
+                for answer in (ready_answer, lost_answer):
+                    self.assertEqual(sum(answer in message["text"] for message, _ in journey.messages), 1)
+                self.assertEqual(len(set(provider.calls)), 3)
+                self.assertEqual(journey.process.pid, gateway_pid)
+            finally:
+                stop_adapter(adapter)
+
+        def _conversation_goal(self, journey, provider):
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey, companion=True, companion_workspace=True)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.original = "Establish the selected Claude native session."
+            provider.quote_response = "I am ready to inspect this topic's goal."
+            provider.human_original = str(uuid.uuid4())
+            browser.text(provider.original, reply=destination, original_id=provider.human_original)
+            journey.wait(lambda: provider.failure or any(
+                row.get("preview") == provider.quote_response
+                for row in browser.get("/api/interaction")["items"]
+            ), seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.idle()
+            native = journey.row("SELECT native_thread_id FROM turns WHERE execution_harness='claude'")[0][0]
+            calls = list(provider.calls)
+            self.assertEqual(len(calls), 1)
+
+            goal, _ = browser.text("/goal", reply=destination)
+            journey.wait(lambda: provider.failure or any(
+                "No goal set." in row.get("preview", "")
+                for row in browser.get("/api/interaction")["items"]
+            ), seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.idle()
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (goal,),
+            ), [("accepted", "claude", "completed", native)])
+            _, readback = browser.text("/goal", reply=destination, original_id=goal)
+            self.assertIs(readback["new_input"], False)
+
+            browser.client.cookies.clear()
+            blocked = str(uuid.uuid4())
+            response = browser.client.post("/api/interaction/inputs", json={
+                "id": blocked, "binding": browser.binding, "reply": destination, "text": "/goal",
+            }, headers=browser.device_headers)
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (blocked,)),
+                             [("retained_unsent",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?", (blocked,)),
+                             [(0,)])
+            self.assertEqual(provider.calls, calls)
+
+        def _exact_claude_quote(self, journey, provider, *, web_profile=None):
+            import hashlib
+
+            browser, destination = None, None
+            if web_profile:
+                from conversation_cold_entry_http_io import Browser
+
+                browser = Browser(journey)
+                self.addCleanup(browser.provider.close)
+                self.addCleanup(browser.client.close)
+                destination = next(row["destination"]
+                                   for row in browser.get("/api/interaction/sessions")["sessions"]
+                                   if row["audio_key"] == "100:7")
+                provider.paired_human = False
+                provider.routed_paired_human = 100
+
+            def send(original, answer, reply):
+                provider.original = original
+                provider.quote_response = answer
+                if browser:
+                    ident = provider.human_original = str(uuid.uuid4())
+                    browser.text(original, reply=reply, original_id=ident)
+                    return ident
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+                return str(journey.admit(original, topic=7, reply=reply))
+
+            def finish(ident, original, answer, reply):
+                def result():
+                    if browser:
+                        return next((row for row in browser.get("/api/interaction")["items"]
+                                     if row["kind"] == "worker_result" and row["preview"] == answer), None)
+                    return next((message for message, payload in journey.messages
+                                 if answer in message["text"]
+                                 and payload.get("reply_parameters", {}).get("message_id") == int(ident)), None)
+
+                journey.wait(lambda: provider.failure or result(), seconds=25)
+                self.assertIsNone(provider.failure)
+                journey.idle()
+                if browser:
+                    _, readback = browser.text(original, reply=reply, original_id=ident)
+                    self.assertIs(readback["new_input"], False)
+                receipt = journey.row(
+                    "SELECT i.phase,t.status,t.native_thread_id,r.id FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "JOIN interaction_results r ON r.local_turn=t.id WHERE s.event_id=?",
+                    (ident,),
+                )
+                self.assertEqual(len(receipt), 1)
+                phase, status, native, result_id = receipt[0]
+                self.assertEqual((phase, status), ("accepted", "completed"))
+                item = result()
+                if browser:
+                    selection = {"source": item["id"], "revision": item["revision"]}
+                    return selection, native, selection
+                selection = {
+                    "source": f"telegram-result:{result_id}",
+                    "revision": hashlib.sha256(answer.encode()).hexdigest(),
+                }
+                return item["message_id"], native, selection
+
+            proposal = "Use the copper clasp on the selected design."
+            question = "What's your proposal for the clasp?"
+            older, native, selection = finish(send(question, proposal, destination),
+                                              question, proposal, destination)
+            arrived, release, cancelled = Event(), Event(), Event()
+            provider.quote_answer_gate = (arrived, release, cancelled)
+            newer_original = "Propose a finish for the stand."
+            newer_answer = "Use a blue finish on the stand."
+            current = send(newer_original, newer_answer, destination)
+            approval = "Sí, adelante."
+            approval_answer = "I'll proceed with the copper clasp."
+            interrupt = browser and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT") == "1"
+            try:
+                self.assertTrue(arrived.wait(20), provider.failure)
+                pending = send(approval, approval_answer, older)
+
+                def queued():
+                    return journey.row(
+                        "SELECT i.phase,json_extract(i.doc,'$.local_turn') FROM interaction_instructions i "
+                        "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?",
+                        (pending,),
+                    ) == [("queued", None)]
+
+                journey.wait(queued, seconds=10)
+                self.assertEqual(len(provider.calls), 2)
+                provider.expected_quote = {**selection, "assistant": proposal}
+                provider.quote_answer_gate = None
+                if interrupt:
+                    provider.abandoned_quote_original = newer_original
+                    interrupt_id, stopped = browser.text("/interrupt", reply=destination)
+                    self.assertEqual(stopped["phase"], "interruption")
+                    self.assertEqual(stopped["routing"]["phase"], "requested")
+
+                    def interrupted():
+                        return journey.row(
+                            "SELECT i.phase,t.status FROM interaction_sources s "
+                            "JOIN interaction_instructions i ON i.input_id=s.id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                            (current,),
+                        ) == [("uncertain", "failed")]
+
+                    journey.wait(interrupted, seconds=20)
+                    cancelled.set()
+            finally:
+                release.set()
+            if not interrupt:
+                _, later_native, _ = finish(current, newer_original, newer_answer, destination)
+                self.assertEqual(later_native, native)
+            _, reply_native, _ = finish(pending, approval, approval_answer, older)
+            self.assertEqual(len(provider.calls), 3)
+            if interrupt:
+                self.assertNotEqual(reply_native, native)
+                _, replay = browser.text("/interrupt", reply=destination, original_id=interrupt_id)
+                self.assertIs(replay["new_input"], False)
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])
+                self.assertFalse(any(row.get("preview") == newer_answer
+                                     for row in browser.get("/api/interaction")["items"]))
+            else:
+                self.assertEqual(reply_native, native)
+
+            if web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
+                self.assertEqual(len(transcripts), 1)
+                transcript = transcripts[0]
+                transcript.rename(fixture_home / "retained-predecessor.jsonl")
+                current = next(row for row in browser.get("/api/interaction")["items"]
+                               if row["id"] == older["source"])
+                recovered_quote = {"source": current["id"], "revision": current["revision"]}
+                provider.expected_quote = {**recovered_quote, "assistant": proposal}
+                original = "Sí, retomá esa propuesta."
+                answer = "I recovered the copper clasp proposal."
+                _, replacement, _ = finish(send(original, answer, recovered_quote),
+                                           original, answer, recovered_quote)
+                self.assertNotEqual(replacement, native)
+                self.assertEqual(len(provider.calls), 4)
+
+        def _conversation_attachments(self, journey, provider):
+            import base64
+            import hashlib
+            from urllib.parse import quote
+
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey, companion=True, companion_workspace=True)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+            reference = {"file_id": str(uuid.uuid4()), "name": "fixture-image.png", "mime": "image/png",
+                         "size": len(image), "sha256": hashlib.sha256(image).hexdigest()}
+            response = browser.client.post("/api/interaction/files", content=image, headers={
+                **browser.headers, "content-type": "application/octet-stream",
+                "x-file-reference": quote(json.dumps(reference), safe=""),
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.attachment = {"base64": base64.b64encode(image).decode()}
+
+            def state(original):
+                return journey.row(
+                    "SELECT i.phase,t.status FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (original,),
+                )
+
+            for caption in ("Inspect the retained original photo.", ""):
+                provider.original = caption
+                provider.human_original = str(uuid.uuid4())
+                ident, _ = browser.text(caption, reply=destination,
+                                        original_id=provider.human_original, files=[reference])
+                journey.wait(lambda: provider.failure or state(ident) in (
+                    [("accepted", "completed")], [("retained_unsent", "failed")],
+                ), seconds=25)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(state(ident), [("accepted", "completed")])
+                saved = browser.client.get(f"/api/interaction/inputs/{ident}/files/0", headers=browser.headers)
+                self.assertEqual(saved.status_code, 200)
+                self.assertEqual(saved.content, image)
+                journey.idle()
+            expected = len(set(provider.exposures))
+            self.assertEqual(expected, 2)
+            journey.wait(lambda: sum(
+                ANSWER in item.get("preview", "") for item in browser.get("/api/interaction")["items"]
+            ) == expected, seconds=20)
+
+            calls = list(provider.calls)
+            browser.client.cookies.clear()
+            blocked = str(uuid.uuid4())
+            response = browser.client.post("/api/interaction/inputs", json={
+                "id": blocked, "binding": browser.binding, "reply": destination,
+                "text": "Companion attachment may not enter the paired Claude session.",
+                "files": [reference],
+            }, headers=browser.device_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            journey.wait(lambda: state(blocked) == [("retained_unsent", "failed")], seconds=20)
+            journey.idle()
+            self.assertEqual(provider.calls, calls)
+            self.assertEqual(len(set(provider.exposures)), expected)
 
         def _telegram_attachments(self, journey, provider):
             import base64
@@ -963,12 +1647,47 @@ timeout_seconds=5
             journey.wait(lambda: provider.failure or journey.row(
                 "SELECT count(*) FROM interaction_session_requests") == [(1,)], seconds=25)
             self.assertIsNone(provider.failure)
-            journey.wait(lambda: provider.failure or len(provider.calls) == 5, seconds=25)
+            journey.wait(lambda: provider.failure or len(provider.calls) == 6, seconds=25)
             self.assertIsNone(provider.failure)
             journey.wait(lambda: journey.row(
                 "SELECT i.phase FROM interaction_session_requests r "
                 "JOIN interaction_instructions i ON i.id=r.target_instruction "
                 "JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=1") == [("accepted",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
+            if os.environ.get("FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RETURN") != "1":
+                return
+
+            def source_execution():
+                return journey.row(
+                    "SELECT t.native_thread_id,t.execution_native_scope FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "WHERE s.event_id=? AND t.status='completed' AND i.phase='accepted'",
+                    (provider.human_original,),
+                )
+
+            journey.wait(source_execution)
+            native, scope = source_execution()[0]
+            result = "The general conversation verified the synthetic design summary."
+            provider.returned_dependency = {
+                "text": result, "native": native, "scope": scope, "parent_prompt": provider.original,
+            }
+            provider.original = result
+            provider.paired_human = False
+            provider.test_session_request = False
+            provider.calls.clear()
+            journey.answer_worker(1, result)
+            journey.wait(lambda: provider.failure or journey.row(
+                "SELECT i.phase,t.status FROM interaction_session_requests r "
+                "JOIN interaction_instructions i ON i.id=json_extract(r.doc,'$.return_instruction') "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                "WHERE r.phase='returned'"
+            ) == [("accepted", "completed")], seconds=30)
+            self.assertIsNone(provider.failure)
+            returned = journey.row(
+                "SELECT json_extract(doc,'$.return_instruction') FROM interaction_session_requests"
+            )[0][0]
+            self.assertEqual(provider.calls, [returned] * 3)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
@@ -1466,9 +2185,13 @@ if __name__ == "__main__":
     mixed = direct and os.environ.get("FOREGROUND_TEST_MIXED_HARNESSES") == "1"
     telegram_topic = engine == "claude" and os.environ.get("FOREGROUND_TEST_TELEGRAM_TOPIC") == "1"
     inverse = telegram_topic or os.environ.get("FOREGROUND_TEST_INVERSE_HARNESSES") == "1"
-    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT") if engine != "claude" else None
-    if signed_interrupt not in {"1", "before"}:
+    signed_interrupt = os.environ.get("FOREGROUND_TEST_SIGNED_INTERRUPT")
+    if signed_interrupt not in {"1", "before", "crash", "return-crash"}:
         signed_interrupt = None
+    if signed_interrupt == "return-crash" and engine != "claude":
+        raise SystemExit("The signed return crash fixture requires Claude")
+    if signed_interrupt in {"crash", "return-crash"}:
+        os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if inverse and engine == "claude":
         direct = True
     if (interaction or direct or inverse) and not telegram_topic:

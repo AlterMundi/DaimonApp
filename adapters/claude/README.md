@@ -134,8 +134,16 @@ even when a Telegram reply points to one part of a split publication. It does
 not import the nested Telegram reply text. A prepared quote is revalidated
 before submission. An identified result whose text was withheld, exceeds the
 context bound, or belongs to a retired generation leaves the input retained.
-Other replies keep their existing path. Native goal commands and
-unpaired or peer inputs keep their existing submission path. Deploy and roll back the Gateway binary
+Other replies keep their existing path. A current canonical local-session
+result keeps the caller's Claude controller catalog so the worker can resume
+the requesting session. The controller can inspect the returned input and
+request status. The result carries attributed evidence and cannot authorize
+another local request. An authenticated paired human can use Claude's native
+`/goal` command directly in Telegram or in the Conversation composer with the
+Claude topic selected. Gateway binds the command to the original and the
+selected topic. Quoted, voice-derived, attached, companion and session-authored
+inputs cannot invoke the native command through that Conversation path.
+Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
 When the last eligible exchange came from the topic's current Codex thread,
@@ -143,7 +151,12 @@ Gateway can attach its exact original and final answer to a resumed or fresh
 Claude thread. It checks the logical owner and generation, the physical
 receipt, and whether multiple originals could have produced the answer. Native
 history remains in its own harness. This currently covers routed originals and
-direct Telegram originals with matching receipts.
+direct Telegram originals with matching receipts. When the topic returns to
+Codex, its existing native thread is resumed. At the first paired turn after
+completed Claude work, Gateway supplies the same topic's owned Claude
+exchanges and available project checkpoint as named untrusted native context.
+The original input keeps its existing contents and delivery identity. Gateway
+checks the selected context again before native submission.
 
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
@@ -438,6 +451,18 @@ that directs the native CLI only to the loopback Anthropic fixture. It checks
 the actual provider-facing catalog and one Matrix status read, the durable
 exposure decision, the signed return and the sender's original thread. The
 reply remains available after restarting Gateway without another provider call.
+Set `FOREGROUND_TEST_SIGNED_INTERRUPT=crash` to kill only the fixture Gateway
+after the provider has received the original. While it is held, a different
+signed original must be refused at capacity before admission. The restarted
+Gateway must keep the same attempt and native session, report the exposed
+outcome as uncertain,
+and leave both the provider and signed return untouched on exact retry. The
+fixture disables Telegram, makes Codex unusable, and waits for the receiving
+writer lease with a shorter test-only expiry. With
+`FOREGROUND_TEST_SIGNED_INTERRUPT=return-crash`, kill Gateway after the signed
+reply is retained by the sender but before Gateway receives the acknowledgment.
+After restart, the journal must retain the same send ID with an uncertain return
+and the sender must still have exactly one signed reply in the original thread.
 Set `FOREGROUND_TEST_INTERACTION=1` to drive authenticated Interaction and send
 a new original after restarting Gateway. The loopback provider checks for the
 first turn's prompt and reply in the resumed native session, and Interaction
@@ -464,9 +489,37 @@ switching its Telegram transport to external. Set
 result projection, native goal commands and a local session request. Add
 `FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to remove the fixture's prior native
 history and verify the same original reaches a successor with retained context.
+Add `FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RETURN=1` to verify a canonical Codex
+helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY=1` keeps Gateway running with
+  TeleDaimon stopped and reads a routed Claude result in Conversation. It then
+  starts the named TeleDaimon process, verifies one projection of the
+  known-unsent result, and checks that a separate lost acknowledgement is
+  retained without replay across adapter restart.
+- `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
+  selected Claude session through the paired Conversation composer, with no
+  additional provider call and a retained refusal for an unpaired companion.
+- `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
+  `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` submit an exact reply to an older
+  proposal while a newer request is still running in the same native session.
+  The fixture verifies the reply stays queued without exposure, then checks the
+  selected result and revision in the next provider input, native session reuse,
+  and the visible reply on the originating surface.
+  Combine the web switch with `FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to
+  verify one successor resumes the work from the same quoted original after
+  the disposable predecessor is moved out of the harness's native store.
+  Combine the web switch with `FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT=1`
+  to interrupt the active Claude turn through Conversation after provider
+  exposure. The queued reply reaches a successor with the exact quote. The
+  interrupted original remains uncertain, the late answer is withheld, and an
+  exact retry of the interruption does not signal the successor.
+- `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
+  from the Conversation composer to a selected Claude topic. The provider
+  fixture checks the original image bytes and the human's provenance, with
+  and without a caption. The companion attempt is retained before exposure.
 - `FOREGROUND_TEST_TELEGRAM_STEER=1` for Telegram and Conversation inputs
   delivered to the already-running Claude turn.
 - `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.
@@ -475,5 +528,18 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_TELEGRAM_DMK_WRITE=1` with `CLAUDE_TEST_DMK_SCRIPTS` for
   paired MCP recall and one native write through the `dmk` wrapper. The test
   reads back the exact synthetic record from the same disposable pool.
+- `FOREGROUND_TEST_TELEGRAM_SKILL_REFRESH=1` for a compatible version and content
+  change. The provider fixture verifies the prior prompt, the new skill
+  instructions and the unchanged native session and tool scope.
+- `FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF=1` for the first Claude turn in a
+  topic previously served by Codex. The provider sees the exact prior request
+  and reply as historical context, and the original Codex binding remains.
+  Add `FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP=1` to switch back and check the
+  first Codex submission receives the Claude exchange as untrusted context
+  and the next ordinary Codex turn follows its existing native history.
+  Add `FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP=1` to submit both transitions
+  through the authenticated Conversation HTTP composer and read back both
+  canonical answers there. The web return uses a short approval and verifies
+  the previous exchange, checkpoint and current input at the Codex boundary.
 
 All Matrix identities, user input and provider output are synthetic.

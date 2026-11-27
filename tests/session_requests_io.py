@@ -60,7 +60,8 @@ class Sessions(Routing):
         return super().handle_extra_rpc(m,send)
 
     def tool(self,topic,operation,arguments):
-        self.calls+=1;ident=f'local-call-{self.calls}';thread=f'native-topic-{topic}'
+        self.calls+=1;ident=f'local-call-{self.calls}'
+        thread=self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?',(topic,))[0][0]
         turn=self.runs[thread]
         send=next(send for selected,send in list(self.clients.values()) if selected==thread)
         send({'id':ident,'method':'item/tool/call','params':{'threadId':thread,'turnId':turn,'callId':ident,'tool':'interaction_controller','namespace':None,'arguments':{'operation':operation,'arguments':arguments}}})
@@ -76,7 +77,8 @@ class Sessions(Routing):
         return args,result
 
     def defer(self,topic):
-        thread=f'native-topic-{topic}';turn=self.runs[thread];rows=self.instructions(topic)
+        thread=self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?',(topic,))[0][0]
+        turn=self.runs[thread];rows=self.instructions(topic)
         requests=sorted({r for row in rows for r in json.loads(row[2])['requests']})
         claim={'requests':requests,'covered':[row[0] for row in rows],'completed':[]}
         self.broadcast(thread,'item/completed',{'turnId':turn,'item':{'id':'deferred','type':'agentMessage','phase':'final_answer','text':'Independent work finished; selected dependency deferred.\n<daimon-result>'+json.dumps(claim)+'</daimon-result>'}})
@@ -131,6 +133,98 @@ def live_return(binary):
         assert len(public)==1 and public[0]['sequence']>0
         print('PASS attributed local request, immutable retry, self/recursive refusal, live context return, original request correlation and committed human returns')
     finally:j.close()
+
+
+def general_continues_handoff(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare(max_active_workers=3, seed_entry=True)
+        j.admit('#Alpha Confirm the selected work with the owner.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        original = j.instructions(7)[0][0]
+        ok, first = j.tool(7, 'session_request', {
+            'parent_instruction': original, 'request_id': 'ask-general',
+            'selector': 'general', 'text': 'Please coordinate the selected question.'})
+        assert ok, first
+        j.wait(lambda: j.instructions(1) and j.instructions(1)[0][1] == 'accepted')
+        general = j.instructions(1)[0][0]
+        ok, caps = j.tool(1, 'capabilities', {})
+        assert ok and 'coordination_inputs' in caps['operations']
+        ok, inputs = j.tool(1, 'coordination_inputs', {})
+        assert ok and inputs['inputs'][0]['instruction'] == general
+        assert inputs['inputs'][0]['eligible_coordination_parent']
+        assert not inputs['inputs'][0]['eligible_human_parent']
+        ok, onward = j.tool(1, 'session_request', {
+            'parent_instruction': general, 'request_id': 'ask-owner',
+            'selector': 'Beta', 'text': 'Confirm the owner-side state.'})
+        assert ok, onward
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        j.defer(1)
+        j.wait(lambda: j.row("SELECT t.status FROM turns t JOIN sessions s ON t.session_id=s.id WHERE s.thread_id=1 ORDER BY t.id DESC LIMIT 1") == [('completed',)])
+        j.answer(8, 'Owner-side result for onward coordination.')
+        j.wait(lambda: len(j.instructions(1)) == 2 and j.instructions(1)[1][1] == 'accepted')
+        j.answer(1, 'General relays the verified owner result.',
+                 thread=j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=1')[0][0])
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        j.answer(7, 'Char task completed with both handoffs.')
+        j.wait(lambda: j.has('Char task completed with both handoffs.', 1))
+        assert len(j.row("SELECT id FROM interaction_session_requests WHERE phase='returned'")) == 2
+        j.internal_delivery('Owner-side result for onward coordination.')
+        j.internal_delivery('General relays the verified owner result.')
+        print('PASS attributed worker → general → owner, private canonical returns and one human reply')
+    finally:
+        j.close()
+
+
+def private_draft_does_not_become_public(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare()
+        j.admit('#Alpha Consult Beta and return one answer.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        original = j.instructions(7)[0][0]
+        j.request()
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        thread = 'native-topic-8'
+        turn = j.runs[thread]
+        item = {'id': 'private-draft', 'type': 'agentMessage', 'phase': 'commentary'}
+        j.broadcast(thread, 'item/started', {'turnId': turn, 'item': item})
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': 'Private prefix.'})
+        entry_local = j.row(
+            "SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id "
+            "WHERE s.thread_id=8 AND t.status='running' ORDER BY t.id DESC LIMIT 1"
+        )[0][0]
+        j.wait(lambda: j.row('SELECT private_handoff FROM turns WHERE id=?', (entry_local,)) == [(1,)])
+        # Simulate an accepted human instruction joining after private output began.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute(
+                """INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id)
+                   SELECT 'fixture-later-human',human.input_id,entry.id,999,'accepted',
+                          json_set(human.doc,'$.local_turn',?),human.instance_id
+                   FROM interaction_instructions human JOIN sessions entry ON entry.thread_id=8
+                   WHERE human.id=?""",
+                (entry_local, original),
+            )
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': ' Later suffix.'})
+        j.broadcast(thread, 'item/completed',
+                    {'turnId': turn, 'item': {**item, 'text': 'Private prefix. Later suffix.'}})
+        j.wait(lambda: j.row("SELECT internal_handoff FROM interaction_native_messages "
+                             "WHERE item_id='private-draft'") == [(1,)])
+        assert not j.has('Private prefix.', 1)
+        page = j.read('presentation', 'list', '0', '0')['result']
+        assert all('Private prefix.' not in i.get('preview', '') for i in page['items'])
+        # The synthetic row represents audience state only. It has no request
+        # journal and must not enter the actual completion's coverage.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute("DELETE FROM interaction_instructions WHERE id='fixture-later-human'")
+        j.answer(8, 'The authorized dependency result.')
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        j.internal_delivery('The authorized dependency result.')
+        print('PASS in-progress private draft stays private after later human admission')
+    finally:
+        j.close()
 
 
 def direct_topic_request_and_return(binary):
@@ -377,6 +471,8 @@ def cancelled_caller(binary):
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     live_return(binary)
+    general_continues_handoff(binary)
+    private_draft_does_not_become_public(binary)
     direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
     deferred_logical_completion(binary)

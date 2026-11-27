@@ -288,6 +288,9 @@ impl TelegramGateway {
                     "TeleDaimon has not identified the selected bot"
                 );
                 topic_publications::recover(self.app.shared.clone())?;
+                if routing::recover_telegram_deliveries(self.app.shared.clone()).is_err() {
+                    tracing::warn!("Known-unsent Telegram result recovery unconfirmed");
+                }
                 release_ready_topics(&self.app)?;
                 Ok(IngressReply::Accepted {
                     next_offset: self.next_offset().await?,

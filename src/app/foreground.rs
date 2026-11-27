@@ -190,8 +190,8 @@ pub(in crate::app) async fn execute_worker(
         if engine == ForegroundEngine::Claude {
             if !attachments.is_empty() {
                 anyhow::ensure!(
-                    human_original && !native_goal_command,
-                    "Attachments require a direct human turn"
+                    (human_original || routed_host_access) && !native_goal_command,
+                    "Attachments require an authenticated human turn"
                 );
                 start["attachments"] = json!(
                     attachments
@@ -696,7 +696,7 @@ pub(super) async fn run_portable_turn(
                 resume: resume.as_slice(),
                 human_original: true,
                 native_goal_command: input.paired_actor
-                    && super::routing::native_claude_goal(&input.text),
+                    && crate::interaction::native_claude_goal(&input.text),
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
@@ -811,15 +811,20 @@ pub(super) async fn run_routed_portable(
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
-    let human_authored = store
-        .interaction_author(&input.id, input.human_id)?
-        .is_none();
+    let author = store.interaction_author(&input.id, input.human_id)?;
+    let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
-    anyhow::ensure!(
-        request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
-        "Routed worker attachments require a direct Claude turn"
-    );
+    // Retain the controller catalog on a canonical result so its receiving
+    // turn can resume the requesting session. The journal checks each action
+    // against its current input, and a result cannot authorize new work.
+    let paired_work = human_authored
+        || author.as_ref().is_some_and(|a| {
+            matches!(
+                a["kind"].as_str(),
+                Some("session_request" | "session_result")
+            )
+        });
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -841,6 +846,14 @@ pub(super) async fn run_routed_portable(
         });
 
     let outcome = async {
+        // The retained Conversation original is paired even when its prompt
+        // needs a routed envelope. Session requests and results cannot attach
+        // files using the paired authority they inherit for host tools.
+        anyhow::ensure!(
+            request.attachments.is_empty()
+                || (engine == ForegroundEngine::Claude && routed_host_access && human_authored),
+            "Routed worker attachments require an authenticated human Claude turn"
+        );
         let (_,body) = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
@@ -849,11 +862,22 @@ pub(super) async fn run_routed_portable(
         let resume = if engine==ForegroundEngine::Claude {
             store.routed_claude_continuations(local,&body)?
         } else {Vec::new()};
-        let native_goal_command = engine == ForegroundEngine::Claude
-            && direct_original
+        let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
+            && human_authored
             && request.attachments.is_empty()
-            && super::routing::native_claude_goal(&request.prompt);
+            && crate::interaction::native_claude_goal(&input.text);
+        let conversation_goal = owned_goal
+            && !direct_original
+            && store.routed_conversation_claude_goal(input)?;
+        anyhow::ensure!(
+            !crate::interaction::native_claude_goal(&request.prompt)
+                || direct_original
+                || conversation_goal,
+            "Direct Conversation goal no longer matches its retained selection"
+        );
+        let native_goal_command = owned_goal && (direct_original || conversation_goal);
+        let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
@@ -871,7 +895,7 @@ pub(super) async fn run_routed_portable(
         let mut missing_resume: Option<(String, Value)> = None;
         loop {
             let mut exposed = false;
-            let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
+            let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
                 .then_some(WorkerController {
                     app,
                     key: input.target,
@@ -888,10 +912,10 @@ pub(super) async fn run_routed_portable(
                     id: &input.id,
                     session: &attempt,
                     resume: if missing_resume.is_some() { &[] } else { &resume },
-                    human_original: direct_original,
+                    human_original,
                     native_goal_command,
-                    routed_human: !direct_original,
-                    routed_host_access: routed_host_access && !direct_original,
+                    routed_human: !human_original,
+                    routed_host_access: routed_host_access && !human_original,
                     session_instructions: session.session_prompt.as_deref(),
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),
@@ -947,6 +971,7 @@ pub(super) async fn run_routed_portable(
     {
         super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
     }
+    super::topic_publications::wake(app.shared.clone(), input.target);
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

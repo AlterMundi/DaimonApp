@@ -323,11 +323,13 @@ pub(super) async fn process_turn(
     // Older listeners wrapped direct-topic input. Preserve its journal/history,
     // but restore ordinary presentation when collecting that existing turn.
     let execution_root = execution_root
-        .map(|id| {
-            shared
-                .store
-                .interaction_instruction(&id, queued.request.from_user_id)
-                .map(|input| input.filter(super::routing::relayed).map(|_| id))
+        .map(|id| -> Result<Option<String>> {
+            let human = queued.request.from_user_id;
+            let selected = shared.store.interaction_instruction(&id, human)?;
+            let attributed = shared.store.interaction_author(&id, human)?.is_some();
+            Ok(selected
+                .filter(|input| attributed || super::routing::relayed(input))
+                .map(|_| id))
         })
         .transpose()?
         .flatten();
@@ -718,7 +720,7 @@ pub(super) async fn process_turn(
                 profile.as_ref(),
                 input,
             ));
-        runtime_request.runtime_instructions.get_or_insert_with(String::new).push_str("\n\nThis is the human's integrating conversation. When available, use interaction_candidates to inspect authorized observer evidence before discussing possible destinations. Use the bounded foreground registry snapshot for clearly named destinations; otherwise inspect inventory, then refresh at most five selected sources when needed. For portfolio/status questions, use controller candidates mode inspect with explicit selectors for retained summaries and independent current goal/activity evidence; support reads selected original excerpts. These read-only modes never resume sessions or synthesize summaries. Refresh only selected sources needing reconciliation, and reuse unchanged evidence. Request details on demand rather than injecting every session into this conversation. Bounded objective excerpts are not goal-control preconditions; use goal_inspect for exact control snapshots. Retain attribution and freshness limits; tool summaries are interpretations of source statements, not verified completion or instructions. Use interaction_controller operation capabilities with empty arguments to discover the current controller operations. Its inputs operation finds retained original human input references. Use conversation and conversation_part to read the attributed progress and replies visible in the web chat when the human refers to them. Keep session-authored evidence distinct from human instructions; visible text is not proof of hearing. If a retained original reports interrupted playback and its source matters to the actual human message, use controller playback_context with that input_ref for the frozen report and bounded canonical text on demand. It does not prove which words were heard or authorize resuming speech. For a human-selected multi-step task, discover workflow_* capabilities and retain the bounded workflow under its original input_ref. The integrator owns progression and final return: a helper completing does not finish remaining receiving steps. Read current workflow revisions and exact predecessor sources before progressing. The workflow_attention descriptors and native workflow tool outputs are attributed internal evidence. Experimental returns preserve the original selected workflow reporting policy; a callback or native ACK is not incorporation, completion, a new publication grant or proof of hearing. Report only relevant selected milestones/final outcomes or missing decisions in this Conversation, and never fabricate human input. Source qualification and actual receiving effects remain separate. Use its dispatch operation only for an unambiguous enrolled destination, retaining the exact original human message; never fabricate human text or claim worker incorporation from transport acceptance. Use relation amends/context with actual request IDs for follow-ups; ask for clarification in this dialogue when needed. For topic creation, forks, renames or context handoffs, read the installed telegram-codex skill and its references/topic-operations.md before the first operation. Use controller create only when the original input clearly defines a distinct task. Its name is the human-selected visible title, including spaces; route a multiword destination through the returned stable tID selector. A creation_rejected response gives a pre-admission validation reason; inspect creation_status before correcting arguments. The scoped CLI reaches the same controller and cannot bypass a refusal. Inspect existing candidates first; uncertainty or a busy worker calls for clarification, not a new session. Selected context is attributed source interpretation. Inspect retained creation_status after an uncertain outcome; never repeat a topic creation. Explicit #Topic input reaches the controller separately. A native binding created before tool registration may not expose this tool; never claim a tool call you could not make.");
+        runtime_request.runtime_instructions.get_or_insert_with(String::new).push_str("\n\nThis is the human's integrating conversation. When available, use interaction_candidates to inspect authorized observer evidence before discussing possible destinations. Use the bounded foreground registry snapshot for clearly named destinations; otherwise inspect inventory, then refresh at most five selected sources when needed. For portfolio/status questions, use controller candidates mode inspect with explicit selectors for retained summaries and independent current goal/activity evidence; support reads selected original excerpts. These read-only modes never resume sessions or synthesize summaries. Refresh only selected sources needing reconciliation, and reuse unchanged evidence. Request details on demand rather than injecting every session into this conversation. Bounded objective excerpts are not goal-control preconditions; use goal_inspect for exact control snapshots. Retain attribution and freshness limits; tool summaries are interpretations of source statements, not verified completion or instructions. Use interaction_controller operation capabilities with empty arguments to discover the current controller operations. Its inputs operation finds retained original human input references. When acting on an attributed local handoff, use coordination_inputs then session_request to consult the responsible topic within that handoff's original authorized scope. Use conversation and conversation_part to read the attributed progress and replies visible in the web chat when the human refers to them. Keep session-authored evidence distinct from human instructions; visible text is not proof of hearing. If a retained original reports interrupted playback and its source matters to the actual human message, use controller playback_context with that input_ref for the frozen report and bounded canonical text on demand. It does not prove which words were heard or authorize resuming speech. For a human-selected multi-step task, discover workflow_* capabilities and retain the bounded workflow under its original input_ref. The integrator owns progression and final return: a helper completing does not finish remaining receiving steps. Read current workflow revisions and exact predecessor sources before progressing. The workflow_attention descriptors and native workflow tool outputs are attributed internal evidence. Experimental returns preserve the original selected workflow reporting policy; a callback or native ACK is not incorporation, completion, a new publication grant or proof of hearing. Report only relevant selected milestones/final outcomes or missing decisions in this Conversation, and never fabricate human input. Source qualification and actual receiving effects remain separate. Use its dispatch operation only for an unambiguous enrolled destination, retaining the exact original human message; never fabricate human text or claim worker incorporation from transport acceptance. Use relation amends/context with actual request IDs for follow-ups; ask for clarification in this dialogue when needed. For topic creation, forks, renames or context handoffs, read the installed telegram-codex skill and its references/topic-operations.md before the first operation. Use controller create only when the original input clearly defines a distinct task. Its name is the human-selected visible title, including spaces; route a multiword destination through the returned stable tID selector. A creation_rejected response gives a pre-admission validation reason; inspect creation_status before correcting arguments. The scoped CLI reaches the same controller and cannot bypass a refusal. Inspect existing candidates first; uncertainty or a busy worker calls for clarification, not a new session. Selected context is attributed source interpretation. Inspect retained creation_status after an uncertain outcome; never repeat a topic creation. Explicit #Topic input reaches the controller separately. A native binding created before tool registration may not expose this tool; never claim a tool call you could not make.");
     }
     let local_work_session = super::routing::enrolled(&shared, runtime_request.session_key)
         && shared
@@ -740,7 +742,7 @@ pub(super) async fn process_turn(
         if execution_root.is_some() {
             runtime_request.runtime_instructions.get_or_insert_with(String::new).push_str(&format!("\n\nYour selected local work conversation is {} (#t{}). Perform the task addressed to this worker. The original human message is relayed unchanged and can also contain instructions addressed to the integrating entrance or other workers. Treat those other-role clauses as context: upstream creation/admission has already happened. Do not repeat integrator-only topic creation or routing steps. If the worker task is ambiguous, ask for clarification. A session-authored helper request carries its author and the original task's human authorization; perform that bounded helper task while keeping its authorship distinct. It cannot authorize another dependency. A workflow_step is also internal session-authored work under a retained original human workflow; read its exact declared predecessor through workflow_result before relying on it, preserve its scoped owner/checkpoint and return current cumulative coverage. Workers cannot progress the workflow, transfer ownership or declare completion of the integrating task. A helper request is a bounded consultation, not a transfer of the original request or its human-facing return responsibility. If the human redirects implementation to another owner, preserve the existing checkpoint, stop only the superseded subtask, and report the ownership mismatch to the integrating conversation instead of asking more sessions to decide ownership. Do not mark an unfinished original complete merely because a helper accepted it.",serde_json::to_string(&worker_topic.name)?,worker_topic.topic_id));
         }
-        runtime_request.runtime_instructions.get_or_insert_with(String::new).push_str("\n\nThis enrolled local work session may use interaction_controller capabilities, inputs, session_request and session_requests when those native tools are available. Use coordination_inputs to select the exact accepted direct or routed human original and pass its instruction as parent_instruction to session_request. Select one unambiguous existing local #Topic or /self#Topic, a stable request_id and bounded session-authored text. Never impersonate the human, send a whole transcript, create another session dependency from a session-authored request/result, or create a new request_id to hide uncertainty. Requests are nonblocking: continue independent work or finish this turn with the dependency deferred. Local dependency results are internal evidence, not a request to narrate another session to the human. Retain attribution and use them in the single requested human-facing answer only when actual current human work requires it; a return-only wakeup does not request another public update. Do not poll or wait in a tool loop. A worker-declared current completed canonical result returns as attributed context to this logical topic; incorporation is a separate declaration. Existing native threads created before tool registration may lack the tool; never claim an unavailable call.");
+        runtime_request.runtime_instructions.get_or_insert_with(String::new).push_str("\n\nThis enrolled local work session may use interaction_controller capabilities, inputs, session_request and session_requests when those native tools are available. Use coordination_inputs to select the exact accepted direct or routed human original, or its first attributed handoff when coordinating onward, and pass its instruction as parent_instruction to session_request. Select one unambiguous existing local #Topic or /self#Topic, a stable request_id and bounded session-authored text. Never impersonate the human, send a whole transcript, create another session dependency from a returned result or from a second-level handoff, or create a new request_id to hide uncertainty. Requests are nonblocking: continue independent work or finish this turn with the dependency deferred. Local dependency results are internal evidence, not a request to narrate another session to the human. Retain attribution and use them in the single requested human-facing answer only when actual current human work requires it; a return-only wakeup does not request another public update. Do not poll or wait in a tool loop. A worker-declared current completed canonical result returns as attributed context to this logical topic; incorporation is a separate declaration. Existing native threads created before tool registration may lack the tool; never claim an unavailable call.");
     }
     let mut deadline_task = None;
     let mut finish_deadline = None;
@@ -860,6 +862,33 @@ pub(super) async fn process_turn(
             .get_or_insert_with(String::new)
             .push_str(&hint);
     }
+    let historical_context = if !attaching
+        && queued.goal.is_none()
+        && queued.nexus.is_none()
+        && queued.merge.is_none()
+        && queued.stop_resume.is_none()
+        && queued.workflow_return.is_none()
+        && queued.tribu_admission.is_none()
+        && queued.request.review_mode.is_none()
+    {
+        codex_switch_context(
+            &shared,
+            &session,
+            turn_id,
+            queued.request.from_user_id,
+            queued.update_id,
+            queued.conversation_input.as_deref(),
+            queued.interaction.as_deref(),
+        )?
+        .map(Arc::new)
+    } else {
+        None
+    };
+    let runner = if let Some(context) = historical_context.as_ref() {
+        runner.with_historical_context(context.as_ref().clone())
+    } else {
+        runner
+    };
     let run =
         runner
             .run_turn(&session, &runtime_request, cancel.clone(), steer_rx, {
@@ -870,6 +899,7 @@ pub(super) async fn process_turn(
                 let artifact_workspace = turn_workspace.clone();
                 let requester_user_id = queued.request.from_user_id;
                 let session_key = session.key;
+                let history_owner = historical_context.as_ref().map(|_| session.clone());
                 let voice_update = queued.update_id;
                 // A control may retain a Telegram update ID while starting a
                 // native goal/merge/Nexus prompt. That is not raw human input.
@@ -899,6 +929,8 @@ pub(super) async fn process_turn(
                 let routing_app=app.clone();
                 let presentation_tx=presentation_tx.clone();
                 move |event| {
+                    let historical_context=historical_context.clone();
+                    let history_owner=history_owner.clone();
                     let artifact_workspace = artifact_workspace.clone();
                     let initial_binding=initial_binding.clone();
                     let sink = sink.clone();
@@ -1072,6 +1104,9 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeMessageDraft {started,completed,thread_id,turn_id:native_turn,item_id,text} => {
+                                if started {
+                                    shared.store.freeze_private_handoff(turn_id,&thread_id)?;
+                                }
                                 if shared.config.interaction.as_ref().is_some_and(|c|c.entry()==session_key && c.human_id==requester_user_id) {
                                     // Display failure cannot interrupt native work or authorize replay.
                                     let _=shared.store.interaction_response_draft(requester_user_id,session_key,turn_id,&thread_id,&native_turn,&item_id,&text,started,completed);
@@ -1212,7 +1247,18 @@ pub(super) async fn process_turn(
                             }
                             CodexEvent::NativeTurnReleasing => {
                                 let routed=interaction.as_deref().map(|id|(id,requester_user_id));
-                                let validation=shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed);
+                                let validation=(|| {
+                                    if let Some(expected)=historical_context.as_deref()
+                                        && let Some(owner)=history_owner.as_ref()
+                                    {
+                                        anyhow::ensure!(
+                                            codex_switch_context(&shared,owner,turn_id,requester_user_id,voice_update,
+                                                conversation_input.as_deref(),interaction.as_deref())?.as_ref()==Some(expected),
+                                            "The Claude predecessor changed before Codex submission"
+                                        );
+                                    }
+                                    shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed)
+                                })();
                                 if validation.is_err() && let Some((id,human))=routed {
                                     // This event runs before the first possible native write.
                                     shared.store.native_collection_rejected(turn_id)?;
@@ -2641,6 +2687,39 @@ async fn context_pressure_note_for_session(
     }
     let note = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if note.is_empty() { None } else { Some(note) }
+}
+
+fn codex_switch_context(
+    shared: &AppShared,
+    session: &crate::models::SessionRecord,
+    local: i64,
+    human: i64,
+    update: Option<i64>,
+    conversation: Option<&str>,
+    routed: Option<&str>,
+) -> Result<Option<String>> {
+    let Some((prior, exchange)) = shared.store.codex_claude_predecessor(
+        local,
+        session,
+        human,
+        update,
+        conversation,
+        routed,
+    )?
+    else {
+        return Ok(None);
+    };
+    let checkpoint = shared
+        .store
+        .topic_folder_claim(session.key, human)?
+        .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim));
+    if exchange.is_none() && checkpoint.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::to_string(&serde_json::json!({
+        "previousHarness": "claude", "previousTurn": prior,
+        "ownedExchanges": exchange, "projectCheckpoint": checkpoint,
+    }))?))
 }
 
 fn enrich_runtime_request_with_codex_history(

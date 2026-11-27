@@ -141,6 +141,41 @@ impl Store {
         Ok(cfg)
     }
 
+    pub fn interaction_target_labels(&self, cfg: &InteractionConfig) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut title = conn.prepare_cached(
+            "SELECT COALESCE(json_extract(b.value,'$.name.value'), s.session_title)
+             FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             LEFT JOIN bot_state b ON b.key='topic_catalog:'||s.chat_id||':'||s.thread_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1",
+        )?;
+        cfg.targets
+            .iter()
+            .map(|target| {
+                let label: Option<String> = title
+                    .query_row(params![cfg.chat_id, target.topic_id, cfg.human_id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?
+                    .flatten();
+                let display_name = label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|label| {
+                        !label.is_empty()
+                            && label.chars().count() <= 128
+                            && !label.chars().any(char::is_control)
+                    })
+                    .unwrap_or(&target.name);
+                Ok(json!({
+                    "name": target.name,
+                    "display_name": display_name,
+                    "stable_selector": format!("t{}", target.topic_id)
+                }))
+            })
+            .collect()
+    }
+
     pub fn interaction_creation(&self, id: &str, human: i64) -> Result<Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         creation_on(&conn, id, human)
@@ -1389,6 +1424,23 @@ mod tests {
         assert_eq!(discovered.targets[0].name, "Explicit");
         assert_eq!(discovered.targets[3].name, "t7");
         assert_eq!(discovered.targets[4].name, "t8");
+        let labels = store.interaction_target_labels(&discovered).unwrap();
+        assert_eq!(
+            labels[4],
+            json!({"name":"t8","display_name":"Two Words","stable_selector":"t8"})
+        );
+        store
+            .observe_topic(
+                SessionKey::new(100, Some(8)),
+                Some("Actual Topic Name"),
+                None,
+                None,
+                json!({"kind":"telegram_update","update_id":4}),
+            )
+            .unwrap();
+        let labels = store.interaction_target_labels(&discovered).unwrap();
+        assert_eq!(labels[4]["display_name"], "Actual Topic Name");
+        assert_eq!(labels[4]["stable_selector"], "t8");
         assert!(discovered.resolve("t999").is_empty());
         store
             .conn

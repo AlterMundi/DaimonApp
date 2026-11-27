@@ -2,6 +2,7 @@
 use super::*;
 use crate::interaction::{
     Instruction, RequestRelation, ReturnRoute, SourceInput, TransportPhase as P, explicit_selector,
+    native_claude_goal,
 };
 
 pub(super) struct Run {
@@ -21,7 +22,13 @@ pub(super) fn begin(shared: &Arc<AppShared>, queued: &QueuedTurn) -> Result<Opti
             .conversation_pinned_instruction(queued.request.from_user_id, id)
             .unwrap_or(false)
     });
-    if (!enrolled(shared, queued.request.session_key) && !pinned)
+    let attributed_entry = queued.interaction.is_some()
+        && shared
+            .config
+            .interaction
+            .as_ref()
+            .is_some_and(|cfg| cfg.entry() == queued.request.session_key);
+    if (!enrolled(shared, queued.request.session_key) && !pinned && !attributed_entry)
         || shared.config.interaction.as_ref().map(|c| c.human_id)
             != Some(queued.request.from_user_id)
     {
@@ -231,14 +238,6 @@ pub(super) fn portable_topic(
 )> {
     let profile = shared.config.interaction.as_ref()?;
     profile.portable_route(key)
-}
-
-pub(super) fn native_claude_goal(text: &str) -> bool {
-    let text = text.trim_end();
-    text == "/goal"
-        || text.strip_prefix("/goal ").is_some_and(|condition| {
-            !condition.trim().is_empty() && condition.chars().count() <= 4000
-        })
 }
 
 pub(super) async fn handle_portable_topic(
@@ -1390,7 +1389,9 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = if source.update_id.is_some() && direct_portable_topic(i) {
+    let prompt = if (source.update_id.is_some() && direct_portable_topic(i))
+        || shared.store.routed_conversation_claude_goal(i)?
+    {
         i.text.clone()
     } else {
         super::nexus::input_prompt(
@@ -1988,6 +1989,26 @@ fn relevance(d: &crate::interaction::Delivery) -> &'static str {
     }
 }
 
+pub(super) fn recover_telegram_deliveries(shared: Arc<AppShared>) -> Result<()> {
+    let Some(cfg) = shared
+        .config
+        .interaction
+        .as_ref()
+        .filter(|_| shared.config.telegram.enabled && shared.config.telegram.external_polling)
+    else {
+        return Ok(());
+    };
+    let human = cfg.human_id;
+    for delivery in shared.store.interaction_ready_telegram_deliveries(
+        human,
+        cfg.entry(),
+        cfg.telegram_entry_projection,
+    )? {
+        publish(shared.clone(), delivery, human);
+    }
+    Ok(())
+}
+
 fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human: i64) {
     if delivery.internal == Some(true) || !shared.config.telegram.enabled {
         // Preserve canonical results as unsent; disabling a transport is not
@@ -2038,8 +2059,14 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
         let mut complete = true;
         for (index, part) in split_text(&body, 3000).into_iter().enumerate() {
             let html = render_markdown_to_html(&part);
-            let sent = shared
-                .telegram
+            let writer = shared.clone();
+            let delivery_id = d.id.clone();
+            let client = shared.telegram.clone().with_publication_guard(move || {
+                writer
+                    .store
+                    .interaction_can_publish_part(&delivery_id, human, index as i64)
+            });
+            let sent = client
                 .send_message_checked(d.origin.chat_id, || {
                     let Some((fresh, text)) = shared.store.interaction_reserve_part(
                         &d.id,
@@ -2066,6 +2093,19 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
                 })
                 .await;
             match sent {
+                #[cfg(unix)]
+                Err(error)
+                    if index == 0
+                        && error
+                            .downcast_ref::<crate::tele_daimon::projection::JsonNotSubmitted>()
+                            .is_some()
+                        && shared
+                            .store
+                            .interaction_first_part_not_submitted(&d.id, human)
+                            .unwrap_or(false) =>
+                {
+                    return;
+                }
                 Ok(Some((message, correction)))
                     if message.chat.id == d.origin.chat_id
                         && message.message_thread_id.unwrap_or(0) == d.origin.thread_id =>

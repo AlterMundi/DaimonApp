@@ -25,6 +25,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
         return json.loads(submission)
 
     def do_POST(self):
+        quote_gate = None
         try:
             assert self.path.startswith("/v1/messages")
             length = int(self.headers["Content-Length"])
@@ -109,7 +110,20 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, dispatch, '"new_admission":false'),
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
-            assert self.server.original in json.dumps(data["messages"])
+            assert self.server.original in json.dumps(data["messages"], ensure_ascii=False)
+            routed_human = getattr(self.server, "routed_paired_human", None)
+            if routed_human is not None:
+                assert "Gateway delivered a routed packet with its author and source recorded." in system
+                blocks = [block["text"] for message in data["messages"]
+                          if isinstance(message["content"], list)
+                          for block in message["content"] if block.get("type") == "text"]
+                provenance = next(
+                    json.loads(line.removeprefix("Transport provenance: "))
+                    for block in blocks for line in block.splitlines()
+                    if line.startswith("Transport provenance: ")
+                )
+                assert provenance["source_channel"] == "conversation", provenance
+                assert provenance["original_human_author"] == routed_human, provenance
             attachment = getattr(self.server, "attachment", None)
             if attachment:
                 assert any(
@@ -120,14 +134,38 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 )
             submission = self.admitted()
             assert submission["native_session_id"]
+            codex_handoff = getattr(self.server, "expected_codex_handoff", None)
+            if codex_handoff:
+                self.server.codex_handoff_native = submission["native_session_id"]
+                assert self.server.codex_handoff_native != codex_handoff["native"]
+                blocks = [block.get("text", "") for message in data["messages"]
+                          if isinstance(message["content"], list) for block in message["content"]
+                          if block.get("type") == "text"]
+                seed = next((block for block in blocks if block.startswith("Gateway historical context (JSON):")), "")
+                assert codex_handoff["original"] in seed and codex_handoff["reply"] in seed, (
+                    "The new Claude turn lacked the receipt-bound Codex exchange"
+                )
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
+            returned_dependency = getattr(self.server, "returned_dependency", None)
+            if returned_dependency:
+                fixture_id = "returned"
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, '"eligible_coordination_parent":false'),
+                    (CONTROLLER, {"operation": "session_request", "arguments": {
+                        "parent_instruction": self.server.current, "request_id": "result-cannot-delegate",
+                        "selector": "general", "text": "This request must never be admitted.",
+                    }}, '"kind":"session_request_rejected"'),
+                ]
             if distinct_request:
                 request = {"parent_instruction": self.server.current, "request_id": "fixture-general",
                            "selector": "general", "text": "Check the design summary for the current request."}
                 steps = [
                     (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
                     (CONTROLLER, {"operation": "capabilities", "arguments": {}}, "telecodex.local-session/v1"),
+                    (CONTROLLER, {"operation": "session_request",
+                                  "arguments": {**request, "report_to_topic": True}},
+                     '"kind":"topic_report_destination_unsupported"'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":true'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":false'),
                 ]
@@ -139,7 +177,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert steer["conversation_text"] in messages
             previous = getattr(self.server, "previous_original", None)
             messages = data["messages"]
-            if distinct_request:
+            if returned_dependency:
+                assert returned_dependency["parent_prompt"] in json.dumps(messages)
+            skill_refresh = getattr(self.server, "refreshed_skill", None)
+            if skill_refresh:
+                fixture_id = "refreshed-skill"
+                assert submission["native_session_id"] == skill_refresh["native"]
+                assert submission["native_session_scope"] == skill_refresh["scope"]
+                assert skill_refresh["previous_prompt"] in json.dumps(messages)
+            if distinct_request or returned_dependency or skill_refresh:
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
@@ -174,6 +220,24 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
+            elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
+                if expected := getattr(self.server, "expected_quote", None):
+                    # Only the current exchange's context may resolve this
+                    # short approval. Earlier messages include other proposals.
+                    content = next(message["content"] for message in reversed(messages)
+                                   if message["role"] == "user")
+                    quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
+                              if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
+                    assert quoted == [expected], quoted
+                    if abandoned := getattr(self.server, "abandoned_quote_original", None):
+                        assert abandoned not in json.dumps(messages, ensure_ascii=False)
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": quote_response}
+                reason = "end_turn"
+                if quote_gate := getattr(self.server, "quote_answer_gate", None):
+                    arrived, release, _ = quote_gate
+                    arrived.set()
+                    assert release.wait(12), "The fixture did not release the active provider turn"
             elif attachment:
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
@@ -216,7 +280,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
-                        if distinct_request and isinstance(entry["content"], list):
+                        if (distinct_request or returned_dependency) and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
                         tool = steps[prior - 1][0]
                         if tool == "Skill":
@@ -260,6 +324,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
         except Exception as error:
+            if (isinstance(error, (BrokenPipeError, ConnectionResetError))
+                    and quote_gate and quote_gate[2].is_set()):
+                # The selected CLI already acknowledged cancellation and may
+                # close its HTTP stream before this late answer is written.
+                return
             import traceback
             point = traceback.extract_tb(error.__traceback__)[-1]
             if self.server.failure is None:
