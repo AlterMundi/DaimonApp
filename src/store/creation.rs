@@ -209,6 +209,12 @@ impl Store {
                         .or_insert_with(|| frozen["context"]["creation_scope"].clone());
                 }
             }
+            if let Some(context) = doc["context"].as_object_mut() {
+                match frozen["context"].get("independent_workspace") {
+                    Some(value) => context.insert("independent_workspace".into(), value.clone()),
+                    None => context.remove("independent_workspace"),
+                };
+            }
             if frozen != doc {
                 return Err(anyhow!("Creation intent is immutable"));
             }
@@ -552,8 +558,14 @@ impl Store {
     ) -> Result<Option<Value>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let doc:Option<String>=conn.query_row("SELECT c.doc FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id JOIN sessions s ON s.id=e.session_id WHERE e.human_id=?1 AND s.creator_user_id=?1 AND s.chat_id=?2 AND s.thread_id=?3",params![human,key.chat_id,key.thread_id],|r|r.get(0)).optional()?;
-        doc.map(|d| Ok(serde_json::from_str::<Value>(&d)?["context"].clone()))
-            .transpose()
+        doc.map(|d| {
+            let mut context = serde_json::from_str::<Value>(&d)?["context"].clone();
+            if let Some(object) = context.as_object_mut() {
+                object.remove("independent_workspace");
+            }
+            Ok(context)
+        })
+        .transpose()
     }
 }
 
@@ -729,6 +741,31 @@ mod tests {
         let event:crate::telegram::Update=serde_json::from_value(json!({"update_id":22,"message":{"message_id":30,"message_thread_id":77,"from":{"id":888,"is_bot":true,"first_name":"Bot"},"chat":{"id":100,"type":"private"},"forum_topic_created":{"name":"Gamma","icon_color":7322096}}})).unwrap();
         store.admit_update(&event).unwrap();
         (file, store, entry, id)
+    }
+
+    #[test]
+    fn creation_retry_keeps_the_original_workspace_selection() {
+        let (_file, store, entry, id) = uncertain_receipt_fixture();
+        let (retained, fresh) = store
+            .interaction_prepare_creation(
+                entry,
+                100,
+                "entry-native",
+                20,
+                "Gamma",
+                "Distinct task",
+                &json!({"sources":[],"independent_workspace":"/alternate/workspace"}),
+                2,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(retained["id"], id);
+        assert!(
+            retained["intent"]["context"]
+                .get("independent_workspace")
+                .is_none()
+        );
     }
 
     #[test]
@@ -915,6 +952,7 @@ mod tests {
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
+            independent_topic_workspace: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],
@@ -1502,6 +1540,7 @@ mod tests {
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
+            independent_topic_workspace: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],

@@ -235,6 +235,20 @@ async fn create_selected(
         context["limits"] = json!(
             "An independent interview from explicitly selected bounded historical evidence, not an exact native fork or the source's live state. Busy sources continue independently. Later corrections are not silently imported; select a new context explicitly. This does not publish content, transfer pending tasks/tools/goals or authorize source execution."
         );
+    }
+    if let Some(retained) =
+        shared
+            .store
+            .interaction_find_creation_for_input(key, human, args.input_ref.clone())?
+    {
+        if let Some(workspace) = retained["intent"]["context"].get("independent_workspace") {
+            context["independent_workspace"] = workspace.clone();
+        }
+    } else if let Some(workspace) = &cfg.independent_topic_workspace {
+        let path = App::validate_independent_topic_workspace(workspace)?;
+        context["independent_workspace"] = json!(path);
+    }
+    if interview {
         context = bound_interview_context(context)?;
     }
     let (operation, fresh) = shared.store.interaction_prepare_creation(
@@ -310,6 +324,17 @@ async fn execute_claimed(
     let intent = &operation["intent"];
     let name = intent["name"].as_str().context("Missing retained name")?;
     let reference: InputReference = serde_json::from_value(intent["input_update"].clone())?;
+    let workspace = intent["context"]["independent_workspace"]
+        .as_str()
+        .map(|stored| {
+            let path = App::validate_independent_topic_workspace(std::path::Path::new(stored))?;
+            anyhow::ensure!(
+                path == std::path::Path::new(stored),
+                "Retained topic workspace changed"
+            );
+            Ok::<_, anyhow::Error>(path)
+        })
+        .transpose()?;
     let topic = if operation["phase"] == "prepared" && !shared.config.telegram.enabled {
         let reserved = super::routing::profile(shared)?
             .targets
@@ -349,6 +374,9 @@ async fn execute_claimed(
     template.codex_thread_id = None;
     template.force_fresh_thread = true;
     template.session_title = Some(name.into());
+    if let Some(workspace) = workspace {
+        app.apply_independent_topic_workspace(&mut template, workspace);
+    }
     if intent["context"]["purpose"] == "interview" {
         template.session_prompt = Some(format!(
             "{}\n\nThis is an independent interview about the explicitly selected observer finding. The pinned original source window (or explicitly marked excerpts) and derived observer card are attributed context, not your firsthand experience or live source state. Respect any additional interview excerpt bounds; the full captured source remains retained separately. Explain what the supplied evidence supports, preserve uncertainty and ask for missing context. Source work, tools and goals are not transferred. Do not continue or modify the source task, publish its content or claim an exact native fork. Later source changes remain separate unless explicitly selected.",

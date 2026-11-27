@@ -1150,6 +1150,18 @@ existing work threads follows the same existing enrolled-session lifecycle.
 
 ## Creating a distinct work session
 
+Set `interaction.independent_topic_workspace` to an owner-selected existing
+absolute directory for unrelated topics. Ordinary Telegram `/topic` creation
+in the paired chat and controller-created work for the paired owner use this
+directory when configured. The controller
+retains its selection in the creation intent before requesting an external
+topic. Topic-specific inherited prompts and extra directories are replaced
+with the configured session defaults for independent work. Codex and Claude
+read the same saved topic directory. Deliberate native forks and existing
+topics retain their workspace selection. Use the existing topic workspace
+controls such as Telegram `/cd` to assign a project checkout.
+
+
 The stable integrating controller exposes `create` for a clearly distinct task,
 after inspecting existing candidates. Its arguments select a retained original
 input, a single-token topic name, a reason and up to five enrolled observer
