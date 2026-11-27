@@ -2312,7 +2312,7 @@ window.Conversation = (() => {
     const continuationProofMaxMs = 2400;
     function verifyBufferedContinuation(selected) {
       const prepared = prefetched;
-      if (!selected?.auto || selected.segmentEnded || selected.verifying || selected.streaming
+      if (!selected?.auto || selected.segmentEnded || selected.verifying || (selected.streaming && !selected.usingBlob)
         || selected.source.kind === "integrator_live" || selected.source.kind === "native_question"
         || selected.next == null || selected.end !== selected.next || !prepared?.buffered
         || prepared.source.id !== selected.source.id || prepared.source.revision !== selected.source.revision
@@ -2475,7 +2475,7 @@ window.Conversation = (() => {
         const prepare=offset=>{
           const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
           waiting.result=requestAudio(source,offset,controller).then(value=>{
-            waiting.buffered=!!value.blob&&!value.streaming;
+            waiting.buffered=!!value.blob&&(!value.streaming||value.usingBlob);
             if(waiting===prefetched)verifyBufferedContinuation(active);
             return {value};
           },error=>({error}));
