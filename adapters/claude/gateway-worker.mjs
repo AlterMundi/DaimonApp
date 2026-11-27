@@ -44,6 +44,7 @@ async function ownerProfile(path) {
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
+  const guidance = Object.hasOwn(value ?? {}, 'bodyGuidanceFile') ? ['bodyGuidanceFile'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
@@ -51,7 +52,7 @@ async function ownerProfile(path) {
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
+      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...foundation, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
@@ -65,6 +66,8 @@ async function ownerProfile(path) {
         || !isAbsolute(value.hostToolDirectory) || /[:\0\r\n]/.test(value.hostToolDirectory)))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
+      || (guidance.length > 0 && (typeof value.bodyGuidanceFile !== 'string'
+        || !isAbsolute(value.bodyGuidanceFile)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
       || (displayName.length > 0 && (typeof value.displayName !== 'string'
         || value.displayName !== value.displayName.trim()
@@ -79,6 +82,14 @@ async function ownerProfile(path) {
     throw new Error('Invalid owner profile');
   }
   return value;
+}
+
+async function bodyGuidance(profile, fullAccess) {
+  if (!fullAccess || !profile.bodyGuidanceFile) return undefined;
+  const bytes = await privateBytes(profile.bodyGuidanceFile, 16 * 1024);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
+  if (!text || text.includes('\0')) throw new Error('Invalid body guidance');
+  return text;
 }
 
 async function sharedDmkBinding(profile) {
@@ -366,8 +377,9 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
-    const [binding, skills, foundation] = await Promise.all([
+    const [binding, skills, foundation, guidance] = await Promise.all([
       sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory), matrixFoundation(profile),
+      bodyGuidance(profile, fullAccess),
     ]);
     if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
@@ -394,11 +406,13 @@ async function main() {
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
-      const [bytes, inventory, currentFoundation] = await Promise.all([
+      const [bytes, inventory, currentFoundation, currentGuidance] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
+        bodyGuidance(current, fullAccess),
       ]);
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
-      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
+      return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
+        && turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -458,7 +472,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, hostTools, controller,
-        fullAccess, routedHuman, sessionInstructions,
+        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,

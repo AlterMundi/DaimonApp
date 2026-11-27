@@ -27,11 +27,13 @@ test('worker sends one native input only after exact owner persistence decision'
     const selection = join(root, 'profile.json');
     const exposure = join(root, 'submitted.txt');
     const apiKeyFile = join(root, 'provider.key');
+    const bodyGuidanceFile = join(root, 'body-guidance.md');
     const subscriptionEmail = 'owner@example.test';
     const accountDriftCwd = join(root, 'other-account');
     const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
     try {
       await mkdir(accountDriftCwd);
+      await writeFile(bodyGuidanceFile, 'Synthetic body guidance: first.', { mode: 0o600 });
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
       await writeFile(cli, `#!${process.execPath}
 if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
@@ -85,6 +87,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   'The paired human supplied the current input.'), paired);
                 assert.equal(options.systemPrompt.append.includes(
                   'The Claude subscription account is a service credential and does not identify the sender.'), paired);
+                assert.equal(options.systemPrompt.append.includes('Synthetic body guidance:'), paired);
+                if (options.resume === ${JSON.stringify(priorSessionId)} && paired) {
+                  assert.match(options.systemPrompt.append, /Synthetic body guidance: updated/);
+                }
                 assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
                 assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
                 const expectedTools = ownerDefault
@@ -114,7 +120,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const profile = {
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
         cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
-        hostTools: ['Read', 'Bash'],
+        hostTools: ['Read', 'Bash'], bodyGuidanceFile,
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,
@@ -127,7 +133,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
-        'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+        'updated-guidance-resume', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       let restrictedScope;
       let hostScope;
@@ -135,6 +141,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       // Exercise the native auth selector here with the isolated fixture SDK.
       if (realBinary) decisions.push('native-auth-rejected');
       for (const decision of decisions) {
+        if (decision === 'updated-guidance-resume') {
+          await writeFile(bodyGuidanceFile, 'Synthetic body guidance: updated.');
+        }
         if (decision === 'owner-default') {
           const { hostTools: _tools, ...defaultProfile } = profile;
           await writeFile(selection, JSON.stringify(defaultProfile));
@@ -156,17 +165,17 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default'].includes(decision);
+          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume'].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
-            : decision === 'companion-resume' ? priorSessionId : nativeSessionId;
+            : ['companion-resume', 'updated-guidance-resume'].includes(decision) ? priorSessionId : nativeSessionId;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
@@ -197,7 +206,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'updated-guidance-resume'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }

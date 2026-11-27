@@ -36,6 +36,16 @@ verified Matrix body. The native system prompt identifies the harness and this
 display name. Device status and body coordinates still come from the authenticated
 Matrix broker. The prompt does not grant memory, tools or skills.
 
+Set optional `bodyGuidanceFile` to the absolute path of an owner-private UTF-8
+file, at most 16 KiB. Select the receiving being's portable orientation and
+keep the canonical SOUL in its maintained source. The worker appends the file
+to authorized paired or routed host-access turns alongside the current topic
+instructions. Scoped Matrix-only turns keep their existing context. The worker
+checks that the selected text is stable through submission. Guidance updates
+do not change the authorization scope or replace native history. Repository
+guidance remains a separate owner selection. This field grants no resource,
+tool or route and performs no memory or inbox preload.
+
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation
 without `--binding`, `bindingFile` to the owner-local binding for this Claude
