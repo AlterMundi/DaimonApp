@@ -123,6 +123,13 @@ Other replies keep their existing path. Native goal commands and
 unpaired or peer inputs keep their existing submission path. Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
+When the last eligible exchange came from the topic's current Codex thread,
+Gateway can attach its exact original and final answer to a resumed or fresh
+Claude thread. It checks the logical owner and generation, the physical
+receipt, and whether multiple originals could have produced the answer. Native
+history remains in its own harness. This currently covers routed originals and
+direct Telegram originals with matching receipts.
+
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
 Provision it using the Claude embodiment's own messaging application and
