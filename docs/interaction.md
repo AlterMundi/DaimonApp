@@ -1265,7 +1265,16 @@ topic for its work, omit `report_to_topic`. This works across harnesses.
 If Gateway returns `topic_report_destination_unsupported` with
 `admitted: false` for an intended internal handoff, correct the call in the
 same turn with the original request ID and omit that flag.
-`session_requests` inspects the latest sixteen retained dependencies.
+`session_requests` inspects the latest sixteen retained dependencies and
+reports each helper's transport phase and linked native turn status. A handoff
+retained before its first local turn after a writer rollover is no longer in
+the active queue. Under the existing owner authority, recover its frozen request
+with `daimon-gateway --control CONFIG input handoff-recover LOCAL_REQUEST_ID`.
+This resumes the same attributed handoff only while its original admission
+generation and target remain valid. An uncertain handoff is inspection-only.
+If a helper needs additional information from another topic, it can return
+what it needs so the original session can ask directly under its retained
+human instruction. The helper's session-authored input is not a new delegation.
 
 Runtime context names the selected worker topic and instructs it to distinguish
 its task from integrator-only clauses in the unchanged human message. This is

@@ -1632,7 +1632,6 @@ impl Store {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn turn_status(&self, turn_id: i64) -> Result<Option<String>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.query_row(

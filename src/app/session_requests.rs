@@ -70,7 +70,20 @@ pub(super) fn tool_call(
                     };
                     Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;Ok(json!({"instruction":i.id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
                 }
-                "session_requests" if args.arguments==json!({})=>Ok(json!({"requests":match portable_requests {Some(values)=>values,None=>app.shared.store.interaction_session_requests(key,human,&request.native_session)?},"recovery":"Inspect retained input phases. Only explicit known-unsent input recovery can retry; never replay uncertain admission."})),
+                "session_requests" if args.arguments==json!({})=>{
+                    let requests=match portable_requests {Some(values)=>values,None=>app.shared.store.interaction_session_requests(key,human,&request.native_session)?};
+                    let transport=requests.iter().map(|r|{
+                        let helper=app.shared.store.interaction_instruction(&r.target_instruction,human)?;
+                        let local_turn=helper.as_ref().and_then(|i|i.local_turn);
+                        let turn_status=local_turn.map(|id|app.shared.store.turn_status(id)).transpose()?.flatten();
+                        Ok((r.id.clone(),json!({
+                            "phase":helper.map(|i|i.phase),
+                            "native_turn_status":turn_status,
+                            "started_local_turn":local_turn.is_some(),
+                        })))
+                    }).collect::<Result<std::collections::BTreeMap<_,_>>>()?;
+                    Ok(json!({"requests":requests,"transport":transport,"recovery":"A retained_unsent handoff with no local turn can use exact owner recovery. An uncertain handoff must never be replayed."}))
+                }
                 "session_receive"=>{
                     let object=args.arguments.as_object().context("Invalid retained selection")?;
                     if object.len()!=1 {bail!("Invalid retained selection");}
@@ -100,6 +113,10 @@ pub(super) fn tool_call(
                             .iter().any(|i|i.id==args.parent_instruction)
                     };
                     if !current_parent { bail!("Parent is not in this active execution"); }
+                    if app.shared.store.interaction_author(&args.parent_instruction, human)?.is_some() {
+                        return Ok(json!({"kind":"session_authored_parent","admitted":false,
+                            "detail":"This handoff can be answered here. If more work is needed, return what the originating session needs to ask directly under its retained human instruction."}));
+                    }
                     let (call,i,fresh)=app.shared.store.interaction_session_request_scoped(
                         key,human,&request.native_session,&request.native_turn,&args.parent_instruction,
                         &args.request_id,targets[0],&args.text,&closed,portable_local,Some(&cfg),args.report_to_topic)?;
