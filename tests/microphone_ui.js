@@ -85,10 +85,12 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
   const contextHold=deferred();let frozen;
   const surface=boot(live,memoryRecovery(),false,false,async value=>{frozen=value;return contextHold.promise;});
   await until(()=>surface.ui.canStartNative());const starting=surface.click();await until(()=>!!frozen);
-  assert.equal(surface.mediaRequests(),0,'Context is frozen before microphone permission');
+  await starting;
+  assert.equal(surface.mediaRequests(),1,'The recording opens while the frozen context is still pending');
   assert.equal(frozen.modality,'audio');assert.equal(frozen.binding,'original-binding');
-  contextHold.resolve([contextRef]);await starting;assert.equal(surface.devices.at(-1).captureId,frozen.id);
-  surface.ui.hold();await until(()=>surface.nodes.get('#conversation-recording-review').hidden===false);
+  assert.equal(surface.devices.at(-1).captureId,frozen.id);
+  surface.ui.hold();assert.equal(surface.uploads.length,0);
+  contextHold.resolve([contextRef]);await until(()=>surface.nodes.get('#conversation-recording-review').hidden===false);
   await surface.click();await until(()=>surface.received.length===1);
   assert.equal(surface.uploads.at(-1).headers['X-Input-Id'],frozen.id);assert.equal(surface.originals.get(frozen.id).files[0].sha256,contextRef.sha256);
  }
@@ -235,7 +237,11 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  const send=unified.nodes.get('#conversation-send');assert.equal(send.type,'button');assert.equal(send['aria-label'],'Send voice message');assert(!send.disabled);
  assert.equal(unified.nodes.get('#conversation-voice-discard').textContent,'×');assert(!unified.nodes.get('#conversation-voice-discard').hidden);
  send.handlers.click();await until(()=>unified.received.length===1);assert.equal(unified.uploads.length,1);assert.equal(send.type,'submit');assert(!unified.button().hidden);
- const cancelled=boot();await cancelled.click();cancelled.confirmation(false);cancelled.cancel();assert.equal(cancelled.devices[0].state,'recording','Declining confirmation must preserve the recording');assert.equal(cancelled.uploads.length,0);cancelled.confirmation(true);cancelled.cancel();assert.equal(cancelled.devices[0].state,'inactive');assert.equal(cancelled.nodes.get('#conversation-send').type,'submit');assert.equal(cancelled.uploads.length,0);assert.equal(cancelled.confirmations.length,2);assert.match(cancelled.confirmations[0],/deleted without sending/);
+ const cancelled=boot();await cancelled.click();cancelled.cancel();
+ assert.equal(cancelled.devices[0].state,'inactive');assert.equal(cancelled.nodes.get('#conversation-send').type,'submit');
+ assert.equal(cancelled.uploads.length,0);assert.equal(cancelled.confirmations.length,0);
+ assert.equal(cancelled.nodes.get('#conversation-voice-discard').hidden,true,'One cancel returns to the ordinary composer');
+
  const f=boot();await f.click();assert.equal(f.button().textContent,'↑');assert.equal(f.paused(),1);
  assert.equal(f.uploads.length,0,'Partial recording cannot admit work');f.click();await until(()=>f.received.length===1);
  assert.equal(f.uploads.length,1);assert.equal(f.uploads[0].body.type,'audio/webm;codecs=opus');assert.equal(f.devices[0].stream.stopped,1);
@@ -377,12 +383,20 @@ function boot(live=false,recovery,status404=false,cues=false,beforeOriginal,orig
  discarded.confirmation(false);discarded.cancel();assert.equal(discarded.nodes.get('#conversation-voice-check').hidden,false);
  discarded.confirmation(true);discarded.cancel();assert.equal(discarded.ui.ownsSend(),false);assert.equal(discarded.button()['aria-label'],'Record a voice message');
  assert.equal(discarded.uploads.length,1,'Discard of an uncertain local copy cannot resend or cancel server work');
- assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,false);
- assert.equal(discarded.nodes.get('#conversation-voice-discard')['aria-label'],'Dismiss recording notice');
- const priorConfirmations=discarded.confirmations.length;discarded.cancel();
- assert.equal(discarded.state(),'');assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,true);
- assert.equal(discarded.confirmations.length,priorConfirmations,'Dismissing feedback is not another discard');
- assert.equal(discarded.uploads.length,1,'Dismissing feedback never changes server work');
+ assert.equal(discarded.nodes.get('#conversation-voice-discard').hidden,true,'Successful local discard retires the cross');
+ const fresh=boot();await fresh.click();fresh.cancel();
+ assert.equal(fresh.confirmations.length,0,'A single action cancels an active unsent recording');
+ assert.equal(fresh.nodes.get('#conversation-voice-discard').hidden,true);
+ assert.equal(fresh.ui.ownsSend(),false);assert.equal(fresh.uploads.length,0);
+ let rejectContext;const contextFailure=new Promise((_,reject)=>{rejectContext=reject;});
+ const safe=boot(false,memoryRecovery(),false,false,()=>contextFailure);
+ await until(()=>safe.ui.canStartNative());await safe.click();safe.click();
+ rejectContext(Error('The world binding changed'));
+ await until(()=>safe.state().startsWith('The world context was unavailable'));
+ assert.equal(safe.uploads.length,0,'The recorded original is available for explicit review');
+ await safe.click();await until(()=>safe.received.length===1);
+ assert.equal(safe.received[0].files?.length??0,0);
+
 
  const blockedStore=memoryRecovery(),blocked=boot(false,blockedStore,true);await until(()=>!blocked.button().disabled);
  blocked.mode('retention-full');await blocked.click();blocked.click();await until(()=>blocked.state().startsWith('Audio storage is full'));

@@ -130,3 +130,28 @@ locally and must not infer that the mic is active from the capability.
 No waveform, text, draft, device ID or capture status crosses the frame.
 Continuous engines and recorder fallback with no existing level source
 continue without this optional presentation.
+
+
+### World context during microphone startup
+
+The canonical recorder selects the original ID and starts the world snapshot on
+the microphone gesture. Audio recording and host context preparation can proceed
+together; only finalization waits to include the same source. If that preparation
+fails, the already recorded audio stays local for explicit review before it can
+be sent without the source. An active unsent recording can be discarded with one
+press. Discarding a retained local recording still confirms that choice and never
+cancels an uncertain server submission.
+
+A same-origin world toolbar can project the canonical microphone phase and
+current explicitly marked live transcript above the scene. The transcript is
+presentation only. It is not sent by the host, reused for a new original,
+stored by the world HUD or logged as an input. The recording status remains
+visible if live captions are unavailable.
+
+Temporary browser recovery expires at 24 hours, including after tab reopen.
+Older copies with no timestamp become dated on first inspection. The selected
+operator can run `scripts/expire_voice_spool.py --dashboard-config FILE` to
+inspect the server's temporary capture spool and add `--apply` to retire expired
+audio. `--hourly` accounts for the receiving hourly maintenance schedule.
+It only removes ordinary owner-held spool files. Canonical transcripts, input
+receipts, and captures explicitly protected by a recording handoff are retained.
