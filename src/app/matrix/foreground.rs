@@ -139,6 +139,7 @@ pub(super) async fn run_selected(
             session_instructions: None,
             workspace: None,
             history_seed: None,
+            project_checkpoint: None,
             text: &text,
             attachments: &[],
             body,
