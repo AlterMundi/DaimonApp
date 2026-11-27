@@ -1112,7 +1112,11 @@ mod tests {
             )
             .unwrap();
         s.clear_session_conversation(a.key).unwrap();
-        assert!(s.interaction_session_recover_unsent(100, &call.id).is_err());
+        assert!(
+            !s.interaction_session_recover_unsent(100, &call.id)
+                .unwrap()
+                .1
+        );
     }
 
     #[test]
