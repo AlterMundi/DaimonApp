@@ -110,6 +110,19 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
             assert self.server.original in json.dumps(data["messages"])
+            routed_human = getattr(self.server, "routed_paired_human", None)
+            if routed_human is not None:
+                assert "Gateway delivered a routed packet with its author and source recorded." in system
+                blocks = [block["text"] for message in data["messages"]
+                          if isinstance(message["content"], list)
+                          for block in message["content"] if block.get("type") == "text"]
+                provenance = next(
+                    json.loads(line.removeprefix("Transport provenance: "))
+                    for block in blocks for line in block.splitlines()
+                    if line.startswith("Transport provenance: ")
+                )
+                assert provenance["source_channel"] == "conversation", provenance
+                assert provenance["original_human_author"] == routed_human, provenance
             attachment = getattr(self.server, "attachment", None)
             if attachment:
                 assert any(

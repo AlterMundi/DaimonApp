@@ -471,5 +471,9 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   Add `FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP=1` to switch back and check the
   first Codex submission receives the Claude exchange as untrusted context
   and the next ordinary Codex turn follows its existing native history.
+  Add `FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP=1` to submit both transitions
+  through the authenticated Conversation HTTP composer and read back both
+  canonical answers there. The web return uses a short approval and verifies
+  the previous exchange, checkpoint and current input at the Codex boundary.
 
 All Matrix identities, user input and provider output are synthetic.
