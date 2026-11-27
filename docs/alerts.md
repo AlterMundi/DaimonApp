@@ -41,10 +41,9 @@ preserved. No token, private error or endpoint enters frontend data or logs.
 `interval_seconds` defaults to 15, bounded to 5–300. HTTP requests are bounded,
 redirects and environmental proxies are disabled, and responses are checked
 against the pinned closed schema. Incidents are paginated up to 200 per view,
-with explicit truncation, and filtered again to this receiver's scope. Resolved
-history is queried separately so it cannot hide active work; up to 20 resolved
-items from a bounded scan are shown with explicit history truncation. Delivery
-also checks the exact scope, adapter and captured projection association.
+with explicit truncation, and filtered again to this receiver's scope. The
+ordinary app polls only open incidents. Delivery also checks the exact scope,
+adapter and captured projection association.
 
 ## Delivery and uncertainty
 
@@ -78,18 +77,16 @@ stale or unavailable; missing worker observation is explicitly unobserved.
 The compact Operations disclosure retains literal producer text, freshness,
 processing, delivery and acknowledgment separately.
 
-The disclosure uses an amber warning icon and explicit unacknowledged count,
-including displayed resolved notices that have not been acknowledged. Open
-incidents stay visible with an Open badge, a separate acknowledgment badge and
-their delivery state. Resolved incidents move into a history disclosure closed
-by default. Acknowledgment removes attention for that notice immediately after
-confirmed acceptance, but never moves an open incident into resolved history.
-Refreshing reads the service's durable acknowledgment state.
+The disclosure shows current open incidents with separate acknowledgment and
+delivery states. A confirmed acknowledgment removes the notice's attention.
+A resolution removes it from the next observation. A late acknowledgment
+cannot restore an older list after the current observation has changed.
+When an incident or the receiving snapshot is stale, the app reports
+uncertainty and withholds that incident until its producer confirms the state.
 
-History is a bounded receiving view, not deletion. The service owns retention;
-the installed core's 30-day policy only prunes eligible old resolved incidents
-without pending/uncertain delivery on new-incident admission. Open work and
-uncertain receipts stay retained. There is no browser clear-all operation.
+The Alerts service retains incident history for operator lookup. Its configured
+retention removes eligible resolved records without pending or uncertain
+delivery on new-incident admission. Open work and uncertain receipts are retained.
 
 `POST /api/alerts/acknowledge` also requires HTTPS Origin and CSRF, bounded closed
 IDs, an explicit user click and the service's scope grant. Request IDs survive
@@ -125,7 +122,7 @@ or an externally changed label. It neither registers an app nor consumes updates
 Telegram's `MenuButtonWebApp` exposes text and a URL, without an icon color or
 animation field: https://core.telegram.org/bots/api#menubuttonwebapp . The supported
 indicator is therefore a colored emoji in the label: red for error/critical, orange
-for warning, blue for information, plain Apps when clear. Only open unacknowledged
+for warning, blue for information, plain Apps when clear. Only current open unacknowledged
 incidents request attention. Acknowledgment does not resolve their conditions.
 Unavailable/stale/unobserved or truncated observation displays a white unknown
 indicator unless a known error/critical already warrants red. Resolved history
@@ -145,7 +142,7 @@ the existing operator authority after verifying the current binding and destinat
 The same `attention_projection` drives the Telegram menu, launcher card/banner
 and Sessions summary. Only open unacknowledged incidents contribute. The compact
 projection includes a count, at most three safe producer summaries and matching
-severity symbols. Resolved history and acknowledgment remain separate from recovery.
+severity symbols. Unverified incidents are excluded from the count and summaries.
 
 An explicit `alerts.launcher_origins` list enables **only** the read-only
 `POST /api/alerts/attention` route for selected exact HTTPS origins. It validates
@@ -169,11 +166,10 @@ Each incident shows its original **Issued** date (`projection.source_at`) and,
 when different, its latest **Updated** date (`projection.updated_at`). Dates use
 the viewer's local timezone, with an ISO timestamp on the time element. Polling
 and receiving timestamps never replace the issue date; missing or invalid source
-dates are explicitly unavailable. Dates appear on both active and resolved cards.
+dates are explicitly unavailable.
 
 Old open incidents do not expire merely because of age. A stale observation is
 not proof of recovery. Reconcile the owning producer or its explicit retirement
 after verified successor coverage; preserve receipts and original provenance.
-Resolved incidents remain in the bounded, initially collapsed history and do not
-contribute to active attention. This display change performs no acknowledgment,
-resolution, deletion or replay.
+Resolved incidents drop out of the ordinary app and remain queryable through
+the independently authorized service history.

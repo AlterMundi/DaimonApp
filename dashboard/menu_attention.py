@@ -12,14 +12,23 @@ class MenuUnavailable(ValueError):
 SYMBOLS = {'clear':'', 'info':'🔵', 'warning':'🟠', 'error':'🔴', 'unknown':'⚪'}
 
 
+def current_pending(view):
+    if view.get('state') != 'available':
+        return []
+    return [row['projection'] for row in view.get('incidents', [])
+            if row['projection']['processing_state'] == 'open'
+            and row.get('freshness') == 'fresh' and not row.get('acknowledgments')]
+
+
 def attention(view):
     ranks = {'info': 1, 'warning': 2, 'error': 3, 'critical': 3}
-    pending = [row['projection'] for row in view.get('incidents', [])
-               if row['projection']['processing_state'] == 'open' and not row.get('acknowledgments')]
-    rank = max((ranks.get(p['severity'], 0) for p in pending), default=0)
+    rank = max((ranks.get(p['severity'], 0) for p in current_pending(view)), default=0)
     if rank >= 3:
         return 'error'
-    if view.get('state') != 'available' or view.get('observer_state') != 'healthy' or view.get('truncated'):
+    has_stale_open = any(row['projection']['processing_state'] == 'open'
+                         and row.get('freshness') != 'fresh' for row in view.get('incidents', []))
+    if (view.get('state') != 'available' or view.get('observer_state') != 'healthy'
+            or view.get('truncated') or has_stale_open):
         return 'unknown'
     return {0:'clear', 1:'info', 2:'warning'}[rank]
 
@@ -27,8 +36,7 @@ def attention(view):
 def attention_projection(view):
     """One safe, authenticated attention projection for menu, launcher and Sessions."""
     level = attention(view)
-    pending = [r['projection'] for r in view.get('incidents', [])
-               if r['projection']['processing_state'] == 'open' and not r.get('acknowledgments')]
+    pending = current_pending(view)
     ranks = {'critical':4, 'error':3, 'warning':2, 'info':1}
     pending.sort(key=lambda p: ranks.get(p['severity'], 0), reverse=True)
     return {'schema':'telecodex.alert-attention/v1', 'level':level, 'symbol':SYMBOLS[level],

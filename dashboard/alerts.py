@@ -360,13 +360,9 @@ class Receiver:
             status = self.client.call('GET', '/v1/status', 'Status')
             records, truncated = self.client.collection('/v1/incidents', 'IncidentPage', processing_state='open')
             incidents = [r for r in records if r['projection']['receiving_scope'] == self.scope]
-            history, history_truncated = self.client.collection('/v1/incidents', 'IncidentPage', processing_state='resolved')
-            history = sorted((r for r in history if r['projection']['receiving_scope'] == self.scope),
-                             key=lambda r: r['projection']['updated_at'], reverse=True)
             observers = [r for r in status['observers'] if r['receiving_scope'] == self.scope]
             self.authorized()
             view = {'state': 'available', 'observed_at': time.time(), 'incidents': incidents,
-                    'resolved_incidents': history[:20], 'history_truncated': history_truncated or len(history) > 20,
                     'observers': observers, 'truncated': truncated, 'delivery_enabled': self.deliver,
                     'observer_state': ('unobserved' if not observers else 'degraded'
                         if any(r['freshness'] != 'fresh' or r['source_state'] != 'healthy' for r in observers)

@@ -421,7 +421,7 @@ class Companion(unittest.TestCase):
                 return {'state':'available','observer_state':'healthy','incidents':[
                     {'projection':{'producer_id':'fixture','incident_id':'case','severity':'error',
                                    'processing_state':'open','summary':'Safe operational summary'},
-                     'acknowledgments':[]}], 'resolved_incidents':[]}
+                     'freshness':'fresh','acknowledgments':[]}]}
         alerts=Alerts()
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
         self.config['additional_origins']=['https://home.example.test']

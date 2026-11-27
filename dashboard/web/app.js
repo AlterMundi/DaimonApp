@@ -30,7 +30,7 @@ let snapshot,
   controlIntent;
 let conversationMode = false;
 const acknowledgmentRequests = new Map();
-let resolvedHistoryExpanded = false;
+let alertRenderVersion = 0;
 let alertTrailOpened = false;
 let conversationAlertsRead, conversationAlertsAgain=false, conversationAlertsDenied=false, conversationAlertsGeneration=0, lastConversationAlerts;
 const statuses = {
@@ -389,6 +389,7 @@ function controlButton(op, stale, count) {
     || (phase === "stopped" && !op.operation);
 }
 function alerts(data) {
+  const version = ++alertRenderVersion;
   const section = $("#operations");
   if (!data || data.state === "not_configured") {
     section.hidden = true;
@@ -400,16 +401,19 @@ function alerts(data) {
     return;
   }
   section.hidden = false;
-  const open = (data.incidents || []).filter((i) => i.projection.processing_state === "open").length;
-  const unacknowledged = [...(data.incidents || []), ...(data.resolved_incidents || [])]
-    .filter((i) => i.projection.processing_state === "open" && !i.acknowledgments.length).length;
+  const reported = (data.incidents || []).filter(incident => incident.projection.processing_state === "open");
+  const active = data.state === "available" ? reported.filter(incident => incident.freshness === "fresh") : [];
+  const hasUnverified = data.state === "available" && reported.length > active.length;
+  const open = active.length;
+  const unacknowledged = active.filter(incident => !incident.acknowledgments.length).length;
   section.dataset.attention = String(unacknowledged > 0);
   if (!conversationMode && !alertTrailOpened && unacknowledged > 0) { section.open = true; alertTrailOpened = true; }
-  $("#operations-summary").textContent = `${data.attention?.symbol ? data.attention.symbol + " " : unacknowledged ? "⚠ " : ""}Operational alerts · ${open} open`
+  $("#operations-summary").textContent = `${data.attention?.symbol ? data.attention.symbol + " " : unacknowledged ? "⚠ " : ""}Operational alerts${data.state === "available" ? ` · ${open} open` : ""}`
     + (unacknowledged ? ` · ${unacknowledged} unacknowledged` : "");
   $("#alerts-state").textContent = data.state === "unavailable"
     ? "Alert service unavailable. Processing and delivery cannot be confirmed."
-    : data.state === "stale" ? "Showing an older observation. Refresh before acting."
+    : data.state === "stale" ? "Current alerts could not be verified. Refresh to check again."
+    : hasUnverified ? "Some alert sources have not confirmed their current state."
     : data.observer_state === "unobserved" ? "Worker observation has not been established."
     : data.observer_state === "degraded" ? "Observation requires attention. Check source and observer freshness."
     : "Observation route current. Processing and delivery are independent.";
@@ -423,31 +427,22 @@ function alerts(data) {
   if (data.state === "unavailable" && explanations[data.error])
     $("#alerts-state").textContent += " " + explanations[data.error];
   const target = $("#incidents"); target.replaceChildren();
-  target.append(el("h3", `Open incidents · ${open}`, "incident-group-title"));
-  const resolvedItems = [...(data.incidents || []), ...(data.resolved_incidents || [])]
-    .filter((i) => i.projection.processing_state === "resolved");
-  const history = el("details", undefined, "incident-history");
-  history.open = resolvedHistoryExpanded;
-  history.addEventListener("toggle", () => { resolvedHistoryExpanded = history.open; });
-  const unseenHistory = resolvedItems.filter((i) => !i.acknowledgments.length).length;
-  history.append(el("summary", `Resolved history · ${resolvedItems.length}`
-    + (unseenHistory ? ` · ${unseenHistory} unacknowledged` : "")));
-  for (const incident of [...(data.incidents || []), ...(data.resolved_incidents || [])]) {
+  if (open) target.append(el("h3", `Open incidents · ${open}`, "incident-group-title"));
+  for (const incident of active) {
     const p = incident.projection;
-    const resolved = p.processing_state === "resolved";
     const acknowledged = incident.acknowledgments.length > 0;
-    const item = el("article", undefined, `incident incident--${resolved ? "resolved" : "open"}`);
+    const item = el("article", undefined, "incident incident--open");
     item.dataset.processingState = p.processing_state;
     item.dataset.acknowledgment = acknowledged ? "acknowledged" : "unacknowledged";
     const badges = el("div", undefined, "incident-status");
-    badges.append(el("span", resolved ? "✓ Resolved" : "! Open", `incident-badge incident-badge--${resolved ? "resolved" : "open"}`),
+    badges.append(el("span", "! Open", "incident-badge incident-badge--open"),
       el("span", acknowledged ? "Acknowledged" : "Unacknowledged", "incident-badge"));
     // Legacy HMK producer IDs remain valid after the DMK project rename.
     const source = /^(hmk|dmk)-/.test(p.producer_id) ? "DMK (Memory)" : p.producer_id;
-    const trailSymbol = !resolved && !acknowledged ? ({critical:"🔴",error:"🔴",warning:"🟠",info:"🔵"}[p.severity] || "") : "";
+    const trailSymbol = !acknowledged ? ({critical:"🔴",error:"🔴",warning:"🟠",info:"🔵"}[p.severity] || "") : "";
     item.append(badges, el("h3", `${trailSymbol ? trailSymbol + " " : ""}${source} · ${p.phase}`),
       el("p", `Reported by: ${p.producer_id} · Resource: ${p.resource_ref || "Unspecified"}`, "note"),
-      el("p", p.summary), el("p", p.processing_state === "resolved" ? `Previous action: ${p.action}` : p.action));
+      el("p", p.summary), el("p", p.action));
     const dates = el("p", undefined, "note incident-dates");
     const appendDate = (label, seconds) => {
       const date = new Date(seconds * 1000);
@@ -475,28 +470,24 @@ function alerts(data) {
         const modeGeneration = conversationAlertsGeneration;
         try {
           const acknowledgment = await api("alerts/acknowledge", {producer_id:p.producer_id, incident_id:p.incident_id, request_id:requestId});
-          if (conversationMode || modeGeneration !== conversationAlertsGeneration) return;
+          if (conversationMode || modeGeneration !== conversationAlertsGeneration || version !== alertRenderVersion) return;
           button.textContent = "Acknowledged";
           // Reflect confirmed acceptance immediately; polling supplies durable state.
           const accepted = (items) => (items || []).map((i) => i === incident
             ? {...i, acknowledgments:[acknowledgment]} : i);
-          alerts({...data, incidents:accepted(data.incidents), resolved_incidents:accepted(data.resolved_incidents)});
+          alerts({...data, incidents:accepted(active)});
         } catch (e) {
-          if (conversationMode || modeGeneration !== conversationAlertsGeneration) return;
+          if (conversationMode || modeGeneration !== conversationAlertsGeneration || version !== alertRenderVersion) return;
           $("#alerts-state").textContent = e.message; button.disabled = false;
         }
       });
       item.append(button);
     }
-    (resolved ? history : target).append(item);
+    target.append(item);
   }
-  if (!data.incidents?.length && data.state === "available") target.append(el("p", "No open incidents reported in this receiving scope."));
+  if (!open && !hasUnverified && data.state === "available") target.append(el("p", "No open incidents reported in this receiving scope."));
   if (data.truncated) target.append(el("p", "Partial view: more incidents exist in this receiving scope.", "note"));
-  if (data.history_truncated) history.append(el("p", "Resolved history is partial; open incidents are listed separately.", "note"));
-  if (resolvedItems.length || data.history_truncated) target.append(history);
-  const uncertain = (data.local_deliveries || []).filter((d) =>
-    ["uncertain", "failed"].includes(d.outcome) || d.state === "claim_unconfirmed").length;
-  if (uncertain) target.append(el("p", `${uncertain} recent delivery attempt(s) failed or unconfirmed. No automatic resend.`, "note"));
+
 }
 function closeConversationAlerts() {
   const section=$("#operations");section.open=false;

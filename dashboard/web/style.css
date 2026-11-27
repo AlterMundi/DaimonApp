@@ -413,13 +413,9 @@ dialog::backdrop {
 .incident-group-title { font-size: 15px; color: var(--muted); margin: 12px 0; }
 .incident { padding-inline: 10px; margin-block: 10px; border-radius: 6px; }
 .incident--open { border-inline-start: 3px solid var(--warn); background: color-mix(in srgb,var(--warn) 6%,transparent); }
-.incident--resolved { border-inline-start: 3px solid var(--good); }
 .incident-status { display: flex; flex-wrap: wrap; gap: 6px; }
 .incident-badge { font-size: 13px; font-weight: 700; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; }
 .incident-badge--open { color: var(--warn); border-color: var(--warn); }
-.incident-badge--resolved { color: var(--good); border-color: var(--good); }
-.incident-history { border-top: 1px solid var(--line); margin-block-start: 12px; }
-.incident-history > summary { color: var(--muted); font-size: 15px; }
 
 .header-tools { display:flex;align-items:center;gap:8px;min-width:0; }
 .header-tools #provider { max-width:120px; }

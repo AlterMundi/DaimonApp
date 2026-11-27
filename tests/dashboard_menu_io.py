@@ -12,7 +12,7 @@ from dashboard.private_state import read_json
 
 def view(severity=None):
     return dict(state='available', observer_state='healthy', incidents=[] if severity is None else [
-        {'projection':{'severity':severity,'processing_state':'open'},'acknowledgments':[]}])
+        {'projection':{'severity':severity,'processing_state':'open','summary':'Check condition'},'freshness':'fresh','acknowledgments':[]}])
 
 
 class MenuTests(unittest.TestCase):
@@ -36,6 +36,11 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(attention(v), 'clear')
         self.assertEqual(attention(dict(view(), state='unavailable')), 'unknown')
         self.assertEqual(attention(dict(view(), truncated=True)), 'unknown')
+        v = view('critical')
+        v['incidents'][0]['freshness'] = 'stale'
+        from dashboard.menu_attention import attention_projection
+        projected = attention_projection(v)
+        self.assertEqual((projected['level'], projected['count'], projected['summaries']), ('unknown', 0, []))
 
     def test_menu_target_preservation_throttle_rollback_and_external_change(self):
         with tempfile.TemporaryDirectory() as tmp:
