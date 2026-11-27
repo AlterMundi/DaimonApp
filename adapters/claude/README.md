@@ -408,6 +408,16 @@ Synthetic owner-route tests cover durable sequencing and repeat requests after
 restart. Live Matrix credentials, provider inference, native session recovery,
 signed reply delivery and human readback require receiving evidence.
 
+When updating either Gateway or the adapter, qualify the exact worker command
+and profile selected by the candidate configuration, including when the
+Gateway executable itself is unchanged. Gateway configuration preflight
+does not start the native worker. For a paired topic with Matrix messaging
+enabled, run the selected worker with the retained native session, body, and
+workspace, then deny the submission decision. Require the expected session
+and scope on `prepare_submission` and a `not_submitted` outcome. This checks
+the live OAuth account and MCP inventory before switching versions and catches
+an older worker that cannot parse the selected messaging profile.
+
 ### Signed interop with the native SDK
 
 Use the pinned Matrix checkout's `src` and repository root in `PYTHONPATH`.
