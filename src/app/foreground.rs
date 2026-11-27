@@ -495,9 +495,8 @@ pub(super) async fn run_routed_portable(
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
-    let human_authored = store
-        .interaction_author(&input.id, input.human_id)?
-        .is_none();
+    let author = store.interaction_author(&input.id, input.human_id)?;
+    let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
     anyhow::ensure!(
