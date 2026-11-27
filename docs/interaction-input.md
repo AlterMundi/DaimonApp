@@ -450,6 +450,18 @@ routing/steering path; see [selected visual context](interaction-visual.md).
 The optional browser selector captures a point in immutable evidence and does
 not open a camera or introduce another conversation owner.
 
+### Workflow admission at capacity
+
+A conversation can retain up to 32 active, unexpired workflow plans. This
+counts plans, including deferred steps. Worker concurrency, native execution
+bounds and heartbeat resource allowances remain independently enforced. The
+journal still retains at most 256 workflows. A full
+active set returns `workflow_active_capacity` and `admitted: false`. The
+refused declaration creates neither a workflow nor a native instruction. Finish
+only workflows whose current results have been incorporated. After a slot
+opens, reuse the same original, request ID and plan. Accepted originals and
+uncertain transmissions keep their existing receipts and must not be replayed.
+
 ### Routing monitor
 
 In Sessions → Interaction, open **Routing monitor · your inputs and destinations**
