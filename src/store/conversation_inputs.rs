@@ -2314,8 +2314,35 @@ impl Store {
         id: &str,
         event: ConversationInputEvent,
     ) -> Result<ConversationInput> {
+        self.conversation_input_event_with_parent(human, id, event, None)
+    }
+
+    pub(crate) fn conversation_direct_input_accepted(
+        &self,
+        human: i64,
+        id: &str,
+        local: i64,
+        key: SessionKey,
+        physical: &str,
+        bot: i64,
+    ) -> Result<ConversationInput> {
+        self.conversation_input_event_with_parent(
+            human,
+            id,
+            ConversationInputEvent::Accepted { local_turn: local },
+            Some((key, physical, bot)),
+        )
+    }
+
+    fn conversation_input_event_with_parent(
+        &self,
+        human: i64,
+        id: &str,
+        event: ConversationInputEvent,
+        parent: Option<(SessionKey, &str, i64)>,
+    ) -> Result<ConversationInput> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
+        let mut tx = conn.transaction()?;
         let input = read_on(&tx, id, human)?;
         if let ConversationInputEvent::Accepted { local_turn } = event
             && matches!(
@@ -2377,6 +2404,17 @@ impl Store {
         let updated = read_on(&tx, id, human)?;
         if phase == "accepted" {
             super::topic_publications::conversation_accepted_on(&tx, &updated)?;
+            if let (Some(local), Some((key, physical, bot))) = (local, parent) {
+                self.retain_direct_parent(
+                    &mut tx,
+                    key,
+                    human,
+                    local,
+                    physical,
+                    &format!("conversation:{id}"),
+                    bot,
+                )?;
+            }
         }
         tx.commit()?;
         Ok(updated)

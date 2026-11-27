@@ -251,10 +251,53 @@ impl Store {
         Ok(())
     }
 
-    /// Observe a direct original at its native acceptance boundary. This enrolls
-    /// no conversation and queues no native input or public presentation.
-    pub fn interaction_record_direct_parent(
+    /// Retain the accepted Telegram input and its eligible coordination parent
+    /// within the same journal transaction. The ordinary input receipt survives
+    /// ineligible provenance and isolated coordination metadata failures.
+    pub(crate) fn native_direct_input_receipt(
         &self,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let mut tx = conn.transaction()?;
+        super::native_recovery::input_receipt_on(&tx, local, Some(client), physical)?;
+        self.retain_direct_parent(&mut tx, caller, human, local, physical, client, bot)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn retain_direct_parent(
+        &self,
+        tx: &mut rusqlite::Transaction<'_>,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        let savepoint = tx.savepoint()?;
+        match self.record_direct_parent_on(&savepoint, caller, human, local, physical, client, bot)
+        {
+            Ok(()) => savepoint.commit()?,
+            Err(error) => {
+                tracing::warn!(%error, local, "Could not retain direct dependency parent");
+                savepoint.finish()?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_direct_parent_on(
+        &self,
+        tx: &Connection,
         caller: SessionKey,
         human: i64,
         local: i64,
@@ -264,8 +307,6 @@ impl Store {
     ) -> Result<()> {
         use crate::interaction::{ReturnRoute, TransportPhase};
 
-        let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
         let binding: Option<(i64, String)> = tx
             .query_row(
                 "SELECT s.id,s.codex_thread_id FROM sessions s
@@ -283,12 +324,12 @@ impl Store {
             return Ok(());
         };
         if physical.is_empty()
-            || super::stopping::fenced_on(&tx, caller)?
-            || super::maintenance_writer_held_on(&tx, caller)?
+            || super::stopping::fenced_on(tx, caller)?
+            || super::maintenance_writer_held_on(tx, caller)?
         {
             return Ok(());
         }
-        let epoch = current_epoch(&tx, human)?;
+        let epoch = current_epoch(tx, human)?;
         let mut source = SourceInput {
             telegram_files: vec![],
             tribu_source: None,
@@ -332,10 +373,12 @@ impl Store {
                     .from
                     .as_ref()
                     .is_none_or(|user| user.id != human || user.is_bot)
+                || !(original.direct_human_text
+                    || (original.direct_human_attachment && message.voice.is_some()))
             {
                 return Ok(());
             }
-            let Ok((text, transcription)) = super::voice::content_on(&tx, &original, human) else {
+            let Ok((text, transcription)) = super::voice::content_on(tx, &original, human) else {
                 // Attachment-only direct messages have no text authority.
                 return Ok(());
             };
@@ -346,7 +389,7 @@ impl Store {
             source.text = text;
             source.transcription = transcription;
         } else if let Some(id) = client.strip_prefix("conversation:") {
-            let input = super::conversation_inputs::read_on(&tx, id, human)?;
+            let input = super::conversation_inputs::read_on(tx, id, human)?;
             if input.entry != caller
                 || input.session != session
                 || input.native != native
@@ -359,7 +402,7 @@ impl Store {
             {
                 return Ok(());
             }
-            super::conversation_inputs::eligible_on(&tx, &input)?;
+            super::conversation_inputs::eligible_on(tx, &input)?;
             source.event_id = input.id;
             source.text = input.text;
             source.transcription = input.voice.and_then(|voice| voice.transcription);
@@ -370,12 +413,12 @@ impl Store {
             return Ok(());
         }
         let (mut parent, fresh) =
-            super::interaction::retain_direct_parent_on(&tx, &source, caller, &self.instance_id)?;
+            super::interaction::retain_direct_parent_on(tx, &source, caller, &self.instance_id)?;
         if fresh {
             parent.phase = TransportPhase::Accepted;
             parent.local_turn = Some(local);
             parent.native_turn = Some(physical.into());
-            save_epoch(&tx, &mut parent, &epoch)?;
+            save_epoch(tx, &mut parent, &epoch)?;
             tx.execute(
                 "UPDATE interaction_instructions SET phase='accepted' WHERE id=?1",
                 [&parent.id],
@@ -385,7 +428,6 @@ impl Store {
                 [&parent.id],
             )?;
         }
-        tx.commit()?;
         Ok(())
     }
 

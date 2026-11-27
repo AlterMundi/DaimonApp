@@ -21,34 +21,6 @@ struct SendArgs {
     report_to_topic: bool,
 }
 
-pub(super) fn record_direct_parent(
-    shared: &AppShared,
-    caller: SessionKey,
-    human: i64,
-    local: i64,
-    physical: &str,
-    client: &str,
-) {
-    if shared
-        .config
-        .interaction
-        .as_ref()
-        .is_some_and(|profile| profile.human_id == human)
-        && super::routing::enrolled(shared, caller)
-        && let Err(error) = shared.store.interaction_record_direct_parent(
-            caller,
-            human,
-            local,
-            physical,
-            client,
-            shared.bot_id,
-        )
-    {
-        // A missing coordination reference must never fail accepted human input.
-        tracing::warn!(%error, local, "Could not retain direct dependency parent");
-    }
-}
-
 pub(super) fn tool_call(
     app: App,
     key: SessionKey,

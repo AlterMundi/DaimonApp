@@ -1028,12 +1028,20 @@ pub(super) async fn process_turn(
                                     shared.store.workflow_native_outcome_attempt(id,attempt,"accepted",Some(&native_id))?;
                                     return Ok(CodexEventOutcome::None);
                                 }
-                                shared.store.native_input_receipt(turn_id,Some(&client_id),&native_id)?;
-                                if let Some(id)=client_id.strip_prefix("conversation:") {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;}
+                                if local_work_session && client_id.starts_with("telegram:") {
+                                    shared.store.native_direct_input_receipt(session_key,requester_user_id,turn_id,&native_id,&client_id,shared.bot_id)?;
+                                } else {
+                                    shared.store.native_input_receipt(turn_id,Some(&client_id),&native_id)?;
+                                }
+                                if let Some(id)=client_id.strip_prefix("conversation:") {
+                                    if local_work_session {
+                                        shared.store.conversation_direct_input_accepted(requester_user_id,id,turn_id,session_key,&native_id,shared.bot_id)?;
+                                    } else {
+                                        shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;
+                                    }
+                                }
                                 if shared.store.interaction_instruction(&client_id,requester_user_id)?.is_some() {
                                     shared.store.interaction_transport(&client_id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;
-                                } else if local_work_session {
-                                    super::session_requests::record_direct_parent(&shared,session_key,requester_user_id,turn_id,&native_id,&client_id);
                                 }
                                 super::topic_publications::wake(shared.clone(),session_key);
                                 Ok(CodexEventOutcome::None)
@@ -1043,12 +1051,19 @@ pub(super) async fn process_turn(
                                     shared.store.workflow_native_outcome_attempt(id,attempt,"accepted",Some(&native_id))?;
                                     if let Some(thread)=conversation_native.as_deref() {let _=shared.store.start_response_draft(requester_user_id,session_key,turn_id,thread,&native_id);}
                                 }
-                                shared.store.native_input_receipt(turn_id,None,&native_id)?;
-                                if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;}
-                                if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
-                                else if direct_parent_start && let Some(client)=client_message_id.as_deref() {
-                                    super::session_requests::record_direct_parent(&shared,session_key,requester_user_id,turn_id,&native_id,client);
+                                if direct_parent_start && let Some(client)=client_message_id.as_deref().filter(|id|id.starts_with("telegram:")) {
+                                    shared.store.native_direct_input_receipt(session_key,requester_user_id,turn_id,&native_id,client,shared.bot_id)?;
+                                } else {
+                                    shared.store.native_input_receipt(turn_id,None,&native_id)?;
                                 }
+                                if let Some(id)=conversation_input.as_deref() {
+                                    if direct_parent_start {
+                                        shared.store.conversation_direct_input_accepted(requester_user_id,id,turn_id,session_key,&native_id,shared.bot_id)?;
+                                    } else {
+                                        shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;
+                                    }
+                                }
+                                if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
                                 if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
 
                                 shared.store.merge_input_accepted(turn_id,&native_id)?;
