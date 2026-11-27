@@ -194,6 +194,43 @@ pub(super) fn recover_on(conn: &Connection, writer: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn claude_quoted_seed_on(
+    conn: &Connection,
+    original: &super::ConversationInput,
+    reference: &super::conversation_routing::ConversationReply,
+    target: SessionKey,
+) -> Result<Option<Value>> {
+    if !reference.source.starts_with("delivery:") {
+        return Ok(None);
+    }
+    let Some(source) =
+        super::presentation::source_on(conn, original.human, original.entry, &reference.source)?
+    else {
+        return Ok(None);
+    };
+    let Some(assistant) = source["text"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    // An older captured input may have only a presentation revision. A
+    // capture-time text digest survives status changes without substituting text.
+    let same_original = match original.reply_text_sha256.as_deref() {
+        Some(hash) => source["text_sha256"].as_str() == Some(hash),
+        None => !reference.context_only && source["revision"] == reference.revision,
+    };
+    if !same_original || source["kind"] != "worker_result" || source["target"] != json!(target) {
+        return Ok(None);
+    }
+    let seed = json!({
+        "source":reference.source,
+        "revision":reference.revision,
+        "assistant":assistant
+    });
+    Ok((serde_json::to_vec(&seed)?.len() <= 12 * 1024).then_some(seed))
+}
+
 fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
     let exchange: Option<(i64, String, String)> = conn.query_row(
         "SELECT prior.id,json_extract(source.doc,'$.text'),result.body
@@ -356,8 +393,23 @@ impl Store {
         Ok(valid)
     }
 
-    /// Select the most recent completed paired exchange for a fresh Claude
-    /// thread. The source is the retained original, not the composed prompt.
+    pub(crate) fn routed_claude_preserves_quote(&self, source: &SourceInput) -> Result<bool> {
+        if source.channel != "conversation" {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let original =
+            super::conversation_inputs::read_on(&conn, &source.event_id, source.human_id)?;
+        Ok(original.paired_actor
+            && !original.retired
+            && original.reply.as_ref().is_some_and(|reference| {
+                reference.source.starts_with("delivery:")
+                    && (!reference.context_only || original.reply_text_sha256.is_some())
+            }))
+    }
+
+    /// Recover an exact quoted result, or the last completed paired exchange
+    /// when the current input did not quote a specific message.
     pub(crate) fn routed_claude_history_seed(
         &self,
         input: &Instruction,
@@ -366,18 +418,27 @@ impl Store {
     ) -> Result<Option<Value>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let source = super::routing::source_on(&conn, &input.id, input.human_id)?;
-        // An explicitly quoted message needs its own exact source, never the
-        // latest exchange as a substitute. A session choice is only routing.
-        let implicit: bool = if source.channel == "conversation" {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM conversation_inputs original
-                 WHERE original.id=?1 AND original.human_id=?2 AND original.retired=0
-                 AND json_extract(original.doc,'$.paired_actor')=1
-                 AND (json_extract(original.doc,'$.reply.source') IS NULL
-                      OR json_extract(original.doc,'$.reply.source') LIKE 'session:%'))",
-                params![source.event_id, input.human_id],
-                |row| row.get(0),
-            )?
+        let implicit = if source.channel == "conversation" {
+            let original =
+                super::conversation_inputs::read_on(&conn, &source.event_id, input.human_id)?;
+            if original.retired || !original.paired_actor {
+                return Ok(None);
+            }
+            if let Some(reference) = original
+                .reply
+                .as_ref()
+                .filter(|reference| !reference.source.starts_with("session:"))
+            {
+                let quote = claude_quoted_seed_on(&conn, &original, reference, input.target)?;
+                anyhow::ensure!(
+                    !reference.source.starts_with("delivery:")
+                        || reference.context_only
+                        || quote.is_some(),
+                    "The selected conversation reply is unavailable; original retained without submission"
+                );
+                return Ok(quote);
+            }
+            true
         } else if let Some(update) = source.update_id {
             conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM incoming_updates WHERE update_id=?1
@@ -401,6 +462,7 @@ impl Store {
         body: &Value,
         prepared: &Value,
         paired_host_access: bool,
+        history_seed: Option<&Value>,
     ) -> Result<bool> {
         let harness = input
             .target_execution
@@ -447,6 +509,23 @@ impl Store {
             && !super::session_requests::paired_request_parent_on(&tx, &current)?
         {
             return Ok(false);
+        }
+        if let Some(quote) = history_seed.filter(|seed| seed["source"].is_string()) {
+            let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
+            let original =
+                super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
+            let Some(reference) = original.reply.as_ref() else {
+                return Ok(false);
+            };
+            if harness != Harness::Claude
+                || !paired_host_access
+                || original.retired
+                || !original.paired_actor
+                || claude_quoted_seed_on(&tx, &original, reference, current.target)?.as_ref()
+                    != Some(quote)
+            {
+                return Ok(false);
+            }
         }
         let changed = tx.execute("UPDATE turns SET native_thread_id=?1,execution_native_scope=?2,execution_body=?3
             WHERE id=?4 AND status='running' AND execution_harness=?5 AND native_thread_id IS NULL
