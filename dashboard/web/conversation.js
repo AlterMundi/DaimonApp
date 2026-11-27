@@ -390,14 +390,10 @@ window.Conversation = (() => {
         else $("#conversation-answers").append(responseDraft);
       }
     }
-    const historyTools=timeline?node("details",undefined,"conversation-history-menu"):undefined;
     if(timeline){
       timeline.hidden=false;
       $("#conversation-history").hidden=true;
-      $("#conversation-inputs-older").textContent="Earlier messages";
-      historyTools.id="conversation-history-menu";
-      historyTools.append(node("summary","History"),$("#conversation-inputs-older"),$("#conversation-older"),$("#conversation-telegram-older"));
-      $("#conversation-observation").append(historyTools);
+      $("#conversation-refresh").hidden=true;
     }
     function atTimelineEnd() {return !!timeline && !followingSpeech() && timeline.scrollHeight-timeline.scrollTop-timeline.clientHeight<80;}
     function arrangeTimelineReplies() {
@@ -583,28 +579,7 @@ window.Conversation = (() => {
       }
       throw Error("Complete message unavailable. Try again.");
     }
-    const foregroundCards=new Map();let foregroundBefore=0,foregroundNewest=0,foregroundReading=false;
-    const foregroundOlder=$("#conversation-foreground-older");foregroundOlder.hidden=true;
-    historyTools?.append(foregroundOlder);
-    const voiceHistoryPanel=node('section',undefined,'voice-history-controls');voiceHistoryPanel.hidden=true;voiceHistoryPanel.append(node('h3','Voice history'));(historyTools || $("#conversation-history")).append(voiceHistoryPanel);
-    const codexHistoryOlder=node('button','Earlier voice conversation');codexHistoryOlder.type='button';codexHistoryOlder.hidden=true;
-    const codexHistoryTools=node('div',undefined,'conversation-tools timeline-history');codexHistoryTools.hidden=true;
-    codexHistoryTools.dataset.timelineTime='-Infinity';codexHistoryTools.dataset.timelineKey='voice-history';
-    codexHistoryTools.append(codexHistoryOlder);voiceHistoryPanel.append(codexHistoryTools);let retryCodexHistoryOlder=false;
-    codexHistoryOlder.addEventListener('click',async()=>{
-      const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryCodexHistoryOlder;
-      try{await codexVoiceSession?.restoreHistory(older);}catch{}
-      finally{if(older&&timeline&&binding===selected){timeline.scrollTop=scroll+timeline.scrollHeight-height;headerBehavior?.syncScroll?.();}}
-    });
-    const publicHistoryOlder=node('button','Earlier voice conversation');publicHistoryOlder.type='button';publicHistoryOlder.hidden=true;
-    const publicHistoryTools=node('div',undefined,'conversation-tools timeline-history');publicHistoryTools.hidden=true;
-    publicHistoryTools.dataset.timelineTime='-Infinity';publicHistoryTools.dataset.timelineKey='voice-history-public';
-    publicHistoryTools.append(publicHistoryOlder);voiceHistoryPanel.append(publicHistoryTools);let retryPublicHistoryOlder=false;
-    publicHistoryOlder.addEventListener('click',async()=>{
-      const selected=binding,scroll=timeline?.scrollTop,height=timeline?.scrollHeight,older=retryPublicHistoryOlder;
-      try{await publicLiveSession?.restoreHistory(older,true);}catch{}
-      finally{if(older&&timeline&&binding===selected){timeline.scrollTop=scroll+timeline.scrollHeight-height;headerBehavior?.syncScroll?.();}}
-    });
+    const foregroundCards=new Map();let foregroundReading=false;
     function foregroundCard(value){
       if(!value||value.kind!=="voice_foreground"||value.speaker!=="assistant"||typeof value.text!=="string"||value.text.length>16384)return;
       const derived=value.derived_caption,caption=!!(derived?.draft===true&&typeof derived.parent_source==="string"&&derived.parent_source.length<=128);
@@ -618,14 +593,14 @@ window.Conversation = (() => {
       setReplyText(card.body,shown.text);card.status.textContent=approximate?"Recovered voice transcript — approximate; it may contain errors.":shown.closed&&!shown.text&&shown.generated_bytes>0?"Voice response — transcript unavailable.":shown.interrupted?"Speech interrupted. The text includes generated words you may not have heard.":shown.closed?"Assistant voice conversation.":"Speaking…";
       const observed=new Date((card.original||shown).observed_at*1000).toISOString();messageTime(card.time,observed);placeInTimeline(card.box,'foreground:'+key,observed);
     }
-    async function foregroundHistory(older=false){
+    async function foregroundHistory(){
       if(foregroundReading)return;foregroundReading=true;
-      try{const value=await api(`interaction/foreground?before=${older?foregroundBefore:0}`);const previousNewest=foregroundNewest;for(const item of value.items){foregroundCard(item);foregroundNewest=Math.max(foregroundNewest,item.cursor||0);}
-        if(older||!foregroundBefore||value.more&&value.before>previousNewest){foregroundBefore=value.before;foregroundOlder.hidden=!value.more;}}
-      catch(error){if(error.status===401||error.status===403)failed(error);}
+      try{
+        const value=await api("interaction/foreground?before=0");
+        for(const item of value.items)foregroundCard(item);
+      }catch(error){if(error.status===401||error.status===403)failed(error);}
       finally{foregroundReading=false;}
     }
-    foregroundOlder.addEventListener('click',()=>foregroundHistory(true));
     function copyButton(read){
       const button=node("button","Copy");button.type="button";button.className="message-copy";
       button.setAttribute("aria-label","Copy message text");button.setAttribute("aria-live","polite");
@@ -940,8 +915,8 @@ window.Conversation = (() => {
       composerNotice(phaseText(value),!!(value.subscription_limit || value.routing?.subscription_limit) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','claude_unconfirmed','claude_rejected','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     }
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
-    let posting = false, inputCursor = 0, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
-    let telegramCursor=0,telegramNewest=0,telegramLoaded=false,telegramReading=false;
+    let posting = false, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
+    let telegramNewest=0,telegramLoaded=false,telegramReading=false;
     const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
       : value.subscription_limit ? subscriptionLimitText(value.subscription_limit)
       : value.routing?.subscription_limit ? routeText(value.routing)
@@ -1070,15 +1045,14 @@ window.Conversation = (() => {
       voiceMode?.close();showResponseDraft();
       companion?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();timeline?.replaceChildren();
-      codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;voiceHistoryPanel.append(codexHistoryTools);
-      publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
-      foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
-      inputGeneration++; inputs.clear(); inputCursor = 0; inputNewest = 0; inputBinding = inputEntryBinding = undefined;
+      codexVoiceSession?.resetHistory?.();
+      publicLiveSession?.resetHistory?.();
+      foregroundCards.clear();
+      inputGeneration++; inputs.clear(); inputNewest = 0; inputBinding = inputEntryBinding = undefined;
       latestComposerId = undefined;syncComposerRecovery(); composerNotice("",false);clearFocus();routingChoices=[];
-      telegramCursor=0;telegramNewest=0;telegramLoaded=false;
+      telegramNewest=0;telegramLoaded=false;
       $("#conversation-inputs").replaceChildren();
-      $("#conversation-inputs-older").hidden = true;
-      $("#conversation-telegram-older").hidden=true;$("#conversation-telegram-state").textContent="";
+      $("#conversation-telegram-state").textContent="";
       sharedText?.reset();draft.disabled = true; send.disabled = true;
     }
     async function readTrace(card) {
@@ -1370,21 +1344,16 @@ window.Conversation = (() => {
       if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding);
       for (const value of result.items) inputCard(value, observation,value.native_binding_current===true?inputBinding:undefined);
       draftState?.observe(result.conversation_draft);
-      if (direction === "before" && remember) {
-        inputCursor = result.cursor || 0;
-        $("#conversation-inputs-older").hidden = !result.more;
-      }
       if (direction === "after" || (remember && !inputNewest)) inputNewest = Math.max(inputNewest, result.newest || 0);
       draft.disabled = readOnly; send.disabled = readOnly || posting;sharedText?.refresh();microphone?.syncControls?.();
       return result;
     }
-    async function telegramPage(before=0,direction="before",remember=true) {
+    async function telegramPage(before=0,direction="before") {
       const owned=inputGeneration,observation=++inputObservation;
       const result=await api(`interaction/telegram-inputs?before=${before}&direction=${direction}`);
       if(owned!==inputGeneration)return;
       if(result.binding!==binding || result.schema!=="telecodex.telegram-input-list/v1")throw new Error("Telegram observation binding changed");
       for(const value of result.items)inputCard(value,observation);
-      if(direction==="before" && remember){telegramCursor=result.cursor||0;$("#conversation-telegram-older").hidden=!result.more;}
       if(direction==="after" || !telegramLoaded)telegramNewest=Math.max(telegramNewest,result.newest||0);
       telegramLoaded=true;
       return result;
@@ -1396,19 +1365,14 @@ window.Conversation = (() => {
         if(!telegramLoaded)await telegramPage();
         else {
           let more=true;
-          for(let n=0;n<4 && more;n++){const page=await telegramPage(telegramNewest,"after",false);more=!!page?.more;if(n===3 && more)refreshAgain=true;}
-          if(owned===inputGeneration)await telegramPage(0,"before",false);
+          for(let n=0;n<4 && more;n++){const page=await telegramPage(telegramNewest,"after");more=!!page?.more;if(n===3 && more)refreshAgain=true;}
+          if(owned===inputGeneration)await telegramPage();
         }
         if(owned===inputGeneration)$("#conversation-telegram-state").textContent="Telegram and app/device inputs share the retained capture order. Historical inputs without that order are labelled separately.";
       }catch(e){if(owned===inputGeneration)$("#conversation-telegram-state").textContent="Telegram observation unavailable. Saved app/device inputs remain visible; nothing was resent.";if(e.status===401)failed(e);}
       finally{telegramReading=false;}
     }
     $("#conversation-sent").addEventListener("toggle",()=>refreshTelegram());
-    $("#conversation-telegram-older").addEventListener("click",async()=>{
-      const button=$("#conversation-telegram-older");button.disabled=true;
-      try{await telegramPage(telegramCursor);}catch(e){$("#conversation-telegram-state").textContent="Earlier Telegram inputs unavailable; nothing was resent.";if([401,403].includes(e.status))failed(e);}
-      finally{button.disabled=false;}
-    });
     draft.addEventListener("keydown", event => {
       if(event.key!=="Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey
         || event.isComposing || event.keyCode===229)return;
@@ -1487,12 +1451,6 @@ window.Conversation = (() => {
         if (e.status === 401 || e.status === 403) failed(e);
       } finally { finishTextPost(); }
     });
-    $("#conversation-inputs-older").addEventListener("click", async () => {
-      const button = $("#conversation-inputs-older"); button.disabled = true;
-      try { await inputPage(inputCursor); } catch (e) { failed(e); }
-      finally { button.disabled = false; }
-    });
-
     const audioElement = $("#conversation-audio");
     const mountedAudio = standalone && window.NativeSpeechAudio?.mount(audioElement) || audioElement;
     const audio = window.PcmSpeech?.mount(mountedAudio)||mountedAudio;
@@ -1613,7 +1571,7 @@ window.Conversation = (() => {
       selected.followed=true;
     }
     let enabled = false, ready = false, reading = false, binding, canListen = false, canStreamSpeech = false, canReportPlayback=false,canReportWordPosition=false,canLimitCaptureQuestions=false;
-    let newest = {delivery:0, native:0, matrix:0,inbox:0,responses:0,publications:0}, oldest = {delivery:0, native:0, matrix:0,inbox:0,responses:0,publications:0};
+    let newest = {delivery:0, native:0, matrix:0,inbox:0,responses:0,publications:0};
     let initialized = false, active, generation = 0, requestAbort, blobUrl, prefetched;
     function playerStatus() {
       if(nativeEnabled&&nativeVoiceSession?.active){
@@ -2125,7 +2083,7 @@ window.Conversation = (() => {
       if (binding && value.binding !== binding) {
         draftState?.bind();
         workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
-        newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}; oldest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
+        newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
         $("#conversation-answers").replaceChildren(); $("#conversation-results").replaceChildren();
       }
       if(standalone){
@@ -2198,10 +2156,6 @@ window.Conversation = (() => {
       showResponseDraft(value.response_draft);
       if(active?.auto && !audio.paused && !active.verifying)prefetchNext(active);
       for (const card of cards.values()) card.listen.hidden = !canListen || card.technicalVisibility;
-      if (direction === "before" && rememberHistory) {
-        oldest = value.cursor;
-        $("#conversation-older").hidden = !value.more;
-      }
       // Recent metadata may jump ahead of a backlog still being read forward.
       if (direction === "after" || (rememberHistory && !initialized)) {
         newest.delivery = Math.max(newest.delivery, value.newest.delivery);
@@ -2244,7 +2198,6 @@ window.Conversation = (() => {
       drainText();
       reading = true;questionRefreshPending=!readOnly;
       $("#conversation-refresh").disabled = true;
-      $("#conversation-older").disabled = true;
       try {
         const previousBinding=binding;
         if(previousBinding)void workspace?.refresh(previousBinding);
@@ -2289,14 +2242,14 @@ window.Conversation = (() => {
             }
           }
         }
-        $("#conversation-state").textContent = hostSurface&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
+        $("#conversation-state").textContent = (standalone||hostSurface)&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
           : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
         drainVoice();
       } catch (e) { failed(e); }
-      finally { reading = false; $("#conversation-refresh").disabled = false; $("#conversation-older").disabled = false;
+      finally { reading = false; $("#conversation-refresh").disabled = false;
         if(refreshAgain){refreshAgain=false;setTimeout(()=>refresh(true),0);}
       }
       await saved;
@@ -2601,14 +2554,6 @@ window.Conversation = (() => {
     $("#conversation-open").addEventListener("click", () => setMode(true));
     $("#conversation-back").addEventListener("click", () => setMode(false));
     $("#conversation-refresh").addEventListener("click", () => refresh(true));
-    $("#conversation-older").addEventListener("click", async () => {
-      if (reading) return;
-      reading = true;
-      $("#conversation-older").disabled = true;
-      try { await page(oldest, "before"); }
-      catch (e) { failed(e); }
-      finally { reading = false; $("#conversation-older").disabled = false; }
-    });
     document.addEventListener("visibilitychange", () => {
       if(document.hidden){if(!playbackAllowed())pause("hidden");return;}
       if(standalone && voiceEnabled && !voiceSuspended && enabled && ready){
@@ -2652,7 +2597,7 @@ window.Conversation = (() => {
     }
     telegram?.onEvent?.("deactivated", pause);
     telegram?.BackButton?.onClick?.(() => setMode(false));
-    if(standalone){$("#conversation-back").hidden=true;$("#conversation-telegram-older").hidden=true;}
+    if(standalone)$("#conversation-back").hidden=true;
     if(readOnly){document.body.classList.toggle("monitor-mode",true);$("#conversation-sent").open=true;}
     if(standalone&&!readOnly&&microphone)legacyVoiceSession=window.ContinuousConversation?.create({
       headers,getBinding:()=>binding,getQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,
@@ -2686,9 +2631,6 @@ window.Conversation = (() => {
     if(standalone&&!readOnly&&microphone)codexVoiceSession=window.CodexConversation?.create({
       headers,getBinding:()=>binding,
       onCaption:text=>voiceMode?.update({caption:text}),
-      onHistory:value=>{codexHistoryTools.hidden=codexHistoryOlder.hidden=!value.more&&!value.error;voiceHistoryPanel.hidden=codexHistoryTools.hidden&&publicHistoryTools.hidden;codexHistoryOlder.disabled=value.loading===true;
-        codexHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';
-        retryCodexHistoryOlder=value.error?value.older===true:true;},
       onItem:value=>{
         if(!value||!value.item||!['user','assistant'].includes(value.item.role)||typeof value.item.text!=='string'||value.item.text.length>16384)return;
         const key='codex:'+value.visit+':'+value.item.id;
@@ -2760,8 +2702,6 @@ window.Conversation = (() => {
       }
       publicLiveSession=window.PublicLiveConversation.create({headers,getBinding:()=>binding,getBackend:()=>voiceChoice==='gpt-live-native'?'native':undefined,
         onUsage:value=>{if(value.binding===binding)liveUsage?.observe(value);},
-        onHistory:value=>{publicHistoryTools.hidden=publicHistoryOlder.hidden=!value.more&&!value.error;voiceHistoryPanel.hidden=codexHistoryTools.hidden&&publicHistoryTools.hidden;publicHistoryOlder.disabled=value.loading===true;
-          publicHistoryOlder.textContent=value.error?'Retry voice history':'Earlier voice conversation';retryPublicHistoryOlder=value.error?value.older===true:true;},
         onCaption:text=>{if(isPublicLive()&&voiceMode?.active)voiceMode.update({caption:text});},
         onItem:value=>{speech=renderPublicTranscript([value],speech);},
         onHistoryItems:values=>{
