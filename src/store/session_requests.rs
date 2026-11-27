@@ -103,22 +103,86 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
             |r| r.get(0),
         )
         .optional()?;
-    Ok(matches!(
-        (author["kind"].as_str(), phase.as_deref()),
-        (Some("session_request"), Some("requested")) | (Some("session_result"), Some("returned"))
-    ))
+    if author["kind"] == "session_request" && phase.as_deref() == Some("requested") {
+        let parent: String = conn.query_row(
+            "SELECT parent_instruction FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+            params![call,human], |r| r.get(0),
+        )?;
+        let parent = instruction_on(conn, &parent, human)?;
+        return Ok(coordination_root_on(conn, human, &parent)?.is_some());
+    }
+    Ok(author["kind"] == "session_result" && phase.as_deref() == Some("returned"))
 }
 
-// The retained human parent can grant the recipient its paired host tools.
-// The helper remains session-authored and cannot itself become a parent.
+fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM turns t
+            JOIN sessions s ON s.id=t.session_id
+            JOIN conversation_entry_generations g ON g.session_id=s.id
+            WHERE t.id=?1 AND t.session_id=?2 AND t.native_thread_id=?3
+              AND t.execution_generation=g.generation AND s.force_fresh_thread=0
+              AND t.status IN ('running','completed'))",
+        params![
+            instruction.local_turn,
+            instruction.target_session,
+            instruction.native_thread
+        ],
+        |row| row.get(0),
+    )? && super::interaction::target_execution_allowed_on(conn, instruction)?)
+}
+
+pub(super) fn controller_parent_eligible_on(
+    conn: &Connection,
+    human: i64,
+    parent: &Instruction,
+) -> Result<bool> {
+    if author_on(conn, &parent.input_id)?.is_none() {
+        return Ok(true);
+    }
+    Ok(coordination_root_on(conn, human, parent)?.is_some()
+        && paired_request_parent_on(conn, parent)?)
+}
+
+// One local helper may coordinate onward under its original human instruction.
+fn coordination_root_on(
+    conn: &Connection,
+    human: i64,
+    parent: &Instruction,
+) -> Result<Option<Instruction>> {
+    let Some(author) = author_on(conn, &parent.input_id)? else {
+        return Ok(Some(parent.clone()));
+    };
+    if author["kind"] != "session_request" {
+        return Ok(None);
+    }
+    let root: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+         WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+         AND NOT EXISTS (SELECT 1 FROM interaction_session_withdrawals
+                         WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+            params![parent.id, human],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(root) = root else { return Ok(None) };
+    let root = instruction_on(conn, &root, human)?;
+    Ok((author_on(conn, &root.input_id)?.is_none()
+        && root.admission_epoch == parent.admission_epoch
+        && current_bound_turn_on(conn, &root)?
+        && current_bound_turn_on(conn, parent)?)
+    .then_some(root))
+}
+
+// Paired tools can be inherited only from the retained human source.
 pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
     let human = child.human_id;
     let parent: Option<String> = conn
         .query_row(
             "SELECT parent_instruction FROM interaction_session_requests
-             WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
-               AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
-                              WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+         WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+         AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
+                        WHERE parent_instruction=interaction_session_requests.parent_instruction)",
             params![child.id, human],
             |row| row.get(0),
         )
@@ -126,10 +190,11 @@ pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -
     let Some(parent) = parent else {
         return Ok(false);
     };
-    let parent = instruction_on(conn, &parent, human)?;
-    if parent.admission_epoch != child.admission_epoch
-        || author_on(conn, &parent.input_id)?.is_some()
-    {
+    let immediate = instruction_on(conn, &parent, human)?;
+    let Some(parent) = coordination_root_on(conn, human, &immediate)? else {
+        return Ok(false);
+    };
+    if parent.admission_epoch != child.admission_epoch {
         return Ok(false);
     }
     let source = super::routing::source_on(conn, &parent.id, human)?;
@@ -254,16 +319,24 @@ impl Store {
             || withdrawn
             || p.target != caller
             || p.native_thread.as_deref() != Some(native)
-            || author_on(&tx, &p.input_id)?.is_some()
         {
             return Err(anyhow!(
                 "Local request has no current accepted human parent"
             ));
         }
+        let root = coordination_root_on(&tx, human, &p)?
+            .context("Local coordination needs a current human original or its first helper")?;
+        let onward = root.id != p.id;
+        anyhow::ensure!(
+            !onward || target != root.target,
+            "An onward handoff cannot target its origin"
+        );
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,
         // independently of the interview model's output or role prompt.
-        if !interview_target_allowed_on(&tx, human, p.target_session, target)? {
+        if !interview_target_allowed_on(&tx, human, p.target_session, target)?
+            || (onward && !interview_target_allowed_on(&tx, human, root.target_session, target)?)
+        {
             return Err(anyhow!(
                 "An interview cannot activate its pinned source work"
             ));
@@ -322,8 +395,10 @@ impl Store {
             )
             .optional()?;
         let count: i64 = tx.query_row(
-            "SELECT count(*) FROM interaction_session_requests WHERE parent_instruction=?",
-            [parent],
+            "SELECT count(*) FROM interaction_session_requests
+             WHERE parent_instruction=?1 OR parent_instruction IN (
+                 SELECT target_instruction FROM interaction_session_requests WHERE parent_instruction=?1)",
+            [&root.id],
             |r| r.get(0),
         )?;
         if existing.is_none() && count >= 4 {
@@ -435,6 +510,12 @@ impl Store {
         session_requests_on(&conn, caller, human)
     }
 
+    pub(crate) fn interaction_session_parent_eligible(&self, id: &str, human: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let parent = instruction_on(&conn, id, human)?;
+        Ok(coordination_root_on(&conn, human, &parent)?.is_some())
+    }
+
     pub fn interaction_session_input_allowed(&self, id: &str, human: i64) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         session_input_allowed_on(&conn, id, human)
@@ -493,7 +574,7 @@ impl Store {
                 && !super::maintenance_writer_held_on(&tx, helper.target)?
                 && super::interaction::target_execution_allowed_on(&tx, &parent)?
                 && super::interaction::target_execution_allowed_on(&tx, &helper)?
-                && author_on(&tx, &parent.input_id)?.is_none()
+                && coordination_root_on(&tx, human, &parent)?.is_some()
                 && session_input_allowed_on(&tx, &helper.id, human)?
                 && helper.local_turn.is_none()
                 && helper.native_turn.is_none(),
@@ -620,6 +701,9 @@ impl Store {
         if !viable
             || (parent.phase != crate::interaction::TransportPhase::Accepted && !exposes_portable)
         {
+            return Ok(None);
+        }
+        if coordination_root_on(&tx, human, &parent)?.is_none() {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
@@ -1024,6 +1108,78 @@ mod tests {
             .unwrap();
         s.clear_session_conversation(a.key).unwrap();
         assert!(s.interaction_session_recover_unsent(100, &call.id).is_err());
+    }
+
+    #[test]
+    fn same_owner_coordination_can_continue_once_and_return_through_both_topics() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let a = setup(&s, 7);
+        let b = setup(&s, 8);
+        let c = setup(&s, 9);
+        let p = parent(&s, &a);
+        let closed = tokio_util::sync::CancellationToken::new();
+        let send =
+            |caller: &SessionRecord, turn: &str, parent: &Instruction, client: &str, target| {
+                s.interaction_session_request(
+                    caller.key,
+                    100,
+                    caller.codex_thread_id.as_deref().unwrap(),
+                    turn,
+                    &parent.id,
+                    client,
+                    target,
+                    "Attributed coordination",
+                    &closed,
+                )
+            };
+        let (_, first, _) = send(&a, "parent-turn", &p, "first", b.key).unwrap();
+        accept(&s, &b, &first, "first-turn");
+        assert!(send(&b, "first-turn", &first, "cycle", a.key).is_err());
+        let (_, second, _) = send(&b, "first-turn", &first, "onward", c.key).unwrap();
+        assert_eq!(
+            s.interaction_author(&second.id, 100).unwrap().unwrap()["parent_instruction"],
+            first.id
+        );
+        for client in ["third", "fourth"] {
+            assert!(send(&b, "first-turn", &first, client, c.key).is_ok());
+        }
+        assert!(send(&a, "parent-turn", &p, "exhausted", c.key).is_err());
+
+        let delivery = result(&s, &c, &second);
+        let second_turn = format!("helper-turn-{}", second.id);
+        assert!(send(&c, &second_turn, &second, "too-deep", a.key).is_err());
+        let returned = s
+            .interaction_session_return(&delivery.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(returned.target, b.key);
+        assert_eq!(returned.requests, first.requests);
+
+        let local = accept(&s, &b, &returned, "return-turn");
+        let text = format!(
+            "Coordinated result\n<daimon-result>{}</daimon-result>",
+            json!({"requests":first.requests,"covered":[first.id,returned.id],"completed":first.requests})
+        );
+        let delivery = s
+            .interaction_record_result(
+                &returned.id,
+                100,
+                local,
+                "native-8",
+                "return-turn",
+                "coordinated-result",
+                &text,
+                false,
+            )
+            .unwrap()
+            .remove(0);
+        let final_return = s
+            .interaction_session_return(&delivery.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(final_return.target, a.key);
+        assert_eq!(final_return.requests, p.requests);
     }
 
     #[test]

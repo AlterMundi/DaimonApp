@@ -1239,9 +1239,12 @@ the active queue. Under the existing owner authority, recover its frozen request
 with `daimon-gateway --control CONFIG input handoff-recover LOCAL_REQUEST_ID`.
 This resumes the same attributed handoff only while its original admission
 generation and target remain valid. An uncertain handoff is inspection-only.
-If a helper needs additional information from another topic, it can return
-what it needs so the original session can ask directly under its retained
-human instruction. The helper's session-authored input is not a new delegation.
+A helper can coordinate with one further topic through `session_request` using
+the active attributed instruction as its parent. Our general conversation uses
+`coordination_inputs` to discover that parent. This preserves session authorship,
+uses the same four-request budget as the original human instruction, and
+returns the result through each originating session. Looping back to the root,
+further chains and public topic reports are excluded from this continuation.
 
 Runtime context names the selected worker topic and instructs it to distinguish
 its task from integrator-only clauses in the unchanged human message. This is

@@ -504,7 +504,13 @@ pub(super) async fn run_routed_portable(
         request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
         "Routed worker attachments require a direct Claude turn"
     );
-    let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
+    // Paired local helpers can coordinate with the same controller. The store
+    // checks their attributed lineage and original human scope per operation.
+    let paired_work = human_authored
+        || author
+            .as_ref()
+            .is_some_and(|a| a["kind"] == "session_request");
+    let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
         .then_some(WorkerController {
             app,
             key: input.target,
