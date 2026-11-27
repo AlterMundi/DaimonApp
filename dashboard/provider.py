@@ -406,14 +406,13 @@ class Provider:
     def portable_session_runtime(self, selected):
         profile=self.receiver.get('interaction',{})
         portable_harnesses=('claude','antigravity','goose')
-        expected=next((row['harness'] for row in profile.get('targets',[])
+        expected=next((row.get('harness') for row in profile.get('targets',[])
                        if profile.get('chat_id')==selected['chat_id']
-                       and row.get('topic_id')==selected['thread_id']
-                       and row.get('harness') in portable_harnesses),None)
+                       and row.get('topic_id')==selected['thread_id']),None)
         try:
             receipt=self.presentation('input workspace')
         except ProviderUnavailable:
-            if expected:raise
+            if expected in portable_harnesses:raise
             return None
         key=f"{selected['chat_id']}:{selected['thread_id']}"
         portable=receipt.get('portable_status',{})
@@ -421,7 +420,7 @@ class Provider:
             raise ProviderUnavailable('Portable routing inventory changed')
         state=portable.get(key)
         if state is None:
-            if expected:raise ProviderUnavailable('Selected portable route unavailable')
+            if expected in portable_harnesses:raise ProviderUnavailable('Selected portable route unavailable')
             return None
         runtime=state.get('runtime') if isinstance(state,dict) else None
         harness=runtime.get('harness') if isinstance(runtime,dict) else None
