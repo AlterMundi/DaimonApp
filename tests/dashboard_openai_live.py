@@ -238,6 +238,37 @@ class DurableCreation(unittest.TestCase):
             self.visits.prepare(str(uuid.uuid4()),100,self.owner,backend_mode='native',replacement=offer)
         self.assertEqual(len(self.calls),1)
 
+    def test_replaced_transport_releases_only_future_source_space(self):
+        self.visits.max_total_bytes = 13 * 512 * 1024
+        self.visits.prepare(self.ident, 100, self.owner, backend_mode='native')
+        self.create()
+        heard = {'type': 'session.output_transcript.delta', 'event_id': 'old-avatar-output',
+                 'delta': 'Retained test fragment', 'start_ms': 0, 'end_ms': 1}
+        self.visits.event(self.ident, 100, self.owner, heard)
+        source = self.root / (self.ident + '.events')
+        before = source.read_bytes()
+        self.visits.end_capture(self.ident, 100, self.owner['binding'])
+        successor = str(uuid.uuid4())
+        self.visits.prepare(successor, 100, self.owner, backend_mode='native',
+                            replacement=self.visits.replacement_offer(100, self.owner))
+        records, other = self.visits._records()
+        self.assertEqual(self.visits._charged(records, other), 2 * 2359296)
+        self.create(ident=successor)
+        records, other = self.visits._records()
+        self.assertEqual(self.visits._charged(records, other), 2359296 + 262144 + len(before))
+        old = self.visits.read(self.ident, 100, self.owner)
+        self.assertEqual(old['state'], 'created')
+        self.assertNotIn('finalization', old)
+        with self.assertRaisesRegex(ValueError, 'no longer accepts source events'):
+            self.visits.event(self.ident, 100, self.owner, {**heard, 'event_id': 'late-output'})
+        self.assertEqual(source.read_bytes(), before)
+        self.visits.end_capture(successor, 100, self.owner['binding'])
+        self.visits.prepare(str(uuid.uuid4()), 100, self.owner, backend_mode='native',
+                            replacement=self.visits.replacement_offer(100, self.owner))
+        self.assertEqual(len(self.calls), 2)
+        self.closed(usage=21)
+        self.assertEqual(self.visits.read(self.ident, 100, self.owner)['finalization']['usage_seconds'], 21)
+
     def test_review_never_waives_live_capture_unknown_creation_other_owner_or_changed_snapshot(self):
         self.visits.prepare(self.ident,100,self.owner,backend_mode='native');self.create()
         self.assertIsNone(self.visits.replacement_offer(100,self.owner))

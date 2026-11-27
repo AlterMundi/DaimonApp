@@ -1560,6 +1560,12 @@ The current visit starts reading for results once it observes an eligible
 native work receipt. Original recordings, transcripts and delivered native
 work remain readable.
 
+The startup window reserves space for the newest retained Conversation input
+before filling the remainder with recent results. A long intervening progress
+update can keep its exact source reference without displacing that input.
+Sources in the resulting window remain in observation order with capture
+coordinates for originals.
+
 The GPT-Live WebRTC data channel supplies immediate local Avatar captions.
 The authenticated sideband still retains the canonical transcript deltas and
 forwards them to the Conversation timeline. Its captions cover clients before
@@ -1713,6 +1719,25 @@ newer visit from another window does not replace that transcript. Retry reads
 the same failed visit; incomplete snapshots and changed owners stay out of
 Conversation. Ordinary earlier-history paging keeps its own cursor.
 
+
+### Storage reserved by replaced transports
+
+An ended native Live visit with an exact same-owner successor and a confirmed
+successor provider call releases its unused source-event reservation. The old
+source file remains read-only, its actual bytes still count against the store,
+and its receipt retains space for native work and late trusted final usage.
+An incomplete replacement or unconfirmed successor creation retains the full
+reservation. This accounting does not close either provider session, change
+the storage bounds, or delete source material.
+
+The Dashboard and native Gateway limit unfinished context to 64 and retained
+context to 512 records in each store. The Gateway still enforces its existing
+per-document and total byte budgets. A closed producer remains available for exact
+readback and uses only the retained-history allowance. Late caption recovery
+must acquire unfinished capacity before reopening context delivery. At the total
+bound the existing refusal preserves originals and requires retention maintenance.
+
+### Browser departure after an explicit close
 
 An authenticated explicit close retains its existing 30-second provider drain
 if the browser disconnects or a close notification cannot reach it. The server

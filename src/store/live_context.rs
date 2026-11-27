@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
 const MAX_TOTAL: usize = 64 * 1024 * 1024;
-const MAX_DIALOGUES: usize = 64;
+const MAX_UNFINISHED_DIALOGUES: usize = 64;
+const MAX_RETAINED_DIALOGUES: usize = 512;
 const MAX_SOURCES: usize = 4096;
 const PAGE: usize = 8000;
 const INLINE: usize = 16000;
@@ -646,9 +647,19 @@ fn save(conn: &Connection, p: &Projection) -> Result<()> {
         [&p.dialogue], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
     if reserved_bytes > MAX_DOCUMENT
         || total - previous + reserved_bytes > MAX_TOTAL
-        || count + usize::from(previous == 0) > MAX_DIALOGUES
+        || count + usize::from(previous == 0) > MAX_RETAINED_DIALOGUES
     {
         bail!("Live context retention full; preserve originals and review before continuing");
+    }
+    if previous == 0 {
+        let unfinished: usize = conn.query_row(
+            "SELECT count(*) FROM live_context WHERE json_extract(doc,'$.closed') IS NOT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        if unfinished >= MAX_UNFINISHED_DIALOGUES {
+            bail!("Unfinished Live contexts reached their bound; preserve originals");
+        }
     }
     conn.execute("INSERT INTO live_context(dialogue,human,chat,topic,doc,reserved_bytes) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(dialogue) DO UPDATE SET doc=excluded.doc,reserved_bytes=excluded.reserved_bytes",
         params![p.dialogue,p.human,p.entry.chat_id,p.entry.thread_id,raw,reserved_bytes])?;
@@ -2067,6 +2078,28 @@ mod tests {
                 "request_revision":basis["checkpoint_request"]["revision"],
                 "text":format!("Purpose and unresolved effects through {through}; originals remain authoritative.")})).unwrap()
         }
+    }
+
+    #[test]
+    fn closed_contexts_do_not_consume_unfinished_capacity() {
+        let f = Fixture::new();
+        f.call(json!({"action":"close","dialogue":f.dialogue,"generation":f.generation}))
+            .unwrap();
+        let open = |dialogue: &str, generation: &str| {
+            f.call(json!({"action":"open","dialogue":dialogue,"generation":generation,"binding":f.binding}))
+        };
+        for _ in 0..MAX_UNFINISHED_DIALOGUES {
+            let dialogue = Uuid::now_v7().to_string();
+            let generation = Uuid::now_v7().to_string();
+            open(&dialogue, &generation).unwrap();
+        }
+        let error = open(&Uuid::now_v7().to_string(), &Uuid::now_v7().to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Unfinished Live contexts reached their bound")
+        );
+        assert_eq!(f.read(false)["closed"], true);
     }
 
     #[test]

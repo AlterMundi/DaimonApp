@@ -459,6 +459,21 @@ class Context(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.provider.fresh),9)
         await p.close()
 
+    async def test_closed_context_records_do_not_consume_unfinished_capacity(self):
+        original=self.producer()
+        await original.open()
+        retained=original.record
+        await original.close()
+        with patch.object(NativeContext,'max_producers',1), patch.object(NativeContext,'max_retained_producers',2):
+            next_record=self.history.context_register(100,str(uuid.uuid4()),self.binding)
+            with self.assertRaisesRegex(ValueError,'Unfinished Live context producers'):
+                self.history.context_register(100,str(uuid.uuid4()),self.binding)
+            self.history.context_phase(next_record,'closed')
+            with self.assertRaisesRegex(ValueError,'producer retention'):
+                self.history.context_register(100,str(uuid.uuid4()),self.binding)
+        selected=self.history.context_resume_record(100,self.binding,retained['dialogue'])
+        self.assertEqual((selected['phase'],selected['generation']),('closed',retained['generation']))
+
     async def test_guidance_known_unsent_can_wait_but_unknown_send_never_replays(self):
         p=self.producer();await p.open()
         def guide():

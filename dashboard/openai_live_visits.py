@@ -125,20 +125,40 @@ class LiveCreations:
         if len(raw) > self.max_record_bytes:
             raise ValueError('Public Live creation receipt exceeds its bound')
         records, other_bytes = self._records()
+        by_id = {existing['id']: existing for existing, _ in records}
         charged = other_bytes
         for existing, size in records:
             if existing['id'] != value['id']:
-                charged += self._reserved(existing, size)
-        charged += self._reserved(value, len(raw))
+                charged += self._reserved(existing, size, by_id)
+        charged += self._reserved(value, len(raw), by_id)
         if charged + len(raw) > self.max_total_bytes:  # Include the temporary atomic write.
             raise ValueError('Public Live receipt storage is full')
         atomic(self._path(value['id']), raw)
 
-    def _reserved(self, value, size):
-        if value['state'] not in self.unsettled:return size
+    @staticmethod
+    def _replaced_transport(value, successor):
+        return (value['state'] == 'created' and value.get('backend_mode') == 'native'
+                and value.get('admission', {}).get('ended') is True
+                and successor is not None and successor.get('backend_mode') == 'native'
+                and successor.get('owner') == value['owner']
+                and successor.get('replaces') == value['id']
+                and successor['state'] in ('created', 'closed') and bool(successor.get('call')))
+
+    def _reserved(self, value, size, by_id):
+        if value['state'] not in self.unsettled:
+            return size
+        successor = by_id.get(value.get('replacement_review', {}).get('target'))
+        if self._replaced_transport(value, successor):
+            # Existing event bytes are already charged by _records(). Retain full
+            # receipt space for pending native work and late trusted final usage.
+            return self.max_record_bytes
         path = self.root / (value['id']+'.events')
         used = path.stat().st_size if path.exists() else 0
         return self.max_record_bytes + max(0, value.get('source_bound',0)-used)
+
+    def _charged(self, records, other_bytes):
+        by_id = {value['id']: value for value, _ in records}
+        return other_bytes + sum(self._reserved(value, size, by_id) for value, size in records)
 
     def read(self, ident, human, frozen):
         owner = self._owner(human, frozen)
@@ -291,7 +311,7 @@ class LiveCreations:
                 active=[v for v in active if v['id']!=reviewed['id']]
             if any(v['owner']['human'] == human for v in active) or len(active) >= self.max_active:
                 raise LiveUnavailable('prior_creation_needs_review')
-            charged = other + sum(self._reserved(v,size) for v,size in records)
+            charged = self._charged(records, other)
             if len(records) >= self.max_records or charged + 2*self.max_record_bytes + 2*1024*1024 > self.max_total_bytes:
                 raise LiveUnavailable('creation_storage_full')
             value = {'schema':'daimon.live-creation/v1', 'id':ident, 'owner':owner,
@@ -491,6 +511,9 @@ class LiveCreations:
                 value['latest_usage'] = event
                 self._write(value)
                 return True
+            review = value.get('replacement_review')
+            if review and self._replaced_transport(value, self._read(review['target'])):
+                raise ValueError('Replaced public Live transport no longer accepts source events')
             # Configuration snapshots can repeat trusted instructions. Retain
             # their source hash and identity, not another serialized context.
             stored = event
@@ -810,7 +833,7 @@ class LiveCreations:
                     raise LiveUnavailable('prior_creation_needs_review')
                 if len(active) >= self.max_active:
                     raise LiveUnavailable('public_voice_capacity')
-                charged = other_bytes + sum(self._reserved(v,size) for v,size in records)
+                charged = self._charged(records, other_bytes)
                 if len(records) >= self.max_records or charged + 2*self.max_record_bytes > self.max_total_bytes:
                     raise LiveUnavailable('creation_storage_full')
                 value = {'schema': 'daimon.live-creation/v1', 'id': ident, 'owner': owner,
