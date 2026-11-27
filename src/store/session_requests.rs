@@ -95,13 +95,21 @@ pub(super) fn later_completion_source_on(
              JOIN interaction_instructions i ON i.id=l.instruction_id
              JOIN turns later ON later.id=?2 AND later.session_id=i.session_id
              JOIN turns prior ON prior.id=json_extract(i.doc,'$.local_turn')
+             JOIN conversation_entry_generations generation ON generation.session_id=later.session_id
              WHERE c.human_id=?1 AND c.phase='requested' AND l.request_id=?4
                AND i.phase='accepted' AND prior.id<later.id AND prior.status='completed'
                AND prior.session_id=later.session_id AND prior.from_user_id=?1
                AND later.from_user_id=?1 AND later.native_thread_id=?3
+               AND later.execution_generation=generation.generation
                AND prior.execution_generation=later.execution_generation
                AND prior.execution_harness=later.execution_harness
                AND json_extract(i.doc,'$.native_thread')=?3
+               AND (later.execution_harness='codex' OR (
+                   prior.execution_native_scope=later.execution_native_scope
+                   AND json_extract(prior.execution_body,'$.beingRef')=json_extract(later.execution_body,'$.beingRef')
+                   AND json_extract(prior.execution_body,'$.embodimentId')=json_extract(later.execution_body,'$.embodimentId')
+                   AND json_extract(prior.execution_body,'$.incarnationId')=json_extract(later.execution_body,'$.incarnationId')
+               ))
                AND NOT EXISTS (
                    SELECT 1 FROM interaction_session_withdrawals w
                    WHERE w.parent_instruction=c.parent_instruction
@@ -121,11 +129,19 @@ pub(super) fn later_completion_source_on(
         return Ok(None);
     }
     let input = instruction_on(conn, &id, human)?;
+    let portable = input
+        .target_execution
+        .as_ref()
+        .is_some_and(|binding| binding.harness.is_portable());
     let (current, correction) = super::routing::freshness(conn, request, &coverage.covered, true)?;
     if !current
         || correction
         || input.admission_epoch.as_deref() != Some(current_epoch(conn, human)?.as_str())
-        || !super::interaction::target_execution_matches_on(conn, &input, Some(native))?
+        || !super::interaction::target_execution_matches_on(
+            conn,
+            &input,
+            (!portable).then_some(native),
+        )?
         || super::stopping::fenced_on(conn, input.target)?
         || super::maintenance_writer_held_on(conn, input.target)?
     {
@@ -1135,11 +1151,16 @@ mod tests {
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
         for paired in [false, true] {
-            check_portable_dependency(paired);
+            check_portable_dependency(paired, false);
         }
     }
 
-    fn check_portable_dependency(paired: bool) {
+    #[test]
+    fn a_later_claude_turn_must_keep_the_original_native_scope_to_return() {
+        check_portable_dependency(false, true);
+    }
+
+    fn check_portable_dependency(paired: bool, later: bool) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         let caller = setup(&store, 7);
@@ -1278,9 +1299,10 @@ mod tests {
         assert_eq!(host_access, paired);
         let native = Uuid::now_v7().to_string();
         let prepared = json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
+        let body = json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
         assert!(
             store
-                .expose_routed_portable(&delivered, local, &json!({}), &prepared, paired)
+                .expose_routed_portable(&delivered, local, &body, &prepared, paired)
                 .unwrap()
         );
         assert_eq!(
@@ -1309,6 +1331,62 @@ mod tests {
             "Worked on the rig\n<daimon-result>{}</daimon-result>",
             json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
         );
+        if later {
+            let partial = format!(
+                "Work remains open\n<daimon-result>{}</daimon-result>",
+                json!({"requests":delivered.requests, "covered":[delivered.id], "completed":[]})
+            );
+            let partial = store
+                .finish_routed_portable(
+                    &delivered,
+                    local,
+                    &json!({"phase":"completed","sessionId":native,"text":partial}),
+                )
+                .unwrap();
+            assert!(!partial[0].completed);
+            assert!(
+                store
+                    .interaction_session_return(&partial[0].id, 100)
+                    .unwrap()
+                    .is_none()
+            );
+            for (key, scope, allowed) in [("wrong-scope", "b", false), ("same-scope", "a", true)] {
+                let (_, next, _) = send(key, "Continue existing work", false).unwrap();
+                let (next_local, _) = begin(&next);
+                let selected =
+                    json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
+                assert!(
+                    store
+                        .expose_routed_portable(&next, next_local, &body, &selected, false)
+                        .unwrap()
+                );
+                let deliveries = store
+                    .finish_routed_portable(
+                        &next,
+                        next_local,
+                        &json!({"phase":"completed","sessionId":native,"text":text}),
+                    )
+                    .unwrap();
+                assert_eq!(deliveries.len(), usize::from(allowed));
+                if let Some(delivery) = deliveries.first() {
+                    assert_eq!(delivery.internal, Some(true));
+                    assert_eq!(delivery.request_id, delivered.id);
+                    assert!(
+                        store
+                            .interaction_session_return(&delivery.id, 100)
+                            .unwrap()
+                            .is_some()
+                    );
+                    assert!(
+                        store
+                            .interaction_session_return(&delivery.id, 100)
+                            .unwrap()
+                            .is_none()
+                    );
+                }
+            }
+            return;
+        }
         let deliveries = store
             .finish_routed_portable(
                 &delivered,

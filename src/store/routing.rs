@@ -312,6 +312,49 @@ pub(super) fn result_on(
     Ok(deliveries)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn later_completion_result_on(
+    tx: &Connection,
+    instance: &str,
+    human: i64,
+    local: i64,
+    thread: &str,
+    turn: &str,
+    item: &str,
+    text: &str,
+    capture_unlinked: bool,
+) -> Result<Vec<Delivery>> {
+    let mut root = None;
+    if let Some(claim) = worker_result(text).1 {
+        for request in &claim.completed {
+            root = super::session_requests::later_completion_source_on(
+                tx, human, local, thread, request, &claim,
+            )?;
+            if root.is_some() {
+                break;
+            }
+        }
+    }
+    if let Some(root) = root {
+        result_on(
+            tx, instance, &root.id, human, local, thread, turn, item, text, true, false,
+        )
+    } else {
+        if capture_unlinked {
+            super::interaction::record_native_message_on(
+                tx,
+                local,
+                thread,
+                turn,
+                item,
+                Some("final_answer"),
+                text,
+            )?;
+        }
+        Ok(Vec::new())
+    }
+}
+
 impl Store {
     /// An ordinary final can finish a specifically declared, still-open helper
     /// dependency without reopening the original native turn.
@@ -326,43 +369,17 @@ impl Store {
     ) -> Result<Vec<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let mut root = None;
-        if let Some(claim) = worker_result(text).1 {
-            for request in &claim.completed {
-                root = super::session_requests::later_completion_source_on(
-                    &tx, human, local, thread, request, &claim,
-                )?;
-                if root.is_some() {
-                    break;
-                }
-            }
-        }
-        let deliveries = if let Some(root) = root {
-            result_on(
-                &tx,
-                &self.instance_id,
-                &root.id,
-                human,
-                local,
-                thread,
-                turn,
-                item,
-                text,
-                true,
-                false,
-            )?
-        } else {
-            super::interaction::record_native_message_on(
-                &tx,
-                local,
-                thread,
-                turn,
-                item,
-                Some("final_answer"),
-                text,
-            )?;
-            Vec::new()
-        };
+        let deliveries = later_completion_result_on(
+            &tx,
+            &self.instance_id,
+            human,
+            local,
+            thread,
+            turn,
+            item,
+            text,
+            true,
+        )?;
         tx.commit()?;
         Ok(deliveries)
     }
