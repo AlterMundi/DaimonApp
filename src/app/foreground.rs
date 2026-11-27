@@ -696,7 +696,7 @@ pub(super) async fn run_portable_turn(
                 resume: resume.as_slice(),
                 human_original: true,
                 native_goal_command: input.paired_actor
-                    && super::routing::native_claude_goal(&input.text),
+                    && crate::interaction::native_claude_goal(&input.text),
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
@@ -862,11 +862,22 @@ pub(super) async fn run_routed_portable(
         let resume = if engine==ForegroundEngine::Claude {
             store.routed_claude_continuations(local,&body)?
         } else {Vec::new()};
-        let native_goal_command = engine == ForegroundEngine::Claude
-            && direct_original
+        let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
+            && human_authored
             && request.attachments.is_empty()
-            && super::routing::native_claude_goal(&request.prompt);
+            && crate::interaction::native_claude_goal(&input.text);
+        let conversation_goal = owned_goal
+            && !direct_original
+            && store.routed_conversation_claude_goal(input)?;
+        anyhow::ensure!(
+            !crate::interaction::native_claude_goal(&request.prompt)
+                || direct_original
+                || conversation_goal,
+            "Direct Conversation goal no longer matches its retained selection"
+        );
+        let native_goal_command = owned_goal && (direct_original || conversation_goal);
+        let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
@@ -901,10 +912,10 @@ pub(super) async fn run_routed_portable(
                     id: &input.id,
                     session: &attempt,
                     resume: if missing_resume.is_some() { &[] } else { &resume },
-                    human_original: direct_original,
+                    human_original,
                     native_goal_command,
-                    routed_human: !direct_original,
-                    routed_host_access: routed_host_access && !direct_original,
+                    routed_human: !human_original,
+                    routed_host_access: routed_host_access && !human_original,
                     session_instructions: session.session_prompt.as_deref(),
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),

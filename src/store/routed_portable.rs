@@ -594,6 +594,34 @@ impl Store {
         Ok(valid)
     }
 
+    pub(crate) fn routed_conversation_claude_goal(&self, input: &Instruction) -> Result<bool> {
+        if !input
+            .target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == Harness::Claude)
+            || !crate::interaction::native_claude_goal(&input.text)
+        {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let source = super::routing::source_on(&conn, &input.id, input.human_id)?;
+        if source.channel != "conversation"
+            || super::session_requests::author_on(&conn, &input.input_id)?.is_some()
+        {
+            return Ok(false);
+        }
+        let original =
+            super::conversation_inputs::read_on(&conn, &source.event_id, input.human_id)?;
+        Ok(original.selected_claude_goal()
+            && original.text == input.text
+            && original.routing.is_some_and(|route| {
+                route.target == input.target
+                    && route.session == input.target_session
+                    && route.selection == "session_destination"
+                    && route.instruction.as_deref() == Some(input.id.as_str())
+            }))
+    }
+
     pub(crate) fn routed_claude_preserves_quote(
         &self,
         source: &SourceInput,

@@ -138,8 +138,12 @@ Other replies keep their existing path. A current canonical local-session
 result keeps the caller's Claude controller catalog so the worker can resume
 the requesting session. The controller can inspect the returned input and
 request status. The result carries attributed evidence and cannot authorize
-another local request. Native goal commands and unpaired or peer inputs keep
-their existing submission path. Deploy and roll back the Gateway binary
+another local request. An authenticated paired human can use Claude's native
+`/goal` command directly in Telegram or in the Conversation composer with the
+Claude topic selected. Gateway binds the command to the original and the
+selected topic. Quoted, voice-derived, attached, companion and session-authored
+inputs cannot invoke the native command through that Conversation path.
+Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
 When the last eligible exchange came from the topic's current Codex thread,
@@ -478,6 +482,9 @@ helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
+  selected Claude session through the paired Conversation composer, with no
+  additional provider call and a retained refusal for an unpaired companion.
 - `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
   `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` submit an exact reply to an older
   proposal while a newer request is still running in the same native session.

@@ -488,6 +488,9 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_GOAL") == "1":
+                        self._conversation_goal(journey, provider)
+                        return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
                         self._exact_claude_quote(journey, provider, web_profile=profile)
                         return
@@ -903,6 +906,59 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _conversation_goal(self, journey, provider):
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey, companion=True, companion_workspace=True)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.original = "Establish the selected Claude native session."
+            provider.quote_response = "I am ready to inspect this topic's goal."
+            provider.human_original = str(uuid.uuid4())
+            browser.text(provider.original, reply=destination, original_id=provider.human_original)
+            journey.wait(lambda: provider.failure or any(
+                row.get("preview") == provider.quote_response
+                for row in browser.get("/api/interaction")["items"]
+            ), seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.idle()
+            native = journey.row("SELECT native_thread_id FROM turns WHERE execution_harness='claude'")[0][0]
+            calls = list(provider.calls)
+            self.assertEqual(len(calls), 1)
+
+            goal, _ = browser.text("/goal", reply=destination)
+            journey.wait(lambda: provider.failure or any(
+                "No goal set." in row.get("preview", "")
+                for row in browser.get("/api/interaction")["items"]
+            ), seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.idle()
+            self.assertEqual(journey.row(
+                "SELECT i.phase,t.execution_harness,t.status,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (goal,),
+            ), [("accepted", "claude", "completed", native)])
+            _, readback = browser.text("/goal", reply=destination, original_id=goal)
+            self.assertIs(readback["new_input"], False)
+
+            browser.client.cookies.clear()
+            blocked = str(uuid.uuid4())
+            response = browser.client.post("/api/interaction/inputs", json={
+                "id": blocked, "binding": browser.binding, "reply": destination, "text": "/goal",
+            }, headers=browser.device_headers)
+            self.assertEqual(response.status_code, 503, response.text)
+            self.assertEqual(journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (blocked,)),
+                             [("retained_unsent",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?", (blocked,)),
+                             [(0,)])
+            self.assertEqual(provider.calls, calls)
 
         def _exact_claude_quote(self, journey, provider, *, web_profile=None):
             import hashlib

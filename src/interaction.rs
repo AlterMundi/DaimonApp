@@ -641,6 +641,14 @@ impl InteractionConfig {
     }
 }
 
+pub(crate) fn native_claude_goal(text: &str) -> bool {
+    let text = text.trim_end();
+    text == "/goal"
+        || text.strip_prefix("/goal ").is_some_and(|condition| {
+            !condition.trim().is_empty() && condition.chars().count() <= 4000
+        })
+}
+
 /// A selector is deliberate only at the beginning of the human's message.
 /// Quoted text, code blocks and incidental mentions remain ordinary content.
 pub fn explicit_selector(text: &str) -> Option<(&str, &str)> {

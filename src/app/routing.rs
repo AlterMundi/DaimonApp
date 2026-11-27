@@ -2,6 +2,7 @@
 use super::*;
 use crate::interaction::{
     Instruction, RequestRelation, ReturnRoute, SourceInput, TransportPhase as P, explicit_selector,
+    native_claude_goal,
 };
 
 pub(super) struct Run {
@@ -237,14 +238,6 @@ pub(super) fn portable_topic(
 )> {
     let profile = shared.config.interaction.as_ref()?;
     profile.portable_route(key)
-}
-
-pub(super) fn native_claude_goal(text: &str) -> bool {
-    let text = text.trim_end();
-    text == "/goal"
-        || text.strip_prefix("/goal ").is_some_and(|condition| {
-            !condition.trim().is_empty() && condition.chars().count() <= 4000
-        })
 }
 
 pub(super) async fn handle_portable_topic(
@@ -1396,7 +1389,9 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = if source.update_id.is_some() && direct_portable_topic(i) {
+    let prompt = if (source.update_id.is_some() && direct_portable_topic(i))
+        || shared.store.routed_conversation_claude_goal(i)?
+    {
         i.text.clone()
     } else {
         super::nexus::input_prompt(

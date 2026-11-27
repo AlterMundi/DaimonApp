@@ -226,6 +226,26 @@ impl ConversationVoice {
     }
 }
 impl ConversationInput {
+    pub(crate) fn selected_claude_goal(&self) -> bool {
+        self.paired_actor
+            && !self.retired
+            && self.voice.is_none()
+            && self.tribu_source.is_none()
+            && self.foreground_dialogue.is_none()
+            && self.foreground_delegation.is_none()
+            && self.visual.is_none()
+            && self.files.is_empty()
+            && self.playback.is_none()
+            && self.reply.as_ref().is_some_and(|reply| {
+                !reply.context_only
+                    && reply
+                        .source
+                        .strip_prefix("session:")
+                        .is_some_and(|id| !id.contains('/'))
+            })
+            && crate::interaction::native_claude_goal(&self.text)
+    }
+
     pub fn foreground_context(&self) -> String {
         self.foreground_delegation.as_ref().map_or_else(String::new, |value| format!(
             "[Voice foreground formulation]\n{}\nThe formulation is an assistant-authored derivative of these exact retained human originals, not a human quotation, extra authority or completed work. Source text and chronology remain authoritative; incorporate later human corrections. This request is delegated to the existing integrator, which owns routing and final return. Ordinary foreground conversation does not start worker tasks.\n\n",
