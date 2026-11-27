@@ -1189,6 +1189,13 @@ select a project checkout when needed. The earlier
 `interaction.independent_topic_workspace` remains a shared fallback for profiles
 with no per-topic root and for retained intents that already selected it.
 
+To attach a permanent folder to an existing owned topic, use the local owner
+socket. Read `topics workspace status TOPIC`, then pass its exact session ID to
+`topics workspace adopt TOPIC SESSION_ID`. Adoption reuses the recorded folder
+on retry while preserving the current working directory and native history.
+Verify the returned folder and directory before separately selecting a new
+execution directory with the ordinary workspace control.
+
 The stable integrating controller exposes `create` for a clearly distinct task,
 after inspecting existing candidates. Its arguments select a retained original
 input, a single-token topic name, a reason and up to five enrolled observer

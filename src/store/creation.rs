@@ -1087,7 +1087,9 @@ mod tests {
             store.finish_update_dispatch(44, true).unwrap();
             let mut template = store.ensure_session(topic, 100, &defaults).unwrap();
             template.cwd = folder.clone();
-            store.reserve_topic_folder(topic, 100, &folder).unwrap();
+            store
+                .reserve_topic_folder(topic, 100, &folder, None)
+                .unwrap();
             let (op, claimed) = store
                 .claim_creation_resume(
                     entry,

@@ -147,6 +147,29 @@ fn maintenance_writer_held_on(conn: &Connection, key: SessionKey) -> Result<bool
     )?)
 }
 
+fn validate_workspace_adoption_on(
+    conn: &Connection,
+    key: SessionKey,
+    human: i64,
+    id: i64,
+) -> Result<()> {
+    let eligible: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+          WHERE s.id=?1 AND s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4
+            AND u.allowed=1 AND s.busy=0
+            AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=s.id AND status='running')
+            AND NOT EXISTS(SELECT 1 FROM interaction_creations c WHERE c.topic=?3
+              AND COALESCE(json_extract(c.doc,'$.target_chat'),c.entry_chat)=?2
+              AND (c.phase IN ('topic_known','retained_topic') OR (c.phase='ready' AND c.topic_release_ready=0))))",
+        params![id,key.chat_id,key.thread_id,human], |r|r.get(0),
+    )?;
+    anyhow::ensure!(
+        eligible && !stopping::fenced_on(conn, key)? && !maintenance_writer_held_on(conn, key)?,
+        "Topic changed, is active or held, or has an unfinished creation"
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionDefaults {
     pub cwd: PathBuf,
@@ -1007,12 +1030,24 @@ impl Store {
         key: SessionKey,
         human: i64,
     ) -> Result<Option<(PathBuf, String)>> {
+        self.topic_folder_claim_for(key, human, None)
+    }
+
+    pub(crate) fn topic_folder_claim_for(
+        &self,
+        key: SessionKey,
+        human: i64,
+        existing_session: Option<i64>,
+    ) -> Result<Option<(PathBuf, String)>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
+        if let Some(id) = existing_session {
+            validate_workspace_adoption_on(&conn, key, human, id)?;
+        }
         conn.query_row(
             "SELECT s.topic_folder, s.topic_folder_claim FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
              WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
-               AND s.topic_folder_owner=?3 AND u.allowed=1 AND s.topic_folder_claim IS NOT NULL",
-            params![key.chat_id,key.thread_id,human], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?)),
+               AND s.topic_folder_owner=?3 AND u.allowed=1 AND s.topic_folder_claim IS NOT NULL AND (?4 IS NULL OR s.id=?4)",
+            params![key.chat_id,key.thread_id,human,existing_session], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?)),
         ).optional().map_err(Into::into)
     }
 
@@ -1021,6 +1056,7 @@ impl Store {
         key: SessionKey,
         human: i64,
         folder: &Path,
+        existing_session: Option<i64>,
     ) -> Result<String> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
@@ -1028,16 +1064,28 @@ impl Store {
             !stopping::fenced_on(&tx, key)? && !maintenance_writer_held_on(&tx, key)?,
             "Topic is held"
         );
+        if let Some(id) = existing_session {
+            validate_workspace_adoption_on(&tx, key, human, id)?;
+        }
         let folder = folder.to_str().context("Topic folder is not UTF-8")?;
         let claim = uuid::Uuid::now_v7().to_string();
         let changed = tx.execute(
             "UPDATE sessions SET topic_folder=?1, topic_folder_owner=?4, topic_folder_claim=?5
              WHERE chat_id=?2 AND thread_id=?3 AND creator_user_id=?4
-             AND busy=0 AND codex_thread_id IS NULL
-             AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id)
+             AND busy=0
+             AND ((?6 IS NULL AND codex_thread_id IS NULL
+                   AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id))
+               OR id=?6)
              AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?4 AND allowed=1)
              AND topic_folder IS NULL",
-            params![folder, key.chat_id, key.thread_id, human, claim],
+            params![
+                folder,
+                key.chat_id,
+                key.thread_id,
+                human,
+                claim,
+                existing_session
+            ],
         )?;
         anyhow::ensure!(changed == 1, "Topic folder owner or selection changed");
         tx.commit()?;
