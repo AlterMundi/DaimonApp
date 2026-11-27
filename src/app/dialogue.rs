@@ -4,6 +4,8 @@ use crate::interaction::{InputReference, RequestRelation};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+const ORIGINAL_UNAVAILABLE: &str = "Dispatch requires a usable human original in this conversation. For a request based on a message sent in another topic, coordinate from that topic under the original human instruction.";
+
 pub(super) fn tool_specs() -> Vec<Value> {
     let mut specs = super::observer::tool_specs();
     // The native tool set is persisted at thread creation. A stable envelope
@@ -544,15 +546,9 @@ pub(super) fn tool_call(
                 crate::store::EntryExecution::Portable(request.local_turn)
             };
             let (mut source,message)=match execution {
-                crate::store::EntryExecution::Codex(native)=>{
-                    let Ok(original)=shared.store.interaction_entry_original(
-                        key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id)
-                    ) else {
-                        return Ok(json!({"kind":"original_unavailable_in_this_conversation","admitted":false,
-                            "detail":"Dispatch requires a retained human original available to this conversation. For coordination based on a message sent in another topic, use the session-request capability in that topic under its original human instruction."}));
-                    };
-                    original
-                },
+                crate::store::EntryExecution::Codex(native)=>shared.store.interaction_entry_original(
+                    key,human,native,&args.input_ref,&format!("telegram:{}",shared.bot_id)
+                ).context(ORIGINAL_UNAVAILABLE)?,
                 crate::store::EntryExecution::Portable(local)=>{
                     let source=shared.store.interaction_portable_entry_source(key,human,local)?;
                     if args.input_ref != InputReference::Conversation(source.event_id.clone()) {
@@ -598,7 +594,12 @@ pub(super) fn tool_call(
             }
             Ok(json!({"kind":"integrator_routing_outcomes","input_ref":args.input_ref,"original_ingress_update":args.input_ref.update(),"original_human":human,"results":results}))
         }.await;
-        let result=match outcome {Ok(value)=>crate::execution::ToolReply::new(true,value.to_string()),Err(error)=>crate::execution::ToolReply::new(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).or_else(||crate::store::live_context_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))};
+        let result=match outcome {
+            Ok(value)=>crate::execution::ToolReply::new(true,value.to_string()),
+            Err(error) if error.to_string()==ORIGINAL_UNAVAILABLE =>
+                crate::execution::ToolReply::new(false,ORIGINAL_UNAVAILABLE.into()),
+            Err(error)=>crate::execution::ToolReply::new(false,super::creation::rejection(&error).or_else(||crate::store::workflow_rejection(&error)).or_else(||crate::store::live_context_rejection(&error)).map(|value|value.to_string()).unwrap_or_else(||"Routing unavailable for this original input, binding, generation or selection. No uncertain operation was retried. Inspect any retained per-target outcomes before recovery.".into()))
+        };
         let _ = send.send(result);
     });
     recv
