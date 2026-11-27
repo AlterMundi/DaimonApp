@@ -82,6 +82,24 @@ class LiveTranscription(unittest.TestCase):
     def meta(self,**extra):return {'id':self.ident,'binding':self.binding,'csrf':self.csrf,**extra}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/live',headers={'origin':origin})
+    def test_partial_binding_reply_reset_recovers_on_same_capture(self):
+        with self.open() as ws:
+            ws.send_json(self.meta())
+            self.assertEqual(ws.receive_json()['type'], 'ready')
+            pcm = b'\x00\x01' * 1600
+            with patch.object(self.provider, 'presentation', side_effect=[
+                    ConnectionResetError('Synthetic lost owner read'), {'binding':self.binding},
+                    {'binding':self.binding}, {'binding':self.binding}]) as read_binding:
+                ws.send_bytes(pcm)
+                self.assertEqual(ws.receive_json()['type'], 'partial')
+                ws.send_json({'type':'finish'})
+                prepared = ws.receive_json()
+            self.assertEqual(prepared['type'], 'prepared')
+            self.assertEqual(prepared['id'], self.ident)
+            self.assertEqual(prepared['source_sha256'], hashlib.sha256(wav_bytes(pcm)).hexdigest())
+            self.assertEqual(read_binding.call_count, 4)
+        self.assertEqual(len(Stream.opened), 1)
+
     def test_reset_after_partial_logs_failed_boundary_without_audio_or_text(self):
         with self.assertLogs('dashboard.live_transcription', level='WARNING') as logged:
             with self.open() as ws:

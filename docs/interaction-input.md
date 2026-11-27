@@ -41,6 +41,10 @@ For live dictation, the dashboard checks the current native binding through
 `input voice capabilities`. The same owner authorization and exact binding
 apply before microphone readiness, provider finalization and receipt exposure.
 The dictation path does not need the input history page or routing menu.
+If the owner socket resets or ends without replying, dictation reconnects
+once to read that binding again. Read recovery leaves the capture and its
+single provider stream in place. A changed binding or revoked access still
+stops the preparation.
 
 `POST /api/interaction/voice` takes bounded raw audio with `X-Input-Id`,
 `X-Input-Binding`, `X-Audio-Sha256` and its supported audio Content-Type, plus the

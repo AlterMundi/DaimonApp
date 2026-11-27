@@ -1360,7 +1360,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             from starlette.concurrency import run_in_threadpool
             result = await run_in_threadpool(provider.presentation_part, source, revision, offset)
-        except OwnerControlReplyUnavailable:
+        except (OwnerControlReplyUnavailable, ConnectionError):
             raise HTTPException(503, 'Saved message temporarily unavailable; try reading again') from None
         except (ProviderUnavailable, OSError, ValueError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
