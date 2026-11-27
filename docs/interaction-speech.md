@@ -513,7 +513,7 @@ reading; actual wording/pronunciation still needs hearing acceptance.
 
 The authenticated audio API accepts `speech_provider: "openai"` alongside the
 canonical source/revision/offset. Missing or unsupported profiles refuse. A
-client requires the matching `X-Speech-Provider` receipt. Under the hood exposes
+client requires the matching `X-Speech-Provider` receipt. Conversation settings exposes
 an explicit Conversation services choice only where both the speech route and
 native `voice.transcription_profiles.openai` are configured. The default remains
 the existing service. Selecting OpenAI also selects the existing GPT-Live +

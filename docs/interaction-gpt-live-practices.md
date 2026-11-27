@@ -143,7 +143,7 @@ authenticated browser recovery, media continuity or family-pilot acceptance.
 The default-off `openai_live` configuration mounts authenticated WebRTC admission,
 trusted sideband, visit status/source pages and exact-original retention. The
 browser exposes **OpenAI · GPT-Live comparison** only with the capability enabled,
-inside **Under the hood**. Qwen/current voice and OpenAI · Codex voice remain
+inside **Conversation settings**. Qwen/current voice and OpenAI · Codex voice remain
 separate choices; capture freezes the choice and never silently falls back.
 See [configuration and operating limits](interaction-public-gpt-live.md).
 

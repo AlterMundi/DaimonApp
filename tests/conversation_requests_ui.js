@@ -204,7 +204,7 @@ function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   await gu.observe({binding:"bound",items:[proposal],cursor:1,more:false});gc=goals.nodes.get('#conversation-goal-cards').children[0];
   offline=true;await goals.button(gc,'Review proposal and outcome').handlers.click();assert(goals.button(gc,'Confirm in conversation').disabled);
   await gu.observe({binding:"bound",items:[{...proposal,current:false,can_confirm:false,phase:"partial"}],cursor:1,more:false});
-  assert.equal(gu.attentionItems().length,0,'A retained partial outcome has no current human decision');
+  assert.equal(gu.attentionItems,undefined,'Work decisions are not published to For you');
   assert(goals.all(gc,v=>v.textContent.startsWith('Part of this instruction applied.')).length,'Expired selection cannot hide an acknowledged partial effect');
   const readonly=boot(0), ro=readonly.goals({readOnly:true,api:async()=>clone(proposal),onChoose:()=>{throw Error('Read-only client chose');}});
   await ro.observe({binding:"bound",items:[proposal],cursor:1,more:false});const readonlyCard=readonly.nodes.get('#conversation-goal-cards').children[0];

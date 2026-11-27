@@ -536,42 +536,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .monitor-mode #conversation-requests { display:none !important; }
 
 
-/* Temporal routing view: the server owns evidence, this pane only observes it. */
 .monitor-mode main { max-width: none; }
-#routing-graph { margin-block: 12px 20px; }
-#routing-graph h2 { font-size: 20px; margin: 0; }
-#routing-graph-viewport {
-  overflow: auto; height: min(65vh, 640px); min-height: 320px;
-  border: 1px solid var(--line); border-radius: var(--dm-radius, 10px);
-  background: var(--bg); overscroll-behavior: contain;
-}
-#routing-graph-viewport:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-#routing-graph-surface { position: relative; isolation: isolate; }
-.routing-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.routing-edge { fill: none; stroke: var(--accent); stroke-width: 2; opacity: .75; }
-.routing-edge.incorporated { stroke-width: 3; }
-.routing-arrow { fill: var(--accent); }
-.routing-node {
-  position: absolute; width: 292px; height: 248px; padding: 14px;
-  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
-  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
-  border-radius: var(--dm-radius, 10px); text-align: start; font: inherit;
-  box-shadow: 0 3px 12px color-mix(in srgb, var(--bg) 65%, transparent);
-}
-.routing-node:hover { border-color: var(--accent); }
-.routing-node:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.routing-route { border-inline-start: 4px solid var(--accent); }
-.routing-response { border-inline-start: 4px solid var(--good); }
-.routing-decision { border-style: dashed; }
-.routing-node-title { font-size: 16px; font-weight: 600; line-height: 1.3; }
-.routing-node-text { font-size: 14px; line-height: 1.4; overflow: hidden; overflow-wrap: anywhere; flex: 1; min-height: 0; white-space: pre-wrap; }
-.routing-node-status { font-size: 14px; color: var(--muted); line-height: 1.3; }
-.routing-lane-label {
-  position: absolute; left: 0; z-index: 2; padding: 1px 10px; font-size: 14px;
-  color: var(--muted); background: var(--bg); pointer-events: none;
-}
-@media (max-width: 480px) { #routing-graph-viewport { height: 60vh; } }
-@media (prefers-reduced-motion: reduce) { #routing-graph-viewport { scroll-behavior: auto; } }
 
 /* The standalone client keeps human inputs and attributed session updates together. */
 #conversation-timeline { flex: 1 0 min(58dvh, 32rem); min-height: 180px; max-height: 58dvh; overflow-y: auto; overscroll-behavior: contain; padding: .5rem; }
@@ -585,8 +550,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .timeline-history { display:none; position:sticky; top:0; z-index:1; background:var(--bg); padding-block:4px; }
 .timeline-history:has(button:not([hidden])) { display:flex; }
 .timeline-history button { min-height:44px; font-size:14px; }
-#conversation-diagnostics { display:contents; }
-#conversation-diagnostics > summary { display:none; }
 #conversation-companion { display:flex; flex-wrap:wrap; align-items:center; gap:20px; min-width:0; }
 #conversation-companion pre { flex:none; margin:0; font:12px/1.05 ui-monospace,monospace; color:var(--accent); transform-origin:50% 50%; }
 #conversation-companion pre[data-fallback="true"] { white-space:normal; overflow-wrap:anywhere; max-width:100%; }
@@ -667,15 +630,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-play { grid-column:1; grid-row:2; }
 .standalone-conversation #conversation-audio { grid-column:1; grid-row:2; height:44px; margin:0; }
 .standalone-conversation #conversation-audio-state { grid-column:2; grid-row:1; margin:0; font-size:14px; }
-.standalone-conversation #conversation-diagnostics { grid-row:7; display:block; min-width:0; border-top:1px solid var(--line); margin-top:2px; }
-.standalone-conversation #conversation-diagnostics > summary { display:flex; align-items:center; justify-content:space-between; cursor:pointer; min-height:44px; color:var(--muted); font-size:14px; }
-.standalone-conversation #conversation-diagnostics[open] > summary { color:var(--accent); }
-.standalone-conversation .conversation-diagnostics-content .timeline-history { position:static; }
-.standalone-conversation .conversation-diagnostics-content { padding:16px 0; max-height:none; overflow:visible; }
-.standalone-conversation #conversation-flow { max-height:none; overflow:visible; }
 .standalone-conversation #conversation > .note { display:none; }
-.standalone-conversation main:has(#conversation-diagnostics[open]) { height:auto; min-height:100dvh; }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]) { overflow:visible; grid-template-rows:auto auto minmax(300px,55dvh) auto auto auto auto; }
 @media(max-width:480px) {
  .standalone-conversation main { padding-inline:12px; gap:4px; }
  .standalone-conversation main > #conversation { gap:6px; }
@@ -685,7 +640,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
  .standalone-conversation .companion-name { font-size:10px; letter-spacing:.12em; }
  .standalone-conversation #conversation-audio-tools button { padding-inline:10px; }
  .standalone-conversation #conversation-audio-state { grid-column:1 / -1; grid-row:3; }
- .standalone-conversation #conversation:has(#conversation-diagnostics[open]) { grid-template-rows:auto auto minmax(220px,50dvh) auto auto auto auto; }
 }
 @media(max-height:650px) {
  .standalone-conversation main > #conversation { overflow:auto; }
@@ -765,10 +719,9 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
  .standalone-conversation main > #conversation { grid-template-rows:auto auto minmax(0,1fr) auto 56px 0px 44px; }
  .standalone-conversation #conversation-audio-tools { height:56px; }
 }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]),.standalone-conversation #conversation:has(#conversation-visual[open]) { overflow:auto; }
+.standalone-conversation #conversation:has(#conversation-visual[open]) { overflow:auto; }
 
 .standalone-conversation #conversation-audio-tools #conversation-player:not([hidden]) { position:static; transform:none; width:100%; padding:0; border:0; border-radius:0; grid-row:auto; }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]) { grid-template-rows:auto auto minmax(220px,50dvh) auto auto auto auto; }
 
 #conversation-visual > summary .attachment-icon { display:block; width:24px; height:24px; flex:none; }
 
@@ -792,8 +745,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-timeline { grid-row:2; }
 .standalone-conversation #conversation-compose { grid-row:3; }
 .standalone-conversation #conversation-audio-tools { grid-row:4; height:72px; }
-.standalone-conversation #conversation-diagnostics { grid-row:5; }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]) { grid-template-rows:auto minmax(220px,50dvh) auto auto auto; }
 @media(max-height:650px) {
  .standalone-conversation header:not(.voice-studio-intro) { height:76px; min-height:76px; }
  .standalone-conversation header:not(.voice-studio-intro) #conversation-companion pre { font-size:6px; }
@@ -834,7 +785,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-attachment-sheet { position:absolute!important; bottom:calc(100% + 8px); left:0; width:100%; max-height:min(55dvh,420px); overflow:auto; padding:12px; border:1px solid var(--line); border-radius:18px; background:var(--panel); box-shadow:0 10px 30px #0006; z-index:6; }
 .standalone-conversation #conversation-attachment-sheet .image-choices { margin:0; }
 .standalone-conversation #conversation-visual > summary { width:44px; height:44px; padding:10px; }
-.standalone-conversation #conversation:has(#conversation-visual[open]):not(:has(#conversation-diagnostics[open])) { overflow:visible; }
+.standalone-conversation #conversation:has(#conversation-visual[open]) { overflow:visible; }
 
 /* Beacon belongs to the fixed presence; its detailed controls stay under the hood. */
 .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { width:44px; height:44px; min-width:44px; padding:6px; font-size:0; }
@@ -864,7 +815,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 
 /* Reply playback sits beside the composer; its controls never create a bottom row. */
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto 44px; }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]),.standalone-conversation #conversation:has(.task-card[data-expanded="true"]) { grid-template-rows:auto minmax(220px,50dvh) auto auto; }
+.standalone-conversation #conversation:has(.task-card[data-expanded="true"]) { grid-template-rows:auto minmax(220px,50dvh) auto auto; }
 .standalone-conversation #conversation-dock { grid-row:3; display:grid; grid-template-columns:minmax(0,1fr); align-items:end; gap:8px; min-width:0; }
 .standalone-conversation #conversation-dock:has(#conversation-player:not([hidden])) { grid-template-columns:128px minmax(0,1fr); }
 .standalone-conversation #conversation-dock #conversation-compose { grid-row:1; grid-column:1; min-width:0; }
@@ -876,7 +827,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-player #conversation-voice-replies { grid-column:2; grid-row:2; }
 .standalone-conversation #conversation-player #conversation-play,.standalone-conversation #conversation-player #conversation-voice-replies { min-width:44px; width:44px; min-height:44px; padding:4px; font-size:11px; line-height:15px; border-radius:12px; }
 .standalone-conversation #conversation-player #conversation-audio-state { grid-column:1;grid-row:2; margin:0; min-width:0; font-size:14px;line-height:17px;overflow-wrap:anywhere;text-align:center; }
-.standalone-conversation #conversation-diagnostics { grid-row:4; }
 @media(max-width:380px) {
  .standalone-conversation #conversation-dock #conversation-compose { padding:6px; }
  .standalone-conversation #conversation-dock .composer-actions { grid-template-columns:44px minmax(0,1fr) auto 56px; gap:2px; }
@@ -898,16 +848,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 
 /* The inspector owns a readable overlay, leaving the underlying chat/capture mounted. */
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto; }
-.standalone-conversation main:has(#conversation-diagnostics[open]) { height:100dvh; min-height:0; }
-.standalone-conversation #conversation:has(#conversation-diagnostics[open]) { overflow:hidden; grid-template-rows:auto minmax(0,1fr) auto; }
-.standalone-conversation #conversation-diagnostics:not([open]) { display:none; }
-.standalone-conversation #conversation-diagnostics[open] { position:fixed; inset:var(--inspector-top,100px) 12px 12px; z-index:20; overflow:auto; overscroll-behavior:contain; margin:0; padding:12px 16px 24px; border:1px solid var(--line); border-radius:18px; background:var(--bg); box-shadow:0 16px 60px #0008; }
-.standalone-conversation #conversation-diagnostics[open] > summary { position:sticky; top:-12px; z-index:1; background:var(--bg); min-height:44px; }
-.standalone-conversation #conversation-diagnostics[open] > summary > span { font-size:0; }
-.standalone-conversation #conversation-diagnostics[open] > summary > span::after { content:"×"; font-size:24px; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect { display:grid; place-items:center; width:44px; height:44px; padding:8px; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect[hidden] { display:none; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-inspect[aria-expanded="true"] { color:var(--accent); border-color:var(--accent); }
 .standalone-conversation header:not(.voice-studio-intro) .header-tools { gap:4px; }
 .standalone-conversation header:not(.voice-studio-intro) .apps-return { display:grid; place-items:center; width:44px; height:44px; padding:4px; font-size:0; }
 .standalone-conversation header:not(.voice-studio-intro) .apps-return::before { content:none; }
@@ -1014,8 +954,6 @@ body.conversation-mode #operations[data-conversation-overlay="true"] #incidents 
 .session-status-list span {font-size:.9em;color:var(--ink);opacity:.82;font-variant-numeric:tabular-nums;}
 
 .routing-node[data-selected="true"] {outline:2px solid var(--accent);outline-offset:2px;}
-#routing-graph-viewport {cursor:grab;}
-#routing-graph-viewport:active {cursor:grabbing;}
 
 /* One persistent voice panel: pause/resume only while an item is playable. */
 .standalone-conversation #conversation-player #conversation-play[hidden],
@@ -1283,7 +1221,7 @@ html[data-style-policy="authored"] .standalone-conversation.conversation-header-
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools {position:absolute;right:0;top:46px;display:flex;gap:4px;width:auto;max-width:148px;padding:0;z-index:1;align-self:start;flex-wrap:wrap;}
 html[data-style-policy="authored"] .standalone-conversation .apps-return {color:var(--ink);min-height:44px;display:grid;place-items:center;border:0;border-radius:0;font-size:0;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .apps-launcher {position:absolute;right:0;top:-46px;}
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) :is(#conversation-inspect,#conversation-sound-toggle,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) :is(#conversation-settings-open,#conversation-sound-toggle,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-account {position:absolute;right:0;bottom:4px;max-width:calc(100% - 158px);font-size:14px;}
 html[data-style-policy="authored"] .standalone-conversation .heartbeat-heart {font-size:16px;min-width:28px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-dock:has(#conversation-player:not([hidden])) {grid-template-columns:36px minmax(0,1fr);gap:4px;}
@@ -1298,8 +1236,8 @@ html[data-style-policy="authored"] .standalone-conversation :is(#conversation-ti
 html[data-style-policy="authored"] .standalone-conversation .reply-text {font-size:16px;line-height:1.65;color:var(--ink);}
 html[data-style-policy="authored"] .standalone-conversation .reply-text img {max-width:100%;border-radius:18px;border:1px solid #bf906730;}
 html[data-style-policy="authored"] .standalone-conversation .reply-actions button {background:transparent;border:1px solid #74c8d75e;border-radius:24px;color:var(--accent);}
-html[data-style-policy="authored"] .standalone-conversation :is(.reply summary,#conversation-diagnostics>summary) {display:flex;align-items:center;gap:12px;color:var(--muted);font-size:14px;}
-html[data-style-policy="authored"] .standalone-conversation :is(.reply summary,#conversation-diagnostics>summary)::after {content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);}
+html[data-style-policy="authored"] .standalone-conversation .reply summary {display:flex;align-items:center;gap:12px;color:var(--muted);font-size:14px;}
+html[data-style-policy="authored"] .standalone-conversation .reply summary::after {content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose {display:grid;grid-template-columns:44px minmax(0,1fr) 44px 76px;gap:4px;align-items:center;padding:10px 12px;margin:0;border:1px solid #bba98fbb;border-radius:26px;background:linear-gradient(145deg,#21313c99,#0c1720);box-shadow:inset 0 0 0 3px #0b121866;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose > .composer-actions {display:contents;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-compose-status {grid-column:1/-1;grid-row:1;height:auto;min-height:0;max-height:110px;flex:none;}
@@ -1389,7 +1327,7 @@ html[data-style-policy="authored"] .standalone-conversation .pending-carousel .p
 
 /* One authored HUD vocabulary across its secondary surfaces. Other people's
    inherited Homemaker choices retain their own presentation. */
-html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.voice-mode,.heartbeat-menu,#conversation-diagnostics[open],#conversation-attachment-sheet,.session-rail,dialog:not(.voice-mode)) {
+html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.voice-mode,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,dialog:not(.voice-mode)) {
  --hud-copper:#bf9067;--hud-copper-soft:#bf906766;
  color:var(--ink);background:linear-gradient(145deg,#1c2b38,#0b151f 70%);border:1px solid var(--hud-copper-soft);border-radius:3px;
  box-shadow:inset 0 0 0 5px #0a141ddd,inset 0 0 0 6px #77d4e022,0 16px 56px #0006;
@@ -1408,8 +1346,6 @@ html[data-style-policy="authored"] .voice-mode h2 {font-family:ui-serif,Georgia,
 html[data-style-policy="authored"] .voice-mode-detection {padding:10px 14px;border-left:1px solid #78d7e077;border-radius:0;background:#142a3544;font-size:14px;}
 html[data-style-policy="authored"] .voice-mode-caption {border-top:1px solid #bf906744;padding-top:16px;line-height:1.65;}
 html[data-style-policy="authored"] .voice-mode-controls {padding:12px 0;border-top:1px solid #78d7e033;}
-html[data-style-policy="authored"] #conversation-diagnostics[open] {padding:12px 18px;}
-html[data-style-policy="authored"] #conversation-diagnostics>summary::after {display:none;}
 html[data-style-policy="authored"] .session-view-toolbar {gap:8px;}
 html[data-style-policy="authored"] .session-message {margin:12px 0;padding:16px;line-height:1.6;}
 html[data-style-policy="authored"] .session-rail {padding:14px;}
@@ -1427,16 +1363,16 @@ html[data-style-policy="authored"] :is(.avatar-workshop-dialog,.heartbeat-menu,#
 /* The scrolling panel itself owns its opaque surface. Decorative cut frames
    must never be the only background: positioned layers cover the initial
    scrollport, not every later scroll position. Keep children/focus unclipped. */
-html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer) {
+html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer) {
  --hud-panel-cut:12px;isolation:isolate;border:0;border-radius:0;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:none;
 }
-html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::before,
-html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {
+html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::before,
+html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {
  content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
  clip-path:polygon(var(--hud-panel-cut) 0,calc(100% - var(--hud-panel-cut)) 0,100% var(--hud-panel-cut),100% calc(100% - var(--hud-panel-cut)),calc(100% - var(--hud-panel-cut)) 100%,var(--hud-panel-cut) 100%,0 calc(100% - var(--hud-panel-cut)),0 var(--hud-panel-cut));
 }
-html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::before {background:#bf906799;}
-html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#conversation-diagnostics[open],#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 5px #0a141d66,inset 0 0 0 6px #77d4e019;}
+html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::before {background:#bf906799;}
+html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 5px #0a141d66,inset 0 0 0 6px #77d4e019;}
 html[data-style-policy="authored"] .control-icon {stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;fill:none;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before {
  content:"";border:0;border-radius:0;width:24px;height:24px;background:currentColor;
@@ -1543,7 +1479,7 @@ html[data-style-policy] body.conversation-surface main {width:100%;max-width:non
 html body.conversation-surface main::before,html body.conversation-surface main::after {display:none;}
 html body.conversation-surface main>header,html body.conversation-surface .toolbar,
 html body.conversation-surface #conversation-companion,html body.conversation-surface #operations,
-html body.conversation-surface #conversation-diagnostics,html body.conversation-surface #conversation-voice-engine,
+html body.conversation-surface #conversation-voice-engine,
 html body.conversation-surface #conversation-voice-choice,html body.conversation-surface #conversation-services-choice,
 html body.conversation-surface #conversation-observation button {display:none!important;}
 html body.conversation-surface #conversation {flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
@@ -1553,3 +1489,16 @@ html body.conversation-surface #conversation-observation {flex:none;margin:0;fon
 html body.conversation-surface #conversation-observation:has(#conversation-state:empty) {display:none;}
 html body.conversation-surface #conversation-dock {row-gap:0;}
 html body.conversation-surface #feedback:empty {display:none;}
+
+#conversation-settings, #conversation-goal-review {
+  width:min(34rem, calc(100% - 24px));
+  max-height:calc(100dvh - 24px);
+  overflow:auto;
+}
+#conversation-settings-open { min-width:44px; min-height:44px; padding:8px; }
+#conversation-settings .conversation-tools { justify-content:space-between; }
+#conversation-settings-title { margin:0; }
+#conversation-history-menu { display:none; }
+#conversation-history-menu:has(button:not([hidden])) { display:block; }
+#conversation-history-menu summary { cursor:pointer; color:var(--muted); }
+#conversation-history-menu:not([open]) > :not(summary) { display:none; }

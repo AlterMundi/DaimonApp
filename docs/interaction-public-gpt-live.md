@@ -65,7 +65,7 @@ than reducing provider features to the old manual-turn adapter. Browser override
 are not accepted. WebRTC negotiates audio format. Total serialized configuration
 is bounded to32KiB.
 
-After explicitly configuring and qualifying this mode, select **Under the hood →
+After explicitly configuring and qualifying this mode, select **Conversation settings →
 Avatar → OpenAI · GPT-Live comparison**. Activation is a human action. Existing
 current-provider defaults and native Codex remain unchanged. Choice and owner are
 frozen per visit; there is no mid-capture switch or silent fallback. Disable only
@@ -555,7 +555,7 @@ model peers remain synthetic; no paid inference or device acceptance is claimed.
 
 For a separately selectable comparison, the owner enables
 `openai_live.native_backend_enabled=true`. Keep `backend_mode` and the existing
-Responses settings unchanged. Under the hood then offers **OpenAI · GPT-Live +
+Responses settings unchanged. Conversation settings then offers **OpenAI · GPT-Live +
 CompAII** in addition to the current modes; the additional option is disabled
 when the server does not advertise it. Selecting it sends only the bounded
 `backend="native"` admission choice, authenticated through the existing
@@ -711,7 +711,7 @@ tested64-item unrelated backlog does not permanently hide the later matching
 answer. Source cursors/unknown append guards still apply before any new send.
 ### Page-local usage comparison
 
-The prepared Under the hood panel reads the existing trusted server usage and
+Before the Conversation settings transition, the voice usage panel read the existing trusted server usage and
 finalization messages; it creates no API, provider call, timer or persistent store.
 It retains at most eight observations on this page and clears them on reload or
 conversation reset. Backend labels follow the accepted admission, not a guessed

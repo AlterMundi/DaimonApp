@@ -222,7 +222,7 @@ session list must remain covered at every scroll position, including with the
 mobile keyboard open. This changes presentation only; session ownership,
 selection, actions and drafts remain with their existing controls.
 
-All authored overlays, including Alerts and Under the hood, keep an opaque
+All authored overlays, including Alerts and Conversation settings, keep an opaque
 background on the scrolling element itself. Decorative cut-corner pseudo-elements
 may draw the frame but must never supply the only fill: they can end at the
 initial scrollport while long content continues. Check the top, middle and bottom
@@ -234,10 +234,11 @@ than leaving a hidden reserved row. Pending work remains in For You and actual
 voice controls retain their own state. The authored avatar starts at the header's
 upper edge with no reserved 44px band; short-height keyboard compaction remains.
 
-Client bundle identification belongs inside the existing **Under the hood** panel.
-Keep its exact hash available for support, but never show the `ui` version strip
-above the ordinary conversation header. Closing technical details hides it again
-without changing authentication, asset versioning or the selected conversation.
+Conversation settings contains editable voice, audio and coordination controls.
+Work decisions has a separate surface for proposals and retained outcomes. For You
+contains questions and actions. The retired inspector source is preserved at
+the `conversation-under-the-hood` tag. The small served bundle identifier remains
+beside the app title.
 
 
 ## Screenshot identity and Avatar audio envelope
