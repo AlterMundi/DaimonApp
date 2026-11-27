@@ -4,7 +4,7 @@ use crate::interaction::{InputReference, RequestRelation};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const ORIGINAL_UNAVAILABLE: &str = "Dispatch requires a usable human original in this conversation. For a request based on a message sent in another topic, coordinate from that topic under the original human instruction.";
+const ORIGINAL_UNAVAILABLE: &str = "Dispatch requires a usable human original in this conversation. For an active handoff, use coordination_inputs and session_request to preserve its original scope.";
 
 pub(super) fn tool_specs() -> Vec<Value> {
     let mut specs = super::observer::tool_specs();
@@ -317,6 +317,26 @@ pub(super) fn tool_call(
     }
     if request.tool == "interaction_controller" && request.arguments.to_string().len() <= 16000 {
         if let Ok(args) = serde_json::from_value::<ControllerArgs>(request.arguments.clone()) {
+            if matches!(
+                args.operation.as_str(),
+                "coordination_inputs" | "session_requests" | "session_request" | "session_receive"
+            ) && app
+                .shared
+                .config
+                .interaction
+                .as_ref()
+                .is_some_and(|cfg| cfg.entry() == key && cfg.human_id == human)
+            {
+                let portable_local = request.harness.is_portable().then_some(request.local_turn);
+                return super::session_requests::tool_call(
+                    app,
+                    key,
+                    human,
+                    request,
+                    closed,
+                    portable_local,
+                );
+            }
             request.tool = match args.operation.as_str() {
                 "workflow_question" | "workflow_supersede" | "workflow_declare"
                 | "workflow_status" | "workflow_advance" | "workflow_attention"
@@ -394,6 +414,9 @@ pub(super) fn tool_call(
                         .retain(|name,_| portable_operation(name));
                     capabilities["operations"]["candidates"]["arguments"]["mode"]=json!("inventory, inspect or support");
                 }
+                capabilities["operations"]["coordination_inputs"]=json!({"arguments":{},"description":"Active attributed handoffs this execution can coordinate. Separate from human originals used by dispatch."});
+                capabilities["operations"]["session_request"]=json!({"arguments":{"parent_instruction":"active coordination_inputs instruction","request_id":"stable caller-chosen identifier","selector":"exact enrolled topic label or stable tID","text":"bounded coordination request with session authorship"},"description":"Coordinate onward from an attributed handoff within the original human instruction's shared budget. Do not use dispatch to copy human messages from other conversations."});
+                capabilities["operations"]["session_requests"]=json!({"arguments":{},"description":"Read local coordination receipts, including actual transport and turn status."});
                 return Ok(capabilities);
             }
             if matches!(request.tool.as_str(),"interaction_matrix_request"|"interaction_matrix_status") {

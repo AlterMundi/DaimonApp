@@ -147,7 +147,7 @@ pub(super) fn controller_parent_on(
             .target_execution
             .as_ref()
             .is_some_and(|value| value.harness == Harness::Claude)
-        || super::session_requests::author_on(conn, &parent.input_id)?.is_some()
+        || !super::session_requests::controller_parent_eligible_on(conn, human, parent)?
         || !current_on(conn, parent, instance)?
     {
         return Ok(false);
