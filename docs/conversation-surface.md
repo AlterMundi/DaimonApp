@@ -115,6 +115,13 @@ not permit sending an old source notice under the new identity. Normal non-hoste
 Conversation retains its existing capture/submission behavior.
 
 
+A child can advertise `features.dismiss: true` on `ready`. A host may
+enable it on the bound `connect` response in an embedded panel. Escape
+then sends the bound `dismiss` envelope without any draft or key data.
+The host may hide the panel and restore world focus while leaving the frame
+mounted. Ignore composition and repeated key presses. Standalone Conversation
+and hosts without the feature keep their own keyboard behavior.
+
 An authenticated host can opt in to the cosmetic avatar playback signal with
 `features.avatarPlayback: true` on `connect`. The child publishes
 `avatar-playback` on the same bound channel using only the rounded 0–1 output

@@ -6,12 +6,12 @@ window.ConversationSurface=(()=>{
     const {surfaceParent:parent,surfaceVisit:visit}=(document.documentElement?.dataset||{});
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
-    let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
+    let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,dismiss=false,lastLevel,lastSpeech=0;
     let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true}});}
+    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;dismiss=false;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,dismiss:true}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function omitContext(){
@@ -30,6 +30,7 @@ window.ConversationSurface=(()=>{
         if(d.features?.avatarMicrophone!==true)microphone(0);
         connected=true;
         avatarPlayback=d.features?.avatarPlayback===true;
+        dismiss=d.features?.dismiss===true;
         avatarMicrophone=d.features?.avatarMicrophone===true;
         return;
       }
@@ -45,6 +46,12 @@ window.ConversationSurface=(()=>{
       old.resolve({...f});
     }
     window.addEventListener('message',receive);
+    window.addEventListener('keydown',event=>{
+      if(!connected||!dismiss||closed||event.key!=='Escape'||event.isComposing)return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if(!event.repeat)send('dismiss');
+    },true);
     async function prepare({id,binding:selected,modality,files=[]}){
       if(closed||!connected||pending||!uuid(id)||selected!==binding||!['text','audio'].includes(modality))throw Error('Connect to the world before sending. Your draft is kept.');
       const count=files.length,total=files.reduce((n,f)=>n+f.size,0);
