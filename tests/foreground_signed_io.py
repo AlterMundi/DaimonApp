@@ -260,7 +260,7 @@ operator.main()
                             assert self.server.original in prompt
                         if telegram_topic and not getattr(self.server, "routed_paired_human", None):
                             if not getattr(self.server, "attachment", None):
-                                assert prompt == self.server.original
+                                assert prompt == getattr(self.server, "goal_command", self.server.original)
                         else:
                             assert '"original_human_author":100' in prompt
                         self.server.current = ident
@@ -1162,10 +1162,79 @@ timeout_seconds=5
             _, readback = browser.text("/goal", reply=destination, original_id=goal)
             self.assertIs(readback["new_input"], False)
 
+            lifecycle = os.environ.get("FOREGROUND_TEST_CLAUDE_GOAL_LIFECYCLE")
+            if lifecycle in {"active", "completed"}:
+                condition = "Report that the synthetic goal fixture is ready."
+                provider.routed_paired_human = None
+                provider.goal_evaluations = 0
+                provider.goal_met = lifecycle == "completed"
+                provider.original = condition
+                provider.quote_response = "The synthetic goal fixture is ready."
+
+                def command_result(command):
+                    provider.goal_command = command
+                    ident = str(uuid.uuid4())
+                    provider.human_original = ident
+                    browser.text(command, reply=destination, original_id=ident)
+
+                    def terminal():
+                        return journey.row(
+                            "SELECT i.phase,t.execution_harness,t.status,t.native_thread_id,t.assistant_text "
+                            "FROM interaction_sources s "
+                            "JOIN interaction_instructions i ON i.input_id=s.id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                            "WHERE s.event_id=? AND t.status IN ('completed','failed')",
+                            (ident,),
+                        )
+
+                    journey.wait(lambda: provider.failure or terminal(), seconds=25)
+                    self.assertIsNone(provider.failure)
+                    journey.idle()
+                    phase, harness, status, session_id, answer = terminal()[0]
+                    self.assertEqual((harness, session_id), ("claude", native))
+                    return ident, phase, status, answer
+
+                set_command = f"/goal {condition}"
+                goal_id, phase, status, answer = command_result(set_command)
+                calls = list(provider.calls)
+                evaluations = provider.goal_evaluations
+                _, duplicate = browser.text(set_command, reply=destination, original_id=goal_id)
+                self.assertIs(duplicate["new_input"], False)
+                if provider.goal_met:
+                    self.assertEqual((phase, status, answer),
+                                     ("accepted", "completed", provider.quote_response))
+                    self.assertEqual(evaluations, 1)
+                else:
+                    self.assertEqual((phase, status), ("uncertain", "failed"))
+                    self.assertGreater(evaluations, 1)
+                    _, phase, status, answer = command_result("/goal")
+                    self.assertEqual((phase, status), ("accepted", "completed"))
+                    self.assertIn(condition, answer)
+                    _, phase, status, answer = command_result("/goal clear")
+                    self.assertEqual((phase, status), ("accepted", "completed"))
+                    self.assertIn("Goal cleared", answer)
+                    self.assertIn(condition, answer)
+                _, phase, status, answer = command_result("/goal")
+                self.assertEqual((phase, status), ("accepted", "completed"))
+                self.assertIn("No goal set.", answer)
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,t.status,t.native_thread_id FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (goal_id,),
+                ), [("accepted", "completed", native)] if provider.goal_met else
+                    [("uncertain", "failed", native)])
+                self.assertEqual(provider.goal_evaluations, evaluations)
+                self.assertEqual(provider.calls, calls)
+
+                journey.wait(lambda: any(answer in row.get("preview", "")
+                                         for row in browser.get("/api/interaction")["items"]))
+
             browser.client.cookies.clear()
             blocked = str(uuid.uuid4())
+            blocked_command = "/goal Report a denied fixture action." if lifecycle else "/goal"
             response = browser.client.post("/api/interaction/inputs", json={
-                "id": blocked, "binding": browser.binding, "reply": destination, "text": "/goal",
+                "id": blocked, "binding": browser.binding, "reply": destination, "text": blocked_command,
             }, headers=browser.device_headers)
             self.assertEqual(response.status_code, 503, response.text)
             self.assertEqual(journey.row("SELECT phase FROM conversation_inputs WHERE id=?", (blocked,)),

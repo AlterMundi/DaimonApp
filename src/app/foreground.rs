@@ -859,9 +859,6 @@ pub(super) async fn run_routed_portable(
             _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
             result = super::matrix::authenticate_foreground_body(&config.transport,&source) => result,
         }?;
-        let resume = if engine==ForegroundEngine::Claude {
-            store.routed_claude_continuations(local,&body)?
-        } else {Vec::new()};
         let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
@@ -877,6 +874,14 @@ pub(super) async fn run_routed_portable(
             "Direct Conversation goal no longer matches its retained selection"
         );
         let native_goal_command = owned_goal && (direct_original || conversation_goal);
+        // A new status or clear command can address a goal that is still
+        // active after the preceding invocation ended without a result.
+        let goal_control = native_goal_command && crate::interaction::native_claude_goal_control(&input.text);
+        let resume = if engine == ForegroundEngine::Claude {
+            store.routed_claude_continuations(local, &body, goal_control)?
+        } else {
+            Vec::new()
+        };
         let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
@@ -934,6 +939,10 @@ pub(super) async fn run_routed_portable(
                         || missing_resume.as_ref().is_some_and(|(scope, _)| {
                             prepared["native_session_scope"].as_str() != Some(scope.as_str())
                         })
+                        || (goal_control && !resume.is_empty() && !resume.iter().any(|prior| {
+                            prepared["native_session_id"].as_str() == Some(prior.session_id.as_str())
+                                && prepared["native_session_scope"].as_str() == Some(prior.scope.as_str())
+                        }))
                     {
                         return Ok(false);
                     }

@@ -547,6 +547,7 @@ impl Store {
         &self,
         local: i64,
         body: &Value,
+        goal_control: bool,
     ) -> Result<Vec<ClaudeContinuation>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         // The worker has already been selected for this authenticated body.
@@ -572,15 +573,19 @@ impl Store {
                 FROM prior WHERE id>coalesce((SELECT max(id) FROM prior WHERE scope='resume_unavailable'),0)
              )
              SELECT native_thread_id,scope FROM ranked
-             WHERE position=1 AND status='completed' AND scope IS NOT NULL
+             WHERE position=1 AND (status='completed' OR (?3 AND status='failed'))
+               AND scope IS NOT NULL
              ORDER BY id DESC LIMIT 8",
         )?;
-        let rows = entries.query_map(params![local, serde_json::to_string(body)?], |row| {
-            Ok(ClaudeContinuation {
-                session_id: row.get(0)?,
-                scope: row.get(1)?,
-            })
-        })?;
+        let rows = entries.query_map(
+            params![local, serde_json::to_string(body)?, goal_control],
+            |row| {
+                Ok(ClaudeContinuation {
+                    session_id: row.get(0)?,
+                    scope: row.get(1)?,
+                })
+            },
+        )?;
         let mut valid = Vec::new();
         for row in rows {
             let row = row?;
@@ -1387,7 +1392,9 @@ mod tests {
         });
         record("completed", &second, &other_incarnation);
         let (local, _) = record("running", "", &body);
-        let scopes = store.routed_claude_continuations(local, &body).unwrap();
+        let scopes = store
+            .routed_claude_continuations(local, &body, false)
+            .unwrap();
         assert_eq!(
             scopes
                 .iter()
@@ -1395,16 +1402,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![from_previous_manifest.as_str(), one.as_str()]
         );
-        record("failed", &first, &body);
+        let (_, unfinished) = record("failed", &first, &body);
         let (next, _) = record("running", "", &body);
-        let scopes = store.routed_claude_continuations(next, &body).unwrap();
+        let scopes = store
+            .routed_claude_continuations(next, &body, false)
+            .unwrap();
         assert_eq!(scopes.len(), 1);
         assert_eq!(scopes[0].session_id, from_previous_manifest);
+        assert_eq!(
+            store
+                .routed_claude_continuations(next, &body, true)
+                .unwrap()[0]
+                .session_id,
+            unfinished
+        );
         record("failed", "resume_unavailable", &body);
         let (next, _) = record("running", "", &body);
         assert!(
             store
-                .routed_claude_continuations(next, &body)
+                .routed_claude_continuations(next, &body, false)
                 .unwrap()
                 .is_empty()
         );
