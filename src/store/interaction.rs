@@ -542,7 +542,7 @@ pub(super) fn target_execution_allowed_on(
     target_execution_matches_on(conn, input, None)
 }
 
-fn target_execution_matches_on(
+pub(super) fn target_execution_matches_on(
     conn: &Connection,
     input: &crate::interaction::Instruction,
     native: Option<&str>,

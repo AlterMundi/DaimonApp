@@ -76,6 +76,62 @@ fn current_epoch(conn: &Connection, human: i64) -> Result<String> {
         .unwrap_or_else(|| "initial".into()))
 }
 
+pub(super) fn later_completion_source_on(
+    conn: &Connection,
+    human: i64,
+    local: i64,
+    native: &str,
+    request: &str,
+    coverage: &crate::interaction::Coverage,
+) -> Result<Option<Instruction>> {
+    // A declaration selects one still-open dependency. Find the original
+    // accepted helper input, never derive authority from the result text alone.
+    let original: Option<String> = conn
+        .query_row(
+            "SELECT i.id FROM interaction_session_requests c
+             JOIN interaction_request_links l ON l.instruction_id=c.target_instruction
+             JOIN interaction_instructions i ON i.id=l.instruction_id
+             JOIN turns later ON later.id=?2 AND later.session_id=i.session_id
+             JOIN turns prior ON prior.id=json_extract(i.doc,'$.local_turn')
+             WHERE c.human_id=?1 AND c.phase='requested' AND l.request_id=?4
+               AND i.phase='accepted' AND prior.id<later.id AND prior.status='completed'
+               AND prior.session_id=later.session_id AND prior.from_user_id=?1
+               AND later.from_user_id=?1 AND later.native_thread_id=?3
+               AND prior.execution_generation=later.execution_generation
+               AND prior.execution_harness=later.execution_harness
+               AND json_extract(i.doc,'$.native_thread')=?3
+               AND NOT EXISTS (
+                   SELECT 1 FROM interaction_session_withdrawals w
+                   WHERE w.parent_instruction=c.parent_instruction
+               )",
+            params![human, local, native, request],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(id) = original else { return Ok(None) };
+    if !coverage
+        .completed
+        .iter()
+        .any(|completed| completed == request)
+        || !coverage.covered.contains(&id)
+        || coverage.deferred.contains(&id)
+    {
+        return Ok(None);
+    }
+    let input = instruction_on(conn, &id, human)?;
+    let (current, correction) = super::routing::freshness(conn, request, &coverage.covered, true)?;
+    if !current
+        || correction
+        || input.admission_epoch.as_deref() != Some(current_epoch(conn, human)?.as_str())
+        || !super::interaction::target_execution_matches_on(conn, &input, Some(native))?
+        || super::stopping::fenced_on(conn, input.target)?
+        || super::maintenance_writer_held_on(conn, input.target)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(input))
+}
+
 fn save_epoch(conn: &Connection, i: &mut Instruction, epoch: &str) -> Result<()> {
     i.admission_epoch = Some(epoch.to_owned());
     conn.execute(

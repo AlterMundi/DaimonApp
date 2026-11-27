@@ -275,6 +275,52 @@ def deferred_logical_completion(binary):
     finally:j.close()
 
 
+def later_helper_completion(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare()
+        j.admit('#Alpha Consult Beta and retain its result.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        _, admitted = j.request()
+        request = admitted['request']['id']
+        j.defer(7)
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        j.defer(8)
+        j.idle()
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('requested',)]
+        assert len(j.instructions(7)) == 1
+
+        native = 'native-topic-8'
+        previous = j.runs[native]
+        j.admit('Continue your existing work here.', topic=8)
+        j.wait(lambda: j.runs.get(native) not in (None, previous))
+        j.wait(lambda: j.row("SELECT count(*) FROM interaction_direct_parents") == [(1,)])
+        j.answer(8, 'A direct reply without the original covered instruction.',
+                 covered=[], item='not-the-selected-answer', finish=False)
+        j.wait(lambda: j.row("SELECT count(*) FROM interaction_native_messages WHERE item_id='not-the-selected-answer'") == [(1,)])
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('requested',)]
+
+        helper = j.instructions(8)[0]
+        selected = json.loads(helper[2])['requests']
+        claim = {'requests': selected, 'covered': [helper[0]], 'completed': selected}
+        answer = 'Beta finished the exact deferred dependency.'
+        params = {'turnId': j.runs[native], 'item': {'id': 'later-completion',
+            'type': 'agentMessage', 'phase': 'final_answer',
+            'text': answer + '\n<daimon-result>' + json.dumps(claim) + '</daimon-result>'}}
+        j.broadcast(native, 'item/completed', params)
+        j.broadcast(native, 'item/completed', params)
+        j.broadcast(native, 'turn/completed', {'turn': {'id': j.runs[native], 'status': 'completed'}})
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('returned',)]
+        assert len(j.internal_delivery(answer)) == 1
+        assert len(j.instructions(8)) == 2
+        j.answer(7, 'The consultation returned to its original caller.')
+        j.idle()
+        print('PASS a later ordinary native turn links one exact pending helper, with one internal return on duplicate final observation')
+    finally:
+        j.close()
+
+
 def completed_group_not_renarrated(binary,mixed=False):
     j=Sessions(binary,control=True)
     try:
@@ -332,6 +378,7 @@ if __name__=='__main__':
     direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
     deferred_logical_completion(binary)
+    later_helper_completion(binary)
     completed_group_not_renarrated(binary)
     completed_group_not_renarrated(binary,mixed=True)
     cancelled_caller(binary)
