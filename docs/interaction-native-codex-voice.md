@@ -1728,3 +1728,11 @@ per-document and total byte budgets. A closed producer remains available for exa
 readback and uses only the retained-history allowance. Late caption recovery
 must acquire unfinished capacity before reopening context delivery. At the total
 bound the existing refusal preserves originals and requires retention maintenance.
+
+### Browser departure after an explicit close
+
+An authenticated explicit close retains its existing 30-second provider drain
+if the browser disconnects or a close notification cannot reach it. The server
+continues checking the same actor and native binding. It stores any confirmed
+final usage from the already attached trusted sideband. Browser loss before
+a close never creates a close intent, and an uncertain command is never retried.

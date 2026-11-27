@@ -233,6 +233,7 @@ def install(app, config, provider, authorize, origins):
         preparation_stopped=threading.Event()
         visit=human=binding=None;meta={};startup_stage=None
         admitted=False;closing=False;close_deadline=None;native_failure=False;returns_unavailable=False
+        browser_gone=False
         async def message(limit):
             raw=await socket.receive_text()
             if len(raw.encode())>limit:raise ValueError('Public voice control exceeds bound')
@@ -240,8 +241,16 @@ def install(app, config, provider, authorize, origins):
             if not isinstance(value,dict):raise ValueError('Select one public voice action')
             return value
         async def send(value):
+            nonlocal browser_gone
+            if browser_gone:
+                return
             await recheck()
-            await asyncio.wait_for(socket.send_json(value),3)
+            try:
+                await asyncio.wait_for(socket.send_json(value),3)
+            except (WebSocketDisconnect, TimeoutError):
+                if not closing:
+                    raise
+                browser_gone=True
         async def current_owner():
             if await asyncio.to_thread(provider.public_live_binding,binding)!=owner:
                 raise ValueError('Public voice owner changed')
@@ -404,7 +413,8 @@ def install(app, config, provider, authorize, origins):
                 startup_stage=None
                 read_browser=asyncio.create_task(message(1024))
                 while True:
-                    done,_=await asyncio.wait((read_provider,read_browser),timeout=.5,return_when=asyncio.FIRST_COMPLETED)
+                    readers=(read_provider,) if read_browser is None else (read_provider,read_browser)
+                    done,_=await asyncio.wait(readers,timeout=.5,return_when=asyncio.FIRST_COMPLETED)
                     await recheck();await current_owner()
                     # Consume source events first when a close races a queued
                     # delegation. A browser assertion cannot complete backend work.
@@ -449,8 +459,18 @@ def install(app, config, provider, authorize, origins):
                                 await asyncio.to_thread(serve_context,history,visit,human,
                                     owner,provider,sideband,event.get('delegation_id'))
                         read_provider=asyncio.create_task(asyncio.to_thread(sideband.receive))
+                    action=None
                     if read_browser in done:
-                        action=read_browser.result()
+                        try:
+                            action=read_browser.result()
+                        except WebSocketDisconnect:
+                            if not closing:
+                                raise
+                            # The authenticated close already owns this bounded
+                            # drain. Browser loss cannot erase a provider receipt.
+                            browser_gone=True
+                            read_browser=None
+                    if action is not None:
                         if source_seals and action.get('type')=='source_sealed' and not closing:
                             receipt=await asyncio.to_thread(accept_seal,history,visit,human,owner,action,provider)
                             await send({'type':'source_seal_recorded','visit':visit,'seal':receipt})
