@@ -192,8 +192,8 @@ window.ConversationSurface=(()=>{
       if(s!==current||!s.pending||s.checking)return;
       s.checking=true;
       try{
-        const {id,original}=s.pending;
-        const value=sendAgain&&original?await retry(original):await check(id);
+        const {id,original,text}=s.pending;
+        const value=sendAgain&&original?await retry(original):await check(id,text);
         if(current===s)confirm(value);
       }
       catch{/* An absent or unknown receipt must not repeat the input. */}
