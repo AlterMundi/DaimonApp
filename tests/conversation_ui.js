@@ -1184,9 +1184,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   early.ended=true;const continuing=early.handlers.ended();assert.deepEqual(incremental.clock.pending(),[60]);incremental.clock.fire(60);await continuing;await until(()=>incremental.audioCalls.length===3&&!early.paused).catch(e=>{throw Error(JSON.stringify({calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-state').textContent,audioState:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120,420],'Continuation consumes its exact cached attempt and prepares only the next segment');
   incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(60);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
-  for (const expiry of [1000,3000]) {
+  for (const audio of [
+    {expiry:1000},{expiry:3000},
+    {expiry:1000,progressive:true,audioEncoding:'pcm_s16le'},{expiry:3000,progressive:true,audioEncoding:'pcm_s16le'},
+  ]) {
+    const {expiry,...transport}=audio;
     let now=0;
-    const continued=boot(false,true,{clock:true,incremental:true,monotonic:()=>now});
+    const continued=boot(false,true,{clock:true,incremental:true,monotonic:()=>now,...transport});
     continued.audio();continued.replyTexts.set('native:9','Measured sentence. '.repeat(80));await continued.ui.refresh();
     continued.nodes.get('#conversation-voice-replies').handlers.click();continued.addReplies(1);await continued.ui.refresh();
     const boundaryPlayer=continued.nodes.get('#conversation-audio');
