@@ -140,6 +140,17 @@ def direct_topic_request_and_return(binary):
         j.allow_native_launch = True
         j.admit('Keep working here.', topic=7)
         j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+        for fields in (
+            {'forward_origin': {'type': 'hidden_user', 'date': 1, 'sender_user_name': 'Another human'}},
+            {'via_bot': {'id': 214, 'is_bot': True, 'first_name': 'Another bot'}},
+        ):
+            previous = len(j.packets['native-topic-7'])
+            update = j.admit('A quote delivered normally, but not a human authorization.',
+                             topic=7, message_fields=fields)
+            j.wait(lambda: len(j.packets['native-topic-7']) > previous)
+            j.wait(lambda: j.row('SELECT status FROM incoming_updates WHERE update_id=?', (update,)) == [('started',)])
+            ok, inputs = j.tool(7, 'inputs', {})
+            assert ok and not any(i.get('original_ingress_update') == update for i in inputs['inputs'])
         original = 'Ask Beta for a scoped read-only result and bring it back here.'
         update = j.admit(original, topic=7)
         j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(2,)])
@@ -179,7 +190,8 @@ def direct_topic_request_and_return(binary):
         # The original direct collector may still be busy. The return goes to
         # the same logical owner after it settles, without replaying the original.
         thread = 'native-topic-7'
-        if len(j.packets[thread]) == 2:
+        if not any('Scoped direct-topic dependency result.' in p['input'][0]['text']
+                   for p in j.packets[thread]):
             turn = j.runs[thread]
             j.broadcast(thread, 'turn/completed', {'turn': {'id': turn, 'status': 'completed'}})
         j.wait(lambda: any(

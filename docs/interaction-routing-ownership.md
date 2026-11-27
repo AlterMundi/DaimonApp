@@ -68,9 +68,12 @@ to identify the exact accepted human message in this physical turn, then calls
 stable selector, a stable request key and attributed text describing the scope
 and checkpoints. The same path accepts a routed human original. Direct Telegram
 input and direct app input keep their existing presentation and submission paths;
-a native receipt makes the original discoverable for this bounded operation.
-The parent metadata follows the retained original's lifecycle. It queues no
-native input, uses no polling and does not replay an earlier message.
+a native receipt makes its direct paired-human original discoverable for this
+bounded operation. Forwarded and bot-authored text stays in ordinary input
+without becoming coordination authority. Direct voice requires its committed
+source-bound transcript. Eligible parent metadata shares the acceptance
+transaction and follows the retained original's lifecycle. It queues no native
+input, uses no polling and does not replay an earlier message.
 
 The destination receives a session-authored instruction and the original's
 channel/message reference. It can return current completed evidence to the
