@@ -312,6 +312,32 @@ body and catalog scope. Existing Codex threads remain distinct from portable
 native sessions. Changing a target's configured harness or body leaves prior
 instructions attached to their recorded destination.
 
+### Qualify a newly provisioned embodiment
+
+Run the same receiving checks for each selected harness. Use a disposable
+test topic and synthetic content, and record the effective adapter version
+and observed outcome by capability:
+
+- Verify the signed body and paired human, the loaded body and repository
+  guidance, and the selected skill revisions. Exercise the actual shared DMK
+  and tool grants.
+- Submit a direct topic message and then an original from the integrating
+  conversation. Check where each canonical reply lands, including Telegram when
+  selected. Exercise attributed progress separately from the final answer.
+- Where the adapter exposes the controller, use its named target catalog and
+  stable selectors to send one ordinary cross-topic request from a human
+  original. Verify admission and the correlated return, including an immutable
+  retry. Internal dependencies and explicitly selected topic publications keep
+  their respective audiences.
+- Where the adapter supports continuation, resume the same native session after
+  an ordinary orientation or skill update and verify access to a known prior
+  fact. Record any fresh-only limit as an adapter capability gap.
+
+These checks use the provisioned body and its own grants. An existing Claude
+session or a passing Gateway-only fixture cannot qualify another body or
+harness. Keep unsupported operations visible in the adapter's reported
+capabilities.
+
 Deploy the Gateway that supports ordinary paired submit and retry before
 updating the dashboard writer that uses those commands.
 
