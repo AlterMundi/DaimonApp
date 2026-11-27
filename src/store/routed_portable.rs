@@ -337,44 +337,96 @@ pub(super) fn claude_telegram_quote_on(
 }
 
 fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
-    let exchange: Option<(i64, String, String)> = conn.query_row(
-        "SELECT prior.id,json_extract(source.doc,'$.text'),result.body
-         FROM turns current
-         JOIN conversation_entry_generations generation ON generation.session_id=current.session_id
-         JOIN sessions owner ON owner.id=current.session_id AND owner.creator_user_id=current.from_user_id
-         JOIN users human ON human.tg_user_id=owner.creator_user_id AND human.allowed=1
-         JOIN turns prior ON prior.session_id=current.session_id
-         JOIN bot_state root ON root.key='execution_root:'||prior.id
-         JOIN interaction_instructions instruction ON instruction.id=json_extract(root.value,'$')
-           AND instruction.session_id=prior.session_id AND instruction.phase='accepted'
-         JOIN interaction_sources source ON source.id=instruction.input_id AND source.human_id=current.from_user_id
-         JOIN interaction_results result ON result.local_turn=prior.id AND result.native_thread=prior.native_thread_id
-           AND result.native_turn='gateway:claude:'||instruction.id AND result.item_id='final'
-         WHERE current.id=?1 AND current.status='running'
-           AND current.execution_generation=generation.generation
-           AND prior.id<current.id AND prior.status='completed'
-           AND prior.from_user_id=current.from_user_id AND prior.execution_generation=current.execution_generation
-           AND prior.execution_harness='claude'
-           AND json_extract(prior.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
-           AND json_extract(prior.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId')
-           AND source.origin_chat=owner.chat_id
-           AND ((source.channel LIKE 'telegram:%' AND source.origin_thread=owner.thread_id)
-             OR (source.channel='conversation' AND EXISTS (
-                 SELECT 1 FROM conversation_inputs original WHERE original.id=source.event_id
-                   AND original.human_id=current.from_user_id AND original.retired=0
-                   AND json_extract(original.doc,'$.paired_actor')=1)))
-           AND json_type(source.doc,'$.tribu_source') IS NOT 'object'
-           AND json_type(source.doc,'$.text')='text'
-         ORDER BY prior.id DESC LIMIT 1",
+    let exchange: Option<(i64, String, String, String)> = conn.query_row(
+        "WITH owned AS (
+            SELECT p.id,p.session_id,p.from_user_id,p.native_thread_id,p.execution_harness,
+                   owner.chat_id,owner.thread_id,p.prompt
+            FROM turns current
+            JOIN conversation_entry_generations g ON g.session_id=current.session_id
+            JOIN sessions owner ON owner.id=current.session_id AND owner.creator_user_id=current.from_user_id
+            JOIN users human ON human.tg_user_id=owner.creator_user_id AND human.allowed=1
+            JOIN turns p ON p.session_id=current.session_id AND p.from_user_id=current.from_user_id
+            WHERE current.id=?1 AND current.status='running' AND current.execution_generation=g.generation
+              AND p.id<current.id AND p.status='completed' AND p.execution_generation=g.generation
+              AND ((p.execution_harness='claude'
+                    AND json_extract(p.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
+                    AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId'))
+                OR (p.execution_harness='codex' AND p.native_thread_id=owner.codex_thread_id))
+         ), routed AS (
+            SELECT prior.id,json_extract(source.doc,'$.text') AS human,result.body AS assistant,
+                   prior.execution_harness AS harness
+            FROM owned prior
+            JOIN bot_state root ON root.key='execution_root:'||prior.id
+            JOIN interaction_instructions instruction ON instruction.id=json_extract(root.value,'$')
+              AND instruction.session_id=prior.session_id AND instruction.phase='accepted'
+            JOIN interaction_sources source ON source.id=instruction.input_id AND source.human_id=prior.from_user_id
+            JOIN interaction_results result ON result.local_turn=prior.id AND result.native_thread=prior.native_thread_id
+            WHERE ((prior.execution_harness='claude'
+                    AND result.native_turn='gateway:claude:'||instruction.id AND result.item_id='final')
+                OR (prior.execution_harness='codex'
+                    AND result.native_turn=json_extract(instruction.doc,'$.native_turn')
+                    AND NOT EXISTS (SELECT 1 FROM interaction_instructions sibling
+                      WHERE sibling.session_id=prior.session_id AND sibling.id<>instruction.id
+                        AND sibling.phase='accepted' AND json_extract(sibling.doc,'$.local_turn')=prior.id
+                        AND json_extract(sibling.doc,'$.native_turn')=result.native_turn)
+                    AND EXISTS (SELECT 1 FROM interaction_native_messages m
+                      WHERE m.local_turn=prior.id AND m.native_thread=result.native_thread
+                        AND m.native_turn=result.native_turn AND m.item_id=result.item_id AND m.phase='final_answer')))
+              AND source.origin_chat=prior.chat_id
+              AND ((source.channel LIKE 'telegram:%' AND source.origin_thread=prior.thread_id)
+                OR (source.channel='conversation' AND EXISTS (
+                    SELECT 1 FROM conversation_inputs original WHERE original.id=source.event_id
+                      AND original.human_id=prior.from_user_id AND original.retired=0
+                      AND json_extract(original.doc,'$.paired_actor')=1)))
+              AND json_type(source.doc,'$.tribu_source') IS NOT 'object'
+              AND json_type(source.doc,'$.text')='text'
+         ), direct AS (
+            SELECT prior.id,
+                   coalesce(json_extract(original.payload_json,'$.message.text'),
+                            json_extract(original.payload_json,'$.message.caption')) AS human,
+                   native.text AS assistant, prior.execution_harness AS harness
+            FROM owned prior
+            JOIN bot_state root ON root.key='execution_root:'||prior.id AND json_type(root.value,'$')='null'
+            JOIN incoming_updates original ON original.turn_id=prior.id AND original.status='settled'
+            JOIN native_input_receipts receipt ON receipt.update_id=original.update_id
+              AND receipt.native_thread=prior.native_thread_id
+            JOIN interaction_native_messages native ON native.local_turn=prior.id
+              AND native.native_thread=receipt.native_thread AND native.native_turn=receipt.native_turn
+              AND native.phase='final_answer'
+            WHERE prior.execution_harness='codex'
+              AND (SELECT count(*) FROM native_input_receipts other
+                   WHERE other.native_thread=receipt.native_thread AND other.native_turn=receipt.native_turn)=1
+              AND (json_extract(original.payload_json,'$.direct_human_text')=1
+                OR json_extract(original.payload_json,'$.direct_human_attachment')=1)
+              AND trim(coalesce(json_extract(original.payload_json,'$.message.text'),
+                                json_extract(original.payload_json,'$.message.caption')),
+                       char(9)||char(10)||char(13)||' ')=prior.prompt
+              AND NOT EXISTS (SELECT 1 FROM interaction_instructions i WHERE i.session_id=prior.session_id
+                AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=prior.id
+                AND json_extract(i.doc,'$.native_turn')=receipt.native_turn)
+              AND json_extract(original.payload_json,'$.message.from.id')=prior.from_user_id
+              AND json_extract(original.payload_json,'$.message.chat.id')=prior.chat_id
+              AND coalesce(json_extract(original.payload_json,'$.message.message_thread_id'),0)=prior.thread_id
+              AND (SELECT count(*) FROM incoming_updates receipts WHERE receipts.turn_id=prior.id)=1
+              AND (SELECT count(*) FROM interaction_native_messages finals WHERE finals.local_turn=prior.id
+                   AND finals.native_thread=receipt.native_thread AND finals.native_turn=receipt.native_turn
+                   AND finals.phase='final_answer')=1
+         )
+         SELECT id,human,assistant,harness FROM (
+            SELECT * FROM routed UNION ALL SELECT * FROM direct
+         ) WHERE human IS NOT NULL ORDER BY id DESC LIMIT 1",
         params![local, body.to_string()],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     ).optional()?;
-    let Some((turn, human, assistant)) = exchange else {
+    let Some((turn, human, assistant, harness)) = exchange else {
         return Ok(None);
     };
     // Keep both originals whole. Never offer a clipped proposal as the
     // evidence for an approval. A broader history reader can page it later.
-    let seed = json!({"turn":turn,"human":human,"assistant":assistant});
+    let mut seed = json!({"turn":turn,"human":human,"assistant":assistant});
+    if harness == "codex" {
+        seed["harness"] = json!(harness);
+    }
     Ok((!human.trim().is_empty()
         && !assistant.trim().is_empty()
         && serde_json::to_vec(&seed)?.len() <= 12 * 1024)
@@ -902,6 +954,58 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_checkpoint_reads_a_direct_codex_exchange_from_the_same_owned_topic() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let session = store.ensure_session(key, 100, &defaults).unwrap();
+        store.set_session_codex_thread(key, "codex-native").unwrap();
+        let conn = store.conn.lock().unwrap();
+        let (prior, current) = {
+            let request = TurnRequest {
+                session_key: key,
+                from_user_id: 100,
+                prompt: "Review the project.".into(),
+                runtime_instructions: None,
+                attachments: vec![],
+                review_mode: None,
+                override_search_mode: None,
+            };
+            let prior =
+                super::super::record_turn_started_on(&conn, session.id, &request, None).unwrap();
+            conn.execute(
+                "UPDATE turns SET status='completed',native_thread_id='codex-native' WHERE id=?1",
+                [prior],
+            )
+            .unwrap();
+            let current =
+                super::super::record_turn_started_on(&conn, session.id, &request, None).unwrap();
+            (prior, current)
+        };
+        let input = json!({"direct_human_text":true,"message":{"chat":{"id":100},"from":{"id":100},
+            "message_thread_id":7,"text":"Review the project."}});
+        conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,turn_id,updated_at)
+          VALUES(1,?1,'settled','fixture',?2,'2026-11-27')", params![input.to_string(),prior]).unwrap();
+        conn.execute("INSERT INTO native_input_receipts(update_id,native_thread,native_turn,observed_at) VALUES(1,'codex-native','turn','2026-11-27')",[]).unwrap();
+        conn.execute("INSERT INTO interaction_native_messages(native_thread,native_turn,item_id,local_turn,phase,text,observed_at)
+          VALUES('codex-native','turn','final',?1,'final_answer','I can update it next.','2026-11-27')", [prior]).unwrap();
+        let body = json!({"beingRef":"same","embodimentId":"claude"});
+        assert_eq!(
+            claude_history_seed_on(&conn, current, &body).unwrap(),
+            Some(
+                json!({"turn":prior,"human":"Review the project.","assistant":"I can update it next.","harness":"codex"})
+            )
+        );
+        conn.execute("UPDATE incoming_updates SET payload_json=json_remove(payload_json,'$.direct_human_text')",[]).unwrap();
+        assert!(
+            claude_history_seed_on(&conn, current, &body)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn claude_owned_workspace_change_preserves_the_parked_native_binding() {
