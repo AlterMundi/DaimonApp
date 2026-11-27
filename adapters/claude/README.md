@@ -98,14 +98,29 @@ including the body binding, memory and tools, continue to partition native
 history. Verify a resumed turn and the new installed skill before reporting
 receiving adoption.
 
-For paired topic inputs, Gateway can supply the last completed exchange from
-the current logical topic generation and the same Claude embodiment. It reads
-the retained original and its completed reply, keeping both whole within the
-12 KiB encoded context bound. A compatible native resume takes precedence.
-The adapter labels the older exchange as historical data and keeps it separate
-from the current original. When Claude reports missing native history before
-submission, Gateway retains that result. This path does not resubmit that
-input. A paired Conversation reply to a canonical result carries the exact
+For paired topic inputs, Gateway can supply up to three completed exchanges
+from the current logical topic generation, with one exchange per native lineage.
+It reads the retained originals and completed replies, keeping each exchange
+whole within the 12 KiB encoded context bound. A compatible native resume takes
+precedence, and the worker omits exchanges already in that native session.
+The adapter labels the older exchanges as historical data and keeps them
+separate from the current original.
+
+A project's active checkpoint may be kept as UTF-8 `CONTINUITY.md` (up to 8 KiB)
+in the Gateway-claimed conversation folder. Install it as an owner-only regular
+file and replace it atomically when the project state changes. The Gateway uses
+the conversation's own folder claim even when the working directory is a
+different project checkout. On a fresh Claude session or when supplying retained
+history across a gap, the worker attaches the checkpoint as a separate data
+block. Prefer dated status, verifiable revisions and source pointers. The file
+carries no approvals or instructions. Missing or invalid files and checkpoints
+that exceed the total worker frame budget leave ordinary conversation delivery
+available. When the SDK confirms a selected native history is missing before Gateway
+commits submission, Gateway may prepare one successor under the same routed
+input and local turn. For paired human input, the successor must carry retained
+history or a project checkpoint. Cancellation, mismatched scope, confirmed
+exposure and uncertain outcomes leave the original retained. A paired
+Conversation reply to a canonical result carries the exact
 selected text to either a resumed or fresh Claude context. Gateway retains
 the selected text digest at capture and verifies the original source and
 destination at preparation. A changed delivery status can preserve the same
@@ -168,9 +183,12 @@ by the other embodiment. The worker exposes its current skill files through
 a local Claude plugin with the `compaii-shared` namespace. No skill files are
 copied and no user or project settings are imported. Before submission, the
 SDK's loaded shared skill names must match the selected directory. Claude
-loads a skill through its native `Skill` tool. A changed skill catalog or
-changed `SKILL.md` revision starts a fresh native session for the next
-original, keeping the Interaction conversation and its signed history.
+loads a skill through its native `Skill` tool. With a matching
+`skillContinuity.layoutRevision`, text and conventional version changes keep
+the native session eligible for resume. The worker still checks the exact
+current inventory at submission. Changes to the catalog, paths or
+authority-bearing metadata change the scope and use the logical
+conversation's retained context when a fresh native session is required.
 
 `matrixFoundation` takes the qualified Matrix Foundation stdio `command` and
 the exact permitted `tools` list. Use the owner launcher for the Claude
@@ -393,6 +411,16 @@ Synthetic owner-route tests cover durable sequencing and repeat requests after
 restart. Live Matrix credentials, provider inference, native session recovery,
 signed reply delivery and human readback require receiving evidence.
 
+When updating either Gateway or the adapter, qualify the exact worker command
+and profile selected by the candidate configuration, including when the
+Gateway executable itself is unchanged. Gateway configuration preflight
+does not start the native worker. For a paired topic with Matrix messaging
+enabled, run the selected worker with the retained native session, body, and
+workspace, then deny the submission decision. Require the expected session
+and scope on `prepare_submission` and a `not_submitted` outcome. This checks
+the live OAuth account and MCP inventory before switching versions and catches
+an older worker that cannot parse the selected messaging profile.
+
 ### Signed interop with the native SDK
 
 Use the pinned Matrix checkout's `src` and repository root in `PYTHONPATH`.
@@ -428,4 +456,24 @@ For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
 external Telegram transport unavailable and no usable Codex executable.
 `CLAUDE_TEST_WORKER_PATH` can select that candidate's exact worker source.
+
+For the routed topic tests, invoke the release binary under its `telecodex`
+name, which allows the fixture to initialize a disposable Codex session before
+switching its Telegram transport to external. Set
+`FOREGROUND_TEST_TELEGRAM_TOPIC=1`; the default case checks ordinary input,
+result projection, native goal commands and a local session request. Add
+`FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to remove the fixture's prior native
+history and verify the same original reaches a successor with retained context.
+Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
+
+- `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_TELEGRAM_STEER=1` for Telegram and Conversation inputs
+  delivered to the already-running Claude turn.
+- `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.
+- `FOREGROUND_TEST_TELEGRAM_CANCEL=1` for a topic-local Stop after exposure
+  and retained uncertainty when Telegram redelivers the original update.
+- `FOREGROUND_TEST_TELEGRAM_DMK_WRITE=1` with `CLAUDE_TEST_DMK_SCRIPTS` for
+  paired MCP recall and one native write through the `dmk` wrapper. The test
+  reads back the exact synthetic record from the same disposable pool.
+
 All Matrix identities, user input and provider output are synthetic.

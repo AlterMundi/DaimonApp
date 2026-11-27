@@ -457,6 +457,58 @@ fn workspace_marker_matches(folder: &Path, claim: &str) -> Result<bool> {
     Ok(true)
 }
 
+pub(super) fn topic_project_checkpoint(folder: &Path, claim: &str) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::MetadataExt;
+
+        const LIMIT: u64 = 8 * 1024;
+        let directory = crate::telegram::open_local_file(folder, folder, true).ok()?;
+        let owner = unsafe { libc::geteuid() };
+        let metadata = directory.metadata().ok()?;
+        if metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+            return None;
+        }
+        let read = |name: &std::ffi::CStr, limit: u64| -> Option<String> {
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return None;
+            }
+            let file = unsafe { fs::File::from_raw_fd(fd) };
+            let metadata = file.metadata().ok()?;
+            if !metadata.is_file()
+                || metadata.uid() != owner
+                || metadata.mode() & 0o077 != 0
+                || metadata.nlink() != 1
+                || metadata.len() > limit
+            {
+                return None;
+            }
+            let mut contents = String::new();
+            file.take(limit + 1).read_to_string(&mut contents).ok()?;
+            (contents.len() as u64 <= limit).then_some(contents)
+        };
+        if read(c".daimon-topic", claim.len() as u64)? != claim {
+            return None;
+        }
+        let checkpoint = read(c"CONTINUITY.md", LIMIT)?;
+        (!checkpoint.trim().is_empty() && !checkpoint.contains('\0')).then_some(checkpoint)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (folder, claim);
+        None
+    }
+}
+
 pub(super) fn publish_workspace_folder(root: &Path, path: &Path, claim: &str) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => {
@@ -731,6 +783,32 @@ pub(super) fn workspace_owner_command(app: &App, human: i64, args: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn project_checkpoint_requires_the_claimed_private_regular_file() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = root.path().join(".daimon-topic");
+        let checkpoint = root.path().join("CONTINUITY.md");
+        fs::write(&marker, "claim").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(topic_project_checkpoint(root.path(), "claim").is_none());
+        symlink(&marker, &checkpoint).unwrap();
+        assert!(topic_project_checkpoint(root.path(), "claim").is_none());
+        fs::remove_file(&checkpoint).unwrap();
+        fs::write(&checkpoint, "Verified branch and commit.").unwrap();
+        fs::set_permissions(&checkpoint, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(topic_project_checkpoint(root.path(), "other").is_none());
+        assert_eq!(
+            topic_project_checkpoint(root.path(), "claim").as_deref(),
+            Some("Verified branch and commit.")
+        );
+        fs::write(checkpoint, "x".repeat(8 * 1024 + 1)).unwrap();
+        assert!(topic_project_checkpoint(root.path(), "claim").is_none());
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]

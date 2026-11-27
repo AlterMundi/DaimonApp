@@ -88,6 +88,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             steer = getattr(self.server, "steer_fixture", None)
             if steer:
                 steps = [("Bash", {"command": steer["command"]}, "Native steer gate opened.")]
+            elif write_memory := getattr(self.server, "memory_write_command", None):
+                assert "owner-configured DMK wrapper" in system
+                steps.append(("Bash", {"command": write_memory}, "Native DMK write accepted."))
             elif host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
@@ -175,6 +178,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
                 reason = "end_turn"
+            elif (recovered := getattr(self.server, "expected_recovered_history", None)) is not None:
+                assert submission["native_session_id"] != self.server.previous_session
+                assert any(
+                    "Gateway historical context (JSON):" in block.get("text", "")
+                    and recovered in block.get("text", "")
+                    for message in messages if isinstance(message["content"], list)
+                    for block in message["content"] if block.get("type") == "text"
+                )
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "I recovered the retained design context."}
+                reason = "end_turn"
             elif previous is not None:
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
@@ -204,7 +218,13 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     else:
                         if distinct_request and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
-                        assert expected_result in payload
+                        tool = steps[prior - 1][0]
+                        if tool == "Skill":
+                            # Recent Claude releases return the launch acknowledgment in
+                            # tool_result and the instructions in a separate message.
+                            assert f"Launching skill: {skill}" in payload or expected_result in payload
+                            payload = json.dumps(messages, ensure_ascii=False)
+                        assert expected_result in payload, tool
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:
@@ -242,5 +262,6 @@ class ClaudeProvider(BaseHTTPRequestHandler):
         except Exception as error:
             import traceback
             point = traceback.extract_tb(error.__traceback__)[-1]
-            self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
+            if self.server.failure is None:
+                self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)

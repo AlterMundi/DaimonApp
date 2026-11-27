@@ -325,9 +325,12 @@ operator.main()
                         arg.replace("{port}", str(config["providerPort"]))
                         for arg in json.loads(real_provider)
                     ]
-                if interaction and scripts:
+                dmk_write = telegram_topic and os.environ.get("FOREGROUND_TEST_TELEGRAM_DMK_WRITE") == "1"
+                if dmk_write and scripts is None:
+                    self.fail("The disposable DMK writer fixture needs CLAUDE_TEST_DMK_SCRIPTS")
+                if (interaction or dmk_write) and scripts:
                     python = os.environ.get("CLAUDE_TEST_DMK_PYTHON", sys.executable)
-                    selected, _ = selected_memory(root, python, scripts, being, provider.current, engine)
+                    selected, memory_db = selected_memory(root, python, scripts, being, provider.current, engine)
                     config["sharedDmk"] = {
                         "command": selected["command"][:-2],
                         "bindingFile": selected["command"][-1],
@@ -416,6 +419,24 @@ for await (const line of createInterface({ input: process.stdin })) {
                     helper.write_text("#!/bin/sh\nprintf 'Native shell %s.' 'readback marker'\n")
                     helper.chmod(0o700)
                     config["hostToolDirectory"] = str(host_bin)
+                    if dmk_write:
+                        writer = host_bin / "dmk"
+                        writer.write_text(
+                            f"#!/bin/sh\nexec /bin/bash {shlex.quote(str(scripts / 'hmk'))} \"$@\"\n"
+                        )
+                        writer.chmod(0o700)
+                        provider.memory_db = memory_db
+                        provider.memory_write_text = "A synthetic memory from the paired Claude turn."
+                        command_env = [f"PATH={Path(python).parent}:/usr/bin:/bin",
+                                       f"HMK_WORKSPACE_ROOT={root}",
+                                       f"HMK_AGENT_MEMORY_BASE={root}", f"HMK_DB_PATH={memory_db}"]
+                        command_line = ["env", *command_env, str(host_bin / "dmk"),
+                                        "memoryctl.py", "add-text", "--shelf", "library",
+                                        "--title", "Claude native writer fixture", "--raw",
+                                        provider.memory_write_text]
+                        provider.memory_write_command = shlex.join(command_line) + (
+                            " && printf 'Native DMK write accepted.'"
+                        )
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
@@ -454,6 +475,10 @@ timeout_seconds=5
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
+                                self._telegram_cancel(journey, provider)
+                            elif dmk_write:
+                                self._telegram_dmk_write(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -601,6 +626,58 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_dmk_write(self, journey, provider):
+            provider.original = "Read the selected fixture memory and save one synthetic record."
+            provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            self.assertEqual(str(update), provider.human_original)
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=35)
+            self.assertIsNone(provider.failure)
+            with sqlite3.connect(provider.memory_db.as_uri() + "?mode=ro", uri=True) as connection:
+                rows = connection.execute(
+                    "SELECT raw FROM chapters WHERE title='Claude native writer fixture'"
+                ).fetchall()
+            self.assertEqual(rows, [(provider.memory_write_text,)])
+
+        def _telegram_cancel(self, journey, provider):
+            native_turns = journey.native_turns
+            provider.exposed, provider.hold = Event(), Event()
+            provider.original = "Keep this synthetic original if I interrupt the selected turn."
+            provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+
+            def state():
+                return journey.row(
+                    "SELECT i.id,i.phase,t.status,s.busy FROM interaction_sources x "
+                    "JOIN interaction_instructions i ON i.input_id=x.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "JOIN sessions s ON s.id=t.session_id WHERE x.event_id=?", (str(update),)
+                )
+
+            try:
+                self.assertTrue(provider.exposed.wait(8), provider.failure)
+                ident = state()[0][0]
+                self.assertEqual(state(), [(ident, "submitting", "running", 1)])
+                journey.command("/stop", "Stop signal sent.", topic=7)
+                journey.wait(lambda: state() == [(ident, "uncertain", "failed", 0)])
+            finally:
+                provider.hold.set()
+
+            original = json.loads(journey.row("SELECT payload_json FROM incoming_updates WHERE update_id=?",
+                                              (update,))[0][0])
+            duplicate_polled = Event()
+            journey.before_poll_reply = lambda updates: (
+                duplicate_polled.set() if any(event["update_id"] == update for event in updates) else None
+            )
+            with journey.lock:
+                journey.updates.append(original)
+            self.assertTrue(duplicate_polled.wait(5))
+            journey.command("/status", "Claude Code", topic=7)
+            self.assertEqual(state(), [(ident, "uncertain", "failed", 0)])
+            self.assertEqual(provider.exposures, [ident])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+            self.assertEqual(journey.native_turns, native_turns)
 
         def _telegram_quota(self, journey, provider):
             provider.rate_limited = True
@@ -809,6 +886,52 @@ timeout_seconds=5
             self.assertIsNone(provider.failure)
             self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
             self.assertEqual(journey.native_turns, native_turns)
+
+            if os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                # Admission precedes the terminal result. Remove the transcript
+                # only after the resumed worker has finished writing it.
+                journey.wait(lambda: journey.row(
+                    "SELECT t.status FROM turns t JOIN interaction_instructions i "
+                    "ON t.id=json_extract(i.doc,'$.local_turn') WHERE i.id=?",
+                    (instruction,),
+                ) == [("completed",)] and journey.has("I retained the first turn.", 7))
+                previous_native = provider.previous_session
+                fixture_home = Path(json.loads(profile.read_text())["configurationDirectory"])
+                native_files = list((fixture_home / "projects").rglob(previous_native + ".jsonl"))
+                self.assertEqual(len(native_files), 1)
+                native_file = native_files[0]
+                native_file.rename(native_file.with_suffix(".unavailable"))
+                before_missing_resume = len(provider.calls)
+                provider.expected_recovered_history = provider.original
+                provider.original = "Resume this design using the last retained context."
+                provider.human_original = str(journey.sequence + 1)
+                recovery_update = journey.admit(provider.original, topic=7)
+                def recovery():
+                    return journey.row(
+                        "SELECT i.phase,t.status,t.native_thread_id IS NOT NULL "
+                        "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                        "LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                        (str(recovery_update),),
+                    )
+
+                journey.wait(lambda: provider.failure or recovery() and
+                             recovery()[0][0] in ("accepted", "retained_unsent", "rejected", "uncertain")
+                             and recovery()[0][1] != "running", seconds=35)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(recovery(), [("accepted", "completed", 1)])
+                journey.wait(lambda: journey.has("I recovered the retained design context.", 7))
+                del provider.expected_recovered_history
+                self.assertEqual(provider.calls[before_missing_resume:], [
+                    journey.row("SELECT i.id FROM interaction_instructions i "
+                                "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?",
+                                (str(recovery_update),))[0][0]
+                ])
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,t.native_thread_id<>?,t.status FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (previous_native, str(recovery_update))), [("accepted", 1, "completed")])
+                self.assertEqual(journey.native_turns, native_turns)
 
             after_retry = list(provider.calls)
             forwarded_goal = journey.admit("/goal", topic=7, message_fields={
@@ -1352,7 +1475,7 @@ if __name__ == "__main__":
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if interaction or direct or inverse:
         sys.path.insert(0, str(foreground.ROOT))
-    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
+    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction or telegram_topic else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
                             interaction=interaction, direct=direct, mixed=mixed, inverse=inverse,
