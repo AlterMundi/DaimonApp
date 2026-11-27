@@ -44,20 +44,27 @@ async function ownerProfile(path) {
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
+  const guidance = Object.hasOwn(value ?? {}, 'bodyGuidanceFile') ? ['bodyGuidanceFile'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
+  const skillAnchor = Object.hasOwn(value ?? {}, 'skillResumeAnchor') ? ['skillResumeAnchor'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...memory, ...skills, ...foundation, ...hostTools,
+      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...foundation, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
       || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
         || !isAbsolute(value.sharedSkillsDirectory)))
+      || (skillAnchor.length > 0 && (!skills.length
+        || !Array.isArray(value.skillResumeAnchor)
+        || value.skillResumeAnchor.length < 2 || value.skillResumeAnchor.length > 16
+        || new Set(value.skillResumeAnchor).size !== value.skillResumeAnchor.length
+        || !value.skillResumeAnchor.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -65,6 +72,8 @@ async function ownerProfile(path) {
         || !isAbsolute(value.hostToolDirectory) || /[:\0\r\n]/.test(value.hostToolDirectory)))
       || (subscription && (typeof value.subscriptionEmail !== 'string'
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
+      || (guidance.length > 0 && (typeof value.bodyGuidanceFile !== 'string'
+        || !isAbsolute(value.bodyGuidanceFile)))
       || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
       || (displayName.length > 0 && (typeof value.displayName !== 'string'
         || value.displayName !== value.displayName.trim()
@@ -79,6 +88,14 @@ async function ownerProfile(path) {
     throw new Error('Invalid owner profile');
   }
   return value;
+}
+
+async function bodyGuidance(profile, fullAccess) {
+  if (!fullAccess || !profile.bodyGuidanceFile) return undefined;
+  const bytes = await privateBytes(profile.bodyGuidanceFile, 16 * 1024);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trim();
+  if (!text || text.includes('\0')) throw new Error('Invalid body guidance');
+  return text;
 }
 
 async function sharedDmkBinding(profile) {
@@ -187,12 +204,18 @@ async function sharedSkillInventory(root) {
     });
     if (!entry?.isFile()) continue;
     const path = await realpath(file);
-    const digest = createHash('sha256').update(await readFile(path)).digest('hex');
+    const bytes = await readFile(path);
+    const digest = createHash('sha256').update(bytes).digest('hex');
     revision.update(JSON.stringify([name, path, digest]));
     names.push(`${SKILL_NAMESPACE}:${name}`);
   }
   if (!names.length) throw new Error('Selected shared skills directory is empty');
   return { names, revision: revision.digest('hex') };
+}
+
+function skillScopeRevision(profile, inventory) {
+  const anchor = profile.skillResumeAnchor;
+  return anchor?.includes(inventory.revision) ? anchor[0] : inventory.revision;
 }
 
 async function sharedSkillPlugin(root, names, directory) {
@@ -300,6 +323,13 @@ async function main() {
     process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
     return;
   }
+  if (flag === '--skill-resume-anchor' && extra.length === 0) {
+    const profile = await ownerProfile(path);
+    if (!profile.sharedSkillsDirectory) throw new Error('Shared skill selection required');
+    const { revision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
+    process.stdout.write(JSON.stringify({ revision }) + '\n');
+    return;
+  }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
   const stop = new AbortController();
   const timeout = setTimeout(() => stop.abort(), 125_000);
@@ -366,8 +396,9 @@ async function main() {
     }
     const { query, createSdkMcpServer, tool } = await import(pathToFileURL(profile.sdk));
     const expectedBody = profile.body;
-    const [binding, skills, foundation] = await Promise.all([
+    const [binding, skills, foundation, guidance] = await Promise.all([
       sharedDmkBinding(profile), sharedSkillInventory(profile.sharedSkillsDirectory), matrixFoundation(profile),
+      bodyGuidance(profile, fullAccess),
     ]);
     if (binding || skills.names.length) scratch = await mkdtemp(join(tmpdir(), 'daimon-claude-'));
     const sharedDmk = binding ? await sharedDmkServer(profile, binding, scratch) : undefined;
@@ -387,18 +418,21 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, controllerSelected, sessionInstructions);
+    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions);
     const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
       const current = await ownerProfile(path);
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
-      const [bytes, inventory, currentFoundation] = await Promise.all([
+      const [bytes, inventory, currentFoundation, currentGuidance] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
+        bodyGuidance(current, fullAccess),
       ]);
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
-      return turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
+      return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
+        && inventory.revision === skills.revision
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -458,7 +492,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, hostTools, controller,
-        fullAccess, routedHuman, sessionInstructions,
+        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,

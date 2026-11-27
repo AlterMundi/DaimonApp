@@ -122,6 +122,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 steps = [
                     (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
                     (CONTROLLER, {"operation": "capabilities", "arguments": {}}, "telecodex.local-session/v1"),
+                    (CONTROLLER, {"operation": "session_request",
+                                  "arguments": {**request, "report_to_topic": True}},
+                     '"kind":"topic_report_destination_unsupported"'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":true'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":false'),
                 ]

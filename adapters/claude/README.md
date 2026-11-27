@@ -36,6 +36,28 @@ verified Matrix body. The native system prompt identifies the harness and this
 display name. Device status and body coordinates still come from the authenticated
 Matrix broker. The prompt does not grant memory, tools or skills.
 
+Set optional `bodyGuidanceFile` to the absolute path of an owner-private UTF-8
+file, at most 16 KiB. Select the receiving being's portable orientation and
+keep the canonical SOUL in its maintained source. The worker appends the file
+to authorized paired or routed host-access turns alongside the current topic
+instructions. Scoped Matrix-only turns keep their existing context. The worker
+checks that the selected text is stable through submission. Guidance updates
+do not change the authorization scope or replace native history. Repository
+guidance remains a separate owner selection. This field grants no resource,
+tool or route and performs no memory or inbox preload.
+
+For a compatible skill update, `--skill-resume-anchor <owner profile>`
+prints the exact installed inventory revision. The optional private
+`skillResumeAnchor` accepts an ordered list of exact inventory revisions.
+Its first revision names the existing native scope. Include a reviewed
+successor only when all installed package changes preserve the effective
+skill and tool grants. The inventory includes skill names, resolved paths
+and SHA-256 of every SKILL.md. An unlisted revision retains its own separate
+scope. The worker rechecks the actual digest before and after recording
+submission. Use separate scopes for permission changes or a confidentiality
+withdrawal. Verify a real resumed turn and a read of the new installed skill
+before reporting receiving adoption.
+
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation
 without `--binding`, `bindingFile` to the owner-local binding for this Claude
