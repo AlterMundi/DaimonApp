@@ -127,6 +127,7 @@ struct AppShared {
     config: Config,
     store: Store,
     telegram: TelegramClient,
+    telegram_dispatchers: telegram_ingress::Dispatchers,
     codex: CodexRunner,
     bot_id: i64,
     bot_metadata: StdMutex<Option<crate::telegram::User>>,
@@ -496,6 +497,7 @@ impl App {
                 config,
                 store,
                 telegram,
+                telegram_dispatchers: Default::default(),
                 codex,
                 bot_id,
                 bot_metadata: StdMutex::new(me),
@@ -807,13 +809,19 @@ impl App {
                     normalize_command(text, self.shared.bot_username().as_deref())
                 {
                     if matches!(command.as_str(), "/status" | "/interrupt" | "/stop") {
-                        self.dispatch_command_text(&user, &message, text).await?;
+                        self.dispatch_command_text(&user, &message, text, None)
+                            .await?;
                         return Ok(());
                     }
                     if engine == crate::interaction::ForegroundEngine::Claude && command == "/topic"
                     {
-                        self.handle_new_topic(&user, &message, (!args.is_empty()).then_some(args))
-                            .await?;
+                        self.handle_new_topic(
+                            &user,
+                            &message,
+                            (!args.is_empty()).then_some(args),
+                            Some(update.update_id),
+                        )
+                        .await?;
                         return Ok(());
                     }
                     if engine == crate::interaction::ForegroundEngine::Claude
@@ -828,7 +836,7 @@ impl App {
                             .get_session(topic_key)?
                             .context("Selected topic is unavailable")?;
                         let reply = if command == "/pwd" {
-                            session.cwd.display().to_string()
+                            self.topic_workspace_description(&session, from.id)?
                         } else {
                             match validate_directory(&args) {
                                 Ok(path) => {
@@ -895,7 +903,15 @@ impl App {
         if routing::handle(self, &message, from.id, text).await? {
             return Ok(());
         }
-        if self.dispatch_command_text(&user, &message, text).await? {
+        if self
+            .dispatch_command_text(
+                &user,
+                &message,
+                text,
+                direct_human_text.then_some(update.update_id),
+            )
+            .await?
+        {
             return Ok(());
         }
         let session_key = SessionKey::new(message.chat.id, message.message_thread_id);
@@ -1106,7 +1122,7 @@ impl App {
         }
         if let Some(command_text) = data.strip_prefix("cmd:") {
             let _ = self
-                .dispatch_command_text(&user, &message, command_text)
+                .dispatch_command_text(&user, &message, command_text, None)
                 .await?;
         }
         Ok(())
@@ -1158,6 +1174,7 @@ impl App {
         user: &crate::models::UserRecord,
         message: &Message,
         text: &str,
+        update: Option<i64>,
     ) -> Result<bool> {
         let session_key = SessionKey::new(message.chat.id, message.message_thread_id);
         let Some((command, args)) = normalize_command(text, self.shared.bot_username().as_deref())
@@ -1193,7 +1210,7 @@ impl App {
             )
             .await?;
         }
-        self.handle_command(user, message, session_key, parsed)
+        self.handle_command(user, message, session_key, parsed, update)
             .await?;
         Ok(true)
     }
@@ -1204,6 +1221,7 @@ impl App {
         message: &Message,
         session_key: SessionKey,
         parsed: ParsedInput,
+        update: Option<i64>,
     ) -> Result<()> {
         match parsed {
             ParsedInput::Forward(text) => {
@@ -1292,7 +1310,7 @@ impl App {
                     }
                 }
                 BridgeCommand::Topic { title } => {
-                    self.handle_new_topic(user, message, title).await?;
+                    self.handle_new_topic(user, message, title, update).await?;
                 }
                 BridgeCommand::Rename { title } => {
                     self.rename_session(user, message, &title, true).await?;
@@ -1387,10 +1405,10 @@ impl App {
                 }
                 BridgeCommand::Pwd => {
                     let session = self.ensure_session(session_key, user.tg_user_id)?;
-                    self.send_status(
+                    self.send_plain_status(
                         message.chat.id,
                         message.message_thread_id,
-                        &format!("`{}`", session.cwd.display()),
+                        &self.topic_workspace_description(&session, user.tg_user_id)?,
                     )
                     .await?;
                 }
@@ -2269,6 +2287,52 @@ impl App {
         Ok(path)
     }
 
+    fn allocate_topic_workspace(
+        &self,
+        root: &Path,
+        title: &str,
+        key: SessionKey,
+        human: i64,
+    ) -> Result<PathBuf> {
+        let mut label = String::new();
+        for ch in title.chars() {
+            if label.len() + ch.len_utf8() > 96 {
+                break;
+            }
+            label.push(if ch.is_alphanumeric() || matches!(ch, ' ' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            });
+        }
+        let label = label.trim_matches([' ', '_', '-']);
+        let label = if label.is_empty() { "Topic" } else { label };
+        let (path, claim) =
+            if let Some((path, claim)) = self.shared.store.topic_folder_claim(key, human)? {
+                anyhow::ensure!(
+                    path.parent() == Some(root),
+                    "Topic folder is outside its retained root"
+                );
+                (path, claim)
+            } else {
+                let path = root.join(format!("{label}--{}-{}", key.chat_id, key.thread_id));
+                match fs::symlink_metadata(&path) {
+                    Ok(_) => bail!("The new topic folder is already in use"),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error).context("Could not inspect the topic folder"),
+                }
+                self.ensure_session(key, human)?;
+                let claim = self.shared.store.reserve_topic_folder(key, human, &path)?;
+                (path, claim)
+            };
+        anyhow::ensure!(
+            path.to_str().is_some_and(|value| value.len() <= 4096),
+            "Allocated topic workspace path is too long"
+        );
+        creation::publish_workspace_folder(root, &path, &claim)?;
+        Ok(path)
+    }
+
     fn apply_independent_topic_workspace(
         &self,
         template: &mut crate::models::SessionRecord,
@@ -2279,11 +2343,37 @@ impl App {
         template.session_prompt = self.shared.session_defaults.session_prompt.clone();
     }
 
+    fn topic_workspace_description(
+        &self,
+        session: &crate::models::SessionRecord,
+        human: i64,
+    ) -> Result<String> {
+        let cwd = session.cwd.display();
+        Ok(match self.shared.store.topic_folder(session.key, human)? {
+            Some(folder) => format!(
+                "Conversation folder: {}\nWorking directory: {cwd}",
+                folder.display()
+            ),
+            None => cwd.to_string(),
+        })
+    }
+
     fn initialize_topic_session(
         &self,
         key: SessionKey,
         user_id: i64,
         template: &crate::models::SessionRecord,
+    ) -> Result<()> {
+        self.initialize_topic_session_with_folder(key, user_id, template, None, None)
+    }
+
+    fn initialize_topic_session_with_folder(
+        &self,
+        key: SessionKey,
+        user_id: i64,
+        template: &crate::models::SessionRecord,
+        folder: Option<&Path>,
+        creation: Option<&str>,
     ) -> Result<()> {
         let destination = self.ensure_session(key, user_id)?;
         if destination.busy || destination.codex_thread_id.is_some() {
@@ -2305,9 +2395,23 @@ impl App {
             inherited.model = self.shared.session_defaults.model.clone();
             inherited.reasoning_effort = self.shared.session_defaults.reasoning_effort.clone();
         }
-        self.shared
-            .store
-            .apply_empty_session_template(key, &inherited, user_id)?;
+        if let Some(folder) = folder {
+            if destination.cwd != self.shared.session_defaults.cwd && destination.cwd != folder {
+                inherited.cwd = destination.cwd.clone();
+            }
+            self.shared.store.apply_new_topic_folder_template(
+                key,
+                &inherited,
+                user_id,
+                folder,
+                &destination.cwd,
+                creation,
+            )?;
+        } else {
+            self.shared
+                .store
+                .apply_empty_session_template(key, &inherited, user_id)?;
+        }
         Ok(())
     }
 
@@ -2605,6 +2709,7 @@ impl App {
         user: &crate::models::UserRecord,
         message: &Message,
         title: Option<String>,
+        update: Option<i64>,
     ) -> Result<()> {
         let target_chat_id = self
             .shared
@@ -2636,20 +2741,60 @@ impl App {
 
         let current_key = SessionKey::new(message.chat.id, message.message_thread_id);
         let current = self.ensure_session(current_key, user.tg_user_id)?;
-        let topic_name = title
+        let title = title
             .as_deref()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.is_empty());
+        let topic_name = title
             .map(str::to_string)
             .unwrap_or_else(|| format!("Telecodex {}", Utc::now().format("%Y-%m-%d %H:%M:%S")));
-        let workspace = self
-            .shared
-            .config
-            .interaction
-            .as_ref()
-            .filter(|profile| {
-                profile.human_id == user.tg_user_id && profile.chat_id == target_chat_id
-            })
+        let workspace_profile = self.shared.config.interaction.as_ref().filter(|profile| {
+            profile.human_id == user.tg_user_id && profile.chat_id == target_chat_id
+        });
+        let workspace_root = workspace_profile
+            .and_then(|profile| profile.topic_workspace_root.as_deref())
+            .map(Self::validate_independent_topic_workspace)
+            .transpose()?;
+        if workspace_root.is_some() && update.is_none() {
+            self.send_plain_status(
+                message.chat.id,
+                message.message_thread_id,
+                "Send /topic directly as a text message to create a conversation.",
+            )
+            .await?;
+            return Ok(());
+        }
+        if let Some(update) = update
+            && let Some((operation, claimed)) = self.shared.store.prepare_direct_topic(
+                current_key,
+                user.tg_user_id,
+                update,
+                (&topic_name, title.is_none()),
+                target_chat_id,
+                workspace_root.as_deref(),
+            )?
+        {
+            let id = operation["id"].as_str().context("Missing creation ID")?;
+            if claimed {
+                if let Err(error) =
+                    creation::complete_direct_topic(self, user.tg_user_id, &operation).await
+                {
+                    tracing::warn!(%id, %error, "Direct topic creation paused");
+                    self.send_plain_status(message.chat.id, message.message_thread_id,
+                        "I couldn't finish setting up the new conversation. I'll keep the original request for recovery.").await?;
+                    return Ok(());
+                }
+            } else {
+                self.send_plain_status(
+                    message.chat.id,
+                    message.message_thread_id,
+                    "I already have that conversation request.",
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+        let workspace = workspace_profile
             .and_then(|profile| profile.independent_topic_workspace.as_deref())
             .map(Self::validate_independent_topic_workspace)
             .transpose()?;

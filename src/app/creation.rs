@@ -241,9 +241,13 @@ async fn create_selected(
             .store
             .interaction_find_creation_for_input(key, human, args.input_ref.clone())?
     {
-        if let Some(workspace) = retained["intent"]["context"].get("independent_workspace") {
-            context["independent_workspace"] = workspace.clone();
+        for field in ["independent_workspace", "topic_workspace_root"] {
+            if let Some(workspace) = retained["intent"]["context"].get(field) {
+                context[field] = workspace.clone();
+            }
         }
+    } else if let Some(root) = &cfg.topic_workspace_root {
+        context["topic_workspace_root"] = json!(App::validate_independent_topic_workspace(root)?);
     } else if let Some(workspace) = &cfg.independent_topic_workspace {
         let path = App::validate_independent_topic_workspace(workspace)?;
         context["independent_workspace"] = json!(path);
@@ -324,17 +328,19 @@ async fn execute_claimed(
     let intent = &operation["intent"];
     let name = intent["name"].as_str().context("Missing retained name")?;
     let reference: InputReference = serde_json::from_value(intent["input_update"].clone())?;
-    let workspace = intent["context"]["independent_workspace"]
-        .as_str()
-        .map(|stored| {
-            let path = App::validate_independent_topic_workspace(std::path::Path::new(stored))?;
-            anyhow::ensure!(
-                path == std::path::Path::new(stored),
-                "Retained topic workspace changed"
-            );
-            Ok::<_, anyhow::Error>(path)
-        })
-        .transpose()?;
+    let retained_workspace = |field| -> Result<Option<PathBuf>> {
+        intent["context"][field]
+            .as_str()
+            .map(|stored| {
+                let stored = Path::new(stored);
+                let path = App::validate_independent_topic_workspace(stored)?;
+                anyhow::ensure!(path == stored, "Retained topic workspace changed");
+                Ok(path)
+            })
+            .transpose()
+    };
+    let root = retained_workspace("topic_workspace_root")?;
+    let workspace = retained_workspace("independent_workspace")?;
     let topic = if operation["phase"] == "prepared" && !shared.config.telegram.enabled {
         let reserved = super::routing::profile(shared)?
             .targets
@@ -351,11 +357,11 @@ async fn execute_claimed(
                 shared.store.interaction_creation_start(id, human)
             })
             .await?;
-        app.record_created_topic(key.chat_id, &topic);
         // A confirmed effect is retained even if its source retired meanwhile.
         shared
             .store
             .interaction_creation_topic(id, human, topic.message_thread_id)?;
+        app.record_created_topic(key.chat_id, &topic);
         topic.message_thread_id
     } else if operation["phase"] == "topic_known" {
         operation["topic"]
@@ -374,7 +380,12 @@ async fn execute_claimed(
     template.codex_thread_id = None;
     template.force_fresh_thread = true;
     template.session_title = Some(name.into());
-    if let Some(workspace) = workspace {
+    let target = SessionKey::new(key.chat_id, Some(topic));
+    let folder = root
+        .as_deref()
+        .map(|root| app.allocate_topic_workspace(root, name, target, human))
+        .transpose()?;
+    if let Some(workspace) = folder.clone().or(workspace) {
         app.apply_independent_topic_workspace(&mut template, workspace);
     }
     if intent["context"]["purpose"] == "interview" {
@@ -383,8 +394,7 @@ async fn execute_claimed(
             template.session_prompt.as_deref().unwrap_or_default()
         ));
     }
-    let target = SessionKey::new(key.chat_id, Some(topic));
-    app.initialize_topic_session(target, human, &template)?;
+    app.initialize_topic_session_with_folder(target, human, &template, folder.as_deref(), None)?;
     let instruction = shared.store.interaction_creation_finish(
         id,
         human,
@@ -394,9 +404,191 @@ async fn execute_claimed(
         .await
         .err()
         .map(|_| "Native delivery unconfirmed; inspect retained input, do not replay");
+    let transport_phase = shared
+        .store
+        .interaction_instruction(&instruction.id, human)?
+        .map(|current| current.phase);
+    if let Err(error) = shared
+        .store
+        .release_controller_creation(id, human)
+        .and_then(|()| telegram_ingress::release_created_topic(app, target))
+    {
+        tracing::warn!(%id, %error, "Created topic updates remain retained");
+    }
     Ok(
-        json!({"kind":"created_destination","operation":shared.store.interaction_creation(id,human)?,"selector":format!("t{topic}"),"instruction":instruction.id,"dispatch_error":error,"incorporation":"Creation and transport acceptance do not establish worker incorporation or completion"}),
+        json!({"kind":"created_destination","operation":shared.store.interaction_creation(id,human)?,"selector":format!("t{topic}"),"instruction":instruction.id,"transport_phase":transport_phase,"dispatch_error":error,"incorporation":"Creation and transport acceptance do not establish worker incorporation or completion"}),
     )
+}
+
+pub(super) async fn complete_direct_topic(app: &App, human: i64, operation: &Value) -> Result<()> {
+    let id = operation["id"].as_str().context("Missing creation ID")?;
+    let result = bind_direct_topic(app, human, operation, id).await;
+    if result.is_err() {
+        app.shared.store.interaction_creation_suspend(id, human)?;
+    }
+    result
+}
+
+fn workspace_marker_matches(folder: &Path, claim: &str) -> Result<bool> {
+    anyhow::ensure!(
+        fs::symlink_metadata(folder)?.is_dir(),
+        "Workspace is not a directory"
+    );
+    let marker = folder.join(".daimon-topic");
+    let metadata = match fs::symlink_metadata(&marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut contents = String::new();
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() == claim.len() as u64,
+        "Invalid workspace ownership marker"
+    );
+    let file = fs::File::open(marker)?;
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(file, claim.len() as u64 + 1),
+        &mut contents,
+    )?;
+    anyhow::ensure!(
+        contents == claim,
+        "Workspace marker belongs to another allocation"
+    );
+    Ok(true)
+}
+
+pub(super) fn publish_workspace_folder(root: &Path, path: &Path, claim: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            anyhow::ensure!(
+                workspace_marker_matches(path, claim)?,
+                "Workspace is already in use"
+            );
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let staging = root.join(format!(".daimon-topic-{claim}"));
+    let mut directory = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut directory, 0o700);
+    match directory.create(&staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    if !workspace_marker_matches(&staging, claim)? {
+        let mut marker = tempfile::NamedTempFile::new_in(&staging)?;
+        std::io::Write::write_all(&mut marker, claim.as_bytes())?;
+        marker.as_file().sync_all()?;
+        marker.persist_noclobber(staging.join(".daimon-topic"))?;
+    }
+    #[cfg(unix)]
+    fs::File::open(&staging)?.sync_all()?;
+    rename_workspace_noreplace(&staging, path)?;
+    #[cfg(unix)]
+    fs::File::open(root)?.sync_all()?;
+    Ok(())
+}
+
+fn rename_workspace_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+        let destination = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
+        // Both paths are sibling paths. Never replace a directory installed by
+        // a different operation in the interval before publication.
+        #[cfg(target_os = "linux")]
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        #[cfg(target_os = "macos")]
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (source, destination);
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+}
+
+async fn bind_direct_topic(app: &App, human: i64, operation: &Value, id: &str) -> Result<()> {
+    let intent = &operation["intent"];
+    let entry: SessionKey = serde_json::from_value(intent["entry"].clone())?;
+    let chat = intent["target_chat"]
+        .as_i64()
+        .context("Missing destination chat")?;
+    let name = intent["name"].as_str().context("Missing topic title")?;
+    let root = Path::new(
+        intent["context"]["topic_workspace_root"]
+            .as_str()
+            .context("Missing topic root")?,
+    );
+    anyhow::ensure!(
+        App::validate_independent_topic_workspace(root)? == root,
+        "Retained topic workspace changed"
+    );
+    let shared = &app.shared;
+    let topic = match operation["phase"].as_str() {
+        Some("prepared") => {
+            let receipt = shared
+                .telegram
+                .create_forum_topic_checked(chat, name, || {
+                    shared.store.interaction_creation_start(id, human)
+                })
+                .await?;
+            shared
+                .store
+                .interaction_creation_topic(id, human, receipt.message_thread_id)?;
+            app.record_created_topic(chat, &receipt);
+            receipt.message_thread_id
+        }
+        Some("topic_known") => operation["topic"]
+            .as_i64()
+            .context("Missing topic receipt")?,
+        _ => bail!("Topic creation is not claimed"),
+    };
+    let key = SessionKey::new(chat, Some(topic));
+    let mut template = shared
+        .store
+        .get_session(entry)?
+        .context("Source topic is unavailable")?;
+    template.codex_thread_id = None;
+    template.force_fresh_thread = true;
+    template.session_title = Some(name.into());
+    let folder = app.allocate_topic_workspace(root, name, key, human)?;
+    app.apply_independent_topic_workspace(&mut template, folder.clone());
+    app.initialize_topic_session_with_folder(key, human, &template, Some(&folder), Some(id))?;
+    if let Err(error) = telegram_ingress::release_created_topic(app, key) {
+        tracing::warn!(%id, %error, "Created topic updates remain retained");
+    }
+    for (chat, thread, text) in [
+        (chat, Some(topic), "New conversation ready.".to_owned()),
+        (
+            entry.chat_id,
+            Some(entry.thread_id).filter(|id| *id != 0),
+            format!("Created topic {name}. Open it to start an independent conversation."),
+        ),
+    ] {
+        if let Err(error) = app.send_plain_status(chat, thread, &text).await {
+            tracing::warn!(%id, %error, "Could not deliver ready topic notice");
+        }
+    }
+    Ok(())
 }
 
 /// Authenticated operator recovery for one retained uncertain creation. This
@@ -405,13 +597,37 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
     let parts: Vec<_> = args.split_whitespace().collect();
     let cfg = super::routing::profile(&app.shared)?;
     anyhow::ensure!(cfg.human_id == human, "Creation owner mismatch");
+    if let ["status-update", update] = parts.as_slice() {
+        return app
+            .shared
+            .store
+            .direct_topic_by_update(human, cfg.chat_id, update.parse()?);
+    }
     let [verb, id, tail @ ..] = parts.as_slice() else {
         bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID");
     };
     let op = app.shared.store.interaction_creation(id, human)?;
     let key: SessionKey = serde_json::from_value(op["intent"]["entry"].clone())?;
-    anyhow::ensure!(key == cfg.entry(), "Creation belongs to another entry");
+    let direct = op["intent"]["kind"] == "telegram_topic";
+    anyhow::ensure!(
+        if direct {
+            op["intent"]["target_chat"] == cfg.chat_id
+        } else {
+            key == cfg.entry()
+        },
+        "Creation belongs to another entry"
+    );
     if *verb == "status" && tail.is_empty() {
+        return Ok(op);
+    }
+    if *verb == "resume" && tail.is_empty() && op["phase"] == "ready" {
+        let topic = op["topic"].as_i64().context("Missing confirmed topic")?;
+        let target = SessionKey::new(cfg.chat_id, Some(topic));
+        anyhow::ensure!(
+            app.shared.store.session_creator(target)? == human,
+            "Topic owner changed"
+        );
+        telegram_ingress::release_created_topic(app, target)?;
         return Ok(op);
     }
     anyhow::ensure!(
@@ -419,9 +635,6 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
         "Telegram service receipt requires its configured bot"
     );
     let reference: InputReference = serde_json::from_value(op["intent"]["input_update"].clone())?;
-    let native = op["intent"]["entry_native"]
-        .as_str()
-        .context("Missing original native binding")?;
     match (*verb, tail) {
         ("reconcile", [event]) => {
             let reserved = cfg.targets.iter().map(|t| t.topic_id).collect::<Vec<_>>();
@@ -437,11 +650,28 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
             }
         }
         ("resume", []) => anyhow::ensure!(
-            op["topic"].as_i64().is_some() && op["phase"] == "retained_topic",
-            "Only a confirmed retained topic may resume here; inspect existing instructions"
+            (op["topic"].as_i64().is_some() && op["phase"] == "retained_topic")
+                || (direct && op["phase"] == "retained_unsent"),
+            "Only a confirmed topic or a known-unsent direct command may resume here"
         ),
         _ => bail!("Expected creation status ID, reconcile ID EVENT_UPDATE or resume ID"),
     }
+    if direct {
+        let (operation, claimed) = app.shared.store.claim_creation_resume(
+            key,
+            human,
+            reference,
+            &CancellationToken::new(),
+            true,
+        )?;
+        if claimed {
+            complete_direct_topic(app, human, &operation).await?;
+        }
+        return app.shared.store.interaction_creation(id, human);
+    }
+    let native = op["intent"]["entry_native"]
+        .as_str()
+        .context("Missing original native binding")?;
     resume(
         app,
         key,
@@ -456,6 +686,30 @@ pub(super) async fn owner_command(app: &App, human: i64, args: &str) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn topic_workspace_recovers_a_staged_folder_and_refuses_an_unrelated_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let claim = Uuid::now_v7().to_string();
+        let staging = root.path().join(format!(".daimon-topic-{claim}"));
+        let final_path = root.path().join("Design--100-42");
+        fs::create_dir(&staging).unwrap();
+        fs::create_dir(&final_path).unwrap();
+        assert!(publish_workspace_folder(root.path(), &final_path, &claim).is_err());
+        assert!(staging.is_dir());
+        assert!(
+            final_path
+                .join(".daimon-topic")
+                .try_exists()
+                .is_ok_and(|exists| !exists)
+        );
+        fs::remove_dir(&final_path).unwrap();
+        publish_workspace_folder(root.path(), &final_path, &claim).unwrap();
+        assert!(!staging.exists());
+        assert!(workspace_marker_matches(&final_path, &claim).unwrap());
+        publish_workspace_folder(root.path(), &final_path, &claim).unwrap();
+    }
 
     #[test]
     fn titles_preserve_human_spaces_and_rejections_are_safe() {

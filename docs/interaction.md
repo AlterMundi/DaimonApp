@@ -1124,17 +1124,44 @@ existing work threads follows the same existing enrolled-session lifecycle.
 
 ## Creating a distinct work session
 
-Set `interaction.independent_topic_workspace` to an owner-selected existing
-absolute directory for unrelated topics. Ordinary Telegram `/topic` creation
-in the paired chat and controller-created work for the paired owner use this
-directory when configured. The controller
-retains its selection in the creation intent before requesting an external
-topic. Topic-specific inherited prompts and extra directories are replaced
-with the configured session defaults for independent work. Codex and Claude
-read the same saved topic directory. Deliberate native forks and existing
-topics retain their workspace selection. Use the existing topic workspace
-controls such as Telegram `/cd` to assign a project checkout.
+Set `interaction.topic_workspace_root` to an existing owner-selected
+directory for conversation folders. Independent Telegram and controller topic
+creation allocate one child using a filesystem-safe form of the confirmed title
+and the stable chat and topic IDs. The shared creation journal freezes the
+root before either external operation and reuses its confirmed topic ID on
+recovery. A direct Telegram command is retained by its original update ID. It
+binds the new topic without sending a model prompt. Use the owner creation
+status and resume controls for a confirmed topic or known-unsent command.
+Use `creation status-update UPDATE_ID` to find the direct command's operation ID.
+An unconfirmed Telegram call requires the existing receipt reconciliation.
+Once Telegram confirms a new topic, ordinary messages received during workspace
+setup remain in the canonical ingress journal before native submission. The
+same topic dispatcher releases them in Telegram update order after the setup
+commit, including after a Gateway restart. A changed owner or Stop epoch
+retires the retained original. An interrupted native dispatch keeps its
+existing uncertainty instead of entering this recovery path.
+For a controller-created topic, the first scheduling attempt for the original
+creation instruction precedes the release. Its exact transport phase remains
+inspectable. After restart, the interaction journal keeps known-unsent and
+uncertain instructions distinct. Releasing later Telegram input never
+retries that initial instruction. To check ready-topic input after a separate
+maintenance hold is removed, use the owner `creation resume ID` control.
+The topic row stores the result
+for both Codex and Claude. Gateway records the permanent folder separately
+from the execution directory. `/pwd` displays both. Renames and explicit checkout selection keep
+the permanent folder. A pre-existing directory without a retained allocation
+is treated as a name collision. The gateway stages the ownership marker before
+publishing the complete directory on Linux or macOS. A retry reuses the staged
+folder or checks the published marker against its recorded allocation.
+Keep a journal-aware Gateway selected while direct creations have pending
+receipts. A previous binary can read the additive database schema but cannot
+recover those receipts.
 
+Existing topics, deliberate native forks and explicitly imported projects keep
+their workspaces. Use the topic workspace control such as Telegram `/cd` to
+select a project checkout when needed. The earlier
+`interaction.independent_topic_workspace` remains a shared fallback for profiles
+with no per-topic root and for retained intents that already selected it.
 
 The stable integrating controller exposes `create` for a clearly distinct task,
 after inspecting existing candidates. Its arguments select a retained original
