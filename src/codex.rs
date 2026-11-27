@@ -467,7 +467,7 @@ fn reject_unsubmitted_steer(steer: CodexSteerRequest, error: anyhow::Error) -> R
 
 pub type CodexSteerResponse = std::result::Result<Option<String>, CodexSteerError>;
 
-/// Plain-text input waiting to be appended to an active Codex turn.
+/// Plain-text input waiting to be appended to an active native turn.
 pub type SteerAdmissionCheck = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 
 /// The same native write-boundary check may need a bounded authority query.
@@ -477,7 +477,7 @@ pub enum SteerInputAdmission {
     Async(Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<()>> + Send + Sync>),
 }
 impl SteerInputAdmission {
-    async fn check(&self) -> Result<()> {
+    pub(crate) async fn check(&self) -> Result<()> {
         match self {
             Self::Sync(check) => check(),
             Self::Async(check) => check().await,

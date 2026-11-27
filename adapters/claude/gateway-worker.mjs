@@ -442,9 +442,57 @@ async function main() {
     const pending = new Map();
     let nextCall = 0;
     let committed = false;
-    async function receiveControllerReplies() {
+    let steeringSelected = false;
+    let acceptingSteers = false;
+    let steerClosed = false;
+    let wakeSteering;
+    const steers = [];
+    const seenSteers = new Set();
+    const steering = fullAccess ? {
+      async *messages() {
+        while (!steerClosed) {
+          if (steers.length) yield steers.shift();
+          else await new Promise(resolve => { wakeSteering = resolve; });
+        }
+      },
+    } : undefined;
+    const steerOptions = steering && {
+      messages: steering.messages(),
+      enabled: () => steeringSelected,
+      admit: scopeStillActive,
+      async ready() {
+        acceptingSteers = true;
+        await writeFrame(process.stdout, { ...correlation, type: 'steer_ready' }, stop.signal);
+      },
+      close() {
+        if (steeringSelected) committed = false;
+        acceptingSteers = false;
+        steerClosed = true;
+        wakeSteering?.();
+      },
+      async result(ids, text) {
+        await writeFrame(process.stdout, { ...correlation, type: 'steer_result', ids, text }, stop.signal);
+      },
+    };
+    async function receiveGatewayInput() {
       try {
         for await (const reply of input) {
+          if (steeringSelected && reply.type === 'steer') {
+            if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'id', 'text'])
+              || reply.schema !== VERSION || reply.inputId !== first.inputId
+              || reply.sessionId !== first.sessionId || typeof reply.id !== 'string'
+              || !UUID.test(reply.id) || reply.id === first.inputId || seenSteers.has(reply.id)
+              || typeof reply.text !== 'string' || !reply.text.trim()
+              || Buffer.byteLength(reply.text) > 16 * 1024 || seenSteers.size >= 8) {
+              throw new Error('Invalid steer input');
+            }
+            seenSteers.add(reply.id);
+            if (acceptingSteers) {
+              steers.push({ id: reply.id, text: reply.text });
+              wakeSteering?.();
+            }
+            continue;
+          }
           if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'callId', 'success', 'text'])
             || reply.schema !== VERSION || reply.type !== 'controller_reply'
             || reply.inputId !== first.inputId || reply.sessionId !== first.sessionId
@@ -485,7 +533,7 @@ async function main() {
       controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
     }
     const outcome = await runClaudeTurn({
-      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal,
+      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
@@ -504,14 +552,16 @@ async function main() {
         if (inputId !== first.inputId || sessionId !== nativeSessionId) return false;
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
-          nativeSessionId: sessionId, sessionScope: scope }, stop.signal);
+          nativeSessionId: sessionId, sessionScope: scope,
+          ...(steering ? { steering: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
-        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
+        steeringSelected = !!steering && decision?.steering === true;
+        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed',
+          ...(steeringSelected ? ['steering'] : [])])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
-        // After exposure only exact outstanding replies may arrive on this pipe.
-        void receiveControllerReplies().catch(() => stop.abort());
+        void receiveGatewayInput().catch(() => stop.abort());
         committed = await scopeStillActive();
         if (committed && fullAccess && profile.maxBudgetUsd === undefined) clearTimeout(timeout);
         return committed;

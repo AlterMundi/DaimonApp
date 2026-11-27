@@ -1,6 +1,6 @@
 # Claude foreground turn
 
-This adapter implements the preflight and single-input execution boundary for
+This adapter implements the preflight and native execution boundary for
 [DaimonGateway harness dispatch](https://github.com/AlterMundi/daimon-matrix/issues/497).
 It takes the owner-selected signed Matrix binding, a broker backed by its
 authenticated client, and the existing Gateway journal's submission callback.
@@ -21,6 +21,25 @@ The callback returns true only after persisting the submission boundary with
 both UUIDs. Cancellation or execution loss past that boundary keeps the
 original uncertain. A completed result is output for Gateway to commit and
 return to Matrix.
+
+### Steer a routed conversation
+
+A paired human's plain-text message can join an active routed Claude conversation
+through the same Gateway steer admission and receipt journal used by Codex. The
+worker offers this capability at preparation and the Gateway enables it only on
+an eligible paired local execution. Either side may omit the capability to keep
+serial execution. Matrix foreground and dedicated Conversation-provider
+exchanges continue to execute one input at a time. Attachments, native goal
+commands and attributed handoffs retain their ordinary queued execution.
+
+The worker keeps the same native input stream open and sends an eligible input
+with its original UUID and Claude priority `next`. Claude reads it after the
+current tool calls, or in its next native turn if the current turn ends first.
+The completed result must echo the exact consumed UUIDs. Shared and separate
+replies retain their actual native result membership. Inputs known to have stayed
+outside the native stream can return to Gateway's queue. A write or execution with
+an unconfirmed outcome retains the original without replay. This path never
+requests an immediate interrupt.
 
 ### Gateway worker
 

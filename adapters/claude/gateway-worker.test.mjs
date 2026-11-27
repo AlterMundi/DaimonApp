@@ -209,7 +209,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'disconnected') restrictedScope = first.sessionScope;
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
-            { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession, sessionScope: first.sessionScope });
+            { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession,
+              sessionScope: first.sessionScope, ...(humanOriginal ? { steering: true } : {}) });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));

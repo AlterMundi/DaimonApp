@@ -454,6 +454,7 @@ pub(super) async fn process_turn(
     let steered_files = Arc::new(SteeredFiles::default());
     if queued.request.review_mode.is_none() {
         let active = ActiveTurnSteerHandle {
+            harness: crate::execution::Harness::Codex,
             turn_id,
             physical_turn: physical_turn.clone(),
             sender: steer_tx,

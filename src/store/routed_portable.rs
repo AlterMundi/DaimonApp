@@ -126,6 +126,20 @@ fn current_on(conn: &Connection, input: &Instruction, writer: &str) -> Result<bo
         )?)
 }
 
+fn paired_host_access_on(conn: &Connection, input: &Instruction) -> Result<bool> {
+    let source = super::routing::source_on(conn, &input.id, input.human_id)?;
+    match source.channel.as_str() {
+        "conversation" => {
+            Ok(
+                super::conversation_inputs::read_on(conn, &source.event_id, input.human_id)?
+                    .paired_actor,
+            )
+        }
+        "local-session" => super::session_requests::paired_request_parent_on(conn, input),
+        _ => Ok(true),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn controller_parent_on(
     conn: &Connection,
@@ -218,15 +232,7 @@ impl Store {
                 && current_on(&tx, &current, &self.instance_id)?,
             "Routed input retired before native preparation"
         );
-        let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
-        let paired = match source.channel.as_str() {
-            "conversation" => {
-                super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
-                    .paired_actor
-            }
-            "local-session" => super::session_requests::paired_request_parent_on(&tx, &current)?,
-            _ => true,
-        };
+        let paired = paired_host_access_on(&tx, &current)?;
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
         let harness = current
@@ -378,6 +384,33 @@ impl Store {
         Ok(true)
     }
 
+    pub(crate) fn routed_claude_steer_allowed(
+        &self,
+        root: &Instruction,
+        local: i64,
+        id: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let Some(active) = super::interaction::instruction_on(&conn, &root.id, root.human_id)?
+        else {
+            return Ok(false);
+        };
+        let Some(next) = super::interaction::instruction_on(&conn, id, root.human_id)? else {
+            return Ok(false);
+        };
+        Ok(active.phase == Phase::Submitting
+            && active.local_turn == Some(local)
+            && next.phase == Phase::Steering
+            && next.local_turn == Some(local)
+            && next.target_execution == active.target_execution
+            && active.native_thread.is_some()
+            && active.native_thread == next.native_thread
+            && super::session_requests::author_on(&conn, &next.input_id)?.is_none()
+            && paired_host_access_on(&conn, &next)?
+            && current_on(&conn, &active, &self.instance_id)?
+            && current_on(&conn, &next, &self.instance_id)?)
+    }
+
     pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
@@ -435,6 +468,46 @@ impl Store {
                 Phase::Accepted,
                 Some(&anchor),
             )?;
+            let mut followups = Vec::new();
+            if let Some(results) = outcome["steerResults"].as_array() {
+                for result in results {
+                    let ids = result["ids"]
+                        .as_array()
+                        .context("Claude result lacks steer IDs")?;
+                    let selected = ids
+                        .last()
+                        .and_then(Value::as_str)
+                        .context("Claude result lacks its final steer ID")?;
+                    let reply = result["text"].as_str();
+                    let result_anchor = if reply.is_some() {
+                        format!("gateway:claude:{selected}")
+                    } else {
+                        anchor.clone()
+                    };
+                    for id in ids {
+                        let id = id.as_str().context("Invalid Claude steer ID")?;
+                        let steered = super::interaction::instruction_on(&tx, id, input.human_id)?
+                            .context("Claude steer input missing")?;
+                        anyhow::ensure!(
+                            steered.phase == Phase::Steering
+                                && steered.native_thread.as_deref() == Some(native)
+                                && steered.local_turn == Some(local),
+                            "Claude steering receipt does not match the retained input"
+                        );
+                        super::interaction::transport_on(
+                            &tx,
+                            id,
+                            input.human_id,
+                            local,
+                            Phase::Accepted,
+                            Some(&result_anchor),
+                        )?;
+                    }
+                    if let Some(reply) = reply {
+                        followups.push((selected, result_anchor, reply));
+                    }
+                }
+            }
             deliveries = super::routing::result_on(
                 &tx,
                 &self.instance_id,
@@ -448,6 +521,21 @@ impl Store {
                 true,
                 true,
             )?;
+            for (selected, result_anchor, reply) in followups {
+                deliveries.extend(super::routing::result_on(
+                    &tx,
+                    &self.instance_id,
+                    selected,
+                    input.human_id,
+                    local,
+                    native,
+                    &result_anchor,
+                    "final",
+                    reply,
+                    true,
+                    true,
+                )?);
+            }
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
