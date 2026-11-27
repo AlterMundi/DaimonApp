@@ -589,7 +589,10 @@ provider/fallback, native dialogue or turn detection is configured on this route
 The authenticated `/api/interaction/voice/openai/live` socket reuses the existing
 Origin/actor/CSRF/binding checks, the exact interaction-only Home/device POST
 allowlist, fresh authorization, voice maintenance fence,
-two-capture capacity and120second audio/140second connection bounds. It streams
+two-capture capacity and120second audio/140second connection bounds. Admission
+checks identity and CSRF once, then resolves the exact Conversation binding.
+Provider readiness, interim previews and final receipt delivery retain their
+fresh authorization checks. The socket streams
 only to a transcription session with no assistant response/tools. Existing mono
 16kHz preview PCM is deterministically resampled to24kHz across packet boundaries;
 the new capture retains that exact16kHz PCM as its canonical WAV original.
@@ -714,6 +717,14 @@ calling a particular voice slow. Real playback fluency, chosen delivery and huma
 hearing are separate acceptance from source/HTTP/queue fixtures.
 
 ## Editing a live dictation draft
+
+Prepared dictation reads the recognizer continuously while authorizing the
+next browser update. Each partial is a complete transcript snapshot. A newer
+snapshot can replace one still waiting to be displayed. The final transcript
+supersedes outstanding previews and gets a fresh access and binding check
+before the exact WAV-linked receipt is stored. Audio input, receipt identity
+and the manual Send action are unchanged.
+
 
 Touching or typing in an editable live-caption composer pauses its current PCM
 capture and visible countdown. **Continue listening** resumes the same recorder

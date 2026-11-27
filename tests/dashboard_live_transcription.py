@@ -17,14 +17,15 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from dashboard.app import create_app
 from dashboard.provider import Provider
 from dashboard.companion import Grants
 from scripts.interaction_asr import streaming_result
 from dashboard.private_state import read_json
-from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox, VoiceActor
+from dashboard.live_transcription import bind_voice_actor, save_prepared, wav_bytes, VoiceInbox, VoiceActor
 from dashboard.transcription import TranscriptionUnavailable
 from dashboard_io import Receiver
 
@@ -230,6 +231,50 @@ class LiveTranscription(unittest.TestCase):
         trusted=streaming_result({'streaming_cache_root':str(self.root/'prepared')},original,
                                  hashlib.sha256(original.read_bytes()).hexdigest())
         self.assertEqual(trusted,{'text':'Final words','streaming_model':'qwen-audio-3.0-realtime-plus'})
+    def test_partial_burst_keeps_latest_authorized_snapshot(self):
+        from dashboard.live_transcription import bind_voice_actor
+        checking, drained, release = threading.Event(), threading.Event(), threading.Event()
+        checks = 0
+        async def bind(*args, **kwargs):
+            session, original, actor = await bind_voice_actor(*args, **kwargs)
+            async def check():
+                nonlocal checks
+                checks += 1
+                if checks == 2:  # Provider readiness already consumed the first check.
+                    checking.set()
+                    while not release.is_set():
+                        await asyncio.sleep(.01)
+                await original()
+            return session, check, actor
+        def burst(stream, pcm):
+            stream.pcm += pcm
+            for revision in range(1, 12):
+                stream.events.put({'type':'partial','text':f'Current preview {revision}','revision':revision})
+        original_receive = Stream.receive
+        def receive(stream):
+            item = original_receive(stream)
+            if item.get('revision') == 11:
+                drained.set()
+            return item
+        pcm = b'\0\0' * 1600
+        with patch('dashboard.live_transcription.bind_voice_actor', side_effect=bind), \
+                patch.object(Stream, 'append', burst), patch.object(Stream, 'receive', receive), self.open() as ws:
+            ws.send_json(self.meta())
+            self.assertEqual(ws.receive_json()['type'], 'ready')
+            ws.send_bytes(pcm)
+            try:
+                self.assertTrue(checking.wait(1))
+                self.assertTrue(drained.wait(1), 'Home authorization must not stall the recognizer reader')
+            finally:
+                release.set()
+            self.assertEqual(ws.receive_json(), {'type':'partial','text':'Current preview 11','revision':11})
+            ws.send_json({'type':'finish'})
+            value = ws.receive_json()
+            self.assertEqual(value['type'], 'prepared')
+            self.assertEqual(value['source_sha256'], hashlib.sha256(wav_bytes(pcm)).hexdigest())
+        self.assertEqual(checks, 4)
+        self.assertEqual(self.provider.calls, [])
+
     def test_preparation_timing_separates_final_provider_and_receipt_without_storage(self):
         finish = Stream.finish
         def delayed_finish(stream):
@@ -829,6 +874,36 @@ class LiveTranscription(unittest.TestCase):
 
 
 class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_admission_checks_identity_once_and_subsequent_checks_are_fresh(self):
+        from types import SimpleNamespace
+
+        checks = []
+        human, binding = 100, 'a' * 64
+
+        async def authorize(request):
+            checks.append('identity')
+            return {'human': human, 'csrf': 'fresh'}
+
+        def presentation(command):
+            checks.append('binding')
+            return {'binding': binding}
+
+        socket = WebSocket({'type': 'websocket', 'headers': [], 'path': '/voice', 'scheme': 'wss'}, None, None)
+        provider = SimpleNamespace(presentation=presentation)
+        session, recheck, _ = await bind_voice_actor(
+            provider, authorize, socket, {'csrf': 'fresh', 'binding': binding}, require_voice=False)
+        self.assertEqual(session['human'], human)
+        self.assertEqual(checks, ['identity', 'binding'])
+        await recheck()
+        self.assertEqual(checks, ['identity', 'binding'] * 2)
+        binding = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'binding changed'):
+            await recheck()
+        human = 101
+        with self.assertRaises(HTTPException):
+            await recheck()
+        self.assertEqual(checks, ['identity', 'binding'] * 3 + ['identity'])
+
     async def test_concurrent_consumers_share_only_the_inflight_read_and_revocation_is_fresh(self):
         from fastapi import HTTPException
         held=asyncio.Event();release=asyncio.Event();reads=[];allowed=True

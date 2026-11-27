@@ -34,18 +34,20 @@ def _conversation_input(text, routed_original):
     text=text.replace('\r\n','\n')
     if text.lstrip().startswith(('# AGENTS.md instructions','<environment_context>')):
         _,marker,text=text.rpartition('\n\nUser request:\n')
-        if not marker:return ''
+        if not marker:return '', None
     if text.startswith('<codex_internal_context '):
-        return ''
+        return '', None
     if text.startswith('[Interaction controller]\n'):
         header,marker,body=text.partition('\nCurrent attributed input:\n')
         instruction=ROUTED_INSTRUCTION.search(header)
-        if not marker or not instruction or not routed_original:return ''
-        original=routed_original(instruction[1])
+        if not marker or not instruction or not routed_original:return '', None
+        resolved=routed_original(instruction[1])
+        if not resolved:return '', None
+        original, input_id=resolved
         if not isinstance(original,str) or not body.startswith(original.replace('\r\n','\n')+'\n'):
-            return ''
-        return original
-    return text.partition('\n\nFollow these instructions for this turn:')[0]
+            return '', None
+        return original, input_id
+    return text.partition('\n\nFollow these instructions for this turn:')[0], None
 
 
 
@@ -97,10 +99,15 @@ def _event(record,technical,routed_original):
         # conversational assistant phases/channels enter either presentation.
         if role=='assistant' and (p.get('channel')=='analysis' or p.get('phase')=='analysis'):return None
         text=_text(p.get('content'))
+        input_id=None
         if not technical:
-            text=_conversation_input(text,routed_original) if role=='user' else _conversation_answer(text)
+            if role=='user':
+                text,input_id=_conversation_input(text,routed_original)
+            else:
+                text=_conversation_answer(text)
         if not technical and not text.strip():return None
         result={'kind':'message','role':role,'text':text}
+        if input_id:result['input_id']=input_id
         if not technical and role=='assistant' and p.get('phase') in (None,'final_answer','final'):
             revision=result_revision(p.get('id'))
             if revision:
@@ -255,6 +262,7 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
         'before':start,'after':following,'before_scan':before_scan,'after_scan':after_scan,
         'has_earlier':start>start_of_events,
         'more':following<end,'skipped_records':skipped,
+        'links_input_ids':routed_original is not None and not technical,
         'role_meaning':'Harness message roles; input can include attributed context, not verified human speech.',
         'source_meaning':'Read-only selected native history; no work, routing, hearing or hidden reasoning is established.'}
 
@@ -285,20 +293,37 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
         raise ValueError('Portable conversation binding changed')
     # Only an accepted human original can create an ordinary conversation pair.
     # Local dependencies and their returns have their own frozen audience.
-    source = '''FROM interaction_instructions i
+    ownership = """i.session_id=? AND s.human_id=? AND i.phase='accepted'
+          AND t.session_id=i.session_id AND t.from_user_id=s.human_id
+          AND t.execution_harness=? AND t.execution_generation=?"""
+    human_original = "NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)"
+    accepted = """FROM interaction_instructions i
         JOIN interaction_sources s ON s.id=i.input_id
-        JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
-        JOIN interaction_results r ON r.local_turn=t.id AND r.native_thread=t.native_thread_id
+        JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')"""
+    final = """r.local_turn=t.id AND r.native_thread=t.native_thread_id
           AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
+          AND length(trim(r.body))>0 AND t.status='completed'"""
+    source = f"""{accepted} JOIN interaction_results r ON {final}
         LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
           AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
-        WHERE i.session_id=? AND s.human_id=? AND i.phase='accepted'
-          AND t.session_id=i.session_id AND t.from_user_id=s.human_id
-          AND t.execution_harness=? AND t.execution_generation=? AND t.status='completed'
-          AND length(trim(r.body))>0
-          AND (p.id IS NOT NULL OR NOT EXISTS
-            (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id))'''
+        WHERE {ownership} AND (p.id IS NOT NULL OR {human_original})"""
     scope = (session, human, harness, generation)
+    # Keep outstanding originals separate from the append-only result cursor.
+    # A final result can arrive out of order and still has its own position.
+    pending_items = []
+    original_id = "CASE WHEN s.channel='conversation' THEN s.event_id END"
+    if event is None and before is None:
+        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
+            {accepted} WHERE {ownership} AND {human_original} AND t.status='running'
+            AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final})
+            ORDER BY i.sequence DESC LIMIT 8""", scope)
+        for instruction, started, text, input_id in reversed(pending.fetchall()):
+            if isinstance(text, str) and text.strip():
+                if len(text)>1000:text=text[:1000]+'…'
+                item_id = hashlib.sha256(f'{identity}:pending:{instruction}'.encode()).hexdigest()[:32]
+                pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
+                                      'timestamp':started,'pending':True})
+                if input_id:pending_items[-1]['input_id']=input_id
     ordered = after is not None
     bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)
     order = 'ASC' if ordered else 'DESC'
@@ -307,12 +332,12 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     else:
         where = 'r.rowid>=?' if ordered else 'r.rowid<=?'
     rows = db.execute(f'''SELECT r.rowid,t.started_at,t.completed_at,
-        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') END,r.body {source} AND {where}
+        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') END,r.body,{original_id} {source} AND {where}
         ORDER BY r.rowid {order} LIMIT {MAX_ITEMS + 1}''', (*scope, bound))
     items = deque()
     total = 0
     examined_through = after
-    for sequence, started, completed, original, answer in rows:
+    for sequence, started, completed, original, answer, input_id in rows:
         pair = [(sequence * 2, 'user', started, original),
                 (sequence * 2 + 1, 'assistant', completed, _conversation_answer(answer))]
         for position, role, timestamp, text in (pair if ordered else reversed(pair)):
@@ -331,6 +356,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                     'timestamp':timestamp, 'text':part, 'offset':text_offset,
                     'next':text_offset+len(part), 'characters':len(text),
                     'more':text_offset+len(part)<len(text)}
+            if role=='user' and input_id:item['input_id']=input_id
             total += len(json.dumps(item, ensure_ascii=False).encode())
             if len(items) == MAX_ITEMS or total > MAX_RESPONSE:
                 break
@@ -347,7 +373,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     earlier = db.execute(f'SELECT 1 {source} AND r.rowid*2<? LIMIT 1', (*scope, first)).fetchone()
     newer = db.execute(f'SELECT 1 {source} AND r.rowid*2+1>=? LIMIT 1', (*scope, following)).fetchone()
     return {'schema':'daimon.session-view/v1', 'revision':identity, 'technical':technical,
-            'items':list(items), 'before':first, 'after':following, 'has_earlier':bool(earlier),
+            'items':list(items), 'pending_items':pending_items, 'links_input_ids':not technical, 'before':first, 'after':following, 'has_earlier':bool(earlier),
             'more':bool(newer), 'before_scan':False, 'after_scan':False, 'skipped_records':0,
             'role_meaning':'Human originals and their retained assistant responses.',
             'source_meaning':'Read-only portable conversation history.'}
