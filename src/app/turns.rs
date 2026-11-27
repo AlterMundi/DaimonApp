@@ -323,11 +323,13 @@ pub(super) async fn process_turn(
     // Older listeners wrapped direct-topic input. Preserve its journal/history,
     // but restore ordinary presentation when collecting that existing turn.
     let execution_root = execution_root
-        .map(|id| {
-            shared
-                .store
-                .interaction_instruction(&id, queued.request.from_user_id)
-                .map(|input| input.filter(super::routing::relayed).map(|_| id))
+        .map(|id| -> Result<Option<String>> {
+            let human = queued.request.from_user_id;
+            let selected = shared.store.interaction_instruction(&id, human)?;
+            let attributed = shared.store.interaction_author(&id, human)?.is_some();
+            Ok(selected
+                .filter(|input| attributed || super::routing::relayed(input))
+                .map(|_| id))
         })
         .transpose()?
         .flatten();
