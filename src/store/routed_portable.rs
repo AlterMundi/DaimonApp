@@ -654,8 +654,9 @@ impl Store {
         }
         let changed = tx.execute("UPDATE turns SET native_thread_id=?1,execution_native_scope=?2,execution_body=?3
             WHERE id=?4 AND status='running' AND execution_harness=?5 AND native_thread_id IS NULL
-            AND execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=turns.session_id)",
-            params![native,scope,body.to_string(),local,harness.name()])?;
+            AND execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=turns.session_id)
+            AND (?6 IS NULL OR EXISTS(SELECT 1 FROM sessions s WHERE s.id=turns.session_id AND s.cwd=?6))",
+            params![native,scope,body.to_string(),local,harness.name(),prepared["workspace"].as_str()])?;
         if changed != 1 {
             return Ok(false);
         }
@@ -671,11 +672,32 @@ impl Store {
         Ok(true)
     }
 
+    pub(crate) fn set_owned_session_cwd(
+        &self,
+        key: SessionKey,
+        human: i64,
+        cwd: &std::path::Path,
+    ) -> Result<()> {
+        let path = cwd.to_str().context("Workspace path is not UTF-8")?;
+        anyhow::ensure!(
+            cwd.is_absolute() && path.len() <= 4096,
+            "Invalid workspace directory"
+        );
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        anyhow::ensure!(conn.execute(
+            "UPDATE sessions SET cwd=?1,updated_at=?2 WHERE chat_id=?3 AND thread_id=?4
+             AND creator_user_id=?5 AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?5 AND allowed=1)",
+            params![path, now_string(), key.chat_id, key.thread_id, human],
+        )? == 1, "Selected topic workspace owner changed");
+        Ok(())
+    }
+
     pub(crate) fn routed_claude_steer_allowed(
         &self,
         root: &Instruction,
         local: i64,
         id: &str,
+        workspace: &std::path::Path,
     ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let Some(active) = super::interaction::instruction_on(&conn, &root.id, root.human_id)?
@@ -685,7 +707,16 @@ impl Store {
         let Some(next) = super::interaction::instruction_on(&conn, id, root.human_id)? else {
             return Ok(false);
         };
-        Ok(active.phase == Phase::Submitting
+        let same_workspace: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND cwd=?2)",
+            params![
+                active.target_session,
+                workspace.to_str().context("Workspace path is not UTF-8")?
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(same_workspace
+            && active.phase == Phase::Submitting
             && active.local_turn == Some(local)
             && next.phase == Phase::Steering
             && next.local_turn == Some(local)
@@ -871,6 +902,36 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_owned_workspace_change_preserves_the_parked_native_binding() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100, 101], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        store.ensure_session(key, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(key, "retained-codex-thread")
+            .unwrap();
+        let binding = store.conversation_request_binding(100, key).unwrap();
+        let workspace = tempfile::TempDir::new().unwrap();
+        assert!(
+            store
+                .set_owned_session_cwd(key, 101, workspace.path())
+                .is_err()
+        );
+        store
+            .set_owned_session_cwd(key, 100, workspace.path())
+            .unwrap();
+        assert_eq!(
+            store.get_session(key).unwrap().unwrap().cwd,
+            workspace.path()
+        );
+        assert_eq!(
+            store.conversation_request_binding(100, key).unwrap(),
+            binding
+        );
+    }
 
     #[test]
     fn claude_history_seed_is_the_exact_owned_exchange_in_the_current_generation() {

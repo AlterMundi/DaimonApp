@@ -803,11 +803,47 @@ impl App {
                     routing::handle(self, &message, from.id, text).await?;
                     return Ok(());
                 }
-                if normalize_command(text, self.shared.bot_username().as_deref()).is_some_and(
-                    |(command, _)| matches!(command.as_str(), "/status" | "/interrupt" | "/stop"),
-                ) {
-                    self.dispatch_command_text(&user, &message, text).await?;
-                    return Ok(());
+                if let Some((command, args)) =
+                    normalize_command(text, self.shared.bot_username().as_deref())
+                {
+                    if matches!(command.as_str(), "/status" | "/interrupt" | "/stop") {
+                        self.dispatch_command_text(&user, &message, text).await?;
+                        return Ok(());
+                    }
+                    if engine == crate::interaction::ForegroundEngine::Claude
+                        && matches!(command.as_str(), "/cd" | "/pwd")
+                    {
+                        self.shared
+                            .store
+                            .conversation_request_binding(from.id, topic_key)?;
+                        let session = self
+                            .shared
+                            .store
+                            .get_session(topic_key)?
+                            .context("Selected topic is unavailable")?;
+                        let reply = if command == "/pwd" {
+                            session.cwd.display().to_string()
+                        } else {
+                            match validate_directory(&args) {
+                                Ok(path) => {
+                                    self.shared
+                                        .store
+                                        .set_owned_session_cwd(topic_key, from.id, &path)?;
+                                    self.shared.store.audit(
+                                        Some(from.id),
+                                        "session_cd",
+                                        serde_json::json!({"chat_id": topic_key.chat_id,
+                                            "thread_id": topic_key.thread_id, "cwd":path}),
+                                    )?;
+                                    format!("Workspace set to {}.", path.display())
+                                }
+                                Err(error) => error.to_string(),
+                            }
+                        };
+                        self.send_plain_status(message.chat.id, message.message_thread_id, &reply)
+                            .await?;
+                        return Ok(());
+                    }
                 }
             }
             return routing::handle_portable_topic(

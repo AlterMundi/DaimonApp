@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -44,9 +44,11 @@ test('worker sends one native input only after exact owner persistence decision'
     const initialSkill = skillDocument('1.2.3', 'Synthetic skill: first.');
     const subscriptionEmail = 'owner@example.test';
     const accountDriftCwd = join(root, 'other-account');
+    const alternateWorkspace = join(root, 'selected-workspace');
     const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
     try {
       await mkdir(accountDriftCwd);
+      await mkdir(alternateWorkspace);
       await writeFile(bodyGuidanceFile, 'Synthetic body guidance: first.', { mode: 0o600 });
       await mkdir(join(sharedSkillsDirectory, 'sample'), { recursive: true });
       await writeFile(skill, initialSkill);
@@ -123,9 +125,14 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   const seed = expectedQuote ?? ${JSON.stringify(historySeed)};
                   assert.equal(content[0].text, 'Gateway historical context (JSON):\\n' + JSON.stringify(seed));
                 }
+                const atSelectedWorkspace = text === 'Synthetic selected workspace.';
+                if (atSelectedWorkspace) {
+                  assert.equal(options.cwd, ${JSON.stringify(alternateWorkspace)});
+                  assert.equal(options.resume, undefined);
+                }
                 const ownerDefault = text === 'Synthetic private default.';
                 const withMessaging = text === 'Synthetic paired chat tools.';
-                const paired = ownerDefault || withMessaging || !!expectedQuote || text === 'Synthetic private tool grant.';
+                const paired = ownerDefault || withMessaging || !!expectedQuote || atSelectedWorkspace || text === 'Synthetic private tool grant.';
                 assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
                 for (const tool of matrixChatTools) {
                   assert.equal(options.allowedTools.includes('mcp__matrix_chat__' + tool), withMessaging);
@@ -212,7 +219,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         matrixStatusCommand: [...profile.matrixStatusCommand, '--binding', observerBinding, '--body-status'] };
       const refusedMessaging = ['messaging-foreign', 'messaging-foreign-socket', 'messaging-expired', 'messaging-broad-grant'];
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
-        'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+        'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
         'messaging-paired', 'messaging-unpaired', ...refusedMessaging];
       let restrictedScope;
@@ -270,22 +277,27 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'messaging-paired', ...refusedMessaging].includes(decision);
+          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'messaging-paired', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : decision === 'messaging-paired' ? 'Synthetic paired chat tools.'
             : decision === 'telegram-quoted-resume' ? 'Synthetic paired Telegram quote.'
             : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'
+            : decision === 'workspace-selected' ? 'Synthetic selected workspace.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'workspace-selected'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
             : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume'].includes(decision) ? priorSessionId : nativeSessionId;
+          const workspace = decision === 'updated-guidance-resume' ? root
+            : ['workspace-selected', 'workspace-replaced'].includes(decision) ? alternateWorkspace
+            : decision === 'workspace-missing' ? join(root, 'absent') : undefined;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
+            ...(workspace === undefined ? {} : { workspace }),
             ...(['changed-skill-metadata', 'updated-guidance-resume'].includes(decision) ? { historySeed } : {}),
             ...(decision === 'quoted-resume' ? { historySeed: exactQuote } : {}),
             ...(decision === 'telegram-quoted-resume' ? { historySeed: telegramQuote } : {}),
@@ -299,6 +311,13 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             continue;
           }
           const first = JSON.parse(firstLine.value);
+          if (decision === 'workspace-missing') {
+            assert.deepEqual(first, { ...correlation, type: 'outcome',
+              outcome: { phase: 'not_submitted', reason: 'claude_workspace_unavailable' } });
+            assert.equal((await exited)[0], 0);
+            await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+            continue;
+          }
           if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
             assert.deepEqual(first, { ...correlation, type: 'outcome',
               outcome: { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' },
@@ -312,12 +331,17 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
             { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession,
-              sessionScope: first.sessionScope, ...(humanOriginal ? { steering: true } : {}) });
+              sessionScope: first.sessionScope, ...(workspace === undefined ? {} : { workspace }),
+              ...(humanOriginal ? { steering: true } : {}) });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
           }
           if (decision === 'skill-changed-during-submission') await writeFile(skill, 'Temporary raced change.');
+          if (decision === 'workspace-replaced') {
+            await rename(alternateWorkspace, join(root, 'prior-workspace'));
+            await mkdir(alternateWorkspace);
+          }
           if (decision === 'disconnected') worker.stdin.end();
           else {
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
@@ -326,7 +350,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
