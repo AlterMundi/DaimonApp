@@ -1241,10 +1241,10 @@ fn reserve_run(shared: &AppShared, i: &Instruction) -> Option<Option<ActiveTurnS
         let mut runs = shared.routing_runs.lock().expect("routing mutex poisoned");
         if let Some(run) = runs.get_mut(&i.target) {
             if let Some(active) = &run.active
-                && !i
-                    .target_execution
-                    .as_ref()
-                    .is_some_and(|binding| binding.harness.is_portable())
+                && active.harness
+                    == i.target_execution
+                        .as_ref()
+                        .map_or(crate::execution::Harness::Codex, |binding| binding.harness)
             {
                 Some(Some(active.clone()))
             } else {
@@ -1479,12 +1479,34 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
     if !dispatch_allowed(&app.shared, &i)? {
         return Ok(());
     }
+    let claude = active.harness == crate::execution::Harness::Claude;
+    let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
+    let needs_fresh_claude = claude
+        && (source.tribu_source.is_some()
+            || !source.telegram_files.is_empty()
+            || native_claude_goal(&i.text)
+            || app
+                .shared
+                .store
+                .interaction_author(&i.id, i.human_id)?
+                .is_some()
+            || app
+                .shared
+                .store
+                .interaction_visual(&i.id, i.human_id)?
+                .is_some()
+            || !app
+                .shared
+                .store
+                .interaction_files(&i.id, i.human_id)?
+                .is_empty());
     // Attention work must wait for a fresh, separately reserved execution.
     // Reuse the existing run queue; physical turn changes must not steer it.
-    if app
-        .shared
-        .store
-        .heartbeat_workflow_delegation(i.human_id, i.target, &i.id)?
+    if needs_fresh_claude
+        || app
+            .shared
+            .store
+            .heartbeat_workflow_delegation(i.human_id, i.target, &i.id)?
     {
         let fresh = {
             let mut runs = app
@@ -1507,23 +1529,26 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
         }
         return Ok(());
     }
-    let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
-    let text = match super::nexus::input_prompt(
-        &app.shared,
-        source.update_id,
-        i.target,
-        i.human_id,
-        &packet(&app.shared, &i, Some(active.turn_id))?,
-    ) {
-        Ok(text) => text,
-        Err(_) => {
-            failure(
-                app.shared.clone(),
-                &i.id,
-                i.human_id,
-                "Input context is unavailable for this worker",
-            );
-            return Ok(());
+    let text = if claude && source.update_id.is_some() && !relayed(&i) {
+        i.text.clone()
+    } else {
+        match super::nexus::input_prompt(
+            &app.shared,
+            source.update_id,
+            i.target,
+            i.human_id,
+            &packet(&app.shared, &i, Some(active.turn_id))?,
+        ) {
+            Ok(text) => text,
+            Err(_) => {
+                failure(
+                    app.shared.clone(),
+                    &i.id,
+                    i.human_id,
+                    "Input context is unavailable for this worker",
+                );
+                return Ok(());
+            }
         }
     };
     let text = match &active.controller_hint {
@@ -1599,7 +1624,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             shared.store.interaction_target_execution_allowed(&selected)?,
                             "Routed target execution changed before native steering"
                         );
-                        if selected.target_execution.is_some() {
+                        if selected.target_execution.is_some() && !claude {
                             shared.store.validate_codex_submission(active_local, true, None)?;
                         }
                         Ok(())
@@ -1613,7 +1638,10 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
         })
         .is_ok();
     tokio::spawn(async move {
-        let result = if sent {
+        let result = if sent && claude {
+            // Native Claude may consume this between tools or in its next reply.
+            rx.await.ok()
+        } else if sent {
             tokio::time::timeout(Duration::from_secs(10), rx)
                 .await
                 .ok()
