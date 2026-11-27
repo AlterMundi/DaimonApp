@@ -1,39 +1,58 @@
 """Reuse a registered home's shared browser session for conversation access."""
 import hashlib
-import http.client
 import json
 import re
+import ssl
 import time
 from urllib.parse import urlsplit
+
+import httpx
 
 from .companion import permitted
 
 
+# Share only TLS connections. Sending each request directly through the
+# transport keeps cookies and responses out of a shared client session.
+_identity_transport = httpx.HTTPTransport(
+    verify=ssl.create_default_context(),
+    trust_env=False,
+    limits=httpx.Limits(max_connections=40, max_keepalive_connections=4, keepalive_expiry=5),
+)
+_identity_timeout = {'connect': 3, 'read': 3, 'write': 3, 'pool': 3}
+
+
 def identity_response(origin, token):
-    target = urlsplit(origin)
-    connection = http.client.HTTPSConnection(target.hostname, target.port, timeout=3)
+    request = httpx.Request(
+        'GET', origin + '/access/identity',
+        headers={'Cookie': '__Host-home=' + token, 'Accept': 'application/json'},
+        extensions={'timeout': _identity_timeout},
+    )
     try:
-        connection.request('GET', '/access/identity', headers={'Cookie': '__Host-home=' + token,
-                                                             'Accept': 'application/json'})
-        response = connection.getresponse()
-        body = response.read(8193)
-        if (response.status not in (200, 401) or len(body) > 8192
-                or response.headers.get_content_type() != 'application/json'):
-            raise OSError('Shared authentication unavailable')
+        response = _identity_transport.handle_request(request)
         try:
-            value = json.loads(body)
-        except (ValueError, RecursionError):
-            raise OSError('Shared identity response unavailable') from None
-        if response.status == 401:
-            # Only Home's explicit anonymous/expired-session contract can
-            # tell the app to offer sign-in. A proxy or unrelated service may
-            # also return 401 while the browser session is still valid.
-            if isinstance(value, dict) and value.get('detail') == 'human_browser_required':
-                raise ValueError('Shared sign-in required')
-            raise OSError('Shared identity response unavailable')
-        return value
-    finally:
-        connection.close()
+            content_type = response.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
+            if response.status_code not in (200, 401) or content_type != 'application/json':
+                raise OSError('Shared authentication unavailable')
+            body = bytearray()
+            for chunk in response.iter_raw():
+                if len(body) + len(chunk) > 8192:
+                    raise OSError('Shared authentication unavailable')
+                body.extend(chunk)
+            try:
+                value = json.loads(body)
+            except (ValueError, RecursionError):
+                raise OSError('Shared identity response unavailable') from None
+            if response.status_code == 401:
+                # Only Home's explicit anonymous/expired-session contract can
+                # tell the app to offer sign-in.
+                if isinstance(value, dict) and value.get('detail') == 'human_browser_required':
+                    raise ValueError('Shared sign-in required')
+                raise OSError('Shared identity response unavailable')
+            return value
+        finally:
+            response.close()
+    except httpx.HTTPError:
+        raise OSError('Shared authentication unavailable') from None
 
 
 class HomeAuth:
