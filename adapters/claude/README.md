@@ -487,6 +487,11 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   Combine the web switch with `FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to
   verify one successor resumes the work from the same quoted original after
   the disposable predecessor is moved out of the harness's native store.
+  Combine the web switch with `FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT=1`
+  to interrupt the active Claude turn through Conversation after provider
+  exposure. The queued reply reaches a successor with the exact quote. The
+  interrupted original remains uncertain, the late answer is withheld, and an
+  exact retry of the interruption does not signal the successor.
 - `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
   from the Conversation composer to a selected Claude topic. The provider
   fixture checks the original image bytes and the human's provenance, with
