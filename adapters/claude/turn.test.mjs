@@ -97,6 +97,36 @@ test('only an explicitly selected human goal uses the native command mode', asyn
   }
 });
 
+test('fresh history quotes preserve the distinct current original at submission', async () => {
+  const historySeed = { turn: 7, human: 'Review the layout.', assistant: 'I can update the layout next.' };
+  const text = 'Yes, do that.';
+  const outcome = await runClaudeTurn(options({
+    input: { ...input, text, historySeed },
+    beforeSubmit: () => true,
+    query: ({ prompt, options: nativeOptions }) => ({
+      async initializationResult() {
+        assert.match(nativeOptions.systemPrompt.append, /historical quotations only/);
+        assert.ok(!nativeOptions.systemPrompt.append.includes(historySeed.assistant));
+        return { claude_code_version: 'fixture-version' };
+      },
+      async mcpServerStatus() { return connected; },
+      async *[Symbol.asyncIterator]() {
+        for await (const request of prompt) {
+          assert.equal(request.uuid, input.id);
+          assert.deepEqual(request.message.content, [
+            { type: 'text', text: 'Gateway historical context (JSON):\n' + JSON.stringify(historySeed) },
+            { type: 'text', text },
+          ]);
+        }
+        yield { type: 'result', subtype: 'success', is_error: false,
+          session_id: input.sessionId, result: 'I will update the layout.' };
+      },
+      close() {},
+    }),
+  }));
+  assert.equal(outcome.phase, 'completed');
+});
+
 test('subscription refusal is retained without mistaking it for an unobserved result', async () => {
   const resetsAt = 1795719000;
   for (const [workObserved, terminalObserved] of [[false, true], [true, true], [false, false]]) {

@@ -5,7 +5,7 @@ use crate::{
     interaction::{Delivery, Instruction, SourceInput, TransportPhase as Phase},
 };
 use anyhow::bail;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub(super) fn telegram_original_epoch(
     conn: &Connection,
@@ -194,6 +194,51 @@ pub(super) fn recover_on(conn: &Connection, writer: &str) -> Result<()> {
     Ok(())
 }
 
+fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
+    let exchange: Option<(i64, String, String)> = conn.query_row(
+        "SELECT prior.id,json_extract(source.doc,'$.text'),result.body
+         FROM turns current
+         JOIN conversation_entry_generations generation ON generation.session_id=current.session_id
+         JOIN sessions owner ON owner.id=current.session_id AND owner.creator_user_id=current.from_user_id
+         JOIN users human ON human.tg_user_id=owner.creator_user_id AND human.allowed=1
+         JOIN turns prior ON prior.session_id=current.session_id
+         JOIN bot_state root ON root.key='execution_root:'||prior.id
+         JOIN interaction_instructions instruction ON instruction.id=json_extract(root.value,'$')
+           AND instruction.session_id=prior.session_id AND instruction.phase='accepted'
+         JOIN interaction_sources source ON source.id=instruction.input_id AND source.human_id=current.from_user_id
+         JOIN interaction_results result ON result.local_turn=prior.id AND result.native_thread=prior.native_thread_id
+           AND result.native_turn='gateway:claude:'||instruction.id AND result.item_id='final'
+         WHERE current.id=?1 AND current.status='running'
+           AND current.execution_generation=generation.generation
+           AND prior.id<current.id AND prior.status='completed'
+           AND prior.from_user_id=current.from_user_id AND prior.execution_generation=current.execution_generation
+           AND prior.execution_harness='claude'
+           AND json_extract(prior.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
+           AND json_extract(prior.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId')
+           AND source.origin_chat=owner.chat_id
+           AND ((source.channel LIKE 'telegram:%' AND source.origin_thread=owner.thread_id)
+             OR (source.channel='conversation' AND EXISTS (
+                 SELECT 1 FROM conversation_inputs original WHERE original.id=source.event_id
+                   AND original.human_id=current.from_user_id AND original.retired=0
+                   AND json_extract(original.doc,'$.paired_actor')=1)))
+           AND json_type(source.doc,'$.tribu_source') IS NOT 'object'
+           AND json_type(source.doc,'$.text')='text'
+         ORDER BY prior.id DESC LIMIT 1",
+        params![local, body.to_string()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).optional()?;
+    let Some((turn, human, assistant)) = exchange else {
+        return Ok(None);
+    };
+    // Keep both originals whole. Never offer a clipped proposal as the
+    // evidence for an approval. A broader history reader can page it later.
+    let seed = json!({"turn":turn,"human":human,"assistant":assistant});
+    Ok((!human.trim().is_empty()
+        && !assistant.trim().is_empty()
+        && serde_json::to_vec(&seed)?.len() <= 12 * 1024)
+        .then_some(seed))
+}
+
 impl Store {
     pub(crate) fn routed_portable_status(
         &self,
@@ -309,6 +354,44 @@ impl Store {
             }
         }
         Ok(valid)
+    }
+
+    /// Select the most recent completed paired exchange for a fresh Claude
+    /// thread. The source is the retained original, not the composed prompt.
+    pub(crate) fn routed_claude_history_seed(
+        &self,
+        input: &Instruction,
+        local: i64,
+        body: &Value,
+    ) -> Result<Option<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let source = super::routing::source_on(&conn, &input.id, input.human_id)?;
+        // An explicitly quoted message needs its own exact source, never the
+        // latest exchange as a substitute. A session choice is only routing.
+        let implicit: bool = if source.channel == "conversation" {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversation_inputs original
+                 WHERE original.id=?1 AND original.human_id=?2 AND original.retired=0
+                 AND json_extract(original.doc,'$.paired_actor')=1
+                 AND (json_extract(original.doc,'$.reply.source') IS NULL
+                      OR json_extract(original.doc,'$.reply.source') LIKE 'session:%'))",
+                params![source.event_id, input.human_id],
+                |row| row.get(0),
+            )?
+        } else if let Some(update) = source.update_id {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM incoming_updates WHERE update_id=?1
+                    AND json_type(payload_json,'$.message.reply_to_message') IS NOT 'object')",
+                [update],
+                |row| row.get(0),
+            )?
+        } else {
+            false
+        };
+        if !implicit {
+            return Ok(None);
+        }
+        claude_history_seed_on(&conn, local, body)
     }
 
     pub(crate) fn expose_routed_portable(
@@ -584,6 +667,130 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_history_seed_is_the_exact_owned_exchange_in_the_current_generation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let session = store.ensure_session(key, 100, &defaults).unwrap();
+        let body = json!({"beingRef":"same","embodimentId":"claude"});
+        let (prior, current) = {
+            let conn = store.conn.lock().unwrap();
+            let record = |status: &str| {
+                conn.query_row(
+                    "INSERT INTO turns(session_id,from_user_id,prompt,status,assistant_text,started_at,
+                         execution_harness,execution_generation,execution_body,native_thread_id)
+                     SELECT ?1,100,'Synthetic wrapper',?2,'I can update the layout next.','2026-11-27',
+                         'claude',generation,?3,'native-thread' FROM conversation_entry_generations WHERE session_id=?1
+                     RETURNING id",
+                    params![session.id, status, body.to_string()],
+                    |r| r.get::<_, i64>(0),
+                ).unwrap()
+            };
+            let prior = record("completed");
+            conn.execute(
+                "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+                params![
+                    format!("execution_root:{prior}"),
+                    json!("instruction").to_string()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO interaction_sources
+                (id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+                VALUES('original',100,'telegram:100','original',100,7,?1,'2026-11-27')",
+                [json!({"text":"Review the layout."}).to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO interaction_instructions
+                (id,input_id,session_id,sequence,phase,doc,instance_id)
+                VALUES('instruction','original',?1,1,'accepted','{}','test')",
+                [session.id],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO interaction_results
+                (id,local_turn,native_thread,native_turn,item_id,body)
+                VALUES('result',?1,'native-thread','gateway:claude:instruction','final','I can update the layout next.')",
+                [prior]).unwrap();
+            (prior, record("running"))
+        };
+        assert_eq!(
+            claude_history_seed_on(&store.conn.lock().unwrap(), current, &body).unwrap(),
+            Some(
+                json!({"turn":prior,"human":"Review the layout.","assistant":"I can update the layout next."})
+            )
+        );
+        assert!(
+            claude_history_seed_on(
+                &store.conn.lock().unwrap(),
+                current,
+                &json!({"beingRef":"other","embodimentId":"claude"})
+            )
+            .unwrap()
+            .is_none()
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE interaction_sources SET origin_thread=8 WHERE id='original'",
+                [],
+            )
+            .unwrap();
+        }
+        assert!(
+            claude_history_seed_on(&store.conn.lock().unwrap(), current, &body)
+                .unwrap()
+                .is_none()
+        );
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE interaction_sources SET channel='conversation' WHERE id='original'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_inputs
+                (id,human_id,session_id,native_thread,phase,doc,instance_id,created_at)
+                VALUES('original',100,?1,'source-binding','answered',?2,'test','2026-11-27')",
+                params![session.id, json!({"paired_actor":true}).to_string()],
+            )
+            .unwrap();
+            assert!(
+                claude_history_seed_on(&conn, current, &body)
+                    .unwrap()
+                    .is_some()
+            );
+            conn.execute(
+                "UPDATE conversation_inputs SET retired=1 WHERE id='original'",
+                [],
+            )
+            .unwrap();
+            assert!(
+                claude_history_seed_on(&conn, current, &body)
+                    .unwrap()
+                    .is_none()
+            );
+            // Restore only this synthetic row so the next assertion isolates the
+            // target generation check from source retirement.
+            conn.execute(
+                "UPDATE conversation_inputs SET retired=0 WHERE id='original'",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE conversation_entry_generations SET generation='replacement' WHERE session_id=?1",
+                         [session.id]).unwrap();
+        }
+        assert!(
+            claude_history_seed_on(&store.conn.lock().unwrap(), current, &body)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn claude_continuations_keep_each_exact_scope_and_fence_uncertain_work() {

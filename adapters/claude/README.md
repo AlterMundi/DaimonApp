@@ -83,6 +83,18 @@ including the body binding, memory and tools, continue to partition native
 history. Verify a resumed turn and the new installed skill before reporting
 receiving adoption.
 
+For paired topic inputs, Gateway can supply the last completed exchange from
+the current logical topic generation and the same Claude embodiment. It reads
+the retained original and its completed reply, keeping both whole within the
+12 KiB encoded context bound. A compatible native resume takes precedence.
+The adapter labels the older exchange as historical data and keeps it separate
+from the current original. When Claude reports missing native history before
+submission, Gateway retains that result. This path does not resubmit that
+input. Explicit message replies require their exact source and do not use this
+latest-exchange fallback. Native goal commands and unpaired or peer inputs
+keep their existing submission path. Deploy and roll back the Gateway binary
+and Claude adapter together, since older workers reject the added start field.
+
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
 Provision it using the Claude embodiment's own messaging application and
