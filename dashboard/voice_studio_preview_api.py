@@ -30,7 +30,7 @@ class PreviewService:
         if not profiles or capacity is None:raise ValueError('Voice previews are not configured')
         binding=self.config['speech_openai']['binding'];raw=speech.private_bytes(binding,16384)
         base=speech.route(binding)
-        if base['provider'] not in ('openai-realtime','openai-tts'):raise ValueError('Select the existing OpenAI speech cache')
+        if base['provider']!='openai-realtime':raise ValueError('Select the existing OpenAI speech cache')
         key=self.config['openai_live']['api_key_file']
         if not isinstance(key,str) or not Path(key).is_absolute():raise ValueError('Select the configured project access')
         fingerprint=speech.sha(speech.canonical([speech.sha(raw),key,profiles[:1]]))

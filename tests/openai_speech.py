@@ -71,6 +71,10 @@ class Reading(unittest.TestCase):
         self.assertIsNone(self.fields['session']['audio']['input']['turn_detection'])
         self.assertEqual(self.fields['session']['tools'],[]);self.assertEqual(self.fields['response']['conversation'],'none')
         self.assertEqual(self.fields['response']['input'][0]['content'][0]['text'],self.request['text'])
+        session, response = self.socket.sent
+        self.assertEqual(session['session']['instructions'], self.fields['response']['instructions'])
+        self.assertNotIn('instructions', response['response'])
+        self.assertEqual(first['render_id'], self.ident)
 
     def test_incomplete_generation_preserves_exact_response_and_refuses_replay(self):
         self.socket.failure={'type':'response.done','response':{'id':'response-one','status':'incomplete'}}

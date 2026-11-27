@@ -26,6 +26,11 @@ def connect(endpoint, model, token, timeout):
 def render(config, fields, token, max_audio, *, connector=None, progress=None, on_pcm=None):
     """One source-bound response; emit verified PCM deltas before final WAV."""
     started=time.monotonic();deadline=started+config['timeout_seconds']
+    response_options = dict(fields['response'])
+    # A response inherits the session instruction unless it overrides it.
+    # Keep the planned fields intact so existing audio and intent IDs still match.
+    if response_options.get('instructions') == fields['session'].get('instructions'):
+        response_options.pop('instructions', None)
     socket=(connector or connect)(config['endpoint'],config['model'],token,config['timeout_seconds'])
     pcm=bytearray();seen=set();response=None;item=None;first_audio=None
     transcript_bytes=0
@@ -52,7 +57,7 @@ def render(config, fields, token, max_audio, *, connector=None, progress=None, o
                     raise SpeechError('speech-session-mismatch')
                 configured=True
                 if progress:progress({'stage':'response_intent','model':config['model']})
-                send({'type':'response.create','response':fields['response']})
+                send({'type':'response.create','response':response_options})
             elif kind=='response.created':
                 value=event.get('response',{})
                 if (not configured or response is not None
