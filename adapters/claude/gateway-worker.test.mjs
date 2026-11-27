@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -42,7 +42,7 @@ test('worker sends one native input only after exact owner persistence decision'
       await writeFile(skill, initialSkill);
       const hash = input => createHash('sha256').update(input).digest('hex');
       const skillResumeAnchor = {
-        membership: hash(JSON.stringify(['sample', skill, ''])),
+        membership: hash(JSON.stringify(['sample', skill, null])),
         revision: hash(JSON.stringify(['sample', skill, hash(initialSkill)])),
       };
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
@@ -139,6 +139,24 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         body,
       };
       await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
+
+      const membershipFor = async text => {
+        await writeFile(skill, text);
+        return JSON.parse(execFileSync(process.execPath,
+          [executable, '--skill-resume-anchor', selection])).membership;
+      };
+      const frontmatter = (metadata, body = 'Installed prose.') =>
+        `---\nname: sample\n${metadata}\n---\n${body}`;
+      const firstVersion = await membershipFor(frontmatter('metadata:\n  version: "1.0.0"'));
+      assert.equal(await membershipFor(frontmatter('metadata:\n  version: "1.0.1"', 'New prose.')), firstVersion);
+      assert.notEqual(await membershipFor(frontmatter('version: 1custom')),
+        await membershipFor(frontmatter('version: 2other')));
+      assert.notEqual(await membershipFor(frontmatter('description: |\n  version: 1.0.0')),
+        await membershipFor(frontmatter('description: |\n  version: 2.0.0')));
+      assert.notEqual(await membershipFor('\uFEFF' + frontmatter('allowed-tools: Read')),
+        await membershipFor('\uFEFF' + frontmatter('allowed-tools: Bash')));
+      await writeFile(skill, initialSkill);
+
 
       const {
         apiKeyFile: _keyFile, configurationDirectory: _directory, maxBudgetUsd: _qualificationBudget,

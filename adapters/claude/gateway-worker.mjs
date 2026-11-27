@@ -189,6 +189,34 @@ async function probeFoundation(server, body, cwd, signal) {
   }
 }
 
+function skillMetadata(bytes, digest) {
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return { opaque: digest };
+  }
+  if (!/^---[ \t]*(?:\r?\n|$)/.test(text)) return null;
+  const header = /^---\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(text);
+  if (header?.index !== 0) return { opaque: digest };
+  // Preserve ambiguous YAML literally. Normalize only plain release scalars
+  // at the root or in the direct metadata mapping used by the publisher.
+  if (/:\s+[|>][+\-\d]*[ \t]*(?:#.*)?$/m.test(header[1])) return header[1];
+  const release = '(?:0|[1-9][0-9]*)(?:\\.(?:0|[1-9][0-9]*)){2}';
+  const scalar = new RegExp(`^((?:version|shared_version):[ \\t]+)(${release}|"${release}"|'${release}')([ \\t]*\\r?)$`);
+  let metadata = false;
+  return header[1].split('\n').map(line => {
+    if (/^\S/.test(line)) {
+      metadata = /^metadata:[ \t]*\r?$/.test(line);
+      return line.replace(scalar, '$1<release>$3');
+    }
+    if (metadata && /^ {2}\S/.test(line)) {
+      return '  ' + line.slice(2).replace(scalar, '$1<release>$3');
+    }
+    return line;
+  }).join('\n');
+}
+
 async function sharedSkillInventory(root) {
   if (!root) return { names: [], revision: null, membership: null };
   const names = [];
@@ -205,12 +233,8 @@ async function sharedSkillInventory(root) {
     const path = await realpath(file);
     const bytes = await readFile(path);
     const digest = createHash('sha256').update(bytes).digest('hex');
-    const frontmatter = /^---\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(bytes.toString('utf8'));
-    const behavior = frontmatter?.index === 0
-      ? frontmatter[1].replace(/^( {0,2}(?:version|shared_version):)[ \t]+["']?[0-9][.0-9+a-z-]*["']?[ \t]*(?=\r?$)/gim, '$1')
-      : '';
     revision.update(JSON.stringify([name, path, digest]));
-    membership.update(JSON.stringify([name, path, behavior]));
+    membership.update(JSON.stringify([name, path, skillMetadata(bytes, digest)]));
     names.push(`${SKILL_NAMESPACE}:${name}`);
   }
   if (!names.length) throw new Error('Selected shared skills directory is empty');
