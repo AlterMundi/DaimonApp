@@ -1287,6 +1287,11 @@ with its own role-specific capabilities. `inputs` identifies accepted inputs in
 that actual native execution. `session_request` selects an original human parent,
 a stable caller request ID, one existing unambiguous topic and at most 16,000
 bytes of session-authored text. It does not copy a transcript or create a topic.
+For ordinary coordination, including sending an existing report to another
+topic for its work, omit `report_to_topic`. This works across harnesses.
+If Gateway returns `topic_report_destination_unsupported` with
+`admitted: false` for an intended internal handoff, correct the call in the
+same turn with the original request ID and omit that flag.
 `session_requests` inspects the latest sixteen retained dependencies and
 reports each helper's transport phase and linked native turn status. A handoff
 retained before its first local turn after a writer rollover is no longer in
