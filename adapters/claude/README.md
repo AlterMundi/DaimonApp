@@ -482,6 +482,11 @@ helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY=1` keeps Gateway running with
+  TeleDaimon stopped and reads a routed Claude result in Conversation. It then
+  starts the named TeleDaimon process, verifies one projection of the
+  known-unsent result, and checks that a separate lost acknowledgement is
+  retained without replay across adapter restart.
 - `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
   selected Claude session through the paired Conversation composer, with no
   additional provider call and a retained refusal for an unpaired companion.

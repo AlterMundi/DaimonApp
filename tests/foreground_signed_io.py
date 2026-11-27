@@ -192,6 +192,11 @@ operator.main()
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
+            adapter_recovery = telegram_topic and os.environ.get(
+                "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
+            if adapter_recovery:
+                journey.config.write_text(journey.config.read_text().replace(
+                    "[interaction]\n", "[interaction]\ntelegram_entry_projection=true\n", 1))
             if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 if telegram_topic:
                     adapter_config = journey.root / "telegram-adapter.toml"
@@ -488,6 +493,9 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if adapter_recovery:
+                        self._claude_adapter_recovery(journey, provider, adapter_config)
+                        return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_GOAL") == "1":
                         self._conversation_goal(journey, provider)
                         return
@@ -906,6 +914,94 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _claude_adapter_recovery(self, journey, provider, adapter_config):
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            teledaimon = journey.root / "teledaimon"
+            teledaimon.symlink_to(Path(journey.binary).resolve())
+
+            def start_adapter():
+                return subprocess.Popen([str(teledaimon), str(adapter_config)], text=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+            def stop_adapter(process):
+                if process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+                _, errors = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, errors)
+
+            def result(answer):
+                provider.original = "Request a fixture reply while testing Telegram delivery."
+                provider.human_original = str(uuid.uuid4())
+                provider.quote_response = answer
+                browser.text(provider.original, reply=destination, original_id=provider.human_original)
+                journey.wait(lambda: provider.failure or any(
+                    row.get("preview") == answer for row in browser.get("/api/interaction")["items"]
+                ), seconds=25)
+                self.assertIsNone(provider.failure)
+                rows = journey.row(
+                    "SELECT d.id FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id "
+                    "WHERE r.body=? AND json_extract(d.doc,'$.origin.thread_id')=1", (answer,))
+                self.assertEqual(len(rows), 1)
+                return rows[0][0]
+
+            def delivery(id):
+                return journey.row(
+                    "SELECT d.phase,count(p.part),max(p.message_id) FROM interaction_deliveries d "
+                    "LEFT JOIN interaction_delivery_parts p ON p.delivery_id=d.id WHERE d.id=? GROUP BY d.id",
+                    (id,),
+                )
+
+            gateway_pid = journey.process.pid
+            ready_answer = "This Claude answer was retained while Telegram was unavailable."
+            ready = result(ready_answer)
+            journey.wait(lambda: journey.row(
+                "SELECT phase FROM interaction_deliveries WHERE id=? "
+                "AND json_extract(doc,'$.telegram_publication_selected')=1", (ready,),
+            ) == [("reserved",)], seconds=8)
+            self.assertEqual(delivery(ready), [("reserved", 0, None)])
+            self.assertFalse(journey.has(ready_answer, 1))
+
+            adapter = start_adapter()
+            try:
+                journey.wait(lambda: adapter.poll() is not None or
+                             (delivery(ready) and delivery(ready)[0][0] == "delivered"), seconds=12)
+                self.assertIsNone(adapter.poll())
+                self.assertEqual(delivery(ready)[0][:2], ("delivered", 1))
+                first_receipt = delivery(ready)
+                self.assertTrue(first_receipt[0][2])
+                lost_answer = "This Claude answer has a deliberately lost Telegram acknowledgement."
+                journey.before_send_message_reply = lambda payload: (
+                    False if lost_answer in payload["text"] else None)
+                lost = result(lost_answer)
+                journey.wait(lambda: delivery(lost) == [("uncertain", 1, None)], seconds=10)
+            finally:
+                stop_adapter(adapter)
+
+            polls = journey.telegram_methods.count("getUpdates")
+            adapter = start_adapter()
+            try:
+                journey.wait(lambda: journey.telegram_methods.count("getUpdates") > polls, seconds=12)
+                following = result("This is a new Claude answer after Telegram returned.")
+                journey.wait(lambda: delivery(following) and delivery(following)[0][0] == "delivered",
+                             seconds=15)
+                self.assertEqual(delivery(ready), first_receipt)
+                self.assertEqual(delivery(lost), [("uncertain", 1, None)])
+                for answer in (ready_answer, lost_answer):
+                    self.assertEqual(sum(answer in message["text"] for message, _ in journey.messages), 1)
+                self.assertEqual(len(set(provider.calls)), 3)
+                self.assertEqual(journey.process.pid, gateway_pid)
+            finally:
+                stop_adapter(adapter)
 
         def _conversation_goal(self, journey, provider):
             from conversation_cold_entry_http_io import Browser
