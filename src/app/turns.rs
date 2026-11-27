@@ -872,8 +872,13 @@ pub(super) async fn process_turn(
         && queued.request.review_mode.is_none()
     {
         codex_switch_context(
-            &shared, &session, turn_id, queued.request.from_user_id, queued.update_id,
-            queued.conversation_input.as_deref(), queued.interaction.as_deref(),
+            &shared,
+            &session,
+            turn_id,
+            queued.request.from_user_id,
+            queued.update_id,
+            queued.conversation_input.as_deref(),
+            queued.interaction.as_deref(),
         )?
         .map(Arc::new)
     } else {
@@ -2694,11 +2699,19 @@ fn codex_switch_context(
     routed: Option<&str>,
 ) -> Result<Option<String>> {
     let Some((prior, exchange)) = shared.store.codex_claude_predecessor(
-        local, session, human, update, conversation, routed,
-    )? else {
+        local,
+        session,
+        human,
+        update,
+        conversation,
+        routed,
+    )?
+    else {
         return Ok(None);
     };
-    let checkpoint = shared.store.topic_folder_claim(session.key, human)?
+    let checkpoint = shared
+        .store
+        .topic_folder_claim(session.key, human)?
         .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim));
     if exchange.is_none() && checkpoint.is_none() {
         return Ok(None);
