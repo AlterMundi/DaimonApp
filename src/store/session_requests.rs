@@ -1147,7 +1147,7 @@ mod tests {
                     .is_none()
             );
             for (key, scope, allowed) in [("wrong-scope", "b", false), ("same-scope", "a", true)] {
-                let (_, next, _) = send(key, "Continue existing work", false).unwrap();
+                let (_, next, _) = send(key, "Continue existing work").unwrap();
                 let (next_local, _) = begin(&next);
                 let selected =
                     json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
