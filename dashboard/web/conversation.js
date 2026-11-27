@@ -2473,6 +2473,14 @@ window.Conversation = (() => {
           if(!completed.complete || !completed.blob?.size)throw Error("Audio stopped before it was ready. The reply is still available to read.");
           return {...metadata,blob:completed.blob,usingBlob:true};
         }
+        const nextHeader=response.headers.get("x-presentation-next-offset"),next=nextHeader===""?null:Number(nextHeader);
+        if(next!==null && (!Number.isSafeInteger(next)||next<=offset))throw Error("Invalid audio continuation");
+        const endHeader=response.headers.get("x-presentation-end-offset"),end=endHeader?Number(endHeader):undefined;
+        if(end!==undefined && (!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end))throw Error("Invalid audio segment boundary");
+        const aheadHeader=response.headers.get("x-presentation-lookahead-offset"),lookahead=aheadHeader?Number(aheadHeader):undefined;
+        if(lookahead!==undefined && (next===null || !Number.isSafeInteger(lookahead) || lookahead<=next || lookahead>offset+1600))throw Error("Invalid audio lookahead boundary");
+        const prefetch=response.headers.get("x-presentation-prefetch")==="true";
+        if(prefetch && end!==undefined && !controller.signal.aborted)onBufferedPart?.(next);
         const stream = response.body.getReader(); const chunks = []; let length = 0;
         while (true) {
           const {value, done} = await stream.read(); if (done) break;
@@ -2484,13 +2492,7 @@ window.Conversation = (() => {
         const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))]
           .map((byte) => byte.toString(16).padStart(2,"0")).join("");
         if (hash !== response.headers.get("x-audio-sha256")) throw new Error("Audio integrity check failed");
-        const nextHeader=response.headers.get("x-presentation-next-offset"),next=nextHeader===""?null:Number(nextHeader);
-        if(next!==null && (!Number.isSafeInteger(next)||next<=offset))throw Error("Invalid audio continuation");
-        const endHeader=response.headers.get("x-presentation-end-offset"),end=endHeader?Number(endHeader):undefined;
-        if(end!==undefined && (!Number.isSafeInteger(end)||end<=offset||end>offset+1600||next!==null&&next!==end))throw Error("Invalid audio segment boundary");
-        const aheadHeader=response.headers.get("x-presentation-lookahead-offset"),lookahead=aheadHeader?Number(aheadHeader):undefined;
-        if(lookahead!==undefined && (next===null || !Number.isSafeInteger(lookahead) || lookahead<=next || lookahead>offset+1600))throw Error("Invalid audio lookahead boundary");
-        return {blob,next,end,lookahead,textHash:response.headers.get("x-presentation-text-sha256"),prefetch:response.headers.get("x-presentation-prefetch")==="true"};
+        return {blob,next,end,lookahead,textHash:response.headers.get("x-presentation-text-sha256"),prefetch};
       }finally{clearTimeout(deadline);}
     }
     function prefetchNext(selected,next=selected.next,ready=selected.prefetch){

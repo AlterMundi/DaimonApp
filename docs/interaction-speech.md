@@ -789,6 +789,12 @@ pause silence, resume, cancellation, prepared-player bounds and exact-byte WAV
 recovery. Neither fixture opens a microphone or calls a provider.
 
 
+For buffered WAV, an exact successor may start preparing as soon as the
+authorized response headers identify its boundary. The current WAV still
+completes digest and canonical-source verification before playback. The
+existing second-lookahead limit and pause/Stop ownership apply.
+
+
 For operational rollback of progressive playback, keep the new compatible
 server/ASR policy/fence and set both canonical speech sections'
 `streaming_output=false`. The same OpenAI renderer/cache then supplies its WAV;
