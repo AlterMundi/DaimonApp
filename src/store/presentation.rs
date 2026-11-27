@@ -1870,6 +1870,95 @@ mod tests {
     }
 
     #[test]
+    fn claude_uses_the_exact_paired_quote_across_delivery_status_changes() {
+        use crate::store::conversation_routing::ConversationReply;
+        use crate::store::routed_portable::claude_quoted_seed_on;
+
+        let (_file, store, entry, _, instruction, body) = setup();
+        let observed = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap();
+        let result = &observed["items"][0];
+        let reply = ConversationReply {
+            source: result["id"].as_str().unwrap().into(),
+            revision: result["revision"].as_str().unwrap().into(),
+            context_only: false,
+        };
+        let binding = {
+            let conn = store.conn.lock().unwrap();
+            entry_binding(&conn, 100, entry, entry_on(&conn, 100, entry).unwrap().0).unwrap()
+        };
+        let (original, _) = store
+            .conversation_input_capture_files(
+                100,
+                entry,
+                &binding,
+                &Uuid::now_v7().to_string(),
+                "Yes, do that.",
+                Some(reply.clone()),
+                None,
+                None,
+                vec![],
+                true,
+            )
+            .unwrap();
+
+        let original = store
+            .conversation_input_read(100, entry, &original.id)
+            .unwrap();
+        let conn = store.conn.lock().unwrap();
+        let selected = source_on(&conn, 100, entry, &reply.source)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            original.reply_text_sha256.as_deref(),
+            selected["text_sha256"].as_str()
+        );
+        let expected =
+            json!({"source":reply.source,"revision":reply.revision,"assistant":body.trim_end()});
+        assert_eq!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target).unwrap(),
+            Some(expected.clone())
+        );
+        conn.execute(
+            "UPDATE interaction_deliveries SET phase='delivered' WHERE id=?1",
+            [reply.source.strip_prefix("delivery:").unwrap()],
+        )
+        .unwrap();
+        let changed = source_on(&conn, 100, entry, &reply.source)
+            .unwrap()
+            .unwrap();
+        assert_ne!(changed["revision"], selected["revision"]);
+        assert_eq!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target).unwrap(),
+            Some(expected)
+        );
+
+        let foreign_topic = SessionKey::new(100, Some(8));
+        assert!(
+            claude_quoted_seed_on(&conn, &original, &reply, foreign_topic)
+                .unwrap()
+                .is_none()
+        );
+        let mut stale = original.clone();
+        stale.reply_text_sha256 = Some("0".repeat(64));
+        assert!(
+            claude_quoted_seed_on(&conn, &stale, &reply, instruction.target)
+                .unwrap()
+                .is_none()
+        );
+        conn.execute(
+            "UPDATE interaction_deliveries SET doc=json_set(doc,'$.body','Different text') WHERE id=?1",
+            [reply.source.strip_prefix("delivery:").unwrap()],
+        ).unwrap();
+        assert!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn canonical_part_reads_committed_state_while_writer_is_held() {
         let (_file, store, entry, _, _, _) = setup();
         let list = store

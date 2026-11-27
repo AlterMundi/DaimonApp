@@ -90,9 +90,15 @@ the retained original and its completed reply, keeping both whole within the
 The adapter labels the older exchange as historical data and keeps it separate
 from the current original. When Claude reports missing native history before
 submission, Gateway retains that result. This path does not resubmit that
-input. Explicit message replies require their exact source and do not use this
-latest-exchange fallback. Native goal commands and unpaired or peer inputs
-keep their existing submission path. Deploy and roll back the Gateway binary
+input. A paired Conversation reply to a canonical result carries the exact
+selected text to either a resumed or fresh Claude context. Gateway retains
+the selected text digest at capture and verifies the original source and
+destination at preparation. A changed delivery status can preserve the same
+text; a different result or topic cannot supply the quote. This uses the
+normal run queue when a Claude turn is busy. If an explicitly selected result
+cannot be supplied, Gateway retains the original without submitting it. Other
+explicit replies do not use the latest-exchange fallback. Native goal commands and
+unpaired or peer inputs keep their existing submission path. Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
 For paired work, optional `matrixMessaging` selects the owner-private
