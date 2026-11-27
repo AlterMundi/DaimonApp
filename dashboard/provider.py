@@ -30,6 +30,10 @@ class OwnerControlNotSubmitted(ProviderUnavailable):
     """The owner socket was unavailable before any request bytes were written."""
 
 
+class OwnerControlReplyUnavailable(ProviderUnavailable):
+    """The owner socket closed before returning a complete acknowledgement."""
+
+
 class VoiceStorageFull(ProviderUnavailable, RetentionUnavailable):
     """Known admission refusal, also compatible with existing voice consumers."""
     pass
@@ -91,7 +95,9 @@ def control(path, nonce=None, command='all', *, envelope=None):
         data = bytearray()
         while b'\n' not in data:
             block = stream.recv(min(4096, 262145 - len(data)))
-            if not block or len(data) + len(block) > 262144:
+            if not block:
+                raise OwnerControlReplyUnavailable('Receiving operation acknowledgement unavailable')
+            if len(data) + len(block) > 262144:
                 raise ProviderUnavailable('Receiving operation acknowledgement unavailable')
             data.extend(block)
         reply = json.loads(data)
