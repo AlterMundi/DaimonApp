@@ -299,7 +299,7 @@ const hung = (options) => new Promise((resolve, reject) => {
   // All producer text stays literal, and acknowledgment IDs survive rerender.
   const incident = {projection:{producer_id:"fixture",incident_id:"one",phase:"index",
     summary:"<img src=x onerror=attack()>",action:"Restore credit",processing_state:"open"},
-    freshness:"stale",deliveries:[{state:"uncertain"}],acknowledgments:[]};
+    freshness:"fresh",deliveries:[{state:"uncertain"}],acknowledgments:[]};
   const operations = {state:"available",observer_state:"unobserved",incidents:[incident],csrf:"alerts-csrf"};
   const independent = boot((route) => route === "api/session" ? ok()
     : route === "api/alerts/acknowledge" ? Promise.resolve({ok:true,json:async () => ({request_id:"one"})})
@@ -362,6 +362,9 @@ const hung = (options) => new Promise((resolve, reject) => {
   vm.runInContext('alerts('+JSON.stringify({...operations,state:"stale",incidents:[incident]})+')',independent.context);
   assert.equal(activeArticle(),undefined);
   assert.match(independent.nodes.get("#alerts-state").textContent,/could not be verified/);
+  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[{...incident,freshness:"stale"}]})+')',independent.context);
+  assert.equal(activeArticle(),undefined);
+  assert.match(independent.nodes.get("#alerts-state").textContent,/have not confirmed/);
   // Acknowledgment changes attention; it never moves an open failure into history.
   const acknowledgedOpen = {...incident,acknowledgments:[{request_id:"ack-confirmed"}]};
   vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[acknowledgedOpen],resolved_incidents:[resolved]})+')',independent.context);

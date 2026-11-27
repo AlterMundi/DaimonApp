@@ -81,8 +81,8 @@ The disclosure shows current open incidents with separate acknowledgment and
 delivery states. A confirmed acknowledgment removes the notice's attention.
 A resolution removes it from the next observation. A late acknowledgment
 cannot restore an older list after the current observation has changed.
-When observation is stale or unavailable, the app reports uncertainty and
-withholds cached incident cards.
+When an incident or the receiving snapshot is stale, the app reports
+uncertainty and withholds that incident until its producer confirms the state.
 
 The Alerts service retains incident history for operator lookup. Its configured
 retention removes eligible resolved records without pending or uncertain
@@ -122,7 +122,7 @@ or an externally changed label. It neither registers an app nor consumes updates
 Telegram's `MenuButtonWebApp` exposes text and a URL, without an icon color or
 animation field: https://core.telegram.org/bots/api#menubuttonwebapp . The supported
 indicator is therefore a colored emoji in the label: red for error/critical, orange
-for warning, blue for information, plain Apps when clear. Only open unacknowledged
+for warning, blue for information, plain Apps when clear. Only current open unacknowledged
 incidents request attention. Acknowledgment does not resolve their conditions.
 Unavailable/stale/unobserved or truncated observation displays a white unknown
 indicator unless a known error/critical already warrants red. Resolved history
@@ -142,7 +142,7 @@ the existing operator authority after verifying the current binding and destinat
 The same `attention_projection` drives the Telegram menu, launcher card/banner
 and Sessions summary. Only open unacknowledged incidents contribute. The compact
 projection includes a count, at most three safe producer summaries and matching
-severity symbols. Resolved history and acknowledgment remain separate from recovery.
+severity symbols. Unverified incidents are excluded from the count and summaries.
 
 An explicit `alerts.launcher_origins` list enables **only** the read-only
 `POST /api/alerts/attention` route for selected exact HTTPS origins. It validates

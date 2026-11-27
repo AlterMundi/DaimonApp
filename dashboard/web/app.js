@@ -381,8 +381,9 @@ function alerts(data) {
     return;
   }
   section.hidden = false;
-  const active = data.state === "available"
-    ? (data.incidents || []).filter(incident => incident.projection.processing_state === "open") : [];
+  const reported = (data.incidents || []).filter(incident => incident.projection.processing_state === "open");
+  const active = data.state === "available" ? reported.filter(incident => incident.freshness === "fresh") : [];
+  const hasUnverified = data.state === "available" && reported.length > active.length;
   const open = active.length;
   const unacknowledged = active.filter(incident => !incident.acknowledgments.length).length;
   section.dataset.attention = String(unacknowledged > 0);
@@ -392,6 +393,7 @@ function alerts(data) {
   $("#alerts-state").textContent = data.state === "unavailable"
     ? "Alert service unavailable. Processing and delivery cannot be confirmed."
     : data.state === "stale" ? "Current alerts could not be verified. Refresh to check again."
+    : hasUnverified ? "Some alert sources have not confirmed their current state."
     : data.observer_state === "unobserved" ? "Worker observation has not been established."
     : data.observer_state === "degraded" ? "Observation requires attention. Check source and observer freshness."
     : "Observation route current. Processing and delivery are independent.";
@@ -405,7 +407,7 @@ function alerts(data) {
   if (data.state === "unavailable" && explanations[data.error])
     $("#alerts-state").textContent += " " + explanations[data.error];
   const target = $("#incidents"); target.replaceChildren();
-  target.append(el("h3", `Open incidents · ${open}`, "incident-group-title"));
+  if (open) target.append(el("h3", `Open incidents · ${open}`, "incident-group-title"));
   for (const incident of active) {
     const p = incident.projection;
     const acknowledged = incident.acknowledgments.length > 0;
@@ -463,7 +465,7 @@ function alerts(data) {
     }
     target.append(item);
   }
-  if (!open && data.state === "available") target.append(el("p", "No open incidents reported in this receiving scope."));
+  if (!open && !hasUnverified && data.state === "available") target.append(el("p", "No open incidents reported in this receiving scope."));
   if (data.truncated) target.append(el("p", "Partial view: more incidents exist in this receiving scope.", "note"));
 
 }
