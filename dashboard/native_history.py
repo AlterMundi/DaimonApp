@@ -141,11 +141,17 @@ class NativeHistory:
             enqueue(db,row)
             # A late finite recovery resumes context delivery, not voice/model
             # work. Explicit next-owner recovery sees this unfinished producer.
-            db.execute("UPDATE foreground_context_producers SET phase='closing' WHERE dialogue=? AND phase='closed'",(dialogue,))
+            changed=db.execute("UPDATE foreground_context_producers SET phase='closing' WHERE dialogue=? AND phase='closed'",(dialogue,))
+            if changed.rowcount and self._open_context_producers(db)>NativeContext.max_producers:
+                raise ValueError('Unfinished Live context producers reached their bound')
         with self._lock:listeners=tuple(self._listeners)
         for notify in listeners:
             with suppress(RuntimeError):notify()
         return self.view(row)
+
+    @staticmethod
+    def _open_context_producers(db):
+        return db.execute("SELECT count(*) FROM foreground_context_producers WHERE phase!='closed'").fetchone()[0]
 
     def context_register(self,human,dialogue,binding):
         self.ident(dialogue)
@@ -155,7 +161,9 @@ class NativeHistory:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute('SELECT * FROM foreground_context_producers WHERE dialogue=?',(dialogue,)).fetchone()
             if row is None:
-                if db.execute('SELECT count(*) FROM foreground_context_producers').fetchone()[0]>=NativeContext.max_producers:
+                if self._open_context_producers(db)>=NativeContext.max_producers:
+                    raise ValueError('Unfinished Live context producers reached their bound')
+                if db.execute('SELECT count(*) FROM foreground_context_producers').fetchone()[0]>=NativeContext.max_retained_producers:
                     raise ValueError('Live context producer retention reached its bound')
                 db.execute("INSERT INTO foreground_context_producers(dialogue,human,scope,binding,generation,phase) VALUES(?,?,?,?,?,'open')",
                     (dialogue,human,self.scope,binding,str(uuid.uuid4())))
