@@ -100,7 +100,7 @@ const hung = (options) => new Promise((resolve, reject) => {
   assert.equal(recovered.calls[0].url,recovered.calls[1].url);assert.equal(recovered.calls[1].options.method,"GET");
   assert.equal(recovered.calls[0].options.signal,recovered.calls[1].options.signal,"One original deadline bounds both reads");
   const exhausted=await requestCase(immutableRoute,undefined,[cut(),cut()]);
-  assert.equal(exhausted.calls.length,2);assert.match(exhausted.error.message,/Saved text.*nothing was resent/);
+  assert.equal(exhausted.calls.length,2);assert.match(exhausted.error.message,/Couldn't load this message/);
   const denied=await requestCase(immutableRoute,undefined,[cut(401)]);
   assert.equal(denied.calls.length,1);assert.equal(denied.error.status,401);
   const write=await requestCase("interaction/inputs",{text:"Do not replay"},[cut(),complete]);
