@@ -234,6 +234,12 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   automatic.advance(5001);await automatic.control.refresh('binding');await tick();
   assert(automatic.root.textContent.includes('Retained answer'),'An existing metadata event recovers a failed initial read without a timer or click');
   assert.equal(automatic.control.capture().reference.source,'session:7');
+  const interruptedRead=boot();await interruptedRead.control.refresh('binding');
+  interruptedRead.byText('Busy work').click();await tick();
+  interruptedRead.failHistory(503);await interruptedRead.control.refresh('binding');await tick();
+  assert(interruptedRead.root.textContent.includes('Retained answer'),'A temporary read outage keeps the visible history');
+  assert.equal(interruptedRead.byLabel('Retry reading this conversation').hidden,false);
+  assert.equal(interruptedRead.control.capture().reference.source,'session:7');
   const replaced=boot();await replaced.control.refresh('binding');replaced.failOnce(409);
   replaced.byText('Busy work').click();await tick();await tick();
   assert(replaced.root.textContent.includes('Retained answer'),'A changed file gets one fresh read automatically');

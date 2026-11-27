@@ -1102,6 +1102,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             from starlette.concurrency import run_in_threadpool
             result=await run_in_threadpool(provider.session_view,ident,technical=technical,
                 revision=revision,before=before,after=after,event=event,text_offset=text_offset,scan=scan)
+        except (OwnerControlReplyUnavailable,ConnectionError,TimeoutError,sqlite3.OperationalError):
+            raise HTTPException(503,'Conversation temporarily unavailable; try reading again') from None
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(409,'Selected conversation changed or is unavailable; select it again') from None
         session=await authorize_async(request)
