@@ -120,6 +120,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 )
             submission = self.admitted()
             assert submission["native_session_id"]
+            codex_handoff = getattr(self.server, "expected_codex_handoff", None)
+            if codex_handoff:
+                self.server.codex_handoff_native = submission["native_session_id"]
+                assert self.server.codex_handoff_native != codex_handoff["native"]
+                blocks = [block.get("text", "") for message in data["messages"]
+                          if isinstance(message["content"], list) for block in message["content"]
+                          if block.get("type") == "text"]
+                seed = next((block for block in blocks if block.startswith("Gateway historical context (JSON):")), "")
+                assert codex_handoff["original"] in seed and codex_handoff["reply"] in seed, (
+                    "The new Claude turn lacked the receipt-bound Codex exchange"
+                )
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
             returned_dependency = getattr(self.server, "returned_dependency", None)

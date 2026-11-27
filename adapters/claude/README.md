@@ -484,5 +484,8 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_TELEGRAM_SKILL_REFRESH=1` for a compatible version and content
   change. The provider fixture verifies the prior prompt, the new skill
   instructions and the unchanged native session and tool scope.
+- `FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF=1` for the first Claude turn in a
+  topic previously served by Codex. The provider sees the exact prior request
+  and reply as historical context, and the original Codex binding remains.
 
 All Matrix identities, user input and provider output are synthetic.
