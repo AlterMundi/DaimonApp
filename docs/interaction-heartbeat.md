@@ -842,3 +842,10 @@ body. Exact receiving roots and allowed tool routes, RSS/external/stored-state
 limits, startup, provider exposure, real accounting authority and full-profile
 adoption remain separate unfinished work. No profile, resource amount or lane
 is selected by this source update.
+
+The owner readiness read distinguishes a loaded route from an unloaded thread's
+historical route metadata. A matching unloaded thread can report that it needs
+preparation even when its last model differs from the listener's current
+selection. This status does not pulse as ready or initiate a resume. A loaded
+thread with a mismatched model or provider still fails verification, and an
+explicit admission refusal remains a refusal.

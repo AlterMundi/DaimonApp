@@ -995,6 +995,20 @@ impl CodexRunner {
                     thread["id"] == native,
                     "Native observation identity changed"
                 );
+                // An unloaded thread exposes historical route metadata.
+                // Report only its cache state; the existing resume and atomic
+                // admission will verify the selected route when work arrives.
+                if thread["status"]["type"] == "notLoaded" {
+                    return Ok(
+                        if thread["canAcceptDirectInput"].is_null()
+                            || thread["canAcceptDirectInput"] == true
+                        {
+                            "native_idle_unloaded"
+                        } else {
+                            "native_admission_unavailable"
+                        },
+                    );
+                }
                 if let Some(selected) = self.session_profile(session.key) {
                     NativeModelProfile::load(&default_codex_home(), selected)?.verify(thread)?;
                 } else {
@@ -1016,15 +1030,6 @@ impl CodexRunner {
                                 .is_none_or(|e| thread["reasoningEffort"] == e),
                         "Native model selection changed"
                     );
-                }
-                // An evicted idle thread has no loaded admission capability.
-                // The existing bounded-work path may resume it when work arrives;
-                // null isn't an explicit refusal and doesn't require a repair.
-                if thread["status"]["type"] == "notLoaded"
-                    && (thread["canAcceptDirectInput"].is_null()
-                        || thread["canAcceptDirectInput"] == true)
-                {
-                    return Ok("native_idle_unloaded");
                 }
                 if thread["canAcceptDirectInput"] != true {
                     return Ok("native_admission_unavailable");
@@ -4597,6 +4602,30 @@ mod tests {
                 "gpt-5.4",
                 None,
                 Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "another-model",
+                None,
+                Some("native_idle_unloaded"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "selected-native",
+                "another-model",
+                Some(false),
+                Some("native_admission_unavailable"),
+            ),
+            (
+                true,
+                "notLoaded",
+                "another-native",
+                "another-model",
+                None,
+                None,
             ),
             (true, "idle", "another-native", "gpt-5.4", Some(true), None),
             (
