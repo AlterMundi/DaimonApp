@@ -591,8 +591,15 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions, messaging);
-    const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
+    const scopeInputs = [profile, binding ?? '', skillScopeRevision(profile, skills), foundation,
+      hostTools, fullAccess, controllerSelected, sessionInstructions];
+    const continuityScope = turnScope(...scopeInputs);
+    const activeScope = messaging ? turnScope(...scopeInputs, messaging) : continuityScope;
+    // Messaging is an owner-selected capability for this turn. Keep the same
+    // paired history when it is added, and retain already indexed chat scopes.
+    const previous = [first.resume, ...alternates].find(prior =>
+      prior?.scope === continuityScope || prior?.scope === activeScope);
+    const scope = previous?.scope ?? continuityScope;
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
@@ -610,7 +617,7 @@ async function main() {
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
         && inventory.revision === skills.revision
-        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === scope
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === activeScope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
