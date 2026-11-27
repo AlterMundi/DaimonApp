@@ -454,6 +454,8 @@ timeout_seconds=5
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
+                                self._telegram_cancel(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -601,6 +603,45 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_cancel(self, journey, provider):
+            native_turns = journey.native_turns
+            provider.exposed, provider.hold = Event(), Event()
+            provider.original = "Keep this synthetic original if I interrupt the selected turn."
+            provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+
+            def state():
+                return journey.row(
+                    "SELECT i.id,i.phase,t.status,s.busy FROM interaction_sources x "
+                    "JOIN interaction_instructions i ON i.input_id=x.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "JOIN sessions s ON s.id=t.session_id WHERE x.event_id=?", (str(update),)
+                )
+
+            try:
+                self.assertTrue(provider.exposed.wait(8), provider.failure)
+                ident = state()[0][0]
+                self.assertEqual(state(), [(ident, "submitting", "running", 1)])
+                journey.command("/stop", "Stop signal sent.", topic=7)
+                journey.wait(lambda: state() == [(ident, "uncertain", "failed", 0)])
+            finally:
+                provider.hold.set()
+
+            original = json.loads(journey.row("SELECT payload_json FROM incoming_updates WHERE update_id=?",
+                                              (update,))[0][0])
+            duplicate_polled = Event()
+            journey.before_poll_reply = lambda updates: (
+                duplicate_polled.set() if any(event["update_id"] == update for event in updates) else None
+            )
+            with journey.lock:
+                journey.updates.append(original)
+            self.assertTrue(duplicate_polled.wait(5))
+            journey.command("/status", "Claude Code", topic=7)
+            self.assertEqual(state(), [(ident, "uncertain", "failed", 0)])
+            self.assertEqual(provider.exposures, [ident])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+            self.assertEqual(journey.native_turns, native_turns)
 
         def _telegram_quota(self, journey, provider):
             provider.rate_limited = True
