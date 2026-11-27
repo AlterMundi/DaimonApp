@@ -46,6 +46,18 @@ do not change the authorization scope or replace native history. Repository
 guidance remains a separate owner selection. This field grants no resource,
 tool or route and performs no memory or inbox preload.
 
+When preparing a compatible skill update for an existing body, capture
+`--skill-resume-anchor <owner profile>` once from the installed baseline, and
+set its output as `skillResumeAnchor` in that private profile before applying
+the reviewed packages. The anchor preserves the original authorization scope
+across compatible skill prose and release-version changes. Names, resolved
+paths and other frontmatter must still match. The worker rechecks actual
+content digests at submission and continues to verify the body, provider and
+tool grants independently. Leave the existing scope rotation in place for
+changed memberships, execution metadata or a deliberate confidentiality
+withdrawal. Verify a real resumed turn and a read of the new installed skill
+before reporting receiving adoption.
+
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation
 without `--binding`, `bindingFile` to the owner-local binding for this Claude

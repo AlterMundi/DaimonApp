@@ -47,18 +47,22 @@ async function ownerProfile(path) {
   const guidance = Object.hasOwn(value ?? {}, 'bodyGuidanceFile') ? ['bodyGuidanceFile'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
   const skills = Object.hasOwn(value ?? {}, 'sharedSkillsDirectory') ? ['sharedSkillsDirectory'] : [];
+  const skillAnchor = Object.hasOwn(value ?? {}, 'skillResumeAnchor') ? ['skillResumeAnchor'] : [];
   const foundation = Object.hasOwn(value ?? {}, 'matrixFoundation') ? ['matrixFoundation'] : [];
   const hostTools = Object.hasOwn(value ?? {}, 'hostTools') ? ['hostTools'] : [];
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...foundation, ...hostTools,
+      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...foundation, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
         .every(item => typeof item === 'string' && isAbsolute(item))
       || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
         || !isAbsolute(value.sharedSkillsDirectory)))
+      || (skillAnchor.length > 0 && (!skills.length
+        || !closed(value.skillResumeAnchor, ['membership', 'revision'])
+        || !Object.values(value.skillResumeAnchor).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -186,9 +190,10 @@ async function probeFoundation(server, body, cwd, signal) {
 }
 
 async function sharedSkillInventory(root) {
-  if (!root) return { names: [], revision: null };
+  if (!root) return { names: [], revision: null, membership: null };
   const names = [];
   const revision = createHash('sha256');
+  const membership = createHash('sha256');
   for (const name of (await readdir(root)).sort()) {
     if (name.startsWith('.')) continue;
     const file = join(root, name, 'SKILL.md');
@@ -198,12 +203,23 @@ async function sharedSkillInventory(root) {
     });
     if (!entry?.isFile()) continue;
     const path = await realpath(file);
-    const digest = createHash('sha256').update(await readFile(path)).digest('hex');
+    const bytes = await readFile(path);
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    const frontmatter = /^---\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(bytes.toString('utf8'));
+    const behavior = frontmatter?.index === 0
+      ? frontmatter[1].replace(/^( {0,2}(?:version|shared_version):)[ \t]+["']?[0-9][.0-9+a-z-]*["']?[ \t]*(?=\r?$)/gim, '$1')
+      : '';
     revision.update(JSON.stringify([name, path, digest]));
+    membership.update(JSON.stringify([name, path, behavior]));
     names.push(`${SKILL_NAMESPACE}:${name}`);
   }
   if (!names.length) throw new Error('Selected shared skills directory is empty');
-  return { names, revision: revision.digest('hex') };
+  return { names, revision: revision.digest('hex'), membership: membership.digest('hex') };
+}
+
+function skillScopeRevision(profile, inventory) {
+  const anchor = profile.skillResumeAnchor;
+  return anchor?.membership === inventory.membership ? anchor.revision : inventory.revision;
 }
 
 async function sharedSkillPlugin(root, names, directory) {
@@ -311,6 +327,13 @@ async function main() {
     process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
     return;
   }
+  if (flag === '--skill-resume-anchor' && extra.length === 0) {
+    const profile = await ownerProfile(path);
+    if (!profile.sharedSkillsDirectory) throw new Error('Shared skill selection required');
+    const { membership, revision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
+    process.stdout.write(JSON.stringify({ membership, revision }) + '\n');
+    return;
+  }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
   const stop = new AbortController();
   const timeout = setTimeout(() => stop.abort(), 125_000);
@@ -399,7 +422,7 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skills.revision, foundation, hostTools, fullAccess, controllerSelected, sessionInstructions);
+    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions);
     const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
@@ -412,7 +435,8 @@ async function main() {
       ]);
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
-        && turnScope(current, bytes ?? '', inventory.revision, currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
+        && inventory.revision === skills.revision
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions) === scope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({

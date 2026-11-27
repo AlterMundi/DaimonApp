@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -28,12 +29,22 @@ test('worker sends one native input only after exact owner persistence decision'
     const exposure = join(root, 'submitted.txt');
     const apiKeyFile = join(root, 'provider.key');
     const bodyGuidanceFile = join(root, 'body-guidance.md');
+    const sharedSkillsDirectory = join(root, 'skills');
+    const skill = join(sharedSkillsDirectory, 'sample', 'SKILL.md');
+    const initialSkill = 'Synthetic skill: first.';
     const subscriptionEmail = 'owner@example.test';
     const accountDriftCwd = join(root, 'other-account');
     const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
     try {
       await mkdir(accountDriftCwd);
       await writeFile(bodyGuidanceFile, 'Synthetic body guidance: first.', { mode: 0o600 });
+      await mkdir(join(sharedSkillsDirectory, 'sample'), { recursive: true });
+      await writeFile(skill, initialSkill);
+      const hash = input => createHash('sha256').update(input).digest('hex');
+      const skillResumeAnchor = {
+        membership: hash(JSON.stringify(['sample', skill, ''])),
+        revision: hash(JSON.stringify(['sample', skill, hash(initialSkill)])),
+      };
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
       await writeFile(cli, `#!${process.execPath}
 if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
@@ -65,6 +76,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             assert.equal(Object.hasOwn(options, 'maxBudgetUsd'), false);
           }
           assert.equal(options.systemPrompt.snapshot, false);
+          assert.deepEqual(options.skills, ['compaii-shared:sample']);
           assert.match(options.systemPrompt.append, /CompAII fixture · claude@itaca/);
           assert.ok(!options.systemPrompt.append.includes(${JSON.stringify(subscriptionEmail)}));
           return {
@@ -75,6 +87,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 apiProvider: 'firstParty', subscriptionType: 'fixture-plan',
               }};
             },
+            async supportedCommands() { return [{name: 'compaii-shared:sample'}]; },
             async mcpServerStatus() { return [{
               name: 'matrix', source: 'sdk', status: 'connected', tools: options.mcpServers.matrix.tools
             }]; },
@@ -96,7 +109,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const expectedTools = ownerDefault
                   ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
                   : paired ? ['Bash', 'Read'] : [];
-                assert.deepEqual(options.tools, expectedTools);
+                assert.deepEqual(options.tools, [...expectedTools, 'Skill']);
                 assert.equal(options.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
                   options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
@@ -120,7 +133,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const profile = {
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
         cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
-        hostTools: ['Read', 'Bash'], bodyGuidanceFile,
+        hostTools: ['Read', 'Bash'], bodyGuidanceFile, sharedSkillsDirectory, skillResumeAnchor,
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,
@@ -132,8 +145,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         ...commonProfile
       } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
-      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
-        'updated-guidance-resume', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
+        'updated-guidance-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
       let restrictedScope;
       let hostScope;
@@ -143,6 +156,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       for (const decision of decisions) {
         if (decision === 'updated-guidance-resume') {
           await writeFile(bodyGuidanceFile, 'Synthetic body guidance: updated.');
+          await writeFile(skill, 'Synthetic skill: updated.');
+        }
+        if (decision === 'changed-skill-metadata') {
+          await writeFile(skill, '---\nname: sample\nallowed-tools: Read\n---\nSynthetic skill: updated.');
         }
         if (decision === 'owner-default') {
           const { hostTools: _tools, ...defaultProfile } = profile;
@@ -165,11 +182,11 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume'].includes(decision);
+          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'changed-skill-metadata'].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'changed-skill-metadata'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
@@ -198,6 +215,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
           }
+          if (decision === 'skill-changed-during-submission') await writeFile(skill, 'Temporary raced change.');
           if (decision === 'disconnected') worker.stdin.end();
           else {
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
@@ -206,7 +224,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'updated-guidance-resume'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
@@ -222,6 +240,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           }
           assert.equal((await exited)[0], 0);
           if (decision === 'profile-changed') await writeFile(selection, JSON.stringify(profile));
+          if (decision === 'skill-changed-during-submission') await writeFile(skill, initialSkill);
+          if (decision === 'changed-skill-metadata') await writeFile(skill, 'Synthetic skill: updated.');
         } finally {
           worker.kill();
           await exited;
