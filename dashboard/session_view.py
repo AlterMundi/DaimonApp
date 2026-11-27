@@ -290,11 +290,14 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
         JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
         JOIN interaction_results r ON r.local_turn=t.id AND r.native_thread=t.native_thread_id
           AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
+        LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
+          AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
         WHERE i.session_id=? AND s.human_id=? AND i.phase='accepted'
           AND t.session_id=i.session_id AND t.from_user_id=s.human_id
           AND t.execution_harness=? AND t.execution_generation=? AND t.status='completed'
           AND length(trim(r.body))>0
-          AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)'''
+          AND (p.id IS NOT NULL OR NOT EXISTS
+            (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id))'''
     scope = (session, human, harness, generation)
     ordered = after is not None
     bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)
@@ -304,7 +307,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     else:
         where = 'r.rowid>=?' if ordered else 'r.rowid<=?'
     rows = db.execute(f'''SELECT r.rowid,t.started_at,t.completed_at,
-        json_extract(s.doc,'$.text'),r.body {source} AND {where}
+        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') END,r.body {source} AND {where}
         ORDER BY r.rowid {order} LIMIT {MAX_ITEMS + 1}''', (*scope, bound))
     items = deque()
     total = 0
