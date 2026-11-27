@@ -724,6 +724,43 @@ class Companion(unittest.TestCase):
             self.assertEqual(current.call_count,2)
         self.assertEqual(len(self.speech.calls),1)
 
+    def test_exact_part_socket_close_is_retryable_but_gateway_conflict_is_not(self):
+        import socket
+        from dashboard.provider import control
+
+        path = self.root / 'exact-part.sock'
+        selection = {**self.provider.source, 'offset': 0}
+        responses = (
+            b'{"ok":',  # EOF before the acknowledgement frame is complete
+            b'{"ok":false,"error":"Presentation source revision changed"}\n',
+            (json.dumps({'ok': True, 'result': selection}) + '\n').encode(),
+        )
+        requests = []
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            path.chmod(0o600)
+            server.listen()
+            server.settimeout(5)
+
+            def answer_parts():
+                for response in responses:
+                    peer, _ = server.accept()
+                    with peer, peer.makefile('rb') as wire:
+                        requests.append(json.loads(wire.readline())['command'])
+                        peer.sendall(response)
+
+            self.provider.presentation_part = lambda source, revision, offset: control(
+                path, command=f'presentation part {source} {revision} {offset}')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                accepting = executor.submit(answer_parts)
+                for expected in (503, 409, 200):
+                    result = self.client.get('/api/interaction/part', params=self.body, headers=self.headers)
+                    self.assertEqual(result.status_code, expected, result.text)
+                accepting.result(timeout=6)
+        self.assertEqual(result.json(), selection)
+        self.assertEqual(requests, [f"presentation part {self.body['source']} {self.body['revision']} 0"]*3)
+        self.assertEqual(self.speech.calls, [])
+
     def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
         from unittest.mock import AsyncMock
         from dashboard.speech import Speech
