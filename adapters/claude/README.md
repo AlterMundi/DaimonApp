@@ -183,9 +183,12 @@ by the other embodiment. The worker exposes its current skill files through
 a local Claude plugin with the `compaii-shared` namespace. No skill files are
 copied and no user or project settings are imported. Before submission, the
 SDK's loaded shared skill names must match the selected directory. Claude
-loads a skill through its native `Skill` tool. A changed skill catalog or
-changed `SKILL.md` revision starts a fresh native session for the next
-original, keeping the Interaction conversation and its signed history.
+loads a skill through its native `Skill` tool. With a matching
+`skillContinuity.layoutRevision`, text and conventional version changes keep
+the native session eligible for resume. The worker still checks the exact
+current inventory at submission. Changes to the catalog, paths or
+authority-bearing metadata change the scope and use the logical
+conversation's retained context when a fresh native session is required.
 
 `matrixFoundation` takes the qualified Matrix Foundation stdio `command` and
 the exact permitted `tools` list. Use the owner launcher for the Claude
