@@ -142,6 +142,29 @@ class IntegratingLedger(unittest.TestCase):
         self.assertNotIn('text',latest)
         self.assertEqual(calls,[0])
 
+    def test_later_progress_does_not_crowd_out_the_latest_retained_text(self):
+        older_output={'id':'native:77','revision':'c'*64,'kind':'integrator_progress',
+            'current':True,'observed_at':'2026-11-07T18:00:01Z'}
+        self.output_page['items'][0]['observed_at']='2026-11-07T18:00:02Z'
+        self.output_page['items'].append(older_output)
+        self.status.pop('voice')
+        self.status['text']='The current keyword is jacaranda.'
+        part=self.p.presentation_part
+        def read_part(source,revision,offset):
+            result=part(source,revision,offset)
+            if source==older_output['id']:
+                text='Long intervening progress. '*300
+                return {**result,'text':text,'next_offset':offset+len(text)}
+            return result
+        self.p.presentation_part=read_part
+
+        sources=integrating_sources(self.p,self.frozen,max_bytes=1280)['sources']
+        self.assertEqual([row['source'] for row in sources],[self.ident,older_output['id'],self.source])
+        self.assertEqual(sources[0]['text'],self.status['text'])
+        self.assertEqual(sources[1]['text_omitted'],'startup_bound')
+        self.assertNotIn('text',sources[1])
+        self.assertEqual(self.reads.count('input status '+self.ident),1)
+
     def test_oversized_latest_original_is_not_replaced_by_a_partial_transcript(self):
         self.input_page['items'][0]['received_at']='2026-11-07T18:00:02Z'
         self.status['text']='A long captured transcript. '*5000
