@@ -443,4 +443,21 @@ For the composed Gateway and TeleDaimon candidate, set
 `FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX=1` to repeat the signed fixture with
 external Telegram transport unavailable and no usable Codex executable.
 `CLAUDE_TEST_WORKER_PATH` can select that candidate's exact worker source.
+
+For the routed topic tests, invoke the release binary under its `telecodex`
+name, which allows the fixture to initialize a disposable Codex session before
+switching its Telegram transport to external. Set
+`FOREGROUND_TEST_TELEGRAM_TOPIC=1`; the default case checks ordinary input,
+result projection, native goal commands and a local session request. Add
+`FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to remove the fixture's prior native
+history and verify the same original reaches a successor with retained context.
+Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
+
+- `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_TELEGRAM_STEER=1` for Telegram and Conversation inputs
+  delivered to the already-running Claude turn.
+- `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.
+- `FOREGROUND_TEST_TELEGRAM_CANCEL=1` for a topic-local Stop after exposure
+  and retained uncertainty when Telegram redelivers the original update.
+
 All Matrix identities, user input and provider output are synthetic.
