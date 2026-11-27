@@ -2152,6 +2152,22 @@ window.Conversation = (() => {
         if(reconciled?.skip)voiceSeen.add(voiceKey(source));
         else if(direction==="after")offerVoice(reconciled?.source||source);
       }
+      const next=voiceQueue[0];
+      // Prepare one confirmed reply while the timeline and question registry
+      // finish refreshing. Only drainVoice can make automatic speech audible.
+      if(direction==="after" && questionRefreshPending && next
+        && ["integrator_answer","worker_result"].includes(next.kind)
+        && voiceEnabled && !voiceSuspended && !voiceBusy && !active && !captureBusy
+        && !prefetched && !queuedPreparations.size && enabled && canListen && !canStreamSpeech
+        && playbackAllowed() && window.navigator?.onLine!==false && !sessionMuted(next)){
+        const offset=next.speech_start||0,controller=new AbortController();
+        const prepared={source:next,offset,controller};
+        prepared.result=requestAudio(next,offset,controller,nextOffset=>{
+          prepared.bufferedNext=nextOffset;
+          prepared.onBufferedPart?.(nextOffset);
+        }).then(value=>({value}),error=>({error}));
+        queuedPreparations.set(preparationKey(next,offset),prepared);
+      }
       playbackLabels();
       showResponseDraft(value.response_draft);
       if(active?.auto && !audio.paused && !active.verifying)prefetchNext(active);
@@ -2231,6 +2247,8 @@ window.Conversation = (() => {
           if(active?.source.kind==="native_question" && !current(active.source))
             stop("This question is no longer current. Refresh before answering.");
         }
+        $("#conversation-state").textContent = (standalone||hostSurface)&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
+          : "No replies yet. Work can continue while this view is closed.";
         questionRefreshPending=!questionsCurrent;drainVoice();
         if (active && enabled && playbackAllowed()) {
           const selected = active, owned = generation;
@@ -2242,8 +2260,6 @@ window.Conversation = (() => {
             }
           }
         }
-        $("#conversation-state").textContent = (standalone||hostSurface)&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
-          : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
@@ -2506,7 +2522,12 @@ window.Conversation = (() => {
       if(following)prepared.controller.signal.removeEventListener("abort",prepared.abortFollowing);
       if(prepared===prefetched)prefetched=undefined;
       queuedPreparations.delete(key);
-      if(!chain?.queued){cancelPreparedMessage(source);for(let n=voiceQueue.length-1;n>=0;n--)if(sameNative(voiceQueue[n],source))removeQueued(n);}
+      if(!chain?.queued){
+        cancelPreparedMessage(source);
+        for(let n=voiceQueue.length-1;n>=0;n--){
+          if(sameMessage(voiceQueue[n],source))removeQueued(n);
+        }
+      }
       if(!chain?.queued){interruptedTurns.delete(source.native_turn);skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
       stop();
       // Transfer the already owned successor after teardown, which must still
@@ -2523,9 +2544,14 @@ window.Conversation = (() => {
       requestAbort = prepared?.controller||new AbortController();
       const controller = requestAbort;playbackLabels();
       try {
-        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller,next=>{
+        const onBufferedPart=next=>{
           if(source.kind!=="integrator_live" && enabled && playbackAllowed())prefetchNext(selected,next,true);
-        })};
+        };
+        if(prepared){
+          prepared.onBufferedPart=onBufferedPart;
+          if(prepared.bufferedNext!==undefined)onBufferedPart(prepared.bufferedNext);
+        }
+        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller,onBufferedPart)};
         if(result.error)throw result.error;
         const {blob,...metadata}=result.value;
         if(active!==selected || generation!==owned)return;

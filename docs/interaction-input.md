@@ -313,6 +313,12 @@ canonical results and creation/restart. It invokes no real model or provider.
 
 ## Reported playback context and semantic intent
 
+For automatic buffered voice with an idle player, Conversation can request the
+first audio part of one newly confirmed reply during timeline refresh. A current
+question still plays first. Playback consumes the prepared part for the exact
+source revision and validates it before unmuting. Muting, stopping or replacing
+the source discards its queued preparation.
+
 A device may report the question or worker result that was playing by adding
 `context_only: true` to its original input's existing `reply` reference. That
 immutable hint is context, not a destination or an answer selection. Plain text
