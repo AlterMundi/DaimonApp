@@ -135,7 +135,10 @@ def silence_and_restart(binary):
         original,_,digest=j.voice('#Alpha Retained across disconnect.',gate=gate)
         j.wait(lambda:digest in j.calls())
         j.stop();j.start()
-        j.wait(lambda:j.row('SELECT phase FROM interaction_voice_inputs WHERE update_id=?',(original,))==[('uncertain',)])
+        # Startup retires the ASR phase and the ingress status in separate steps.
+        j.wait(lambda:j.row('''SELECT v.phase,i.status FROM interaction_voice_inputs v
+            JOIN incoming_updates i USING(update_id) WHERE v.update_id=?''',(original,))
+            ==[('uncertain','undetermined')])
         gate.touch()
         assert j.row('SELECT status FROM incoming_updates WHERE update_id=?',(original,))==[('undetermined',)]
         assert j.calls().count(digest)==1 and not j.instructions(7)
@@ -210,7 +213,10 @@ def restart_reaps_owned_asr_group(binary):
             return not result.stdout.strip() or result.stdout.strip().startswith('Z')
         j.wait(lambda:all(terminated(pid) for pid in pids))
         j.start()
-        j.wait(lambda:j.row('SELECT phase FROM interaction_voice_inputs WHERE update_id=?',(update,))==[('uncertain',)])
+        # Startup retires the ASR phase and the ingress status in separate steps.
+        j.wait(lambda:j.row('''SELECT v.phase,i.status FROM interaction_voice_inputs v
+            JOIN incoming_updates i USING(update_id) WHERE v.update_id=?''',(update,))
+            ==[('uncertain','undetermined')])
         gate.touch()
         assert j.calls().count(digest)==1 and not j.instructions(7)
         assert j.row('SELECT status FROM incoming_updates WHERE update_id=?',(update,))==[('undetermined',)]
