@@ -124,3 +124,35 @@ The fixture checks the exact provider-facing tool list, a read through the
 real DMK reader, a signed same-thread reply observed by the sender and
 restart without resubmission. It uses a disposable Matrix authority,
 synthetic memory and a loopback model responder.
+
+## Qwen Code candidate
+
+`runQwenTurn` uses the shared ACP transport with the owner-selected Qwen Code
+installation, workspace, environment, and exact native session ID. For an
+existing ID it uses `session/load` and fails before submission if that load
+fails. For a topic without a native binding it returns the new ID to the
+journal callback, which must durably record exposure before prompt release.
+The caller must validate the topic, account, body, workspace, and selected
+provider before invoking the adapter.
+
+Qwen Code 0.28.7 emits a roughly 636 KiB command-list notification. Only that
+notification can use the Qwen-specific 768 KiB frame allowance. Ordinary
+frames and assistant text use the shared limits. The adapter attempts ACP
+cancellation after exposure and returns an uncertain outcome if the terminal
+reply was not confirmed. It does not replay the original.
+
+For a synthetic receiving test, set `QWEN_TEST_ACP_BINARY` to the pinned Qwen
+Code 0.28.7 executable and run `node --test adapters/acp/qwen-turn.test.mjs`
+using its compatible Node runtime. The test exercises a denied journal
+decision, two prompts through the same native binding, a failed load, and an
+interruption after provider exposure,
+with only a loopback model endpoint and a disposable home. It disables
+background memory, suggestions and provider retries in that test profile.
+
+Use the subscription the owner selects. Alibaba's
+[Qwen Code setup](https://www.alibabacloud.com/help/en/model-studio/qwen-code)
+distinguishes the Singapore Coding Plan, Token Plan and standard API
+credentials. Bailian CLI can be installed as a tool for the harness. The Qwen
+Code adapter completed one isolated interactive prompt through the international
+Qwen Token Plan using `qwen4-max`. Gateway topic routing and signed body
+acceptance remain separate from the adapter qualification.
