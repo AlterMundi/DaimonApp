@@ -229,9 +229,10 @@ async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=T
     if require_voice and not getattr(provider, 'receiver', {}).get('voice'):
         raise ValueError('Voice input unavailable')
     actor=VoiceActor(authorize,request,session['human'])
+    binding_command = 'input voice capabilities' if require_voice else f'input list {2**63-1} after'
 
     async def check_binding():
-        value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')
+        value = await asyncio.to_thread(provider.presentation, binding_command)
         if value['binding'] != meta['binding']:
             raise ValueError('Conversation binding changed')
 

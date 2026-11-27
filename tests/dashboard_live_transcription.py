@@ -874,6 +874,29 @@ class LiveTranscription(unittest.TestCase):
 
 
 class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_dictation_uses_current_voice_binding_without_reading_routes(self):
+        from types import SimpleNamespace
+
+        checks = []
+        current = 'a' * 64
+
+        async def authorize(_):
+            checks.append('identity')
+            return {'human': 100, 'csrf': 'fresh'}
+
+        def presentation(command):
+            checks.append(command)
+            return {'binding': current}
+
+        socket = WebSocket({'type': 'websocket', 'headers': [], 'path': '/voice', 'scheme': 'wss'}, None, None)
+        provider = SimpleNamespace(presentation=presentation, receiver={'voice': {'enabled': True}})
+        _, recheck, _ = await bind_voice_actor(
+            provider, authorize, socket, {'csrf': 'fresh', 'binding': current})
+        current = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'binding changed'):
+            await recheck()
+        self.assertEqual(checks, ['identity', 'input voice capabilities'] * 2)
+
     async def test_admission_checks_identity_once_and_subsequent_checks_are_fresh(self):
         from types import SimpleNamespace
 
