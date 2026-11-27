@@ -337,7 +337,7 @@ pub(super) fn claude_telegram_quote_on(
 }
 
 fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
-    let exchange: Option<(i64, String, String, String)> = conn.query_row(
+    let mut query = conn.prepare(
         "WITH owned AS (
             SELECT p.id,p.session_id,p.from_user_id,p.native_thread_id,p.execution_harness,
                    owner.chat_id,owner.thread_id,p.prompt
@@ -354,7 +354,7 @@ fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result
                 OR (p.execution_harness='codex' AND p.native_thread_id=owner.codex_thread_id))
          ), routed AS (
             SELECT prior.id,json_extract(source.doc,'$.text') AS human,result.body AS assistant,
-                   prior.execution_harness AS harness
+                   prior.execution_harness AS harness, prior.native_thread_id AS native_thread
             FROM owned prior
             JOIN bot_state root ON root.key='execution_root:'||prior.id
             JOIN interaction_instructions instruction ON instruction.id=json_extract(root.value,'$')
@@ -384,7 +384,7 @@ fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result
             SELECT prior.id,
                    coalesce(json_extract(original.payload_json,'$.message.text'),
                             json_extract(original.payload_json,'$.message.caption')) AS human,
-                   native.text AS assistant, prior.execution_harness AS harness
+                   native.text AS assistant, prior.execution_harness AS harness, prior.native_thread_id AS native_thread
             FROM owned prior
             JOIN bot_state root ON root.key='execution_root:'||prior.id AND json_type(root.value,'$')='null'
             JOIN incoming_updates original ON original.turn_id=prior.id AND original.status='settled'
@@ -412,25 +412,55 @@ fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result
                    AND finals.native_thread=receipt.native_thread AND finals.native_turn=receipt.native_turn
                    AND finals.phase='final_answer')=1
          )
-         SELECT id,human,assistant,harness FROM (
-            SELECT * FROM routed UNION ALL SELECT * FROM direct
-         ) WHERE human IS NOT NULL ORDER BY id DESC LIMIT 1",
-        params![local, body.to_string()],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    ).optional()?;
-    let Some((turn, human, assistant, harness)) = exchange else {
+         , ranked AS (
+            SELECT *,row_number() OVER (PARTITION BY harness,native_thread ORDER BY id DESC) AS position
+            FROM (SELECT * FROM routed UNION ALL SELECT * FROM direct)
+            WHERE human IS NOT NULL AND native_thread IS NOT NULL
+         )
+         SELECT id,human,assistant,harness,native_thread FROM ranked
+         WHERE position=1 ORDER BY id DESC LIMIT 3",
+    )?;
+    let mut rows = query.query(params![local, body.to_string()])?;
+    let mut exchanges = Vec::new();
+    while let Some(row) = rows.next()? {
+        let turn: i64 = row.get(0)?;
+        let human: String = row.get(1)?;
+        let assistant: String = row.get(2)?;
+        let harness: String = row.get(3)?;
+        let native_thread: String = row.get(4)?;
+        if human.trim().is_empty() || assistant.trim().is_empty() {
+            continue;
+        }
+        let exchange = json!({"turn":turn,"human":human,"assistant":assistant,
+                            "harness":harness,"nativeThread":native_thread});
+        exchanges.push(exchange);
+        if serde_json::to_vec(&json!({"exchanges":exchanges}))?.len() > 12 * 1024 {
+            // Never clip a quotation that could change the meaning of an approval.
+            exchanges.pop();
+        }
+    }
+    if exchanges.len() > 1 {
+        // Present oldest first while keeping the newest owned exchange in each lineage.
+        exchanges.reverse();
+        return Ok(Some(json!({"exchanges":exchanges})));
+    }
+    let Some(mut seed) = exchanges.pop() else {
         return Ok(None);
     };
-    // Keep both originals whole. Never offer a clipped proposal as the
-    // evidence for an approval. A broader history reader can page it later.
-    let mut seed = json!({"turn":turn,"human":human,"assistant":assistant});
-    if harness == "codex" {
-        seed["harness"] = json!(harness);
+    if seed["harness"] == "codex" {
+        seed.as_object_mut()
+            .expect("exchange object")
+            .remove("nativeThread");
+    } else if seed["nativeThread"]
+        .as_str()
+        .is_some_and(|id| Uuid::parse_str(id).is_err())
+    {
+        // Retained older fixtures and non-resumable historical rows remain readable.
+        let seed = seed.as_object_mut().expect("exchange object");
+        seed.remove("nativeThread");
+        seed.remove("harness");
     }
-    Ok((!human.trim().is_empty()
-        && !assistant.trim().is_empty()
-        && serde_json::to_vec(&seed)?.len() <= 12 * 1024)
-        .then_some(seed))
+    Ok(Some(seed))
 }
 
 impl Store {
@@ -700,6 +730,16 @@ impl Store {
                 None
             };
             if harness != Harness::Claude || !paired_host_access || resolved.as_ref() != Some(quote)
+            {
+                return Ok(false);
+            }
+        }
+        if let Some(seed) = history_seed
+            .filter(|seed| seed["nativeThread"].is_string() || seed["exchanges"].is_array())
+        {
+            if harness != Harness::Claude
+                || !paired_host_access
+                || claude_history_seed_on(&tx, local, body)?.as_ref() != Some(seed)
             {
                 return Ok(false);
             }

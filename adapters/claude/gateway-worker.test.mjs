@@ -21,6 +21,10 @@ const priorSessionId = '7da8a4c1-f56b-43f8-ba35-e9d6fa710e64';
 const original = 'Reply using this selected fixture original.';
 const historySeed = { turn: 12, human: 'Check the layout.', assistant: 'I can move the section next.' };
 const codexSeed = { ...historySeed, harness: 'codex' };
+const earlierSeed = { ...historySeed, harness: 'claude', nativeThread: nativeSessionId };
+const splitHistory = { exchanges: [earlierSeed, {
+  ...historySeed, turn: 13, harness: 'claude', nativeThread: priorSessionId,
+}] };
 const exactQuote = { source: 'delivery:37da8c68-c490-404d-93a4-e4d6741a4397',
   revision: 'a'.repeat(64), assistant: 'Earlier proposal selected by the paired human.' };
 const telegramQuote = { ...exactQuote,
@@ -122,10 +126,13 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   ? ${JSON.stringify(telegramQuote)} : text === 'Synthetic paired Conversation quote.'
                     ? ${JSON.stringify(exactQuote)} : null;
                 const fromCodex = text === 'Synthetic prior Codex exchange.';
-                if (expectedQuote || fromCodex) assert.ok(Array.isArray(content), text);
+                const recovered = text === 'Synthetic split Claude exchange.';
+                if (expectedQuote || fromCodex || recovered) assert.ok(Array.isArray(content), text);
+                if (recovered) assert.equal(options.resume, ${JSON.stringify(priorSessionId)});
                 assert.equal(Array.isArray(content), options.systemPrompt.append.includes('Gateway attached retained context'));
                 if (Array.isArray(content)) {
-                  const seed = fromCodex ? ${JSON.stringify(codexSeed)} : expectedQuote ?? ${JSON.stringify(historySeed)};
+                  const seed = recovered ? ${JSON.stringify({ exchanges: [earlierSeed] })}
+                    : fromCodex ? ${JSON.stringify(codexSeed)} : expectedQuote ?? ${JSON.stringify(historySeed)};
                   assert.equal(content[0].text, 'Gateway historical context (JSON):\\n' + JSON.stringify(seed));
                 }
                 const atSelectedWorkspace = text === 'Synthetic selected workspace.';
@@ -136,7 +143,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const ownerDefault = text === 'Synthetic private default.';
                 const objectSchemas = text === 'Synthetic paired Tribe chat tools.';
                 const withMessaging = objectSchemas || text === 'Synthetic paired chat tools.';
-                const paired = ownerDefault || withMessaging || !!expectedQuote || atSelectedWorkspace || fromCodex || text === 'Synthetic private tool grant.';
+                const paired = ownerDefault || withMessaging || !!expectedQuote || atSelectedWorkspace || fromCodex || recovered || text === 'Synthetic private tool grant.';
                 assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
                 if (withMessaging) {
                   assert.equal(options.mcpServers.matrix_chat.args.at(-1),
@@ -229,7 +236,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         matrixStatusCommand: [...profile.matrixStatusCommand, '--binding', observerBinding, '--body-status'] };
       const refusedMessaging = ['messaging-foreign', 'messaging-foreign-socket', 'messaging-expired', 'messaging-broad-grant'];
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
-        'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+        'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
         'messaging-paired', 'messaging-paired-tribe', 'messaging-paired-isolated',
         'messaging-binding-changed', 'messaging-unpaired', ...refusedMessaging];
@@ -296,7 +303,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         try {
           const pairedMessaging = decision.startsWith('messaging-paired');
           const messagingChanged = decision === 'messaging-binding-changed';
-          const humanOriginal = pairedMessaging || messagingChanged || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
+          const humanOriginal = pairedMessaging || messagingChanged || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : decision === 'messaging-paired-tribe' ? 'Synthetic paired Tribe chat tools.'
             : pairedMessaging || messagingChanged ? 'Synthetic paired chat tools.'
@@ -304,15 +311,16 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'
             : decision === 'workspace-selected' ? 'Synthetic selected workspace.'
             : decision === 'codex-seeded-resume' ? 'Synthetic prior Codex exchange.'
+            : decision === 'split-history-resume' ? 'Synthetic split Claude exchange.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'workspace-selected', 'messaging-paired-tribe'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'messaging-paired-tribe'].includes(decision) ? hostScope
             : ['companion-resume', 'messaging-paired-isolated'].includes(decision) ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
-            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'messaging-paired-tribe'].includes(decision) ? priorSessionId : nativeSessionId;
+            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'messaging-paired-tribe'].includes(decision) ? priorSessionId : nativeSessionId;
           const workspace = decision === 'updated-guidance-resume' ? root
             : ['workspace-selected', 'workspace-replaced'].includes(decision) ? alternateWorkspace
             : decision === 'workspace-missing' ? join(root, 'absent') : undefined;
@@ -323,6 +331,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             ...(decision === 'quoted-resume' ? { historySeed: exactQuote } : {}),
             ...(decision === 'telegram-quoted-resume' ? { historySeed: telegramQuote } : {}),
             ...(decision === 'codex-seeded-resume' ? { historySeed: codexSeed } : {}),
+            ...(decision === 'split-history-resume' ? { historySeed: splitHistory } : {}),
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
           }) + '\n');
           const firstLine = await lines.next();
@@ -374,7 +383,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = pairedMessaging || ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'messaging-unpaired'].includes(decision);
+          const completed = pairedMessaging || ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'messaging-unpaired'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
