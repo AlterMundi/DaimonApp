@@ -214,6 +214,18 @@ function boot(fail){
   device.stop();w.emit({finished:true});if(mode==='wrong-prepared-id')s.message({type:'prepared',id:'other'});await new Promise(yes=>setImmediate(yes));
   assert.deepEqual(lost.events.map(e=>e.type),['data','stop'],`${mode} must retain one complete local fallback`);assert(Buffer.from(await lost.events[0].data.arrayBuffer()).equals(wav));assert.equal(lost.sockets.length,1,'Never reconnect/replay provider audio');
  }
+ for(const failure of ['before-finish','after-finish']){
+  const lost=boot(),device=await lost.create(undefined,{transcriptionProvider:'openai'});
+  const socket=lost.sockets[0],worklet=lost.worklets[0];
+  device.start();socket.open();socket.message({type:'ready'});worklet.emit({pcm:samples});
+  if(failure==='before-finish')socket.close();
+  device.stop();worklet.emit({finished:true});
+  if(failure==='after-finish')socket.close();
+  await new Promise(setImmediate);
+  assert.equal(device.canFinalizeFile,failure==='before-finish');
+  assert.equal(lost.events[0].data.size,44+samples.byteLength);
+  assert.equal(lost.sockets.length,1);
+ }
  const stalled=boot(),stalledDevice=await stalled.create();stalledDevice.start();stalled.sockets[0].open();stalled.sockets[0].message({type:'ready'});stalled.worklets[0].emit({pcm:samples});stalledDevice.stop();
  stalled.timers.find(t=>t.ms===6000&&!t.cleared).fn();
  assert.equal(stalledDevice.captureStop,'audio_flush_unconfirmed','A missing final worklet flush must not present its partial WAV as a complete recording');

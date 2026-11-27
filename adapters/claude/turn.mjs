@@ -106,7 +106,7 @@ async function connectedCatalog(native, expected, signal) {
  * be advertised separately when their native behavior has been qualified.
  */
 export async function runClaudeTurn({
-  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal,
+  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering,
 }) {
   if (typeof input?.text !== 'string' || (input.text.length === 0 && !input.attachments?.length)
       || Buffer.byteLength(input.text) > MAX_INPUT_BYTES
@@ -137,6 +137,15 @@ export async function runClaudeTurn({
   let reason = 'matrix_identity_unverified';
   let observedLimit, throttle;
   let observedWork = false;
+  let rootOutcome;
+  let steeringReady = false;
+  let steerDeadline;
+  const submitted = new Set();
+  const outstanding = new Set();
+  const steerEnabled = () => !!steering && steering.enabled?.() !== false;
+  const withSteering = outcome => steerEnabled()
+    ? { ...outcome, steerSubmitted: [...submitted] }
+    : outcome;
   const throttled = (terminalObserved) => ({ phase: 'subscription_limited', sessionId: input.sessionId,
     limit: throttle, workObserved: observedWork, terminalObserved });
 
@@ -151,6 +160,18 @@ export async function runClaudeTurn({
       ...(input.nativeGoalCommand ? { origin: { kind: 'human' } } : { client_composed: true }),
       message: { role: 'user', content },
     };
+    if (!steerEnabled()) return;
+    for await (const next of steering.messages) {
+      if (rootOutcome || abortController.signal.aborted) return;
+      if (!await steering.admit() || rootOutcome || abortController.signal.aborted) return;
+      submitted.add(next.id);
+      outstanding.add(next.id);
+      yield {
+        type: 'user', uuid: next.id, session_id: input.sessionId, parent_tool_use_id: null,
+        origin: { kind: 'human' }, client_composed: true, priority: 'next',
+        message: { role: 'user', content: next.text },
+      };
+    }
   }
 
   try {
@@ -280,9 +301,10 @@ export async function runClaudeTurn({
     for await (const event of native) {
       if (typeof event.session_id === 'string' && event.session_id) {
         if (input.sessionId !== event.session_id) {
-          return dispatched
+          if (rootOutcome) return withSteering(rootOutcome);
+          return withSteering(dispatched
             ? { phase: 'uncertain', reason: 'claude_session_changed', sessionId: input.sessionId }
-            : { phase: 'not_submitted', reason: 'claude_session_changed' };
+            : { phase: 'not_submitted', reason: 'claude_session_changed' });
         }
       }
       if (!dispatched || event.session_id !== input.sessionId) continue;
@@ -299,35 +321,63 @@ export async function runClaudeTurn({
           if (event.parent_tool_use_id == null) throttle = undefined;
         }
       }
-      if (event.type !== 'result') continue;
-      if (event.subtype === 'success' && event.is_error === false
-          && event.session_id === input.sessionId
-          && typeof event.result === 'string' && event.result.trim()
-          && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES) {
-        return { phase: 'completed', sessionId: input.sessionId, text: event.result };
+      const answered = event.user_message_uuids
+        ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
+      if (steerEnabled() && !steeringReady && !rootOutcome
+          && event.type === 'assistant' && answered.includes(input.id)) {
+        await steering.ready();
+        steeringReady = true;
       }
-      if (throttle) return throttled(event.is_error === true);
-      const budgetExhausted = event.subtype === 'error_max_budget_usd'
-        && event.is_error === true && event.session_id === input.sessionId;
-      const reason = budgetExhausted ? 'claude_budget_exhausted' : 'claude_result_unqualified';
-      return { phase: 'uncertain', reason, sessionId: input.sessionId };
+      if (event.type !== 'result') continue;
+      const successful = event.subtype === 'success' && event.is_error === false
+        && typeof event.result === 'string' && event.result.trim()
+        && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
+      const consumed = [...new Set(answered)].filter(id => outstanding.has(id));
+      if (!rootOutcome) {
+        if (steerEnabled() && answered.length && !answered.includes(input.id)) continue;
+        if (steeringReady && !answered.length) {
+          if (successful) continue;
+          if (throttle) return withSteering(throttled(event.is_error === true));
+        }
+        if (!successful) {
+          if (throttle) return withSteering(throttled(event.is_error === true));
+          const reason = event.subtype === 'error_max_budget_usd' && event.is_error === true
+            ? 'claude_budget_exhausted' : 'claude_result_unqualified';
+          return withSteering({ phase: 'uncertain', reason, sessionId: input.sessionId });
+        }
+        rootOutcome = { phase: 'completed', sessionId: input.sessionId, text: event.result };
+        steering?.close();
+        if (consumed.length) await steering.result(consumed, null);
+        if (outstanding.size > consumed.length) {
+          // An input not folded into the first result can become the next turn
+          // on this same stream. Keep its receipt separate from the first.
+          steerDeadline = setTimeout(() => abortController.abort(), 120_000);
+        }
+      } else if (successful && consumed.length) {
+        await steering.result(consumed, event.result);
+      }
+      if (successful) for (const id of consumed) outstanding.delete(id);
+      if (!outstanding.size) return withSteering(rootOutcome);
     }
   } catch (error) {
     if (input.resume && !dispatched && error?.message ===
         `Claude Code returned an error result: No conversation found with session ID: ${input.sessionId}`) {
       return { phase: 'not_submitted', reason: 'claude_resume_session_missing' };
     }
-    if (dispatched && throttle) return throttled(false);
+    if (dispatched && throttle && !rootOutcome) return withSteering(throttled(false));
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
     clearTimeout(timer);
+    clearTimeout(steerDeadline);
+    steering?.close();
     release(false);
     abortController.abort();
     native?.close();
     stop.removeEventListener('abort', cancel);
   }
-  if (dispatched && throttle) return throttled(false);
-  return dispatched
+  if (rootOutcome) return withSteering(rootOutcome);
+  if (dispatched && throttle) return withSteering(throttled(false));
+  return withSteering(dispatched
     ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: input.sessionId }
-    : { phase: 'not_submitted', reason: stop.aborted ? 'cancelled' : reason };
+    : { phase: 'not_submitted', reason: stop.aborted ? 'cancelled' : reason });
 }

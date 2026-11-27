@@ -7,7 +7,7 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-pub(in crate::app) struct WorkerTurn<'a> {
+pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub id: &'a str,
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
@@ -21,7 +21,21 @@ pub(in crate::app) struct WorkerTurn<'a> {
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
+    pub steering: Option<&'a mut WorkerSteering<'s>>,
 }
+
+pub(in crate::app) struct WorkerSteering<'a> {
+    app: &'a super::App,
+    root: &'a crate::interaction::Instruction,
+    active: super::ActiveTurnSteerHandle,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<crate::codex::CodexSteerRequest>,
+    sent: Vec<(
+        String,
+        tokio::sync::oneshot::Sender<crate::codex::CodexSteerResponse>,
+    )>,
+}
+
+const MAX_CLAUDE_STEERS: usize = 8;
 
 pub(in crate::app) struct WorkerController<'a> {
     app: &'a super::App,
@@ -47,7 +61,7 @@ impl Drop for OwnedProcessGroup {
 pub(in crate::app) async fn execute_worker(
     command: &[String],
     engine: ForegroundEngine,
-    turn: WorkerTurn<'_>,
+    turn: WorkerTurn<'_, '_>,
     commit: impl FnOnce(Value) -> Result<bool>,
 ) -> Result<Value> {
     use std::{
@@ -105,6 +119,7 @@ pub(in crate::app) async fn execute_worker(
         body,
         cancel,
         controller,
+        mut steering,
     } = turn;
     anyhow::ensure!(
         !cancel.is_cancelled(),
@@ -178,6 +193,7 @@ pub(in crate::app) async fn execute_worker(
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
+        let mut negotiated_steering = false;
         if frame["type"] == "prepare_submission" {
             let observed = frame.get("nativeSessionId");
             let selected = match engine {
@@ -219,16 +235,84 @@ pub(in crate::app) async fn execute_worker(
                 native_session = Some(selected.to_owned());
                 committed_long_turn.store(allow_long_turn, Ordering::Relaxed);
             }
-            send(
-                &mut input,
-                json!({"schema":schema,"type":"submission_decision",
-                "inputId":id,"sessionId":session,"committed":committed}),
-            )
-            .await?;
-            frame = receive(&mut output, schema, id, session).await?;
+            let mut decision = json!({"schema":schema,"type":"submission_decision",
+                "inputId":id,"sessionId":session,"committed":committed});
+            if committed
+                && engine == ForegroundEngine::Claude
+                && steering.is_some()
+                && frame["steering"] == true
+            {
+                negotiated_steering = true;
+                decision["steering"] = json!(true);
+            }
+            send(&mut input, decision).await?;
+            frame = Value::Null;
         }
         let mut next_call = 1;
-        while frame["type"] == "controller_call" {
+        let mut steer_ready = false;
+        let mut steer_results = Vec::new();
+        loop {
+            if frame.is_null() {
+                let next = receive(&mut output, schema, id, session);
+                tokio::pin!(next);
+                loop {
+                    let Some(steering) = steering.as_deref_mut().filter(|_| steer_ready) else {
+                        frame = next.await?;
+                        break;
+                    };
+                    tokio::select! {
+                        biased;
+                        observed = &mut next => {
+                            frame = observed?;
+                            break;
+                        }
+                        request = steering.receiver.recv() => {
+                            let Some(request) = request else {
+                                frame = next.await?;
+                                break;
+                            };
+                            if let Some(wire) = steering.prepare(request).await {
+                                send(&mut input, json!({"schema":schema,"type":"steer",
+                                    "inputId":id, "sessionId":session, "id":wire.0, "text":wire.1})).await?;
+                            }
+                        }
+                    }
+                }
+            }
+            if frame["type"] == "steer_ready" {
+                anyhow::ensure!(
+                    negotiated_steering
+                        && !steer_ready
+                        && native_session.is_some()
+                        && frame.as_object().is_some_and(|object| object.len() == 4),
+                    "Invalid Claude steering readiness"
+                );
+                let adapter = steering
+                    .as_deref()
+                    .context("Unexpected Claude steering readiness")?;
+                steer_ready = true;
+                super::routing::started(
+                    adapter.app,
+                    adapter.root.target,
+                    id,
+                    adapter.active.clone(),
+                )?;
+                frame = Value::Null;
+                continue;
+            }
+            if frame["type"] == "steer_result" {
+                anyhow::ensure!(steer_ready && steer_results.len() < MAX_CLAUDE_STEERS
+                    && frame.as_object().is_some_and(|object| object.len() == 6)
+                    && frame["ids"].as_array().is_some_and(|ids| !ids.is_empty() && ids.len() <= MAX_CLAUDE_STEERS)
+                    && (frame["text"].is_null() || frame["text"].as_str().is_some_and(|text| !text.trim().is_empty() && text.len() <= 65536)),
+                    "Invalid Claude steering result");
+                steer_results.push(json!({"ids":frame["ids"].take(),"text":frame["text"].take()}));
+                frame = Value::Null;
+                continue;
+            }
+            if frame["type"] != "controller_call" {
+                break;
+            }
             let owner = controller
                 .as_ref()
                 .context("Worker has no controller access")?;
@@ -289,7 +373,7 @@ pub(in crate::app) async fn execute_worker(
             }
             send(&mut input, response).await?;
             next_call += 1;
-            frame = receive(&mut output, schema, id, session).await?;
+            frame = Value::Null;
         }
         let outcome = frame["outcome"].take();
         anyhow::ensure!(
@@ -323,6 +407,11 @@ pub(in crate::app) async fn execute_worker(
         let mut outcome = outcome;
         if let Some(object) = outcome.as_object_mut() {
             object.remove("resumeUnavailableBody");
+            object.remove("steerResults");
+        }
+        if let Some(adapter) = steering.as_deref_mut() {
+            adapter.validate_outcome(&outcome, &steer_results)?;
+            outcome["steerResults"] = json!(steer_results);
         }
         if outcome["reason"] == "claude_resume_session_missing"
             && let Some(unavailable) = outcome.get("resumeUnavailable")
@@ -358,11 +447,130 @@ pub(in crate::app) async fn execute_worker(
     result
 }
 
+impl WorkerSteering<'_> {
+    async fn prepare(
+        &mut self,
+        request: crate::codex::CodexSteerRequest,
+    ) -> Option<(String, String)> {
+        use crate::codex::CodexSteerError;
+        let allowed = async {
+            let id = request
+                .client_message_id
+                .as_deref()
+                .context("Steer ID missing")?;
+            anyhow::ensure!(
+                self.sent.len() < MAX_CLAUDE_STEERS
+                    && !self.sent.iter().any(|(sent, _)| sent == id)
+                    && request.images.is_empty()
+                    && request.goal.is_none()
+                    && request.observation.is_none()
+                    && request.tool_output.is_none()
+                    && !request.text.trim().is_empty()
+                    && request.text.len() <= 16 * 1024,
+                "Claude steer requires a bounded ordinary input"
+            );
+            if let Some(check) = &request.admission_check {
+                check.check().await?;
+            }
+            anyhow::ensure!(
+                self.app.shared.store.routed_claude_steer_allowed(
+                    self.root,
+                    self.active.turn_id,
+                    id
+                )?,
+                "Claude steering admission changed"
+            );
+            Ok::<_, anyhow::Error>(id.to_owned())
+        }
+        .await;
+        match allowed {
+            Ok(id) => {
+                self.sent.push((id.clone(), request.response));
+                Some((id, request.text))
+            }
+            Err(error) => {
+                let _ = request
+                    .response
+                    .send(Err(CodexSteerError::Rejected(error.to_string())));
+                None
+            }
+        }
+    }
+
+    fn validate_outcome(&self, outcome: &Value, results: &[Value]) -> Result<()> {
+        if self.sent.is_empty() && results.is_empty() && outcome["steerSubmitted"].is_null() {
+            return Ok(());
+        }
+        let submitted = outcome["steerSubmitted"]
+            .as_array()
+            .context("Claude steer accounting missing")?;
+        let mut submitted_ids = std::collections::HashSet::new();
+        for id in submitted {
+            let id = id.as_str().context("Invalid Claude steer ID")?;
+            anyhow::ensure!(
+                self.sent.iter().any(|(sent, _)| sent == id) && submitted_ids.insert(id),
+                "Unknown or duplicate Claude submission"
+            );
+        }
+        let mut covered = std::collections::HashSet::new();
+        for (index, result) in results.iter().enumerate() {
+            anyhow::ensure!(
+                outcome["phase"] == "completed" && (!result["text"].is_null() || index == 0),
+                "Claude steer result has no matching root outcome"
+            );
+            for id in result["ids"]
+                .as_array()
+                .context("Claude steer result is missing IDs")?
+            {
+                let id = id.as_str().context("Invalid Claude steer result ID")?;
+                anyhow::ensure!(
+                    submitted_ids.contains(id) && covered.insert(id),
+                    "Claude steer result included an unsubmitted or duplicate ID"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve(mut self, outcome: &Value) -> Result<()> {
+        use crate::codex::CodexSteerError;
+        self.receiver.close();
+        while let Ok(request) = self.receiver.try_recv() {
+            let _ = request.response.send(Err(CodexSteerError::Rejected(
+                "Claude turn ended before submission".into(),
+            )));
+        }
+        for (id, response) in self.sent {
+            let retained = self
+                .app
+                .shared
+                .store
+                .interaction_instruction(&id, self.root.human_id)?;
+            let result = match retained.and_then(|input| input.native_turn) {
+                Some(anchor) => Ok(Some(anchor)),
+                None if outcome["steerSubmitted"]
+                    .as_array()
+                    .is_some_and(|submitted| !submitted.iter().any(|value| value == &id)) =>
+                {
+                    Err(CodexSteerError::Rejected(
+                        "Claude stream closed before submission".into(),
+                    ))
+                }
+                None => Err(CodexSteerError::Undetermined(
+                    "Claude incorporation unconfirmed".into(),
+                )),
+            };
+            let _ = response.send(result);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(not(unix))]
 pub(in crate::app) async fn execute_worker(
     _command: &[String],
     _engine: ForegroundEngine,
-    _turn: WorkerTurn<'_>,
+    _turn: WorkerTurn<'_, '_>,
     _commit: impl FnOnce(Value) -> Result<bool>,
 ) -> Result<Value> {
     anyhow::bail!("native worker requires Unix process groups")
@@ -431,6 +639,7 @@ pub(super) async fn run_portable_turn(
                 attachments: &[],
                 body: body.clone(),
                 cancel: &cancel,
+                steering: None,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
                     .then_some(WorkerController {
                         app,
@@ -451,7 +660,9 @@ pub(super) async fn run_portable_turn(
     }
     .await
     .ok();
-    store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))
+    let deliveries = store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))?;
+    super::routing::publish_results(app, input.human, deliveries);
+    Ok(())
 }
 
 pub(super) async fn run_routed_portable(
@@ -518,6 +729,25 @@ pub(super) async fn run_routed_portable(
             routed: true,
         });
 
+    let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
+        .then(|| {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            WorkerSteering {
+                app,
+                root: input,
+                active: super::ActiveTurnSteerHandle {
+                    harness: Harness::Claude,
+                    turn_id: local,
+                    physical_turn: Default::default(),
+                    sender,
+                    attachments: Default::default(),
+                    controller_hint: None,
+                },
+                receiver,
+                sent: Vec::new(),
+            }
+        });
+
     // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
     // adapters must receive a new session coordinate for that attempt.
     let attempt = uuid::Uuid::new_v4().to_string();
@@ -538,6 +768,7 @@ pub(super) async fn run_routed_portable(
             routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
             session_instructions:session.session_prompt.as_deref(),
             text:&request.prompt,attachments:&request.attachments,body:body.clone(),cancel:&cancel,controller,
+            steering:steering.as_mut(),
         },|prepared| {
             if cancel.is_cancelled() {return Ok(false);}
             if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
@@ -549,6 +780,9 @@ pub(super) async fn run_routed_portable(
         }).await
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
+    if let Some(steering) = steering {
+        steering.resolve(&outcome)?;
+    }
     if input.origin.message_id.is_some()
         && let Some(limit) = store
             .interaction_instruction(&input.id, input.human_id)?

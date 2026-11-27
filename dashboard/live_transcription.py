@@ -19,6 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from .voice_admission import admit_voice, admission_failure
 from .private_state import private_directory, read_json, write_json
+from .provider import OwnerControlReplyUnavailable
 from .transcription import TranscriptionStream, TranscriptionUnavailable
 from .turn_detection import Detector, DetectionUnavailable, analyze_capture, command as detection_command
 from scripts.speech_render import lock, RenderError
@@ -229,9 +230,20 @@ async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=T
     if require_voice and not getattr(provider, 'receiver', {}).get('voice'):
         raise ValueError('Voice input unavailable')
     actor=VoiceActor(authorize,request,session['human'])
+    binding_command = 'input voice capabilities' if require_voice else f'input list {2**63-1} after'
 
     async def check_binding():
-        value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')
+        try:
+            value = await asyncio.to_thread(provider.presentation, binding_command)
+        except (ConnectionError, OwnerControlReplyUnavailable):
+            if not require_voice:
+                raise
+            # A lost reply to this read does not mean the grant changed.
+            # Reconnect once to read live state without replaying capture or Send.
+            try:
+                value = await asyncio.to_thread(provider.presentation, binding_command)
+            except OwnerControlReplyUnavailable as error:
+                raise OSError('Conversation binding temporarily unavailable') from error
         if value['binding'] != meta['binding']:
             raise ValueError('Conversation binding changed')
 

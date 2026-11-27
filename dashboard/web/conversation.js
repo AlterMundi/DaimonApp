@@ -370,7 +370,7 @@ window.Conversation = (() => {
       transcriptPreview.text=value.text;input.value=value.text;
       input.scrollTop=input.scrollHeight;if(value.resumed){input.focus?.();input.setSelectionRange?.(input.value.length,input.value.length);}
     }
-    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,beforeOriginal:hostSurface?value=>hostSurface.prepare(value):undefined,onOriginalAttempt:value=>hostSurface?.attempt?.(value),onOriginalDiscard:value=>hostSurface?.discard?.(value),getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);hostSurface?.status({id,phase:stage},true);},onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}hostSurface?.status(value);retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,getLevelSink:value=>hostSurface?.microphoneSink(value),onLevel:value=>{if(!value)hostSurface?.silenceMicrophone();presentState({inputLevel:value});},onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
+    const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,beforeOriginal:hostSurface?value=>hostSurface.prepare(value):undefined,onOriginalAttempt:value=>hostSurface?.attempt?.(value),onOriginalDiscard:value=>hostSurface?.discard?.(value),getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);hostSurface?.status({id,phase:stage},true);},onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}hostSurface?.status(value);retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),canFinalizeOpenAIFile:()=>lastVoiceCapabilities?.can_openai_conversation===true,getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,getLevelSink:value=>hostSurface?.microphoneSink(value),onLevel:value=>{if(!value)hostSurface?.silenceMicrophone();presentState({inputLevel:value});},onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
     document.body.classList.toggle("standalone-conversation",standalone);
     const timeline = standalone ? $("#conversation-timeline") : undefined;
     const headerBehavior=timeline?window.ConversationHeader?.mount({timeline}):undefined;
@@ -2152,6 +2152,22 @@ window.Conversation = (() => {
         if(reconciled?.skip)voiceSeen.add(voiceKey(source));
         else if(direction==="after")offerVoice(reconciled?.source||source);
       }
+      const next=voiceQueue[0];
+      // Prepare one confirmed reply while the timeline and question registry
+      // finish refreshing. Only drainVoice can make automatic speech audible.
+      if(direction==="after" && questionRefreshPending && next
+        && ["integrator_answer","worker_result"].includes(next.kind)
+        && voiceEnabled && !voiceSuspended && !voiceBusy && !active && !captureBusy
+        && !prefetched && !queuedPreparations.size && enabled && canListen && !canStreamSpeech
+        && playbackAllowed() && window.navigator?.onLine!==false && !sessionMuted(next)){
+        const offset=next.speech_start||0,controller=new AbortController();
+        const prepared={source:next,offset,controller};
+        prepared.result=requestAudio(next,offset,controller,nextOffset=>{
+          prepared.bufferedNext=nextOffset;
+          prepared.onBufferedPart?.(nextOffset);
+        }).then(value=>({value}),error=>({error}));
+        queuedPreparations.set(preparationKey(next,offset),prepared);
+      }
       playbackLabels();
       showResponseDraft(value.response_draft);
       if(active?.auto && !audio.paused && !active.verifying)prefetchNext(active);
@@ -2231,6 +2247,8 @@ window.Conversation = (() => {
           if(active?.source.kind==="native_question" && !current(active.source))
             stop("This question is no longer current. Refresh before answering.");
         }
+        $("#conversation-state").textContent = (standalone||hostSurface)&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
+          : "No replies yet. Work can continue while this view is closed.";
         questionRefreshPending=!questionsCurrent;drainVoice();
         if (active && enabled && playbackAllowed()) {
           const selected = active, owned = generation;
@@ -2242,8 +2260,6 @@ window.Conversation = (() => {
             }
           }
         }
-        $("#conversation-state").textContent = (standalone||hostSurface)&&cards.size ? "" : cards.size ? `${cards.size} ${cards.size===1?"reply":"replies"} available.`
-          : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
@@ -2292,7 +2308,30 @@ window.Conversation = (() => {
       if(active!==selected || generation!==owned)return;
       stopFailedSpeech(selected,"Audio decoding stopped. Your text and playback position remain available.");
     }
-    async function startPlayback() {
+    const continuationLeadSeconds = 2;
+    const continuationProofMaxMs = 2400;
+    function verifyBufferedContinuation(selected) {
+      const prepared = prefetched;
+      if (!selected?.auto || selected.segmentEnded || selected.verifying || (selected.streaming && !selected.usingBlob)
+        || selected.source.kind === "integrator_live" || selected.source.kind === "native_question"
+        || selected.next == null || selected.end !== selected.next || !prepared?.buffered
+        || prepared.source.id !== selected.source.id || prepared.source.revision !== selected.source.revision
+        || prepared.offset !== selected.next
+        || prepared.continuationCheck?.generation === generation || audio.paused || audio.muted
+        || document.hidden || window.navigator?.onLine===false || voiceSuspended || captureBusy
+        || !enabled || !playbackAllowed() || sessionMuted(selected.source)) return;
+      const remaining = audio.duration - audio.currentTime;
+      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > continuationLeadSeconds) return;
+      prepared.continuationCheck = {
+        previous: selected,
+        generation,
+        binding,
+        result: part(prepared.source, prepared.offset)
+          .then(value=>({value,verifiedAt:performance.now()}),error=>({error}))
+      };
+    }
+
+    async function startPlayback(continuationCheck) {
       const selected = active;
       if (!selected || !blobUrl || !playbackAllowed() || !enabled || captureBusy
         || workspaceAudioScope!==undefined&&sessionMuted(selected.source)) return;
@@ -2303,9 +2342,16 @@ window.Conversation = (() => {
       // Unlock this element on a user gesture; source validation happens muted.
       try {
         const started = audio.play();
-        const check = part(selected.source, selected.offset);
-        let [,verified]=await Promise.all([started, check]);
+        const check = continuationCheck?.result || part(selected.source, selected.offset).then(value=>({value}));
+        const [,observed]=await Promise.all([started, check]);
         if (active !== selected || generation !== owned) return;
+        if(observed.error)throw observed.error;
+        let verified=observed.value;
+        if(continuationCheck && (continuationCheck.binding!==binding || document.hidden
+          || window.navigator?.onLine===false || performance.now()-observed.verifiedAt>continuationProofMaxMs)){
+          verified=await part(selected.source, selected.offset);
+          if(active!==selected || generation!==owned)return;
+        }
         async function validatePrefix(value){
           if(selected.end===undefined)return value;
           const chars=Array.from(value.text),count=selected.end-selected.offset;
@@ -2348,6 +2394,7 @@ window.Conversation = (() => {
         }catch{}
         followPlayback();
         prefetchNext(selected);
+        verifyBufferedContinuation(selected);
       } catch (e) {
         if (active !== selected || generation !== owned) return;
         selected.verifying = false;
@@ -2427,7 +2474,12 @@ window.Conversation = (() => {
         if(next===null)return;
         const prepare=offset=>{
           const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
-          waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return waiting;
+          waiting.result=requestAudio(source,offset,controller).then(value=>{
+            waiting.buffered=!!value.blob&&(!value.streaming||value.usingBlob);
+            if(waiting===prefetched)verifyBufferedContinuation(active);
+            return {value};
+          },error=>({error}));
+          return waiting;
         };
         if(!prefetched)prefetched=prepare(next);
         // Only finalized WAV Live readings advertise the second exact boundary.
@@ -2462,11 +2514,20 @@ window.Conversation = (() => {
       if(captureBusy)return;
       const key=preparationKey(source,offset);
       const prepared=queuedPreparations.get(key) || (prefetched?.source?.id===source.id && prefetched.source.revision===source.revision && prefetched.offset===offset?prefetched:undefined);
+      const proof=prepared?.continuationCheck;
+      const continuationCheck=chain===active && chain?.segmentEnded && proof?.previous===chain
+        && proof.generation===generation && proof.binding===binding && !document.hidden
+        && window.navigator?.onLine!==false ? proof : undefined;
       const following=prepared?.following;
       if(following)prepared.controller.signal.removeEventListener("abort",prepared.abortFollowing);
       if(prepared===prefetched)prefetched=undefined;
       queuedPreparations.delete(key);
-      if(!chain?.queued){cancelPreparedMessage(source);for(let n=voiceQueue.length-1;n>=0;n--)if(sameNative(voiceQueue[n],source))removeQueued(n);}
+      if(!chain?.queued){
+        cancelPreparedMessage(source);
+        for(let n=voiceQueue.length-1;n>=0;n--){
+          if(sameMessage(voiceQueue[n],source))removeQueued(n);
+        }
+      }
       if(!chain?.queued){interruptedTurns.delete(source.native_turn);skippedMessages.delete(messageKey(source));liveSpeech?.continueSource(source);voiceSuspended=false;}
       stop();
       // Transfer the already owned successor after teardown, which must still
@@ -2483,9 +2544,14 @@ window.Conversation = (() => {
       requestAbort = prepared?.controller||new AbortController();
       const controller = requestAbort;playbackLabels();
       try {
-        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller,next=>{
+        const onBufferedPart=next=>{
           if(source.kind!=="integrator_live" && enabled && playbackAllowed())prefetchNext(selected,next,true);
-        })};
+        };
+        if(prepared){
+          prepared.onBufferedPart=onBufferedPart;
+          if(prepared.bufferedNext!==undefined)onBufferedPart(prepared.bufferedNext);
+        }
+        const result=prepared?await prepared.result:{value:await requestAudio(source,offset,controller,onBufferedPart)};
         if(result.error)throw result.error;
         const {blob,...metadata}=result.value;
         if(active!==selected || generation!==owned)return;
@@ -2496,7 +2562,7 @@ window.Conversation = (() => {
         if(active!==selected)return;
         audio.src = blobUrl;
         toggle.disabled = false;
-        return await startPlayback();
+        return await startPlayback(continuationCheck);
       } catch (e) {
         if (active !== selected || generation !== owned) return;
         stop();voiceBusy=false;
@@ -2509,7 +2575,7 @@ window.Conversation = (() => {
     audio.addEventListener("error",()=>{void audioDecodeFailed();});
     audio.addEventListener("nativefocusloss",()=>pause("audio-focus"));
     audio.addEventListener("pause",()=>{if(active && !active.verifying && !requestAbort){playLabel("Play audio");playerStatus();presentState({playback:undefined});}});
-    audio.addEventListener("timeupdate",()=>followPlayback());
+    audio.addEventListener("timeupdate",()=>{followPlayback();verifyBufferedContinuation(active);});
     audio.addEventListener("playing",()=>{
       if(active && !active.verifying && !audio.muted){if(active.queued)timing?.source(active.source,true);playLabel("Pause audio");playerStatus();presentState({playback:"playing"});}
     });

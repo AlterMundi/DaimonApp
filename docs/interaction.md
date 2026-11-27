@@ -1410,6 +1410,11 @@ Exact saved text parts and the source checks for ordinary audio resolve through
 a read-only SQLite connection, using one committed snapshot for each part.
 An in-progress journal write can finish independently of these reads. The
 audio route still checks the exact source again before releasing the waveform.
+
+If the owner socket closes before acknowledging an exact part read, the
+dashboard returns a temporary read failure for the client's bounded GET
+recovery. A confirmed revision conflict keeps its separate response and is
+read back only after choosing the new revision.
 Visibility, revision and offset checks use the same rules as the canonical
 timeline.
 

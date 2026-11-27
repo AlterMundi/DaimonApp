@@ -85,7 +85,10 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 if extra_foundation:
                     steps.append(("ToolSearch", {"query": f"select:{FOUNDATION}"}, FOUNDATION))
                 steps.append((FOUNDATION, {}, foundation))
-            if host_tools:
+            steer = getattr(self.server, "steer_fixture", None)
+            if steer:
+                steps = [("Bash", {"command": steer["command"]}, "Native steer gate opened.")]
+            elif host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
                     ("Bash", {"command": "test -z \"${ANTHROPIC_API_KEY+x}\" && fixture-shared-command"},
@@ -127,6 +130,10 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 ]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
+            if steer and prior:
+                messages = json.dumps(data["messages"])
+                assert steer["text"] in messages
+                assert steer["conversation_text"] in messages
             previous = getattr(self.server, "previous_original", None)
             messages = data["messages"]
             if distinct_request:

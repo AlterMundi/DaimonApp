@@ -107,6 +107,10 @@ topic_id=8
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(response.json()['items'][0]['text'],'Retained worker result')
         self.assertIsNone(self.provider.native,'Reading a selected history must not open native processes')
+        for failure in (ConnectionResetError(),sqlite3.OperationalError('database is locked')):
+            with self.subTest(failure=type(failure).__name__), patch.object(self.provider,'session_view',side_effect=failure):
+                self.assertEqual(self.client.get(url,headers=self.owner).status_code,503)
+        self.assertEqual(self.client.get(url,headers=self.owner).json()['items'],response.json()['items'])
         self.assertEqual(self.client.get('/api/interaction/sessions/'+'f'*24,headers=self.owner).status_code,409)
         grants=Grants(self.config,self.provider);output=self.root/'history-device.json'
         enrolled=grants.enroll('History device',output,3600)

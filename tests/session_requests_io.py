@@ -176,6 +176,136 @@ def general_continues_handoff(binary):
         j.close()
 
 
+def private_draft_does_not_become_public(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare()
+        j.admit('#Alpha Consult Beta and return one answer.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        original = j.instructions(7)[0][0]
+        j.request()
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        thread = 'native-topic-8'
+        turn = j.runs[thread]
+        item = {'id': 'private-draft', 'type': 'agentMessage', 'phase': 'commentary'}
+        j.broadcast(thread, 'item/started', {'turnId': turn, 'item': item})
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': 'Private prefix.'})
+        entry_local = j.row(
+            "SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id "
+            "WHERE s.thread_id=8 AND t.status='running' ORDER BY t.id DESC LIMIT 1"
+        )[0][0]
+        j.wait(lambda: j.row('SELECT private_handoff FROM turns WHERE id=?', (entry_local,)) == [(1,)])
+        # Simulate an accepted human instruction joining after private output began.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute(
+                """INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id)
+                   SELECT 'fixture-later-human',human.input_id,entry.id,999,'accepted',
+                          json_set(human.doc,'$.local_turn',?),human.instance_id
+                   FROM interaction_instructions human JOIN sessions entry ON entry.thread_id=8
+                   WHERE human.id=?""",
+                (entry_local, original),
+            )
+        j.broadcast(thread, 'item/agentMessage/delta',
+                    {'turnId': turn, 'itemId': item['id'], 'delta': ' Later suffix.'})
+        j.broadcast(thread, 'item/completed',
+                    {'turnId': turn, 'item': {**item, 'text': 'Private prefix. Later suffix.'}})
+        j.wait(lambda: j.row("SELECT internal_handoff FROM interaction_native_messages "
+                             "WHERE item_id='private-draft'") == [(1,)])
+        assert not j.has('Private prefix.', 1)
+        page = j.read('presentation', 'list', '0', '0')['result']
+        assert all('Private prefix.' not in i.get('preview', '') for i in page['items'])
+        # The synthetic row represents audience state only. It has no request
+        # journal and must not enter the actual completion's coverage.
+        with sqlite3.connect(j.root / 'state.sqlite') as conn:
+            conn.execute("DELETE FROM interaction_instructions WHERE id='fixture-later-human'")
+        j.answer(8, 'The authorized dependency result.')
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        j.internal_delivery('The authorized dependency result.')
+        print('PASS in-progress private draft stays private after later human admission')
+    finally:
+        j.close()
+
+
+def direct_topic_request_and_return(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare()
+        j.allow_native_launch = True
+        j.admit('Keep working here.', topic=7)
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+        for fields in (
+            {'forward_origin': {'type': 'hidden_user', 'date': 1, 'sender_user_name': 'Another human'}},
+            {'via_bot': {'id': 214, 'is_bot': True, 'first_name': 'Another bot'}},
+        ):
+            previous = len(j.packets['native-topic-7'])
+            update = j.admit('A quote delivered normally, but not a human authorization.',
+                             topic=7, message_fields=fields)
+            j.wait(lambda: len(j.packets['native-topic-7']) > previous)
+            j.wait(lambda: j.row('SELECT status FROM incoming_updates WHERE update_id=?', (update,)) == [('started',)])
+            ok, inputs = j.tool(7, 'inputs', {})
+            assert ok and not any(i.get('original_ingress_update') == update for i in inputs['inputs'])
+        original = 'Ask Beta for a scoped read-only result and bring it back here.'
+        update = j.admit(original, topic=7)
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(2,)])
+        ok, inputs = j.tool(7, 'inputs', {})
+        assert ok, inputs
+        selected = next(i for i in inputs['inputs'] if i['text_excerpt'] == original)
+        assert selected['eligible_human_parent']
+        assert selected['source_channel'] == 'telegram:123'
+        assert selected['source_message']['thread_id'] == 7
+        assert selected['original_ingress_update'] == update
+        args = {
+            'parent_instruction': selected['instruction'],
+            'request_id': 'direct-read',
+            'selector': 't8',
+            'text': 'Check the synthetic value; make no changes.',
+        }
+        ok, refusal = j.tool(7, 'session_request', {k: v for k, v in args.items() if k != 'parent_instruction'})
+        assert ok and refusal['kind'] == 'session_request_rejected' and not refusal['admitted']
+        ok, admission = j.tool(7, 'session_request', args)
+        assert ok and admission['new_admission'], admission
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        ok, repeat = j.tool(7, 'session_request', args)
+        assert ok and not repeat['new_admission']
+        assert repeat['request']['id'] == admission['request']['id']
+        assert len(j.instructions(8)) == 1
+        helper_packet = j.packets['native-topic-8'][-1]['input'][0]['text']
+        provenance = json.loads(next(
+            line.removeprefix('Transport provenance: ')
+            for line in helper_packet.splitlines() if line.startswith('Transport provenance: ')
+        ))
+        assert provenance['original_human_author'] is None
+        assert provenance['author']['kind'] == 'session_request'
+        assert provenance['author']['parent_instruction'] == selected['instruction']
+        assert provenance['author']['human_parent']['origin'] == selected['source_message']
+        j.answer(8, 'Scoped direct-topic dependency result.')
+        j.wait(lambda: j.row('SELECT phase FROM interaction_session_requests') == [('returned',)])
+        # Keep the original collector alive until the retained return accepts.
+        # Observing the request row alone does not settle a steer in flight.
+        thread = 'native-topic-7'
+        return_id = j.row(
+            "SELECT json_extract(doc,'$.return_instruction') FROM interaction_session_requests WHERE id=?",
+            (admission['request']['id'],),
+        )[0][0]
+        j.wait(lambda: j.row("SELECT phase FROM interaction_instructions WHERE id=?", (return_id,)) == [('accepted',)])
+        j.wait(lambda: any(
+            'Scoped direct-topic dependency result.' in packet['input'][0]['text']
+            for packet in j.packets[thread]
+        ))
+        assert len(j.instructions(7)) == 3
+        ok, selection = j.tool(7, 'session_receive', {'request_id': admission['request']['id']})
+        assert ok and selection['new_return_instruction'] is None
+        assert [packet['input'][0]['text'] for packet in j.packets[thread]].count(original) == 1
+        assert len(j.instructions(8)) == 1
+        assert not j.has('Scoped direct-topic dependency result.', 1)
+        assert not j.has('Scoped direct-topic dependency result.', 7)
+        j.broadcast(thread, 'turn/completed', {'turn': {'id': j.runs[thread], 'status': 'completed'}})
+        print('PASS exact direct Telegram steer authorizes one attributed dependency and one internal return')
+    finally:
+        j.close()
+
+
 def one_slot_deferred_return(binary):
     j=Sessions(binary,control=True)
     try:
@@ -240,6 +370,53 @@ def deferred_logical_completion(binary):
     finally:j.close()
 
 
+def later_helper_completion(binary):
+    j = Sessions(binary, control=True)
+    j.allow_native_launch = True
+    try:
+        j.prepare()
+        j.admit('#Alpha Consult Beta and retain its result.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        _, admitted = j.request()
+        request = admitted['request']['id']
+        j.defer(7)
+        j.wait(lambda: j.instructions(8) and j.instructions(8)[0][1] == 'accepted')
+        j.defer(8)
+        j.idle()
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('requested',)]
+        assert len(j.instructions(7)) == 1
+
+        native = 'native-topic-8'
+        previous = j.runs[native]
+        j.admit('Continue your existing work here.', topic=8)
+        j.wait(lambda: j.runs.get(native) not in (None, previous))
+        j.wait(lambda: j.row("SELECT count(*) FROM interaction_direct_parents") == [(1,)])
+        j.answer(8, 'A direct reply without the original covered instruction.',
+                 covered=[], item='not-the-selected-answer', finish=False)
+        j.wait(lambda: j.row("SELECT count(*) FROM interaction_native_messages WHERE item_id='not-the-selected-answer'") == [(1,)])
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('requested',)]
+
+        helper = j.instructions(8)[0]
+        selected = json.loads(helper[2])['requests']
+        claim = {'requests': selected, 'covered': [helper[0]], 'completed': selected}
+        answer = 'Beta finished the exact deferred dependency.'
+        params = {'turnId': j.runs[native], 'item': {'id': 'later-completion',
+            'type': 'agentMessage', 'phase': 'final_answer',
+            'text': answer + '\n<daimon-result>' + json.dumps(claim) + '</daimon-result>'}}
+        j.broadcast(native, 'item/completed', params)
+        j.broadcast(native, 'item/completed', params)
+        j.broadcast(native, 'turn/completed', {'turn': {'id': j.runs[native], 'status': 'completed'}})
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('returned',)]
+        assert len(j.internal_delivery(answer)) == 1
+        assert len(j.instructions(8)) == 2
+        j.answer(7, 'The consultation returned to its original caller.')
+        j.idle()
+        print('PASS a later ordinary native turn links one exact pending helper, with one internal return on duplicate final observation')
+    finally:
+        j.close()
+
+
 def completed_group_not_renarrated(binary,mixed=False):
     j=Sessions(binary,control=True)
     try:
@@ -295,8 +472,11 @@ if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     live_return(binary)
     general_continues_handoff(binary)
+    private_draft_does_not_become_public(binary)
+    direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
     deferred_logical_completion(binary)
+    later_helper_completion(binary)
     completed_group_not_renarrated(binary)
     completed_group_not_renarrated(binary,mixed=True)
     cancelled_caller(binary)

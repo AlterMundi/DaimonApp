@@ -502,7 +502,7 @@ impl Store {
             ).optional()?;
             if order.is_none_or(|order| order <= captured)
                 || conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE update_id=?1)",
+                    "SELECT EXISTS(SELECT 1 FROM interaction_sources o JOIN interaction_instructions i ON i.input_id=o.id WHERE o.update_id=?1 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id))",
                     [update.update_id],
                     |r| r.get::<_, bool>(0),
                 )?
@@ -533,7 +533,7 @@ impl Store {
         let revision = binding
             .as_ref()
             .map(|binding| binding.execution.revision.as_str());
-        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND ((COALESCE(json_extract(i.doc,'$.target_execution.harness'),'codex')='codex'
+        let mut query=conn.prepare("SELECT i.doc,i.phase,o.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id JOIN sessions s ON s.id=i.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND o.human_id=?3 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) AND ((COALESCE(json_extract(i.doc,'$.target_execution.harness'),'codex')='codex'
           AND (json_extract(i.doc,'$.native_thread')=s.codex_thread_id OR json_extract(i.doc,'$.native_thread') IS NULL))
           OR (json_extract(i.doc,'$.target_execution.harness') IN ('claude','goose','antigravity')
           AND json_extract(i.doc,'$.target_execution.revision')=?5))

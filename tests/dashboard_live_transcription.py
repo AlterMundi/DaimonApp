@@ -82,6 +82,24 @@ class LiveTranscription(unittest.TestCase):
     def meta(self,**extra):return {'id':self.ident,'binding':self.binding,'csrf':self.csrf,**extra}
     def open(self,origin='https://example.test'):
         return self.client.websocket_connect('/api/interaction/voice/live',headers={'origin':origin})
+    def test_partial_binding_reply_reset_recovers_on_same_capture(self):
+        with self.open() as ws:
+            ws.send_json(self.meta())
+            self.assertEqual(ws.receive_json()['type'], 'ready')
+            pcm = b'\x00\x01' * 1600
+            with patch.object(self.provider, 'presentation', side_effect=[
+                    ConnectionResetError('Synthetic lost owner read'), {'binding':self.binding},
+                    {'binding':self.binding}, {'binding':self.binding}]) as read_binding:
+                ws.send_bytes(pcm)
+                self.assertEqual(ws.receive_json()['type'], 'partial')
+                ws.send_json({'type':'finish'})
+                prepared = ws.receive_json()
+            self.assertEqual(prepared['type'], 'prepared')
+            self.assertEqual(prepared['id'], self.ident)
+            self.assertEqual(prepared['source_sha256'], hashlib.sha256(wav_bytes(pcm)).hexdigest())
+            self.assertEqual(read_binding.call_count, 4)
+        self.assertEqual(len(Stream.opened), 1)
+
     def test_reset_after_partial_logs_failed_boundary_without_audio_or_text(self):
         with self.assertLogs('dashboard.live_transcription', level='WARNING') as logged:
             with self.open() as ws:
@@ -874,6 +892,29 @@ class LiveTranscription(unittest.TestCase):
 
 
 class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_dictation_uses_current_voice_binding_without_reading_routes(self):
+        from types import SimpleNamespace
+
+        checks = []
+        current = 'a' * 64
+
+        async def authorize(_):
+            checks.append('identity')
+            return {'human': 100, 'csrf': 'fresh'}
+
+        def presentation(command):
+            checks.append(command)
+            return {'binding': current}
+
+        socket = WebSocket({'type': 'websocket', 'headers': [], 'path': '/voice', 'scheme': 'wss'}, None, None)
+        provider = SimpleNamespace(presentation=presentation, receiver={'voice': {'enabled': True}})
+        _, recheck, _ = await bind_voice_actor(
+            provider, authorize, socket, {'csrf': 'fresh', 'binding': current})
+        current = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'binding changed'):
+            await recheck()
+        self.assertEqual(checks, ['identity', 'input voice capabilities'] * 2)
+
     async def test_admission_checks_identity_once_and_subsequent_checks_are_fresh(self):
         from types import SimpleNamespace
 

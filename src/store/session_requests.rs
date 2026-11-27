@@ -76,6 +76,78 @@ fn current_epoch(conn: &Connection, human: i64) -> Result<String> {
         .unwrap_or_else(|| "initial".into()))
 }
 
+pub(super) fn later_completion_source_on(
+    conn: &Connection,
+    human: i64,
+    local: i64,
+    native: &str,
+    request: &str,
+    coverage: &crate::interaction::Coverage,
+) -> Result<Option<Instruction>> {
+    // A declaration selects one still-open dependency. Find the original
+    // accepted helper input, never derive authority from the result text alone.
+    let original: Option<String> = conn
+        .query_row(
+            "SELECT i.id FROM interaction_session_requests c
+             JOIN interaction_request_links l ON l.instruction_id=c.target_instruction
+             JOIN interaction_instructions i ON i.id=l.instruction_id
+             JOIN turns later ON later.id=?2 AND later.session_id=i.session_id
+             JOIN turns prior ON prior.id=json_extract(i.doc,'$.local_turn')
+             JOIN conversation_entry_generations generation ON generation.session_id=later.session_id
+             WHERE c.human_id=?1 AND c.phase='requested' AND l.request_id=?4
+               AND i.phase='accepted' AND prior.id<later.id AND prior.status='completed'
+               AND prior.session_id=later.session_id AND prior.from_user_id=?1
+               AND later.from_user_id=?1 AND later.native_thread_id=?3
+               AND later.execution_generation=generation.generation
+               AND prior.execution_generation=later.execution_generation
+               AND prior.execution_harness=later.execution_harness
+               AND json_extract(i.doc,'$.native_thread')=?3
+               AND (later.execution_harness='codex' OR (
+                   prior.execution_native_scope=later.execution_native_scope
+                   AND json_extract(prior.execution_body,'$.beingRef')=json_extract(later.execution_body,'$.beingRef')
+                   AND json_extract(prior.execution_body,'$.embodimentId')=json_extract(later.execution_body,'$.embodimentId')
+                   AND json_extract(prior.execution_body,'$.incarnationId')=json_extract(later.execution_body,'$.incarnationId')
+               ))
+               AND NOT EXISTS (
+                   SELECT 1 FROM interaction_session_withdrawals w
+                   WHERE w.parent_instruction=c.parent_instruction
+               )",
+            params![human, local, native, request],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(id) = original else { return Ok(None) };
+    if !coverage
+        .completed
+        .iter()
+        .any(|completed| completed == request)
+        || !coverage.covered.contains(&id)
+        || coverage.deferred.contains(&id)
+    {
+        return Ok(None);
+    }
+    let input = instruction_on(conn, &id, human)?;
+    let portable = input
+        .target_execution
+        .as_ref()
+        .is_some_and(|binding| binding.harness.is_portable());
+    let (current, correction) = super::routing::freshness(conn, request, &coverage.covered, true)?;
+    if !current
+        || correction
+        || input.admission_epoch.as_deref() != Some(current_epoch(conn, human)?.as_str())
+        || !super::interaction::target_execution_matches_on(
+            conn,
+            &input,
+            (!portable).then_some(native),
+        )?
+        || super::stopping::fenced_on(conn, input.target)?
+        || super::maintenance_writer_held_on(conn, input.target)?
+    {
+        return Ok(None);
+    }
+    Ok(Some(input))
+}
+
 fn save_epoch(conn: &Connection, i: &mut Instruction, epoch: &str) -> Result<()> {
     i.admission_epoch = Some(epoch.to_owned());
     conn.execute(
@@ -111,7 +183,25 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
         let parent = instruction_on(conn, &parent, human)?;
         return Ok(coordination_root_on(conn, human, &parent)?.is_some());
     }
-    Ok(author["kind"] == "session_result" && phase.as_deref() == Some("returned"))
+    if author["kind"] != "session_result" || phase.as_deref() != Some("returned") {
+        return Ok(false);
+    }
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+        params![call, human],
+        |row| row.get(0),
+    )?;
+    let request: SessionRequest = serde_json::from_str(&raw)?;
+    if request.return_instruction.as_deref() != Some(i.id.as_str()) {
+        return Ok(false);
+    }
+    for id in [&request.parent_instruction, &request.target_instruction] {
+        let execution = instruction_on(conn, id, human)?;
+        if execution.target_execution.is_some() && !current_bound_turn_on(conn, &execution)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
@@ -243,9 +333,198 @@ impl Store {
         self.conn.lock().expect("store mutex poisoned").execute_batch(
             "CREATE TABLE IF NOT EXISTS interaction_session_requests(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,caller_chat INTEGER NOT NULL,caller_topic INTEGER NOT NULL,parent_instruction TEXT NOT NULL,target_instruction TEXT NOT NULL UNIQUE,phase TEXT NOT NULL,doc TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS interaction_session_authors(input_id TEXT PRIMARY KEY REFERENCES interaction_sources(id),doc TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS interaction_session_withdrawals(parent_instruction TEXT PRIMARY KEY);"
+             CREATE TABLE IF NOT EXISTS interaction_session_withdrawals(parent_instruction TEXT PRIMARY KEY);
+             CREATE TABLE IF NOT EXISTS interaction_direct_parents(instruction TEXT PRIMARY KEY REFERENCES interaction_instructions(id) ON DELETE CASCADE);"
         )?;
         Ok(())
+    }
+
+    /// Retain the accepted Telegram input and its eligible coordination parent
+    /// within the same journal transaction. The ordinary input receipt survives
+    /// ineligible provenance and isolated coordination metadata failures.
+    pub(crate) fn native_direct_input_receipt(
+        &self,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let mut tx = conn.transaction()?;
+        super::native_recovery::input_receipt_on(&tx, local, Some(client), physical)?;
+        self.retain_direct_parent(&mut tx, caller, human, local, physical, client, bot)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn retain_direct_parent(
+        &self,
+        tx: &mut rusqlite::Transaction<'_>,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        let savepoint = tx.savepoint()?;
+        match self.record_direct_parent_on(&savepoint, caller, human, local, physical, client, bot)
+        {
+            Ok(()) => savepoint.commit()?,
+            Err(error) => {
+                tracing::warn!(%error, local, "Could not retain direct dependency parent");
+                savepoint.finish()?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_direct_parent_on(
+        &self,
+        tx: &Connection,
+        caller: SessionKey,
+        human: i64,
+        local: i64,
+        physical: &str,
+        client: &str,
+        bot: i64,
+    ) -> Result<()> {
+        use crate::interaction::{ReturnRoute, TransportPhase};
+
+        let binding: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT s.id,s.codex_thread_id FROM sessions s
+                JOIN users u ON u.tg_user_id=s.creator_user_id
+                JOIN turns t ON t.session_id=s.id
+                WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+                AND u.allowed=1 AND s.force_fresh_thread=0 AND t.id=?4
+                AND t.from_user_id=?3 AND t.native_thread_id=s.codex_thread_id
+                AND t.status='running' AND t.completed_at IS NULL AND (t.review_json IS NULL OR t.review_json='null')",
+                params![caller.chat_id, caller.thread_id, human, local],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((session, native)) = binding else {
+            return Ok(());
+        };
+        if physical.is_empty()
+            || super::stopping::fenced_on(tx, caller)?
+            || super::maintenance_writer_held_on(tx, caller)?
+        {
+            return Ok(());
+        }
+        let epoch = current_epoch(tx, human)?;
+        let mut source = SourceInput {
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: None,
+            channel: "conversation".into(),
+            event_id: String::new(),
+            update_id: None,
+            human_id: human,
+            target_sessions: vec![session],
+            origin: ReturnRoute {
+                chat_id: caller.chat_id,
+                thread_id: caller.thread_id,
+                message_id: None,
+            },
+            text: String::new(),
+        };
+        let telegram_prefix = format!("telegram:{}:{human}:", caller.chat_id);
+        if let Some(update) = client
+            .strip_prefix(&telegram_prefix)
+            .and_then(|id| id.parse::<i64>().ok())
+        {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT i.payload_json FROM incoming_updates i
+                    JOIN native_input_receipts n ON n.update_id=i.update_id
+                    JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+                    WHERE i.update_id=?1 AND i.turn_id=?2 AND n.native_thread=?3
+                    AND n.native_turn=?4 AND e.value=?5",
+                    params![update, local, native, physical, epoch],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(raw) = raw else { return Ok(()) };
+            let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+            let Some(message) = original.message.as_ref() else {
+                return Ok(());
+            };
+            if message.chat.id != caller.chat_id
+                || message.message_thread_id.unwrap_or_default() != caller.thread_id
+                || message
+                    .from
+                    .as_ref()
+                    .is_none_or(|user| user.id != human || user.is_bot)
+                || !(original.direct_human_text
+                    || (original.direct_human_attachment && message.voice.is_some()))
+            {
+                return Ok(());
+            }
+            let Ok((text, transcription)) = super::voice::content_on(tx, &original, human) else {
+                // Attachment-only direct messages have no text authority.
+                return Ok(());
+            };
+            source.channel = format!("telegram:{bot}");
+            source.event_id = update.to_string();
+            source.update_id = Some(update);
+            source.origin.message_id = Some(message.message_id);
+            source.text = text;
+            source.transcription = transcription;
+        } else if let Some(id) = client.strip_prefix("conversation:") {
+            let input = super::conversation_inputs::read_on(tx, id, human)?;
+            if input.entry != caller
+                || input.session != session
+                || input.native != native
+                || input.local_turn != Some(local)
+                || input.phase != "accepted"
+                || input.routing.is_some()
+                || input.foreground_dialogue.is_some()
+                || input.tribu_source.is_some()
+                || !input.paired_actor
+            {
+                return Ok(());
+            }
+            super::conversation_inputs::eligible_on(tx, &input)?;
+            source.event_id = input.id;
+            source.text = input.text;
+            source.transcription = input.voice.and_then(|voice| voice.transcription);
+        } else {
+            return Ok(());
+        }
+        if source.text.trim().is_empty() {
+            return Ok(());
+        }
+        let (mut parent, fresh) =
+            super::interaction::retain_direct_parent_on(tx, &source, caller, &self.instance_id)?;
+        if fresh {
+            parent.phase = TransportPhase::Accepted;
+            parent.local_turn = Some(local);
+            parent.native_turn = Some(physical.into());
+            save_epoch(tx, &mut parent, &epoch)?;
+            tx.execute(
+                "UPDATE interaction_instructions SET phase='accepted' WHERE id=?1",
+                [&parent.id],
+            )?;
+            tx.execute(
+                "INSERT INTO interaction_direct_parents VALUES(?1)",
+                [&parent.id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn interaction_dependency_inputs(
+        &self,
+        local: i64,
+        human: i64,
+    ) -> Result<Vec<Instruction>> {
+        self.turn_inputs(local, human, true)
     }
 
     pub fn interaction_author(&self, instruction: &str, human: i64) -> Result<Option<Value>> {
@@ -390,7 +669,7 @@ impl Store {
             update_id: None,
             human_id: human,
             target_sessions: vec![target_id],
-            origin: original.origin,
+            origin: original.origin.clone(),
             text: text.to_owned(),
         };
         let existing: Option<(String, String)> = tx
@@ -449,7 +728,7 @@ impl Store {
             return_instruction: None,
             phase: "requested".into(),
         };
-        let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human});
+        let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
         if route.is_some() {
             crate::interaction::local_claude_packet(&i, &author)?;
         }
@@ -712,6 +991,9 @@ impl Store {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.target_execution.is_some() && !current_bound_turn_on(&tx, &helper)? {
+            return Ok(None);
+        }
         let route = local_claude_route(config, call.caller)?;
         let result_text = if route.is_some() {
             let end = d
@@ -867,11 +1149,16 @@ mod tests {
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
         for paired in [false, true] {
-            check_portable_dependency(paired);
+            check_portable_dependency(paired, false);
         }
     }
 
-    fn check_portable_dependency(paired: bool) {
+    #[test]
+    fn a_later_claude_turn_must_keep_the_original_native_scope_to_return() {
+        check_portable_dependency(false, true);
+    }
+
+    fn check_portable_dependency(paired: bool, later: bool) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         let caller = setup(&store, 7);
@@ -986,21 +1273,94 @@ mod tests {
                 .unwrap()["kind"],
             "session_request"
         );
-        let (local, host_access) = store
-            .begin_routed_portable(
-                &delivered,
-                &TurnRequest {
-                    session_key: target.key,
-                    from_user_id: 100,
-                    prompt: delivered.text.clone(),
-                    runtime_instructions: None,
-                    attachments: vec![],
-                    review_mode: None,
-                    override_search_mode: None,
-                },
-            )
-            .unwrap();
+        let begin = |input: &Instruction| {
+            store
+                .begin_routed_portable(
+                    input,
+                    &TurnRequest {
+                        session_key: target.key,
+                        from_user_id: 100,
+                        prompt: input.text.clone(),
+                        runtime_instructions: None,
+                        attachments: vec![],
+                        review_mode: None,
+                        override_search_mode: None,
+                    },
+                )
+                .unwrap()
+        };
+        let (local, host_access) = begin(&delivered);
         assert_eq!(host_access, paired);
+        if later {
+            let native = Uuid::now_v7().to_string();
+            let prepared =
+                json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
+            let body =
+                json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
+            assert!(
+                store
+                    .expose_routed_portable(&delivered, local, &body, &prepared, paired)
+                    .unwrap()
+            );
+            let text = format!(
+                "Worked on the rig\n<daimon-result>{}</daimon-result>",
+                json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
+            );
+            let partial = format!(
+                "Work remains open\n<daimon-result>{}</daimon-result>",
+                json!({"requests":delivered.requests, "covered":[delivered.id], "completed":[]})
+            );
+            let partial = store
+                .finish_routed_portable(
+                    &delivered,
+                    local,
+                    &json!({"phase":"completed","sessionId":native,"text":partial}),
+                )
+                .unwrap();
+            assert!(!partial[0].completed);
+            assert!(
+                store
+                    .interaction_session_return(&partial[0].id, 100)
+                    .unwrap()
+                    .is_none()
+            );
+            for (key, scope, allowed) in [("wrong-scope", "b", false), ("same-scope", "a", true)] {
+                let (_, next, _) = send(key, "Continue existing work").unwrap();
+                let (next_local, _) = begin(&next);
+                let selected =
+                    json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
+                assert!(
+                    store
+                        .expose_routed_portable(&next, next_local, &body, &selected, false)
+                        .unwrap()
+                );
+                let deliveries = store
+                    .finish_routed_portable(
+                        &next,
+                        next_local,
+                        &json!({"phase":"completed","sessionId":native,"text":text}),
+                    )
+                    .unwrap();
+                assert_eq!(deliveries.len(), usize::from(allowed));
+                if let Some(delivery) = deliveries.first() {
+                    assert_eq!(delivery.internal, Some(true));
+                    assert_eq!(delivery.request_id, delivered.id);
+                    assert!(
+                        store
+                            .interaction_session_return(&delivery.id, 100)
+                            .unwrap()
+                            .is_some()
+                    );
+                    assert!(
+                        store
+                            .interaction_session_return(&delivery.id, 100)
+                            .unwrap()
+                            .is_none()
+                    );
+                }
+            }
+            return;
+        }
         if paired {
             store
                 .conn

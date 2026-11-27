@@ -37,6 +37,21 @@ submitting it. Unsupported browsers retain text input. Browser device access use
 feature detection; actual Telegram client microphone permissions require receiving
 qualification.
 
+For live dictation, the dashboard checks the current native binding through
+`input voice capabilities`. The same owner authorization and exact binding
+apply before microphone readiness, provider finalization and receipt exposure.
+The dictation path does not need the input history page or routing menu.
+If the owner socket resets or ends without replying, dictation reconnects
+once to read that binding again. Read recovery leaves the capture and its
+single provider stream in place. A changed binding or revoked access still
+stops the preparation.
+
+If the live connection ends before the browser requests finalization, Send can
+use the configured OpenAI file transcription for the complete local WAV. This
+is the first submission of the same capture ID and source hash. Once live
+finalization may have started, keep the selected live result reader and its
+known or unresolved outcome. A partial WAV still requires explicit review.
+
 `POST /api/interaction/voice` takes bounded raw audio with `X-Input-Id`,
 `X-Input-Binding`, `X-Audio-Sha256` and its supported audio Content-Type, plus the
 existing Origin/authentication/CSRF checks before buffering a large upload.
@@ -297,6 +312,12 @@ paths with synthetic peers, parallel workers, reversed correction dispatch,
 canonical results and creation/restart. It invokes no real model or provider.
 
 ## Reported playback context and semantic intent
+
+For automatic buffered voice with an idle player, Conversation can request the
+first audio part of one newly confirmed reply during timeline refresh. A current
+question still plays first. Playback consumes the prepared part for the exact
+source revision and validates it before unmuting. Muting, stopping or replacing
+the source discards its queued preparation.
 
 A device may report the question or worker result that was playing by adding
 `context_only: true` to its original input's existing `reply` reference. That

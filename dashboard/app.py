@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response, StreamingResponse, RedirectResponse
 from init_data_py import errors, validate_by_signature
 
-from .provider import Provider, ProviderUnavailable
+from .provider import OwnerControlReplyUnavailable, Provider, ProviderUnavailable
 from .computer_health import ComputerHealth, HealthUnavailable
 from .coordination import Coordination, CoordinationUnavailable, ControlRejected
 from .visual import VisualSelectionInvalid
@@ -1102,6 +1102,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             from starlette.concurrency import run_in_threadpool
             result=await run_in_threadpool(provider.session_view,ident,technical=technical,
                 revision=revision,before=before,after=after,event=event,text_offset=text_offset,scan=scan)
+        except (OwnerControlReplyUnavailable,ConnectionError,TimeoutError,sqlite3.OperationalError):
+            raise HTTPException(503,'Conversation temporarily unavailable; try reading again') from None
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(409,'Selected conversation changed or is unavailable; select it again') from None
         session=await authorize_async(request)
@@ -1360,6 +1362,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             from starlette.concurrency import run_in_threadpool
             result = await run_in_threadpool(provider.presentation_part, source, revision, offset)
+        except (OwnerControlReplyUnavailable, ConnectionError):
+            raise HTTPException(503, 'Saved message temporarily unavailable; try reading again') from None
         except (ProviderUnavailable, OSError, ValueError):
             raise HTTPException(409, 'Selected result changed or is unavailable; refresh the conversation') from None
         await authorize_async(request)

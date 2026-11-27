@@ -142,6 +142,7 @@ pub(super) async fn run_selected(
             body,
             cancel: &cancel,
             controller: None,
+            steering: None,
         },
         |prepared| {
             // Order the exposure commit and the operator interruption together.

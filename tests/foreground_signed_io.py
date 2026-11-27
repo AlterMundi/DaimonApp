@@ -448,7 +448,9 @@ timeout_seconds=5
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                         )
                         try:
-                            if os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
+                            if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
+                                self._telegram_steer(journey, provider, profile)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
@@ -651,6 +653,68 @@ timeout_seconds=5
                 self.assertEqual(source["telegram_files"][0]["sha256"], expected)
                 self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), image)
             self.assertEqual(len(set(provider.exposures)), 3)
+
+        def _telegram_steer(self, journey, provider, profile):
+            selected = json.loads(profile.read_text())
+            selected["hostTools"] = ["Bash"]
+            profile.write_text(json.dumps(selected))
+            started = journey.root / "steer-tool-started"
+            release = journey.root / "steer-tool-release"
+            provider.host_tools = ["Bash"]
+            provider.steer_fixture = {
+                "text": "New Telegram original while the tool is working.",
+                "conversation_text": "New Conversation original while the tool is working.",
+                "command": (
+                    f"touch {shlex.quote(str(started))}; "
+                    f"for n in $(seq 1 150); do if test -f {shlex.quote(str(release))}; "
+                    "then sleep 0.5; echo 'Native steer gate opened.'; exit 0; fi; "
+                    "sleep 0.1; done; exit 1"
+                ),
+            }
+            with journey.lock:
+                provider.original = "Run the synthetic gate tool and answer."
+                provider.human_original = str(journey.sequence + 1)
+            root = journey.admit(provider.original, topic=7)
+            def state(update):
+                return journey.row(
+                    "SELECT i.id,i.phase,json_extract(i.doc,'$.local_turn'),"
+                    "json_extract(i.doc,'$.native_turn') FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id WHERE s.event_id=?",
+                    (str(update),),
+                )
+
+            journey.wait(lambda: provider.failure or started.exists() or (
+                state(root) and state(root)[0][1] in ("retained_unsent", "rejected", "uncertain", "accepted")
+            ), seconds=25)
+            self.assertIsNone(provider.failure)
+            self.assertTrue(started.exists(), (state(root), provider.calls, provider.exposures))
+            followup = journey.admit(provider.steer_fixture["text"], topic=7)
+            conversation = str(uuid.uuid4())
+            try:
+                journey.wait(lambda: provider.failure or (
+                    state(followup) and state(followup)[0][1] == "steering"), seconds=6)
+                page = journey.read("presentation", "list", "0", "0")["result"]
+                original = {"binding": page["binding"], "id": conversation,
+                            "text": "#Alpha " + provider.steer_fixture["conversation_text"]}
+                self.assertTrue(journey.read("input", "submit-human", json.dumps(original))["result"]["new_input"])
+                journey.wait(lambda: provider.failure or (
+                    state(conversation) and state(conversation)[0][1] == "steering"), seconds=6)
+                self.assertEqual(state(followup)[0][2], state(root)[0][2])
+                self.assertEqual(state(conversation)[0][2], state(root)[0][2])
+            finally:
+                release.touch()
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=25)
+            self.assertIsNone(provider.failure)
+            original, followup = state(root)[0], state(followup)[0]
+            self.assertEqual(original[1:], followup[1:])
+            self.assertEqual(original[1:], state(conversation)[0][1:])
+            self.assertEqual(original[1], "accepted")
+            self.assertEqual(provider.calls, [original[0], original[0]])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1,)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_delivery_requests"), [(3,)])
+            self.assertEqual(journey.row(
+                "SELECT count(*) FROM turns WHERE execution_harness='claude'"
+            ), [(1,)])
 
         def _telegram_topic_exchange(self, journey, provider, return_attempts, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")

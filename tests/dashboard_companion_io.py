@@ -235,13 +235,33 @@ class Companion(unittest.TestCase):
     def test_malformed_identity_response_is_unavailable_not_expired(self):
         from dashboard.home_auth import identity_response
         for body in (b'{', b'\xff'):
-            with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
-                response=connection.return_value.getresponse.return_value
-                response.status=200;response.read.return_value=body
-                response.headers.get_content_type.return_value='application/json'
+            reply = httpx.Response(200, headers={'Content-Type':'application/json'},
+                                   stream=httpx.ByteStream(body))
+            with patch('dashboard.home_auth._identity_transport.handle_request', return_value=reply):
                 with self.assertRaises(OSError):
                     identity_response('https://home.example.test','h'*43)
-                connection.return_value.close.assert_called_once()
+                self.assertTrue(reply.is_closed)
+
+    def test_identity_transport_sends_current_cookie_without_adopting_response_cookies(self):
+        from dashboard.home_auth import identity_response
+        responses = [
+            httpx.Response(200, headers={'Content-Type':'application/json',
+                                        'Set-Cookie':'__Host-home=not-the-browser-session'},
+                           stream=httpx.ByteStream(b'{}')),
+            httpx.Response(401, headers={'Content-Type':'application/json'},
+                           stream=httpx.ByteStream(b'{"detail":"human_browser_required"}')),
+        ]
+        with patch('dashboard.home_auth._identity_transport.handle_request',
+                   side_effect=responses) as handle:
+            self.assertEqual(identity_response('https://home.example.test', 'h'*43), {})
+            with self.assertRaisesRegex(ValueError, 'Shared sign-in required'):
+                identity_response('https://home.example.test', 'x'*43)
+        requests = [call.args[0] for call in handle.call_args_list]
+        self.assertEqual([(r.method, str(r.url)) for r in requests],
+                         [('GET', 'https://home.example.test/access/identity')]*2)
+        self.assertEqual([r.headers['cookie'] for r in requests],
+                         ['__Host-home='+'h'*43, '__Host-home='+'x'*43])
+        self.assertTrue(all(response.is_closed for response in responses))
 
     def test_shared_access_only_offers_sign_in_for_home_session_refusal(self):
         self.config['shared_auth']={'enabled':True,'home_origin':'https://home.example.test'}
@@ -256,27 +276,22 @@ class Companion(unittest.TestCase):
             (401, 'application/json', b'{"detail":"human_browser_required"}' + b' ' * 8193, 503),
             (503, 'application/json', b'{"detail":"human_browser_required"}', 503),
         ):
+            reply=httpx.Response(raw_status,headers={'Content-Type':media},stream=httpx.ByteStream(payload))
             with self.subTest(raw_status=raw_status, media=media, expected=expected), patch(
-                'dashboard.home_auth.http.client.HTTPSConnection'
-            ) as connection:
-                reply=connection.return_value.getresponse.return_value
-                reply.status=raw_status
-                reply.headers.get_content_type.return_value=media
-                reply.read.return_value=payload
+                'dashboard.home_auth._identity_transport.handle_request',return_value=reply
+            ):
                 response=self.client.get('/api/interaction/access',headers=headers)
                 self.assertEqual(response.status_code,expected,response.text)
                 if expected==503:
                     self.assertEqual(response.json(),{'detail':'Shared authentication unavailable; retry shortly'})
-                connection.return_value.close.assert_called_once()
-        with patch('dashboard.home_auth.http.client.HTTPSConnection') as connection:
-            reply=connection.return_value.getresponse.return_value
-            reply.status=200
-            reply.headers.get_content_type.return_value='application/json'
-            reply.read.return_value=json.dumps({
-                'contract':'dm.home-session/v1','origin':'https://home.example.test',
-                'expires':int(time.time())+3600,
-                'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'},
-            }).encode()
+                self.assertTrue(reply.is_closed)
+        payload=json.dumps({
+            'contract':'dm.home-session/v1','origin':'https://home.example.test',
+            'expires':int(time.time())+3600,
+            'actor':{'ref':'human:telegram:100','kind':'human','name':'Fixture'},
+        }).encode()
+        reply=httpx.Response(200,headers={'Content-Type':'application/json'},stream=httpx.ByteStream(payload))
+        with patch('dashboard.home_auth._identity_transport.handle_request',return_value=reply):
             response=self.client.get('/api/interaction/access',headers=headers)
             self.assertEqual(response.status_code,200,response.text)
             self.assertEqual(response.json()['actor_ref'],'human:telegram:100')
@@ -708,6 +723,49 @@ class Companion(unittest.TestCase):
             self.assertEqual(audio().status_code,401,'Revocation before synthesis prevents the provider call')
             self.assertEqual(current.call_count,2)
         self.assertEqual(len(self.speech.calls),1)
+
+    def test_exact_part_socket_close_is_retryable_but_gateway_conflict_is_not(self):
+        import socket
+        from dashboard.provider import control
+
+        path = self.root / 'exact-part.sock'
+        selection = {**self.provider.source, 'offset': 0}
+        responses = (
+            b'{"ok":',  # EOF before the acknowledgement frame is complete
+            b'{"ok":false,"error":"Presentation source revision changed"}\n',
+            (json.dumps({'ok': True, 'result': selection}) + '\n').encode(),
+        )
+        requests = []
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            path.chmod(0o600)
+            server.listen()
+            server.settimeout(5)
+
+            def answer_parts():
+                for response in responses:
+                    peer, _ = server.accept()
+                    with peer, peer.makefile('rb') as wire:
+                        requests.append(json.loads(wire.readline())['command'])
+                        peer.sendall(response)
+
+            self.provider.presentation_part = lambda source, revision, offset: control(
+                path, command=f'presentation part {source} {revision} {offset}')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                accepting = executor.submit(answer_parts)
+                for expected in (503, 409, 200):
+                    result = self.client.get('/api/interaction/part', params=self.body, headers=self.headers)
+                    self.assertEqual(result.status_code, expected, result.text)
+                accepting.result(timeout=6)
+        self.assertEqual(result.json(), selection)
+        self.assertEqual(requests, [f"presentation part {self.body['source']} {self.body['revision']} 0"]*3)
+        self.assertEqual(self.speech.calls, [])
+
+    def test_exact_part_connection_reset_is_temporarily_unavailable(self):
+        with patch.object(self.provider, 'presentation_part', side_effect=ConnectionResetError):
+            result = self.client.get('/api/interaction/part', params=self.body, headers=self.headers)
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(self.speech.calls, [])
 
     def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
         from unittest.mock import AsyncMock
