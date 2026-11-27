@@ -137,8 +137,9 @@ def atomic(path, data):
 
 
 @contextmanager
-def lock(path):
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+def lock(path, *, create=True):
+    flags = (os.O_CREAT | os.O_RDWR) if create else (os.O_RDONLY | os.O_NONBLOCK)
+    fd = os.open(path, flags | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'rb') as handle:
         info = os.fstat(handle.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -294,15 +295,39 @@ def cached_audio(job, state):
     return job / name
 
 
+def has_audio_payload(job):
+    with os.scandir(job) as entries:
+        return any(entry.name in ('audio.wav', 'audio.mp3') for entry in entries)
+
+
+def needs_audio_inventory(job):
+    # A writer holds this lock until its final payload and receipt are durable.
+    # Check for payloads while holding the lock so a render completing during
+    # the scan cannot be mistaken for an inactive receipt.
+    try:
+        with lock(job / '.lock', create=False):
+            return has_audio_payload(job)
+    except FileNotFoundError:
+        # A directory without a lock has no active reservation. Still account
+        # for a retained payload from a prior layout.
+        return has_audio_payload(job)
+    except (OSError, RenderError):
+        # Active or unreadable locks go through the established receipt and
+        # payload checks. A failed probe never makes a job disposable.
+        return True
+
+
 def audio_inventory(root, *, exclude=None):
     """One authoritative pass counts protected bytes and eligible completed media."""
     used, candidates = 0, []
-    for job in root.iterdir():
-        if not re.fullmatch(r'[a-f0-9]{64}', job.name):
+    with os.scandir(root) as entries:
+        jobs = [entry for entry in entries if re.fullmatch(r'[a-f0-9]{64}', entry.name)
+                and entry.is_dir(follow_symlinks=False)]
+    for entry in jobs:
+        job = Path(entry.path)
+        if not needs_audio_inventory(job):
             continue
-        info = job.lstat()
-        if not stat.S_ISDIR(info.st_mode):
-            continue
+        info = entry.stat(follow_symlinks=False)
         try:
             prior = json.loads(private_bytes(job / 'state.json', 32768))
         except FileNotFoundError:

@@ -299,6 +299,7 @@ class Render(unittest.TestCase):
         first = self.render()
         unrelated = speech.directory(self.root/'cache'/('e'*64))
         speech.atomic(unrelated/'state.json', b'not-valid-json')
+        speech.atomic(unrelated/'audio.wav', self.data)
         # Own immutable payload/source verification is still required, but a
         # cache read cannot depend on thousands of unrelated outcome receipts.
         second = self.render()
@@ -351,6 +352,37 @@ class Render(unittest.TestCase):
                 self.assertEqual(json.loads((protected/'state.json').read_text())['phase'],phase)
                 self.assertEqual(result['accounted_audio_bytes'],speech.MAX_AUDIO)
                 self.assertEqual(len(self.calls),before)
+
+    def test_inventory_skips_receipt_only_jobs_and_keeps_active_reservations(self):
+        root = speech.directory(self.root / 'cache')
+        expired = speech.directory(root / ('a' * 64))
+        active = speech.directory(root / ('b' * 64))
+        for job, phase in ((expired, 'audio_expired'), (active, 'intent')):
+            speech.write_state(job / 'state.json', {'phase': phase})
+        with speech.lock(expired / '.lock'):
+            pass
+        with speech.lock(active / '.lock'), mock.patch.object(
+                speech, 'private_bytes', wraps=speech.private_bytes) as read:
+            self.assertEqual(speech.audio_inventory(root), (speech.MAX_AUDIO, []))
+            read.assert_called_once_with(active / 'state.json', 32768)
+        self.assertEqual(speech.audio_inventory(root), (0, []))
+        self.assertTrue((expired / 'state.json').exists())
+        self.assertTrue((active / 'state.json').exists())
+
+    def test_inventory_counts_a_render_completed_before_its_lock_is_acquired(self):
+        root = speech.directory(self.root / 'cache')
+        job = speech.directory(root / ('c' * 64))
+        speech.write_state(job / 'state.json', {'phase': 'intent'})
+        original_lock = speech.lock
+        data = wav()
+
+        def complete_then_lock(path, *, create=True):
+            speech.atomic(job / 'audio.wav', data)
+            speech.write_state(job / 'state.json', {'phase': 'rendered'})
+            return original_lock(path)
+
+        with mock.patch.object(speech, 'lock', side_effect=complete_then_lock):
+            self.assertEqual(speech.audio_inventory(root), (len(data), []))
 
     def test_success_restart_cache_scope_and_no_playback_claim(self):
         first = self.render()
