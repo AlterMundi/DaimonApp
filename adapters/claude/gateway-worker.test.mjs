@@ -19,6 +19,7 @@ const correlation = {
 const nativeSessionId = '627b6f7e-50a1-46ad-90d2-684c5faf97c3';
 const priorSessionId = '7da8a4c1-f56b-43f8-ba35-e9d6fa710e64';
 const original = 'Reply using this selected fixture original.';
+const historySeed = { turn: 12, human: 'Check the layout.', assistant: 'I can move the section next.' };
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
 test('worker sends one native input only after exact owner persistence decision',
@@ -107,9 +108,16 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }] : [])]; },
             async *[Symbol.asyncIterator]() {
               for await (const request of prompt) {
-                const ownerDefault = request.message.content === 'Synthetic private default.';
-                const withMessaging = request.message.content === 'Synthetic paired chat tools.';
-                const paired = ownerDefault || withMessaging || request.message.content === 'Synthetic private tool grant.';
+                const { content } = request.message;
+                const text = Array.isArray(content) ? content.at(-1).text : content;
+                assert.equal(Array.isArray(content), options.systemPrompt.append.includes('Gateway recovered this earlier exchange'));
+                if (Array.isArray(content)) {
+                  assert.equal(options.resume, undefined);
+                  assert.equal(content[0].text, ${JSON.stringify('Gateway historical context (JSON):\n' + JSON.stringify(historySeed))});
+                }
+                const ownerDefault = text === 'Synthetic private default.';
+                const withMessaging = text === 'Synthetic paired chat tools.';
+                const paired = ownerDefault || withMessaging || text === 'Synthetic private tool grant.';
                 assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
                 for (const tool of matrixChatTools) {
                   assert.equal(options.allowedTools.includes('mcp__matrix_chat__' + tool), withMessaging);
@@ -131,7 +139,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 assert.deepEqual(options.tools, [...expectedTools, 'Skill']);
                 assert.equal(options.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
                   options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
-                await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
+                await writeFile(${JSON.stringify(exposure)}, text, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
                 yield { type: 'result', subtype: 'success', is_error: false,
                   session_id: request.session_id, result: 'Qualified fixture reply.' };
@@ -268,6 +276,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             : ['companion-resume', 'updated-guidance-resume'].includes(decision) ? priorSessionId : nativeSessionId;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
+            ...(['changed-skill-metadata', 'updated-guidance-resume'].includes(decision) ? { historySeed } : {}),
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
           }) + '\n');
           const firstLine = await lines.next();

@@ -454,6 +454,7 @@ async function main() {
     const controllerSelected = first?.controller === true;
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
+    const historySeed = first?.historySeed;
     const attachments = first?.attachments;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
@@ -468,7 +469,13 @@ async function main() {
       ...(controllerSelected ? ['controller'] : []), ...(routedHuman ? ['routedHuman'] : []), ...(routedHostAccess ? ['routedHostAccess'] : []),
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(attachments === undefined ? [] : ['attachments']),
-      ...(sessionInstructions === undefined ? [] : ['sessionInstructions'])])
+      ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
+      ...(historySeed === undefined ? [] : ['historySeed'])])
+      || (historySeed !== undefined && (!fullAccess
+        || !closed(historySeed, ['turn', 'human', 'assistant'])
+        || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
+        || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())
+        || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
       || (routedHostAccess && !routedHuman)
       || (routedHuman && first.humanOriginal)
       || (controllerSelected && !fullAccess)
@@ -646,7 +653,8 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
-      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand },
+      input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
+        historySeed: !resume && !nativeGoalCommand ? historySeed : undefined },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

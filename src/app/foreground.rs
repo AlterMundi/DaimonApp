@@ -16,6 +16,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
+    pub history_seed: Option<&'a Value>,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
@@ -114,6 +115,7 @@ pub(in crate::app) async fn execute_worker(
         routed_human,
         routed_host_access,
         session_instructions,
+        history_seed,
         text,
         attachments,
         body,
@@ -170,6 +172,9 @@ pub(in crate::app) async fn execute_worker(
             }
             if let Some(instructions) = session_instructions {
                 start["sessionInstructions"] = json!(instructions);
+            }
+            if let Some(history) = history_seed {
+                start["historySeed"] = history.clone();
             }
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume.first());
@@ -635,6 +640,7 @@ pub(super) async fn run_portable_turn(
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
+                history_seed: None,
                 text: &input.text,
                 attachments: &[],
                 body: body.clone(),
@@ -748,9 +754,6 @@ pub(super) async fn run_routed_portable(
             }
         });
 
-    // A new known-unsent attempt may reuse the instruction, but CREATE_ONLY
-    // adapters must receive a new session coordinate for that attempt.
-    let attempt = uuid::Uuid::new_v4().to_string();
     let outcome = async {
         let (_,body) = tokio::select! {
             biased;
@@ -760,24 +763,54 @@ pub(super) async fn run_routed_portable(
         let resume = if engine==ForegroundEngine::Claude {
             store.routed_claude_continuations(local,&body)?
         } else {Vec::new()};
-        execute_worker(&config.worker_command,engine,WorkerTurn{
-            id:&input.id,session:&attempt,resume:&resume,human_original:direct_original,
-            native_goal_command:engine==ForegroundEngine::Claude && direct_original
-                && routed_host_access && request.attachments.is_empty()
-                && super::routing::native_claude_goal(&request.prompt),
-            routed_human:!direct_original,routed_host_access:routed_host_access && !direct_original,
-            session_instructions:session.session_prompt.as_deref(),
-            text:&request.prompt,attachments:&request.attachments,body:body.clone(),cancel:&cancel,controller,
-            steering:steering.as_mut(),
-        },|prepared| {
-            if cancel.is_cancelled() {return Ok(false);}
-            if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
-                .is_some_and(|current| current.id == session.id && current.session_prompt == session.session_prompt)
-            {
-                return Ok(false);
-            }
-            store.expose_routed_portable(input,local,&body,&prepared,routed_host_access)
-        }).await
+        let native_goal_command = engine == ForegroundEngine::Claude
+            && direct_original
+            && routed_host_access
+            && request.attachments.is_empty()
+            && super::routing::native_claude_goal(&request.prompt);
+        let history_seed = if engine == ForegroundEngine::Claude
+            && routed_host_access
+            && human_authored
+            && !native_goal_command
+        {
+            store.routed_claude_history_seed(input, local, &body)?
+        } else {
+            None
+        };
+        // CREATE_ONLY adapters require a distinct coordinate for each attempt.
+        let attempt = uuid::Uuid::new_v4().to_string();
+        execute_worker(
+            &config.worker_command,
+            engine,
+            WorkerTurn {
+                id: &input.id,
+                session: &attempt,
+                resume: &resume,
+                human_original: direct_original,
+                native_goal_command,
+                routed_human: !direct_original,
+                routed_host_access: routed_host_access && !direct_original,
+                session_instructions: session.session_prompt.as_deref(),
+                history_seed: history_seed.as_ref(),
+                text: &request.prompt,
+                attachments: &request.attachments,
+                body: body.clone(),
+                cancel: &cancel,
+                controller,
+                steering: steering.as_mut(),
+            },
+            |prepared| {
+                if cancel.is_cancelled() {
+                    return Ok(false);
+                }
+                if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
+                    .is_some_and(|current| current.id == session.id && current.session_prompt == session.session_prompt)
+                {
+                    return Ok(false);
+                }
+                store.expose_routed_portable(input, local, &body, &prepared, routed_host_access)
+            },
+        ).await
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
     if let Some(steering) = steering {
