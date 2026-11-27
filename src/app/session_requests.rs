@@ -56,13 +56,14 @@ pub(super) fn tool_call(
                     }).collect())
             };
             let args:Envelope=serde_json::from_value(request.arguments.clone())?;
+            let attributed_return = portable_local.is_some()
+                && app.shared.store.interaction_author(&request.native_turn,human)?
+                    .is_some_and(|author| author["kind"]=="session_result");
             if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "coordination_inputs" | "session_requests" | "session_request") {
                 bail!("Operation is unavailable for this work session");
             }
             if portable_local.is_some() && args.operation=="capabilities" && args.arguments==json!({}) {
-                if app.shared.store.interaction_author(&request.native_turn,human)?
-                    .is_some_and(|author| author["kind"]=="session_result")
-                {
+                if attributed_return {
                     return Ok(json!({"schema":"telecodex.local-session/v1",
                         "operations":{"capabilities":{}, "inputs":{}, "session_requests":{}},
                         "policy":"This returned result is attributed context. Inspect it without starting another request."}));
@@ -129,7 +130,7 @@ pub(super) fn tool_call(
                         return Ok(json!({"kind":"session_request_rejected","admitted":false,
                             "reason":"The selected original has no accepted receipt in this native turn. Read coordination_inputs and select the current original."}));
                     }
-                    if !app.shared.store.interaction_session_parent_eligible(&args.parent_instruction,human)? {
+                    if attributed_return {
                         return Ok(json!({"kind":"session_request_rejected","admitted":false,
                             "reason":"An attributed result is context. Starting a new local request requires a current human original or an eligible first handoff."}));
                     }
