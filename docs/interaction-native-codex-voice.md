@@ -1722,8 +1722,9 @@ An incomplete replacement or unconfirmed successor creation retains the full
 reservation. This accounting does not close either provider session, change
 the storage bounds, or delete source material.
 
-The native context store admits at most 64 unfinished producers and retains at
-most 512 producer records total. A closed producer remains available for exact
+The Dashboard and native Gateway limit unfinished context to 64 and retained
+context to 512 records in each store. The Gateway still enforces its existing
+per-document and total byte budgets. A closed producer remains available for exact
 readback and uses only the retained-history allowance. Late caption recovery
 must acquire unfinished capacity before reopening context delivery. At the total
 bound the existing refusal preserves originals and requires retention maintenance.
