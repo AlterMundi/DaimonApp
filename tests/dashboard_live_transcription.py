@@ -17,14 +17,15 @@ import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from dashboard.app import create_app
 from dashboard.provider import Provider
 from dashboard.companion import Grants
 from scripts.interaction_asr import streaming_result
 from dashboard.private_state import read_json
-from dashboard.live_transcription import save_prepared, wav_bytes, VoiceInbox, VoiceActor
+from dashboard.live_transcription import bind_voice_actor, save_prepared, wav_bytes, VoiceInbox, VoiceActor
 from dashboard.transcription import TranscriptionUnavailable
 from dashboard_io import Receiver
 
@@ -873,6 +874,36 @@ class LiveTranscription(unittest.TestCase):
 
 
 class VoiceActorChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_admission_checks_identity_once_and_subsequent_checks_are_fresh(self):
+        from types import SimpleNamespace
+
+        checks = []
+        human, binding = 100, 'a' * 64
+
+        async def authorize(request):
+            checks.append('identity')
+            return {'human': human, 'csrf': 'fresh'}
+
+        def presentation(command):
+            checks.append('binding')
+            return {'binding': binding}
+
+        socket = WebSocket({'type': 'websocket', 'headers': [], 'path': '/voice', 'scheme': 'wss'}, None, None)
+        provider = SimpleNamespace(presentation=presentation)
+        session, recheck, _ = await bind_voice_actor(
+            provider, authorize, socket, {'csrf': 'fresh', 'binding': binding}, require_voice=False)
+        self.assertEqual(session['human'], human)
+        self.assertEqual(checks, ['identity', 'binding'])
+        await recheck()
+        self.assertEqual(checks, ['identity', 'binding'] * 2)
+        binding = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'binding changed'):
+            await recheck()
+        human = 101
+        with self.assertRaises(HTTPException):
+            await recheck()
+        self.assertEqual(checks, ['identity', 'binding'] * 3 + ['identity'])
+
     async def test_concurrent_consumers_share_only_the_inflight_read_and_revocation_is_fresh(self):
         from fastapi import HTTPException
         held=asyncio.Event();release=asyncio.Event();reads=[];allowed=True
