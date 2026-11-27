@@ -19,6 +19,7 @@ class NativeContext:
     resume_wait_seconds=20
     resume_observations=12
     max_producers=64
+    max_retained_producers=512
     max_sources=4096
 
     def __init__(self,history,provider,human,dialogue,binding,owner):

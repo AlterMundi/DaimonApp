@@ -1721,3 +1721,9 @@ and its receipt retains space for native work and late trusted final usage.
 An incomplete replacement or unconfirmed successor creation retains the full
 reservation. This accounting does not close either provider session, change
 the storage bounds, or delete source material.
+
+The native context store admits at most 64 unfinished producers and retains at
+most 512 producer records total. A closed producer remains available for exact
+readback and uses only the retained-history allowance. Late caption recovery
+must acquire unfinished capacity before reopening context delivery. At the total
+bound the existing refusal preserves originals and requires retention maintenance.
