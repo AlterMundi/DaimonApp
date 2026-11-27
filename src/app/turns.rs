@@ -1081,6 +1081,9 @@ pub(super) async fn process_turn(
                                 let root=result_root.as_deref().or_else(||inputs.iter().find(|i|super::routing::relayed(i)).map(|i|i.id.as_str()));
                                 if phase.as_deref()==Some("final_answer") && let Some(id)=root {
                                     super::routing::result(routing_app.clone(),id,requester_user_id,turn_id,&thread_id,&native_turn,&item_id,&text,result_root.is_some())?;
+                                } else if phase.as_deref()==Some("final_answer") && crate::interaction::worker_result(&text).1.is_some() {
+                                    let deliveries=shared.store.interaction_record_later_completion(requester_user_id,turn_id,&thread_id,&native_turn,&item_id,&text)?;
+                                    super::routing::publish_results(&routing_app,requester_user_id,deliveries);
                                 } else {
                                     shared.store.record_native_message(turn_id, &thread_id, &native_turn, &item_id, phase.as_deref(), &text)?;
                                 }

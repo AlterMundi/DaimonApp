@@ -83,6 +83,15 @@ receipt is separate from acceptance, incorporation and completion. Do not retry
 an uncertain dispatch or invent a replacement key. Missing or expired active
 execution evidence cannot be replaced with an earlier message reference.
 
+A partial helper answer leaves its dependency open. If the selected work
+finishes in a later turn of the same receiving conversation and generation,
+declare completion with the original helper instruction in `covered` and its
+original request IDs in `requests` and `completed`. Gateway checks the selected
+owner, binding, open dependency and current coverage before using the existing
+internal return queue. A later answer without that declaration remains ordinary
+conversation. An interrupted, withdrawn or uncertain operation is never
+resubmitted to make a completion claim possible.
+
 An explicit request may assign the selected bounded work to that destination.
 Canonical ownership changes, cross-body routing and workflow progression still
 use their owning surfaces. A request grants no goal operation. Pause, resume,
