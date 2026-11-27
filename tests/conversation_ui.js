@@ -796,6 +796,28 @@ function boot(readOnly=false,standalone=false,options={}) {
     await new Promise(resolve=>setImmediate(resolve));assert.equal(offline.audioCalls.length,0,'Failed question observation cannot unlock new automatic speech');
     options.requestFailure=false;await offline.ui.refresh();await until(()=>offline.audioCalls.length===1);offline.ui.stop();
   }
+  for(const pendingQuestion of [false,true]){
+    const early=boot(false,true,{clock:true});early.audio();await early.ui.refresh();
+    early.nodes.get('#conversation-voice-replies').handlers.click();
+    const player=early.nodes.get('#conversation-audio');
+    if(pendingQuestion)early.nativeRequest();
+    early.addReplies(1);
+    const questions=early.holdRequests(),refresh=early.ui.refresh();
+    await questions.entered;
+    try{
+      assert.deepEqual(early.audioCalls.map(call=>call.source),['native:9'],'Confirmed reply synthesis starts before the question read settles');
+      assert(player.paused,'Early preparation cannot play or take the floor');
+    }finally{questions.release();await refresh;}
+    await until(()=>!player.paused && !player.muted);
+    assert.equal(early.nodes.get('#conversation-playing').textContent,pendingQuestion?'Conversation · Scope':'Conversation reply');
+    if(pendingQuestion){
+      player.ended=true;await player.handlers.ended();early.clock.fire(1200);
+      await until(()=>early.nodes.get('#conversation-playing').textContent==='Conversation reply' && !player.paused && !player.muted);
+    }
+    assert.deepEqual(early.audioCalls.map(call=>call.source),pendingQuestion
+      ?['native:9','request:native-request']:['native:9'],'The prepared reply is consumed without a second synthesis call');
+    early.ui.stop();
+  }
   for(const finishHashWhileReading of [false,true]){
     const hold={active:true,releases:[]},options={liveSpeech:true,hashHold:hold,responseDraft:{provisional:true,native_turn:'priority-physical',native_item:'priority-item',text:'An early sentence. More',observed_at:'2100-01-01T00:00:00Z'}};
     const race=boot(false,true,options);race.addReplies(-8);race.audio();await race.ui.refresh();race.nodes.get('#conversation-voice-replies').handlers.click();
