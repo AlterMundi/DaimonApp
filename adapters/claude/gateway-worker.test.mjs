@@ -144,9 +144,14 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   assert.equal(options.resume, undefined);
                 }
                 const ownerDefault = text === 'Synthetic private default.';
-                const withMessaging = text === 'Synthetic paired chat tools.';
+                const objectSchemas = text === 'Synthetic paired Tribe chat tools.';
+                const withMessaging = objectSchemas || text === 'Synthetic paired chat tools.';
                 const paired = ownerDefault || withMessaging || !!expectedQuote || atSelectedWorkspace || fromCodex || recovered || text === 'Synthetic private tool grant.';
                 assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
+                if (withMessaging) {
+                  assert.equal(options.mcpServers.matrix_chat.args.at(-1),
+                    objectSchemas ? '--object-tool-schemas' : 'mcp');
+                }
                 for (const tool of matrixChatTools) {
                   assert.equal(options.allowedTools.includes('mcp__matrix_chat__' + tool), withMessaging);
                 }
@@ -259,6 +264,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         if (decision.startsWith('messaging-')) await writeFile(selection, JSON.stringify(messagingProfile));
         if (decision === 'messaging-paired-tribe') {
           await writeFile(chatBinding, JSON.stringify({ ...binding, socket: tribeSocket }));
+          await writeFile(selection, JSON.stringify({ ...messagingProfile,
+            matrixMessaging: { connection: matrixMessaging, objectToolSchemas: true } }));
         }
         if (decision === 'messaging-binding-changed') await writeFile(chatBinding, JSON.stringify(binding));
         if (decision === 'messaging-foreign-socket') {
@@ -301,6 +308,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           const messagingChanged = decision === 'messaging-binding-changed';
           const humanOriginal = pairedMessaging || messagingChanged || ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'workspace-selected', 'workspace-replaced', 'workspace-missing', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
+            : decision === 'messaging-paired-tribe' ? 'Synthetic paired Tribe chat tools.'
             : pairedMessaging || messagingChanged ? 'Synthetic paired chat tools.'
             : decision === 'telegram-quoted-resume' ? 'Synthetic paired Telegram quote.'
             : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'

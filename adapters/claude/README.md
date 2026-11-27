@@ -173,6 +173,12 @@ accepting steering. Enabling the binding resumes the existing same-scope
 paired history, including sessions already indexed with a messaging
 fingerprint. Setup and discovery do not read an inbox or send anything.
 
+For Claude CLI versions that omit tools with a root union schema, use
+`matrixMessaging: { "connection": "/path/to/connection.json", "objectToolSchemas": true }`
+with a Matrix client that supports `agent_chat mcp --object-tool-schemas`.
+This changes catalog presentation only. Matrix validates ordinary send and
+exact recovery separately before dispatch.
+
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation
 without `--binding`, `bindingFile` to the owner-local binding for this Claude
