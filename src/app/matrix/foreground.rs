@@ -137,6 +137,7 @@ pub(super) async fn run_selected(
             routed_human: false,
             routed_host_access: false,
             session_instructions: None,
+            history_seed: None,
             text: &text,
             attachments: &[],
             body,
