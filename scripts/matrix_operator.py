@@ -467,10 +467,12 @@ def inbox(value, client, *, timeout=10, intake_window=True):
         if selected.verified_source != source:
             raise MatrixExecutionError("Authenticated inbox owner changed")
     else:
-        _, observed = selected.invoke("runtime.status", {})
+        # Each automatic page needs the current signed owner, not a full
+        # integrity scan of the shared ledger. Keep all failures fail-closed.
+        _, observed = selected.invoke("runtime.status", {"view": "receiving"})
         runtime = observed.get("result", {}) if observed.get("ok") is True else {}
         if (
-            runtime.get("schema") != "dm.runtime.status/v1"
+            runtime.get("schema") != "dm.runtime.receiving-status/v1"
             or runtime.get("being_ref") != source["being_ref"]
             or runtime.get("local_origin", {}).get("embodiment_id") != source["embodiment_id"]
         ):
