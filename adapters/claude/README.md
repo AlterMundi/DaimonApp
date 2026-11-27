@@ -457,5 +457,8 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_TELEGRAM_DMK_WRITE=1` with `CLAUDE_TEST_DMK_SCRIPTS` for
   paired MCP recall and one native write through the `dmk` wrapper. The test
   reads back the exact synthetic record from the same disposable pool.
+- `FOREGROUND_TEST_TELEGRAM_SKILL_REFRESH=1` for a compatible version and content
+  change. The provider fixture verifies the prior prompt, the new skill
+  instructions and the unchanged native session and tool scope.
 
 All Matrix identities, user input and provider output are synthetic.

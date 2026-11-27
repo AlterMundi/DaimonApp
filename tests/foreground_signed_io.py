@@ -357,7 +357,8 @@ operator.main()
                                            "record_uid": selected["recordUid"],
                                            "expected_revision": selected["revision"]}
                     provider.worker_profile = profile
-                if interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1":
+                skill_refresh = telegram_topic and os.environ.get("FOREGROUND_TEST_TELEGRAM_SKILL_REFRESH") == "1"
+                if skill_refresh or (interaction and os.environ.get("FOREGROUND_TEST_SHARED_SKILLS") == "1"):
                     shared = root / "shared-agent-skills"
                     skill = shared / "fixture-skill"
                     skill.mkdir(parents=True)
@@ -365,8 +366,8 @@ operator.main()
                     provider.skill_marker = "Readback from the shared skill directory."
                     provider.skill_file = skill / "SKILL.md"
                     provider.skill_file.write_text(
-                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n---\n"
-                        + provider.skill_marker
+                        "---\nname: fixture-skill\ndescription: A synthetic shared skill.\n"
+                        'metadata:\n  version: "1.0.0"\n---\n' + provider.skill_marker
                     )
                     config["sharedSkillsDirectory"] = str(shared)
                 if interaction and os.environ.get("FOREGROUND_TEST_FOUNDATION") == "1":
@@ -454,6 +455,13 @@ for await (const line of createInterface({ input: process.stdin })) {
                             " && printf 'Native DMK write accepted.'"
                         )
                 profile.write_text(json.dumps(config))
+                if skill_refresh:
+                    anchor = json.loads(subprocess.check_output(
+                        [*command[:-2], "--skill-resume-anchor", str(profile)],
+                        text=True, timeout=5,
+                    ))
+                    config["skillContinuity"] = {"layoutRevision": anchor["layoutRevision"]}
+                    profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
                     sender_source, sender = self._start_sender(root, fixture, service, capabilities, body)
@@ -495,6 +503,8 @@ timeout_seconds=5
                                 self._telegram_cancel(journey, provider)
                             elif dmk_write:
                                 self._telegram_dmk_write(journey, provider)
+                            elif skill_refresh:
+                                self._telegram_skill_refresh(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -642,6 +652,42 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_skill_refresh(self, journey, provider):
+            def submit(text):
+                provider.original = text
+                provider.human_original = str(journey.sequence + 1)
+                update = journey.admit(text, topic=7)
+                self.assertEqual(str(update), provider.human_original)
+
+                def accepted():
+                    return journey.row(
+                        "SELECT i.id,t.native_thread_id,t.execution_native_scope FROM interaction_sources s "
+                        "JOIN interaction_instructions i ON i.input_id=s.id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                        "WHERE s.event_id=? AND i.phase='accepted' AND t.status='completed'",
+                        (str(update),),
+                    )
+
+                journey.wait(lambda: provider.failure or accepted(), seconds=30)
+                self.assertIsNone(provider.failure)
+                return accepted()[0]
+
+            first_prompt = "Load the first version of the shared skill and finish this turn."
+            first, native, scope = submit(first_prompt)
+            calls_per_turn = 3 + len(provider.host_tools)
+            self.assertEqual(provider.calls, [first] * calls_per_turn)
+            provider.skill_marker = "Readback from version two of the shared skill."
+            provider.skill_file.write_text(provider.skill_file.read_text()
+                .replace('"1.0.0"', '"1.1.0"')
+                .replace("Readback from the shared skill directory.", provider.skill_marker))
+            provider.refreshed_skill = {"native": native, "scope": scope, "previous_prompt": first_prompt}
+            provider.calls.clear()
+            second, resumed, refreshed_scope = submit("Load the updated shared skill in this same topic.")
+            self.assertEqual(provider.calls, [second] * calls_per_turn)
+            self.assertEqual((resumed, refreshed_scope), (native, scope))
+            self.assertNotEqual(first, second)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])
 
         def _telegram_dmk_write(self, journey, provider):
             provider.original = "Read the selected fixture memory and save one synthetic record."

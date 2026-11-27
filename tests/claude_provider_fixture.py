@@ -154,7 +154,13 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             messages = data["messages"]
             if returned_dependency:
                 assert returned_dependency["parent_prompt"] in json.dumps(messages)
-            if distinct_request or returned_dependency:
+            skill_refresh = getattr(self.server, "refreshed_skill", None)
+            if skill_refresh:
+                fixture_id = "refreshed-skill"
+                assert submission["native_session_id"] == skill_refresh["native"]
+                assert submission["native_session_scope"] == skill_refresh["scope"]
+                assert skill_refresh["previous_prompt"] in json.dumps(messages)
+            if distinct_request or returned_dependency or skill_refresh:
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
