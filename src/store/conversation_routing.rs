@@ -719,7 +719,13 @@ impl Store {
                 .name
                 .clone()
         };
-        if body.trim().is_empty() {
+        let route = profile
+            .portable_route(target)
+            .map(|(engine, config)| (engine, &config.transport.source));
+        let has_claude_files = !input.files.is_empty()
+            && route
+                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+        if body.trim().is_empty() && !has_claude_files {
             bail!("Write a message after the selector");
         }
         if body.starts_with('/') && body != "/interrupt" {
@@ -794,9 +800,6 @@ impl Store {
         let relation = inherited
             .map(|f| RequestRelation::Amends(f.requests.clone()))
             .unwrap_or(RequestRelation::New);
-        let route = profile
-            .portable_route(target)
-            .map(|(engine, config)| (engine, &config.transport.source));
         let (instruction, fresh) = super::interaction::admit_selected_on(
             &tx,
             &source,

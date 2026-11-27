@@ -478,6 +478,10 @@ helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
+  from the Conversation composer to a selected Claude topic. The provider
+  fixture checks the original image bytes and the human's provenance, with
+  and without a caption. The companion attempt is retained before exposure.
 - `FOREGROUND_TEST_TELEGRAM_STEER=1` for Telegram and Conversation inputs
   delivered to the already-running Claude turn.
 - `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.

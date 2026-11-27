@@ -248,7 +248,7 @@ operator.main()
                             (self.server.human_original,),
                         )[0]
                         assert phase == "submitting"
-                        if getattr(self.server, "attachment", None):
+                        if getattr(self.server, "attachment", None) and not getattr(self.server, "routed_paired_human", None):
                             assert prompt == self.server.attachment["caption"]
                         else:
                             assert self.server.original in prompt
@@ -496,6 +496,8 @@ timeout_seconds=5
                         try:
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
+                            elif os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
+                                self._conversation_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -892,6 +894,73 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+
+        def _conversation_attachments(self, journey, provider):
+            import base64
+            import hashlib
+            from urllib.parse import quote
+
+            from conversation_cold_entry_http_io import Browser
+
+            browser = Browser(journey, companion=True, companion_workspace=True)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+            reference = {"file_id": str(uuid.uuid4()), "name": "fixture-image.png", "mime": "image/png",
+                         "size": len(image), "sha256": hashlib.sha256(image).hexdigest()}
+            response = browser.client.post("/api/interaction/files", content=image, headers={
+                **browser.headers, "content-type": "application/octet-stream",
+                "x-file-reference": quote(json.dumps(reference), safe=""),
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.attachment = {"base64": base64.b64encode(image).decode()}
+
+            def state(original):
+                return journey.row(
+                    "SELECT i.phase,t.status FROM interaction_instructions i "
+                    "JOIN interaction_sources s ON s.id=i.input_id "
+                    "LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (original,),
+                )
+
+            for caption in ("Inspect the retained original photo.", ""):
+                provider.original = caption
+                provider.human_original = str(uuid.uuid4())
+                ident, _ = browser.text(caption, reply=destination,
+                                        original_id=provider.human_original, files=[reference])
+                journey.wait(lambda: provider.failure or state(ident) in (
+                    [("accepted", "completed")], [("retained_unsent", "failed")],
+                ), seconds=25)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(state(ident), [("accepted", "completed")])
+                saved = browser.client.get(f"/api/interaction/inputs/{ident}/files/0", headers=browser.headers)
+                self.assertEqual(saved.status_code, 200)
+                self.assertEqual(saved.content, image)
+                journey.idle()
+            expected = len(set(provider.exposures))
+            self.assertEqual(expected, 2)
+            journey.wait(lambda: sum(
+                ANSWER in item.get("preview", "") for item in browser.get("/api/interaction")["items"]
+            ) == expected, seconds=20)
+
+            calls = list(provider.calls)
+            browser.client.cookies.clear()
+            blocked = str(uuid.uuid4())
+            response = browser.client.post("/api/interaction/inputs", json={
+                "id": blocked, "binding": browser.binding, "reply": destination,
+                "text": "Companion attachment may not enter the paired Claude session.",
+                "files": [reference],
+            }, headers=browser.device_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            journey.wait(lambda: state(blocked) == [("retained_unsent", "failed")], seconds=20)
+            journey.idle()
+            self.assertEqual(provider.calls, calls)
+            self.assertEqual(len(set(provider.exposures)), expected)
 
         def _telegram_attachments(self, journey, provider):
             import base64
