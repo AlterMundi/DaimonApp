@@ -970,13 +970,14 @@ timeout_seconds=5
             question = "What's your proposal for the clasp?"
             older, native, selection = finish(send(question, proposal, destination),
                                               question, proposal, destination)
-            arrived, release = Event(), Event()
-            provider.quote_answer_gate = (arrived, release)
+            arrived, release, cancelled = Event(), Event(), Event()
+            provider.quote_answer_gate = (arrived, release, cancelled)
             newer_original = "Propose a finish for the stand."
             newer_answer = "Use a blue finish on the stand."
             current = send(newer_original, newer_answer, destination)
             approval = "Sí, adelante."
             approval_answer = "I'll proceed with the copper clasp."
+            interrupt = browser and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT") == "1"
             try:
                 self.assertTrue(arrived.wait(20), provider.failure)
                 pending = send(approval, approval_answer, older)
@@ -992,13 +993,38 @@ timeout_seconds=5
                 self.assertEqual(len(provider.calls), 2)
                 provider.expected_quote = {**selection, "assistant": proposal}
                 provider.quote_answer_gate = None
+                if interrupt:
+                    provider.abandoned_quote_original = newer_original
+                    interrupt_id, stopped = browser.text("/interrupt", reply=destination)
+                    self.assertEqual(stopped["phase"], "interruption")
+                    self.assertEqual(stopped["routing"]["phase"], "requested")
+
+                    def interrupted():
+                        return journey.row(
+                            "SELECT i.phase,t.status FROM interaction_sources s "
+                            "JOIN interaction_instructions i ON i.input_id=s.id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                            (current,),
+                        ) == [("uncertain", "failed")]
+
+                    journey.wait(interrupted, seconds=20)
+                    cancelled.set()
             finally:
                 release.set()
-            _, later_native, _ = finish(current, newer_original, newer_answer, destination)
-            self.assertEqual(later_native, native)
+            if not interrupt:
+                _, later_native, _ = finish(current, newer_original, newer_answer, destination)
+                self.assertEqual(later_native, native)
             _, reply_native, _ = finish(pending, approval, approval_answer, older)
-            self.assertEqual(reply_native, native)
             self.assertEqual(len(provider.calls), 3)
+            if interrupt:
+                self.assertNotEqual(reply_native, native)
+                _, replay = browser.text("/interrupt", reply=destination, original_id=interrupt_id)
+                self.assertIs(replay["new_input"], False)
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])
+                self.assertFalse(any(row.get("preview") == newer_answer
+                                     for row in browser.get("/api/interaction")["items"]))
+            else:
+                self.assertEqual(reply_native, native)
 
             if web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
                 fixture_home = Path(json.loads(web_profile.read_text())["home"])

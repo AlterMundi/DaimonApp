@@ -25,6 +25,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
         return json.loads(submission)
 
     def do_POST(self):
+        quote_gate = None
         try:
             assert self.path.startswith("/v1/messages")
             length = int(self.headers["Content-Length"])
@@ -228,11 +229,13 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
                               if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
                     assert quoted == [expected], quoted
+                    if abandoned := getattr(self.server, "abandoned_quote_original", None):
+                        assert abandoned not in json.dumps(messages, ensure_ascii=False)
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": quote_response}
                 reason = "end_turn"
-                if gate := getattr(self.server, "quote_answer_gate", None):
-                    arrived, release = gate
+                if quote_gate := getattr(self.server, "quote_answer_gate", None):
+                    arrived, release, _ = quote_gate
                     arrived.set()
                     assert release.wait(12), "The fixture did not release the active provider turn"
             elif attachment:
@@ -321,6 +324,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(response)
         except Exception as error:
+            if (isinstance(error, (BrokenPipeError, ConnectionResetError))
+                    and quote_gate and quote_gate[2].is_set()):
+                # The selected CLI already acknowledged cancellation and may
+                # close its HTTP stream before this late answer is written.
+                return
             import traceback
             point = traceback.extract_tb(error.__traceback__)[-1]
             if self.server.failure is None:
