@@ -459,6 +459,9 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   proposal with a newer proposal already in the same native session. The
   fixture checks the selected result and revision in the current provider
   input, native session reuse, and the visible reply on the originating surface.
+  Combine the web switch with `FOREGROUND_TEST_CLAUDE_MISSING_RESUME=1` to
+  verify one successor resumes the work from the same quoted original after
+  the disposable predecessor is moved out of the harness's native store.
 - `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
   from the Conversation composer to a selected Claude topic. The provider
   fixture checks the original image bytes and the human's provenance, with

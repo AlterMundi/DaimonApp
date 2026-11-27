@@ -489,7 +489,7 @@ timeout_seconds=5
                     journey.start()
                     journey.wait_control_socket(journey.socket)
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
-                        self._exact_claude_quote(journey, provider, web=True)
+                        self._exact_claude_quote(journey, provider, web_profile=profile)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
                         self._conversation_attachments(journey, provider)
@@ -506,7 +506,7 @@ timeout_seconds=5
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
-                                self._exact_claude_quote(journey, provider, web=False)
+                                self._exact_claude_quote(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -904,11 +904,11 @@ timeout_seconds=5
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
 
-        def _exact_claude_quote(self, journey, provider, *, web):
+        def _exact_claude_quote(self, journey, provider, *, web_profile=None):
             import hashlib
 
             browser, destination = None, None
-            if web:
+            if web_profile:
                 from conversation_cold_entry_http_io import Browser
 
                 browser = Browser(journey)
@@ -978,6 +978,21 @@ timeout_seconds=5
             _, reply_native, _ = turn("Sí, adelante.", "I'll proceed with the copper clasp.", older)
             self.assertEqual(reply_native, native)
             self.assertEqual(len(provider.calls), 3)
+
+            if web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
+                self.assertEqual(len(transcripts), 1)
+                transcript = transcripts[0]
+                transcript.rename(fixture_home / "retained-predecessor.jsonl")
+                current = next(row for row in browser.get("/api/interaction")["items"]
+                               if row["id"] == older["source"])
+                recovered_quote = {"source": current["id"], "revision": current["revision"]}
+                provider.expected_quote = {**recovered_quote, "assistant": proposal}
+                _, replacement, _ = turn(
+                    "Sí, retomá esa propuesta.", "I recovered the copper clasp proposal.", recovered_quote)
+                self.assertNotEqual(replacement, native)
+                self.assertEqual(len(provider.calls), 4)
 
         def _conversation_attachments(self, journey, provider):
             import base64
