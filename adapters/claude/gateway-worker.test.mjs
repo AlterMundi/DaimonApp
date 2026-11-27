@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,18 +22,39 @@ const original = 'Reply using this selected fixture original.';
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
 test('worker sends one native input only after exact owner persistence decision',
-  { timeout: 12_000 }, async () => {
+  { timeout: 20_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'gateway-claude-worker-'));
+    const observerServer = createServer();
+    const foreignServer = createServer();
     const sdk = join(root, 'fixture.mjs');
     const cli = join(root, 'claude-fixture');
     const selection = join(root, 'profile.json');
     const exposure = join(root, 'submitted.txt');
     const apiKeyFile = join(root, 'provider.key');
+    const bodyGuidanceFile = join(root, 'body-guidance.md');
+    const sharedSkillsDirectory = join(root, 'skills');
+    const skill = join(sharedSkillsDirectory, 'sample', 'SKILL.md');
+    const skillBody = 'name: sample\nmetadata:\n';
+    const skillDocument = (version, text) => '---\n' + skillBody + '  version: "' + version + '"\n---\n' + text;
+    const initialSkill = skillDocument('1.2.3', 'Synthetic skill: first.');
     const subscriptionEmail = 'owner@example.test';
     const accountDriftCwd = join(root, 'other-account');
     const fixtureKey = 'sk-ant-api03-fixture-not-a-provider-credential';
     try {
       await mkdir(accountDriftCwd);
+      await writeFile(bodyGuidanceFile, 'Synthetic body guidance: first.', { mode: 0o600 });
+      await mkdir(join(sharedSkillsDirectory, 'sample'), { recursive: true });
+      await writeFile(skill, initialSkill);
+      const hash = input => createHash('sha256').update(input).digest('hex');
+      const updatedSkill = skillDocument('1.2.4', 'Synthetic skill: updated.');
+      const inventory = text => hash(JSON.stringify(['sample', skill, hash(text)]));
+      const skillResumeAnchor = [inventory(initialSkill),
+        inventory(skillDocument('1.2.2', 'Older approved skill text.'))];
+      const skillContinuity = {
+        layoutRevision: hash(JSON.stringify(['sample', skill, ['name: sample', 'metadata:', ['metadata.version', 'semver'], '']])),
+        previousRevision: inventory(initialSkill),
+      };
+      assert.ok(!skillResumeAnchor.includes(inventory(updatedSkill)));
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
       await writeFile(cli, `#!${process.execPath}
 if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
@@ -44,6 +67,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       await writeFile(sdk, `
         import { writeFile } from 'node:fs/promises';
         import assert from 'node:assert/strict';
+        const matrixChatTools = ['messaging_delivery', 'messaging_inbox', 'messaging_reply', 'messaging_send'];
         export const tool = (name) => ({ name });
         export const createSdkMcpServer = (description) => description;
         export function query({ prompt, options }) {
@@ -63,6 +87,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             assert.equal(Object.hasOwn(options, 'maxBudgetUsd'), false);
           }
           assert.equal(options.systemPrompt.snapshot, false);
+          assert.deepEqual(options.skills, ['compaii-shared:sample']);
           assert.match(options.systemPrompt.append, /CompAII fixture · claude@itaca/);
           assert.ok(!options.systemPrompt.append.includes(${JSON.stringify(subscriptionEmail)}));
           return {
@@ -73,24 +98,37 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 apiProvider: 'firstParty', subscriptionType: 'fixture-plan',
               }};
             },
+            async supportedCommands() { return [{name: 'compaii-shared:sample'}]; },
             async mcpServerStatus() { return [{
               name: 'matrix', source: 'sdk', status: 'connected', tools: options.mcpServers.matrix.tools
-            }]; },
+            }, ...(options.mcpServers.matrix_chat ? [{
+              name: 'matrix_chat', source: 'dynamic', status: 'connected',
+              tools: matrixChatTools.map(name => ({ name })),
+            }] : [])]; },
             async *[Symbol.asyncIterator]() {
               for await (const request of prompt) {
                 const ownerDefault = request.message.content === 'Synthetic private default.';
-                const paired = ownerDefault || request.message.content === 'Synthetic private tool grant.';
+                const withMessaging = request.message.content === 'Synthetic paired chat tools.';
+                const paired = ownerDefault || withMessaging || request.message.content === 'Synthetic private tool grant.';
+                assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
+                for (const tool of matrixChatTools) {
+                  assert.equal(options.allowedTools.includes('mcp__matrix_chat__' + tool), withMessaging);
+                }
                 assert.equal(options.permissionMode, paired ? 'bypassPermissions' : 'dontAsk');
                 assert.equal(options.systemPrompt.append.includes(
                   'The paired human supplied the current input.'), paired);
                 assert.equal(options.systemPrompt.append.includes(
                   'The Claude subscription account is a service credential and does not identify the sender.'), paired);
+                assert.equal(options.systemPrompt.append.includes('Synthetic body guidance:'), paired);
+                if (options.resume === ${JSON.stringify(priorSessionId)} && paired) {
+                  assert.match(options.systemPrompt.append, /Synthetic body guidance: updated/);
+                }
                 assert.equal(options.allowDangerouslySkipPermissions, paired ? true : undefined);
                 assert.equal(options.settings.sandbox?.enabled, paired ? false : undefined);
                 const expectedTools = ownerDefault
                   ? ['Bash', 'Edit', 'Glob', 'Grep', 'NotebookEdit', 'Read', 'Write']
                   : paired ? ['Bash', 'Read'] : [];
-                assert.deepEqual(options.tools, expectedTools);
+                assert.deepEqual(options.tools, [...expectedTools, 'Skill']);
                 assert.equal(options.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,
                   options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
                 await writeFile(${JSON.stringify(exposure)}, request.message.content, { flag: 'wx' });
@@ -114,7 +152,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       const profile = {
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
         cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
-        hostTools: ['Read', 'Bash'],
+        hostTools: ['Read', 'Bash'], bodyGuidanceFile, sharedSkillsDirectory, skillResumeAnchor,
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,
@@ -126,18 +164,78 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         ...commonProfile
       } = profile;
       const subscription = { ...commonProfile, subscriptionEmail };
-      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost',
-        'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
-        'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift'];
+      const matrixMessaging = join(root, 'chat-connection.json');
+      const chatBinding = join(root, 'chat-binding.json');
+      const chatClient = join(root, 'chat-client.json');
+      const chatSocket = join(root, 'runtime.sock');
+      const foreignSocket = join(root, 'foreign.sock');
+      const observerBinding = join(root, 'observer-binding.json');
+      const observerClient = join(root, 'observer-client.json');
+      observerServer.listen(chatSocket);
+      foreignServer.listen(foreignSocket);
+      await Promise.all([once(observerServer, 'listening'), once(foreignServer, 'listening')]);
+      const binding = { schema: 'dm.agent-chat.binding/v1', client_config: chatClient, socket: chatSocket };
+      await writeFile(matrixMessaging, JSON.stringify({ command: [process.execPath, '-I', '-m', 'daimon_matrix.agent_chat', '--binding', chatBinding] }), { mode: 0o600 });
+      await writeFile(chatBinding, JSON.stringify(binding), { mode: 0o600 });
+      const chatGrant = {
+        schema: 'dm.local.client-config/v3',
+        runtime_id: 'fixture-runtime',
+        expected_server: { body_ref: 'fixture', principal_id: 'fixture',
+          embodiment_id: body.embodimentId, incarnation_id: body.incarnationId },
+        capability: { schema: 'dm.local.capability/v2', status: 'active',
+          validity: { mode: 'until-revoked', not_before_ms: 0 },
+          methods: ['messaging.inbox', 'messaging.delivery', 'messaging.send', 'messaging.reply'] },
+      };
+      await writeFile(chatClient, JSON.stringify(chatGrant), { mode: 0o600 });
+      await writeFile(observerClient, JSON.stringify(chatGrant), { mode: 0o600 });
+      await writeFile(observerBinding, JSON.stringify({
+        source: { being_ref: body.beingRef, embodiment_id: body.embodimentId },
+        observation: { socket: chatSocket, client_config: observerClient },
+      }), { mode: 0o600 });
+      const messagingProfile = { ...profile, matrixMessaging,
+        matrixStatusCommand: [...profile.matrixStatusCommand, '--binding', observerBinding, '--body-status'] };
+      const refusedMessaging = ['messaging-foreign', 'messaging-foreign-socket', 'messaging-expired', 'messaging-broad-grant'];
+      const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
+        'updated-guidance-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+        'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
+        'messaging-paired', 'messaging-unpaired', ...refusedMessaging];
       let restrictedScope;
       let hostScope;
       // Native bootstrap with a synthetic key timed out offline.
       // Exercise the native auth selector here with the isolated fixture SDK.
       if (realBinary) decisions.push('native-auth-rejected');
       for (const decision of decisions) {
+        if (decision === 'updated-guidance-resume') {
+          await writeFile(bodyGuidanceFile, 'Synthetic body guidance: updated.');
+          await writeFile(skill, updatedSkill);
+          await writeFile(selection, JSON.stringify({ ...profile, skillContinuity }));
+        }
+        if (decision === 'changed-skill-metadata') {
+          await writeFile(skill, '---\nname: sample\nallowed-tools: Read\n---\nSynthetic skill: updated.');
+        }
         if (decision === 'owner-default') {
           const { hostTools: _tools, ...defaultProfile } = profile;
           await writeFile(selection, JSON.stringify(defaultProfile));
+        }
+        if (decision.startsWith('messaging-')) await writeFile(selection, JSON.stringify(messagingProfile));
+        if (decision === 'messaging-foreign-socket') {
+          await writeFile(chatClient, JSON.stringify(chatGrant));
+          await writeFile(chatBinding, JSON.stringify({ ...binding, socket: foreignSocket }));
+        }
+        if (decision === 'messaging-expired') {
+          await writeFile(chatBinding, JSON.stringify(binding));
+          const { validity: _validity, ...grant } = chatGrant.capability;
+          await writeFile(chatClient, JSON.stringify({ ...chatGrant, capability: {
+            ...grant, schema: 'dm.local.capability/v1', not_before_ms: 0, not_after_ms: 1,
+          } }));
+        }
+        if (decision === 'messaging-foreign') {
+          await writeFile(chatClient, JSON.stringify({ ...chatGrant,
+            expected_server: { ...chatGrant.expected_server, embodiment_id: 'foreign' } }));
+        }
+        if (decision === 'messaging-broad-grant') {
+          await writeFile(chatClient, JSON.stringify({ ...chatGrant,
+            capability: { ...chatGrant.capability, methods: [...chatGrant.capability.methods, 'runtime.admin'] } }));
         }
         if (decision === 'subscription-committed') await writeFile(selection, JSON.stringify(subscription));
         if (decision === 'subscription-wrong-account') {
@@ -156,22 +254,30 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default'].includes(decision);
+          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'changed-skill-metadata', 'messaging-paired', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
+            : decision === 'messaging-paired' ? 'Synthetic paired chat tools.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'changed-skill-metadata'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
-            : decision === 'companion-resume' ? priorSessionId : nativeSessionId;
+            : ['companion-resume', 'updated-guidance-resume'].includes(decision) ? priorSessionId : nativeSessionId;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
           }) + '\n');
-          const first = JSON.parse((await lines.next()).value);
+          const firstLine = await lines.next();
+          if (refusedMessaging.includes(decision)) {
+            assert.equal(firstLine.done, true);
+            assert.equal((await exited)[0], 1);
+            await assert.rejects(readFile(exposure), { code: 'ENOENT' });
+            continue;
+          }
+          const first = JSON.parse(firstLine.value);
           if (['subscription-wrong-account', 'subscription-account-drift'].includes(decision)) {
             assert.deepEqual(first, { ...correlation, type: 'outcome',
               outcome: { phase: 'not_submitted', reason: 'claude_subscription_auth_unverified' },
@@ -180,7 +286,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
             continue;
           }
-          assert.match(first.sessionScope, /^[a-f0-9]{64}$/);
+          assert.match(first.sessionScope ?? JSON.stringify(first), /^[a-f0-9]{64}$/, decision);
           if (decision === 'disconnected') restrictedScope = first.sessionScope;
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
@@ -190,6 +296,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
           }
+          if (decision === 'skill-changed-during-submission') await writeFile(skill, 'Temporary raced change.');
           if (decision === 'disconnected') worker.stdin.end();
           else {
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
@@ -198,7 +305,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
@@ -214,6 +321,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           }
           assert.equal((await exited)[0], 0);
           if (decision === 'profile-changed') await writeFile(selection, JSON.stringify(profile));
+          if (decision === 'skill-changed-during-submission') await writeFile(skill, initialSkill);
+          if (decision === 'changed-skill-metadata') await writeFile(skill, updatedSkill);
         } finally {
           worker.kill();
           await exited;
@@ -242,6 +351,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         }
       }
     } finally {
+      await Promise.all([observerServer, foreignServer].map(server =>
+        new Promise(resolve => server.close(resolve))));
       await rm(root, { recursive: true, force: true });
     }
   });
