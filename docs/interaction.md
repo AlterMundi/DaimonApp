@@ -1287,6 +1287,8 @@ with its own role-specific capabilities. `inputs` identifies accepted inputs in
 that actual native execution. `session_request` selects an original human parent,
 a stable caller request ID, one existing unambiguous topic and at most 16,000
 bytes of session-authored text. It does not copy a transcript or create a topic.
+Worker `capabilities` pairs each target's display title with its stable
+selector. Use the selector in the tool call, including for titles with spaces.
 For ordinary coordination, including sending an existing report to another
 topic for its work, omit `report_to_topic`. This works across harnesses.
 If Gateway returns `topic_report_destination_unsupported` with
