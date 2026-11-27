@@ -515,7 +515,7 @@ async function main() {
       || first.freshNativeSessionId === first.sessionId
       || (first.resume !== null && !validResume(first.resume))
       || !Array.isArray(alternates) || alternates.length > 7 || !alternates.every(validResume)
-      || (attachments !== undefined && (first.humanOriginal !== true || nativeGoalCommand
+      || (attachments !== undefined && (!fullAccess || nativeGoalCommand
         || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
         || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
           && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096

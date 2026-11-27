@@ -190,8 +190,8 @@ pub(in crate::app) async fn execute_worker(
         if engine == ForegroundEngine::Claude {
             if !attachments.is_empty() {
                 anyhow::ensure!(
-                    human_original && !native_goal_command,
-                    "Attachments require a direct human turn"
+                    (human_original || routed_host_access) && !native_goal_command,
+                    "Attachments require an authenticated human turn"
                 );
                 start["attachments"] = json!(
                     attachments
@@ -815,10 +815,6 @@ pub(super) async fn run_routed_portable(
     let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
-    anyhow::ensure!(
-        request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
-        "Routed worker attachments require a direct Claude turn"
-    );
     // Retain the controller catalog on a canonical result so its receiving
     // turn can resume the requesting session. The journal checks each action
     // against its current input, and a result cannot authorize new work.
@@ -850,6 +846,14 @@ pub(super) async fn run_routed_portable(
         });
 
     let outcome = async {
+        // The retained Conversation original is paired even when its prompt
+        // needs a routed envelope. Session requests and results cannot attach
+        // files using the paired authority they inherit for host tools.
+        anyhow::ensure!(
+            request.attachments.is_empty()
+                || (engine == ForegroundEngine::Claude && routed_host_access && human_authored),
+            "Routed worker attachments require an authenticated human Claude turn"
+        );
         let (_,body) = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
