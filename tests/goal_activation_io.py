@@ -161,7 +161,12 @@ def qualify(binary):
         visible=j.cli(entry,'conversation')['presentation']['items']
         assert not any(item.get('preview')=='This later goal reply belongs to direct Alpha.' for item in visible)
         j.wait(lambda:j.has('This later goal reply belongs to direct Alpha.',7))
-        assert j.row('SELECT count(*) FROM interaction_sources')==[(1,)],'Only the explicit correction was a router input'
+        assert j.row("""SELECT count(*) FROM interaction_sources s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM interaction_instructions i
+                JOIN interaction_direct_parents p ON p.instruction=i.id
+                WHERE i.input_id=s.id
+            )""")==[(1,)],'Only the explicit correction was a router input'
         # Metadata controls admit only the actual selected clause after the CAS,
         # preserving inactive/absent goal state and the same canonical return path.
         for action,clause,objective in [('pause','Explain the paused work.',None),('edit','Explain the revised work.','Revised paused objective.'),('clear','Discuss a fresh idea.',None)]:

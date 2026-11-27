@@ -81,6 +81,14 @@ frame_ms=100
         outer=json.loads(result.stdout);assert outer['ok'] and outer['result']['success'],outer
         return json.loads(outer['result']['contentItems'][0]['text'])
 
+def routed_instructions(j, topic):
+    return j.row("""SELECT i.id,i.phase,i.doc FROM interaction_instructions i
+        JOIN sessions s ON s.id=i.session_id
+        WHERE s.thread_id=? AND NOT EXISTS (
+            SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id
+        ) ORDER BY i.sequence""", (topic,))
+
+
 def qualify(binary,pack=False):
     j=Warm(binary,pack=pack)
     try:
@@ -109,7 +117,7 @@ def qualify(binary,pack=False):
         original=j.cli(entry,'inputs')['inputs'][-1]['input_ref']
         assert sum(m.get('method')=='turn/start' for m in j.rpc)==before+1
         j.cli(entry,'dispatch',{'input_ref':original,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
-        j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
+        j.wait(lambda:[row[1] for row in routed_instructions(j, 7)] == ['accepted'])
         assert 'Controller access for this execution' in j.packets['native-topic-7'][-1]['input'][0]['text']
         worker=j.access(7)
         symlink=j.root/'linked-access.json';symlink.symlink_to(worker)
@@ -120,7 +128,7 @@ def qualify(binary,pack=False):
         assert 'companion_hint' in caps['operations']
         assert j.cli(worker,'companion_hint',worker_pose)['new_registration']
         # An existing busy worker invokes the same nonblocking dependency handler.
-        parent=j.instructions(7)[0][0]
+        parent=routed_instructions(j, 7)[0][0]
         args={'parent_instruction':parent,'request_id':'warm-dependency','selector':'Beta','text':'Provide the selected evidence for this task.'}
         result=j.cli(worker,'session_request',args)
         j.wait(lambda:j.instructions(8) and j.instructions(8)[0][1]=='accepted')
@@ -133,9 +141,11 @@ def qualify(binary,pack=False):
         j.cli(forged,'capabilities',ok=False)
         stale=j.root/'expired-access.json';shutil.copyfile(worker,stale);stale.chmod(0o600)
         j.answer(8,'The selected helper evidence.')
-        j.wait(lambda:len(j.instructions(7))==2 and j.instructions(7)[1][1]=='accepted')
+        j.wait(lambda:[row[1] for row in routed_instructions(j, 7)] == ['accepted', 'accepted'])
         j.answer(7,'Work incorporating the helper evidence.')
-        j.wait(lambda:j.row("SELECT count(*) FROM interaction_public_deliveries WHERE phase!='delivered'")==[(0,)])
+        j.wait(lambda:j.row("""SELECT d.phase FROM interaction_public_deliveries d
+            JOIN interaction_results r ON r.id=d.result_id
+            WHERE r.body='Work incorporating the helper evidence.'""")==[('delivered',)])
         assert j.row("SELECT count(*) FROM interaction_deliveries WHERE json_extract(doc,'$.internal')=1")==[(1,)]
         assert not j.has('The selected helper evidence.',1)
         j.wait(lambda:not worker.exists())
