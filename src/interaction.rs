@@ -649,6 +649,17 @@ pub(crate) fn native_claude_goal(text: &str) -> bool {
         })
 }
 
+pub(crate) fn native_claude_goal_control(text: &str) -> bool {
+    let text = text.trim_end();
+    text == "/goal"
+        || text.strip_prefix("/goal ").is_some_and(|argument| {
+            matches!(
+                argument.trim(),
+                "clear" | "stop" | "off" | "reset" | "none" | "cancel"
+            )
+        })
+}
+
 /// A selector is deliberate only at the beginning of the human's message.
 /// Quoted text, code blocks and incidental mentions remain ordinary content.
 pub fn explicit_selector(text: &str) -> Option<(&str, &str)> {

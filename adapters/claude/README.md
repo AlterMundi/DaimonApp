@@ -502,6 +502,12 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
   selected Claude session through the paired Conversation composer, with no
   additional provider call and a retained refusal for an unpaired companion.
+  Add `FOREGROUND_TEST_CLAUDE_GOAL_LIFECYCLE=completed` for goal creation and
+  evaluation, or `=active` to leave a goal unresolved in the native session.
+  The active case verifies that a subsequent paired status or clear command
+  addresses that same session while the earlier turn remains uncertain.
+  Both cases verify that resubmitting the same input ID does not run the goal
+  again and that an unpaired browser cannot set a goal.
 - `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
   `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` submit an exact reply to an older
   proposal while a newer request is still running in the same native session.

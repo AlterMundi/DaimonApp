@@ -45,6 +45,21 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             system = json.dumps(data["system"], ensure_ascii=False)
+            if getattr(self.server, "goal_command", None) and "evaluating a stop-condition hook" in system:
+                messages = json.dumps(data["messages"])
+                assert self.server.original in messages
+                assert self.server.quote_response in messages
+                self.admitted()
+                self.server.goal_evaluations += 1
+                assert self.server.goal_evaluations <= 8
+                self.send_fixture_message(
+                    data, f"goal_{self.server.goal_evaluations}", {"type": "text", "text": ""},
+                    {"type": "text_delta", "text": json.dumps({
+                        "ok": self.server.goal_met, "reason": self.server.quote_response,
+                    })},
+                    "end_turn",
+                )
+                return
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
             if getattr(self.server, "session_instructions", None):
@@ -300,29 +315,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     block = {"type": "text", "text": ""}
                     delta = {"type": "text_delta", "text": ANSWER}
                     reason = "end_turn"
-            message = {
-                "id": f"msg_{fixture_id}_{prior}", "type": "message", "role": "assistant", "content": [],
-                "model": data["model"], "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 8, "output_tokens": 1},
-            }
-            frames = [
-                ("message_start", {"message": message}),
-                ("content_block_start", {"index": 0, "content_block": block}),
-                ("content_block_delta", {"index": 0, "delta": delta}),
-                ("content_block_stop", {"index": 0}),
-                ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
-                                   "usage": {"output_tokens": 4}}),
-                ("message_stop", {}),
-            ]
-            response = "".join(
-                f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
-                for event, value in frames
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(response)))
-            self.end_headers()
-            self.wfile.write(response)
+            self.send_fixture_message(data, f"{fixture_id}_{prior}", block, delta, reason)
         except Exception as error:
             if (isinstance(error, (BrokenPipeError, ConnectionResetError))
                     and quote_gate and quote_gate[2].is_set()):
@@ -334,3 +327,28 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             if self.server.failure is None:
                 self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)
+
+    def send_fixture_message(self, data, ident, block, delta, reason):
+        message = {
+            "id": f"msg_{ident}", "type": "message", "role": "assistant", "content": [],
+            "model": data["model"], "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": 8, "output_tokens": 1},
+        }
+        frames = [
+            ("message_start", {"message": message}),
+            ("content_block_start", {"index": 0, "content_block": block}),
+            ("content_block_delta", {"index": 0, "delta": delta}),
+            ("content_block_stop", {"index": 0}),
+            ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
+                               "usage": {"output_tokens": 4}}),
+            ("message_stop", {}),
+        ]
+        response = "".join(
+            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
+            for event, value in frames
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
