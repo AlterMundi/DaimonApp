@@ -247,6 +247,8 @@ class Render(unittest.TestCase):
         self.assertEqual(state['phase'],'audio_expired')
         self.assertEqual(state['text_sha256'],first['text_sha256'])
         self.assertEqual(len(self.calls),1,'Maintenance cannot call the provider')
+        self.assertIsNone(speech.read_completed_wav(self.binding,self.request))
+        self.assertEqual(len(self.calls),1,'The cache-only lookup cannot recreate expired audio')
         second=self.render()
         self.assertFalse(second['cache_hit'])
         self.assertEqual(json.loads(path.read_text())['generation'],2)
