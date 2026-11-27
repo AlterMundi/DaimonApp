@@ -440,6 +440,74 @@ impl Store {
         session_input_allowed_on(&conn, id, human)
     }
 
+    /// Requeue an admitted, known-unsent handoff without changing its source,
+    /// destination, dependency budget or original admission generation.
+    pub(crate) fn interaction_session_recover_unsent(
+        &self,
+        human: i64,
+        id: &str,
+    ) -> Result<(Instruction, bool)> {
+        use crate::interaction::TransportPhase as Phase;
+
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (raw, phase): (String, String) = tx
+            .query_row(
+                "SELECT doc,phase FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+                params![id, human],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("Owned local handoff unavailable")?;
+        let call: SessionRequest = serde_json::from_str(&raw)?;
+        let mut helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.phase != Phase::RetainedUnsent || phase != "requested" {
+            return Ok((helper, false));
+        }
+
+        let parent = instruction_on(&tx, &call.parent_instruction, human)?;
+        let viable: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t
+                JOIN sessions s ON s.id=t.session_id
+                JOIN users u ON u.tg_user_id=s.creator_user_id
+                JOIN conversation_entry_generations g ON g.session_id=s.id
+                WHERE t.id=?1 AND t.session_id=?2 AND t.native_thread_id=?3
+                  AND t.status IN ('running','completed') AND t.execution_generation=g.generation
+                  AND u.tg_user_id=?4 AND u.allowed=1 AND s.force_fresh_thread=0)",
+            params![
+                parent.local_turn,
+                parent.target_session,
+                call.caller_native,
+                human
+            ],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            viable
+                && parent.phase == Phase::Accepted
+                && parent.target == call.caller
+                && parent.admission_epoch.as_deref() == Some(&call.epoch)
+                && helper.admission_epoch.as_deref() == Some(&call.epoch)
+                && current_epoch(&tx, human)? == call.epoch
+                && !super::stopping::fenced_on(&tx, call.caller)?
+                && !super::stopping::fenced_on(&tx, helper.target)?
+                && !super::maintenance_writer_held_on(&tx, helper.target)?
+                && super::interaction::target_execution_allowed_on(&tx, &parent)?
+                && super::interaction::target_execution_allowed_on(&tx, &helper)?
+                && author_on(&tx, &parent.input_id)?.is_none()
+                && session_input_allowed_on(&tx, &helper.id, human)?
+                && helper.local_turn.is_none()
+                && helper.native_turn.is_none(),
+            "The original local handoff is no longer eligible for recovery"
+        );
+        helper.phase = Phase::Queued;
+        tx.execute(
+            "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
+            params![helper.id, serde_json::to_string(&helper)?, self.instance_id],
+        )?;
+        tx.commit()?;
+        Ok((helper, true))
+    }
+
     /// Withdraw future dependency continuations synchronously with scoped controls.
     pub fn interaction_withdraw_session_requests(&self, caller: SessionKey) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -868,6 +936,94 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn owner_recovers_only_the_known_unsent_admitted_handoff() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let s = Store::open(file.path(), &[100], &defaults).unwrap();
+        let a = setup(&s, 7);
+        let b = setup(&s, 8);
+        let p = parent(&s, &a);
+        let (call, helper, _) = s
+            .interaction_session_request(
+                a.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &p.id,
+                "recover-me",
+                b.key,
+                "A retained handoff",
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        // Emulate the existing writer rollover: transport changes, original stays frozen.
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent' WHERE id=?1",
+                [&helper.id],
+            )
+            .unwrap();
+        assert!(s.interaction_session_recover_unsent(101, &call.id).is_err());
+        let (recovered, changed) = s.interaction_session_recover_unsent(100, &call.id).unwrap();
+        assert!(changed);
+        assert_eq!(recovered.id, helper.id);
+        assert_eq!(recovered.input_id, helper.input_id);
+        assert_eq!(recovered.admission_epoch, helper.admission_epoch);
+        assert_eq!(recovered.phase, P::Queued);
+        assert!(
+            !s.interaction_session_recover_unsent(100, &call.id)
+                .unwrap()
+                .1
+        );
+
+        for phase in ["uncertain", "cancelled", "accepted"] {
+            s.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE interaction_instructions SET phase=?2 WHERE id=?1",
+                    params![helper.id, phase],
+                )
+                .unwrap();
+            assert!(
+                !s.interaction_session_recover_unsent(100, &call.id)
+                    .unwrap()
+                    .1
+            );
+        }
+
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE interaction_instructions SET phase='retained_unsent' WHERE id=?1",
+                [&helper.id],
+            )
+            .unwrap();
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO bot_state(key,value) VALUES('stop_admission_epoch:100','later')",
+                [],
+            )
+            .unwrap();
+        assert!(s.interaction_session_recover_unsent(100, &call.id).is_err());
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM bot_state WHERE key='stop_admission_epoch:100'",
+                [],
+            )
+            .unwrap();
+        s.clear_session_conversation(a.key).unwrap();
+        assert!(s.interaction_session_recover_unsent(100, &call.id).is_err());
     }
 
     #[test]

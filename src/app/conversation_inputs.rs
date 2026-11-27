@@ -162,6 +162,27 @@ pub(super) async fn command(app: &App, human: i64, args: &str) -> Result<Value> 
     if cfg.human_id != human {
         bail!("Conversation input owner mismatch");
     }
+    if let Some(id) = args.strip_prefix("handoff-recover ") {
+        let id = uuid::Uuid::parse_str(id)?.to_string();
+        let (helper, requeued) = app
+            .shared
+            .store
+            .interaction_session_recover_unsent(human, &id)?;
+        let dispatch_unconfirmed = requeued
+            && super::routing::dispatch(app, &helper.id, human)
+                .await
+                .is_err();
+        let phase = app
+            .shared
+            .store
+            .interaction_instruction(&helper.id, human)?
+            .context("Recovered handoff disappeared")?
+            .phase;
+        return Ok(json!({
+            "request_id": id, "instruction": helper.id, "phase": phase,
+            "requeued": requeued, "dispatch_unconfirmed": dispatch_unconfirmed,
+        }));
+    }
     if let Some(body) = args.strip_prefix("voice native initialize ") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

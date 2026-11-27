@@ -1232,7 +1232,16 @@ with its own role-specific capabilities. `inputs` identifies accepted inputs in
 that actual native execution. `session_request` selects an original human parent,
 a stable caller request ID, one existing unambiguous topic and at most 16,000
 bytes of session-authored text. It does not copy a transcript or create a topic.
-`session_requests` inspects the latest sixteen retained dependencies.
+`session_requests` inspects the latest sixteen retained dependencies and
+reports each helper's transport phase and linked native turn status. A handoff
+retained before its first local turn after a writer rollover is no longer in
+the active queue. Under the existing owner authority, recover its frozen request
+with `daimon-gateway --control CONFIG input handoff-recover LOCAL_REQUEST_ID`.
+This resumes the same attributed handoff only while its original admission
+generation and target remain valid. An uncertain handoff is inspection-only.
+If a helper needs additional information from another topic, it can return
+what it needs so the original session can ask directly under its retained
+human instruction. The helper's session-authored input is not a new delegation.
 
 Runtime context names the selected worker topic and instructs it to distinguish
 its task from integrator-only clauses in the unchanged human message. This is
