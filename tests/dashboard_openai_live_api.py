@@ -23,6 +23,7 @@ from dashboard.companion import permitted
 from dashboard.live_transcription import wav_bytes
 from dashboard.openai_live import LiveCall, LiveUnavailable, session_spec
 from dashboard.openai_live_api import install
+from dashboard.openai_live_native_backend import return_next_native_part
 from dashboard.openai_live_visits import LiveCreations
 from dashboard.provider import Provider, ProviderUnavailable
 from dashboard.native_history import NativeHistory
@@ -924,7 +925,7 @@ class Mounted(unittest.TestCase):
         self.assertEqual(Client.instances,[])
         self.assertFalse((self.state/'public-live-visits'/(self.ident+'.json')).exists())
 
-    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False):
+    def _native_backend_flow(self,slow_result=False,renew=False,automatic=False,unconfirmed_work=False,prior_visit_context=True):
         app=self.app_with_history();saved={};calls={'asr':0,'work':0}
         entered=threading.Event();release=threading.Event();self.addCleanup(release.set)
         owner=self.owner;frozen=owner.public_live_binding('a'*64)
@@ -978,7 +979,7 @@ class Mounted(unittest.TestCase):
                     'client_event_id':event['event_id']})
         async def authorize(request):return {'human':100,'csrf':'fresh'}
         config={**self.config,'openai_live':{**self.config['openai_live'],'backend_mode':'native',
-            **({'continuous_renewal':True} if automatic else {})}}
+            'prior_visit_context':prior_visit_context, **({'continuous_renewal':True} if automatic else {})}}
         install(app,config,owner,authorize,['https://example.test'])
         with patch.object(Client,'send',acknowledge):
             with TestClient(app,base_url='https://example.test') as client:
@@ -1093,6 +1094,17 @@ class Mounted(unittest.TestCase):
 
     def test_native_backend_whole_mounted_source_work_and_result_flow(self):
         self._native_backend_flow()
+
+    def test_current_visit_result_reader_starts_after_observed_native_work(self):
+        observed=[]
+        def returning(history,visit,human,owner,*args,**kwargs):
+            work=history.read(visit,human,owner)['delegations']
+            observed.append(work.get('native-task',{}).get('native_work',{}).get('state'))
+            return return_next_native_part(history,visit,human,owner,*args,**kwargs)
+        with patch('dashboard.openai_live_api.return_next_native_part',side_effect=returning):
+            self._native_backend_flow(prior_visit_context=False)
+        self.assertTrue(observed,'The current result still returns during the open visit')
+        self.assertEqual(set(observed),{'observed'},'No reader runs before an exact native receipt')
 
     def test_uncertain_native_handoff_keeps_current_speech_until_explicit_stop_without_replay(self):
         self._native_backend_flow(unconfirmed_work=True)
