@@ -151,11 +151,10 @@ window.Conversation = (() => {
     });
     // Reuse the same presence renderer in the fixed header, freeing conversation space.
     if(standalone){
-      const presence=$("#conversation-companion"),identity=$("header .identity"),tools=$("header .header-tools"),beacon=$("#conversation-sound-toggle");
+      const presence=$("#conversation-companion"),identity=$("header .identity");
       if(presence && identity)identity.append(presence);
       const build=$("#client-build"),name=$("#conversation-companion .companion-name");
       if(build && name)name.before(build);
-      if(tools && beacon){tools.insertBefore(beacon,tools.firstChild);beacon.title="Session sound · Beacon";}
       const compose = $("#conversation-compose"), playback = $("#conversation-audio-tools");
       const dock = node("div"); dock.id = "conversation-dock";
       const bar = node("div"); bar.id = "conversation-compose-bar";
@@ -164,8 +163,6 @@ window.Conversation = (() => {
     }
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
-    $("#conversation-sound")?.append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
-    const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
     let headerSignal,headerSignalAt=-Infinity;
     const headerMotion=window.matchMedia?.('(prefers-reduced-motion: reduce)');
     try{if(standalone)headerSignal=window.ConversationVoiceMode?.signalSurface?.(document.querySelector('header'));}catch{/* Optional feedback cannot affect voice. */}
@@ -187,7 +184,7 @@ window.Conversation = (() => {
     document.addEventListener('visibilitychange',()=>{if(document.hidden)clearHeaderSignal();});
     window.addEventListener('pagehide',clearHeaderSignal);
     headerMotion?.addEventListener?.('change',()=>{if(headerMotion.matches)clearHeaderSignal();});
-    const presentState=(patch,updateVoice=true)=>{showHeaderSignal(patch);if(Object.hasOwn(patch,'outputLevel')){avatarWorkshop?.speechLevel?.(patch.outputLevel);hostSurface?.playback(patch.outputLevel);}else if(patch.playback&&patch.playback!=='playing')hostSurface?.playback(0);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
+    const presentState=(patch,updateVoice=true)=>{showHeaderSignal(patch);if(Object.hasOwn(patch,'outputLevel')){avatarWorkshop?.speechLevel?.(patch.outputLevel);hostSurface?.playback(patch.outputLevel);}else if(patch.playback&&patch.playback!=='playing')hostSurface?.playback(0);companion?.update(patch);if(updateVoice)voiceMode?.update(patch);};
     const settings=$("#conversation-settings"), settingsButton=$("#conversation-settings-open");
     if(settingsButton && settings){
       settingsButton.hidden=readOnly;
@@ -313,7 +310,10 @@ window.Conversation = (() => {
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();voiceContext=undefined;selectFocus({source:`task:${task.id}`,revision:task.revision,context_only:true},`${task.label} · ${task.title}`);return true;
     }});
-    const goalControls=window.GoalControls?.mount({api,getBinding:()=>binding,readOnly,onAvailable:available=>{if(decisionButton)decisionButton.hidden=readOnly||!available;},onChoose:message=>{
+    const goalControls=window.GoalControls?.mount({api,getBinding:()=>binding,readOnly,onAvailable:available=>{
+      if(decisionButton)decisionButton.hidden=!available;
+      if(!available && decisionDialog?.open)decisionDialog.close();
+    },onChoose:message=>{
       if(readOnly || posting || draft.value.trim())return false;
       decisionDialog?.close?.();pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draftState?.change(message);draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
     }});
@@ -993,7 +993,6 @@ window.Conversation = (() => {
       const next=row?(workspaceAudioKey(row)??null):undefined;
       if(next===workspaceAudioScope)return;
       workspaceAudioScope=next;
-      sound?.update({sessionScoped:next!==undefined});
       audioFilterChanged({persist:false,scopeChanged:true});
     }
     function workspaceAudioKey(row){
@@ -1069,7 +1068,7 @@ window.Conversation = (() => {
       canDecideRequests=false;
       liveUsage?.reset();
       voiceMode?.close();showResponseDraft();
-      companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
+      companion?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
       disableVoice();timeline?.replaceChildren();
       codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;voiceHistoryPanel.append(codexHistoryTools);
       publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
@@ -1910,7 +1909,7 @@ window.Conversation = (() => {
       voiceEnabled=false;voiceBusy=false;clearVoiceQueue();voiceFinalTimes.clear();voiceContext=undefined;voiceStatus();stop();
     }
     $("#conversation-voice-replies").addEventListener("click",()=>{
-      if(voiceEnabled || active && blobUrl && !audio.ended){sound?.disable();disableVoice();}else {
+      if(voiceEnabled || active && blobUrl && !audio.ended){disableVoice();}else {
         window.PcmSpeech?.unlock();enableVoice();
         if(captureBusy){voiceBusy=false;return;}
         if(active && blobUrl && !audio.ended){
@@ -1978,7 +1977,7 @@ window.Conversation = (() => {
         history.replaceState(null, "", url);
       }
       try { telegram?.BackButton?.[enabled ? "show" : "hide"]?.(); } catch (_) {}
-      if (!enabled) {pause("view"); sound?.reset(); microphone?.deactivate();}
+      if (!enabled) {pause("view");  microphone?.deactivate();}
       modeChanged(enabled, initial);
     }
     // api() aborts a request at its deadline. That is a connection interruption,
@@ -2294,7 +2293,6 @@ window.Conversation = (() => {
           : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
-        void sound?.refresh();
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
         drainVoice();
       } catch (e) { failed(e); }
@@ -2800,7 +2798,7 @@ window.Conversation = (() => {
         if(voiceEngine)voiceEngine.disabled=true;
         voiceModePrevious={enabled:voiceEnabled,suspended:voiceSuspended,continuous:continuousEnabled};
         if(continuousEnabled)microphone.continuousOwner(true);
-        conversationOnly=true;stop();audioFilterChanged();enableVoice();sound?.update({conversationOnly:true});
+        conversationOnly=true;stop();audioFilterChanged();enableVoice();
       },
       onSpeak:({avatarEntry=false}={})=>voiceModePrevious?.continuous?
         (voiceSession===publicLiveSession?publicLiveSession?.start({avatarEntry}):voiceSession?.start()):
@@ -2817,7 +2815,7 @@ window.Conversation = (() => {
         const direct=voiceModePrevious?.continuous, owner=binding, observed=inputGeneration,publicVoice=voiceSession===publicLiveSession;
         let held;
         if(direct){held=voiceSession?.hold();microphone.continuousOwner(false);void microphone.reviewContinuous(voiceSession?.originals||[]);captureBusy=false;}
-        else held=microphone?.hold();conversationOnly=false;sound?.update({conversationOnly:false});
+        else held=microphone?.hold();conversationOnly=false;
         if(voiceModePrevious?.enabled){voiceSuspended=voiceModePrevious.suspended;voiceStatus();}
         else disableVoice();
         voiceModePrevious=undefined;presentState({outputLevel:0},false);audioFilterChanged();companion?.update({});
@@ -2838,7 +2836,7 @@ window.Conversation = (() => {
       }
     });
     setMode(initialMode(), true, false);
-    return {refresh, pause, identity:value=>hostSurface?.identity(value), stop:()=>{sound?.disable();disableVoice();},
+    return {refresh, pause, identity:value=>hostSurface?.identity(value), stop:disableVoice,
       unauthenticated() { hostSurface?.disconnect();ready=false; failed({status:401,message:document.documentElement.dataset.sharedAuth==='true'?"Sign in again to reconnect.":"Open your conversation access file to reconnect."}); },
       authenticated() { ready = true; $("#conversation-open").disabled = false; }};
   }

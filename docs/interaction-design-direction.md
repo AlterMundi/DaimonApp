@@ -234,8 +234,10 @@ than leaving a hidden reserved row. Pending work remains in For You and actual
 voice controls retain their own state. The authored avatar starts at the header's
 upper edge with no reserved 44px band; short-height keyboard compaction remains.
 
-Conversation settings contains editable voice, audio and coordination controls.
-Work decisions has a separate surface for proposals and retained outcomes. For You
+Conversation settings contains editable voice and coordination controls.
+Beacon is not mounted in DaimonApp.
+A goal change shows a review action only while it requires human confirmation.
+Earlier outcomes remain in the owning workflow and Conversation replies. For You
 contains questions and actions. The retired inspector source is preserved at
 the `conversation-under-the-hood` tag. The small served bundle identifier remains
 beside the app title.

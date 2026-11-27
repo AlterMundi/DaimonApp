@@ -190,7 +190,7 @@ function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   await gu.observe({binding:"bound",items:[proposal],cursor:1,more:false});
   let gc=goals.nodes.get('#conversation-goal-cards').children[0];
   assert(goals.button(gc,'Confirm in conversation').disabled);
-  await goals.button(gc,'Review proposal and outcome').handlers.click();
+  await goals.button(gc,'Read proposed change').handlers.click();
   goals.button(gc,'Confirm in conversation').handlers.click();
   assert(decisions[0].includes(proposal.id)&&decisions[0].includes(proposal.plan.followup));
   goals.button(gc,'Decline in conversation').handlers.click();assert(!decisions[1].includes(proposal.plan.followup));
@@ -199,16 +199,16 @@ function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   await gu.observe({binding:"bound",items:[],cursor:0,more:false});
   assert(!goals.button(gc,'Dismiss').hidden && goals.button(gc,'Confirm in conversation').disabled);
   gu.reset();await gu.observe({binding:"bound",items:[proposal],cursor:1,more:false});gc=goals.nodes.get('#conversation-goal-cards').children[0];
-  const goalHold=deferred();delayed=goalHold;const pendingDetail=goals.button(gc,'Review proposal and outcome').handlers.click();await goalHold.entered;
+  const goalHold=deferred();delayed=goalHold;const pendingDetail=goals.button(gc,'Read proposed change').handlers.click();await goalHold.entered;
   gu.reset();goalHold.release();await pendingDetail;assert.equal(goals.nodes.get('#conversation-goal-cards').children.length,0);
   await gu.observe({binding:"bound",items:[proposal],cursor:1,more:false});gc=goals.nodes.get('#conversation-goal-cards').children[0];
-  offline=true;await goals.button(gc,'Review proposal and outcome').handlers.click();assert(goals.button(gc,'Confirm in conversation').disabled);
+  offline=true;await goals.button(gc,'Read proposed change').handlers.click();assert(goals.button(gc,'Confirm in conversation').disabled);
   await gu.observe({binding:"bound",items:[{...proposal,current:false,can_confirm:false,phase:"partial"}],cursor:1,more:false});
   assert.equal(gu.attentionItems,undefined,'Work decisions are not published to For you');
   assert(goals.all(gc,v=>v.textContent.startsWith('Part of this instruction applied.')).length,'Expired selection cannot hide an acknowledged partial effect');
   const readonly=boot(0), ro=readonly.goals({readOnly:true,api:async()=>clone(proposal),onChoose:()=>{throw Error('Read-only client chose');}});
   await ro.observe({binding:"bound",items:[proposal],cursor:1,more:false});const readonlyCard=readonly.nodes.get('#conversation-goal-cards').children[0];
-  await readonly.button(readonlyCard,'Review proposal and outcome').handlers.click();assert(readonly.button(readonlyCard,'Confirm in conversation').hidden);
+  await readonly.button(readonlyCard,'Read proposed change').handlers.click();assert(readonly.button(readonlyCard,'Confirm in conversation').hidden);
   }
   {
     const f=boot(0), replies=[];let offline=false,hold;

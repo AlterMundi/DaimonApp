@@ -284,8 +284,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   if(standalone){
     assert.equal(document.querySelector("#conversation-visual summary").textContent,"","Mount must preserve the authored paperclip, not overwrite it with text");
     assert.equal(document.querySelector("#conversation-message").rows,1);
-    assert(document.querySelector("header .header-tools").children.includes(document.querySelector("#conversation-sound-toggle")));
-    assert(document.querySelector("#conversation-sound").children.includes(document.querySelector("#conversation-sound-controls")));
+    assert(!nodes.has("#conversation-sound-toggle"));
   }
   ui.authenticated();
   return {ui, copied,statusReads, nodes, requests, originals,replyTexts,partReads,humanTasks,streamedTransports,

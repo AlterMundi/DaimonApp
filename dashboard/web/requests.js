@@ -316,7 +316,7 @@ window.RequestControls = (() => {
       } finally {if (owned === generation) {reading = false; more.disabled = false;}}
     }
     more.addEventListener("click", () => refresh(cursor));
-    return {attentionItems:()=>[...cards.values()].filter(c=>c.meta&&!terminal(c.meta)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
+    return {attentionItems:()=>[...cards.values()].filter(c=>["pending","answering","unknown"].includes(c.meta?.state)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
   }
   return {mount};
 })();
@@ -331,21 +331,26 @@ window.GoalControls = (() => {
       acknowledged:"Instruction acknowledged. Work and reply may continue.",cancelled:"Proposal cancelled.",superseded:"Replaced by a later instruction.",rejected:"Not applied; review the current goal.",
       known_unsent:"Saved; not sent.",retained_unsent:"Saved; not sent after restart.",uncertain:"Outcome unconfirmed. Nothing will be repeated.",partial:"Part of this instruction applied. Check the retained outcome before continuing."})[view.phase] || "Control outcome unavailable.";
   function mount({api,getBinding,onChoose,onAvailable=()=>{},readOnly=false}) {
-    const section=document.querySelector("#conversation-goals"),list=document.querySelector("#conversation-goal-cards"),more=document.querySelector("#conversation-goals-more");
+    const section=document.querySelector("#conversation-goals"),list=document.querySelector("#conversation-goal-cards");
     const message=document.querySelector("#conversation-goal-state");
-    const cards=new Map();let generation=0,cursor=0,reading=false,probe=0;
+    const cards=new Map();let generation=0,probe=0;
     const owns=(card,owned)=>generation===owned && cards.get(card.id)===card;
-    function updateAvailability(){section.hidden=!cards.size && more.hidden;onAvailable(!section.hidden);}
-    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();cursor=0;reading=false;more.hidden=true;message.textContent="";updateAvailability();}
+    const awaitingConfirmation=view=>view.current===true && view.can_confirm===true && !closed(view.phase);
+    function updateAvailability(){
+      section.hidden=readOnly || ![...cards.values()].some(card=>awaitingConfirmation(card.view));
+      onAvailable(!section.hidden);
+    }
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();message.textContent="";updateAvailability();}
     function render(card,view){
       card.view=view;card.title.textContent=`${({start:"Start",resume:"Resume",pause:"Pause",clear:"Clear",edit:"Edit",replace:"Replace"})[view.action]||"Review"} · ${view.label}`;
       card.state.textContent=status(view);card.dismiss.hidden=!closed(view.phase);
-      card.confirm.disabled=card.cancel.disabled=readOnly || !view.can_confirm || !card.reviewed;
-      if(readOnly || !view.can_confirm){card.confirm.hidden=card.cancel.hidden=true;}
+      card.box.hidden=!awaitingConfirmation(view);
+      card.confirm.disabled=card.cancel.disabled=readOnly || !awaitingConfirmation(view) || !card.reviewed;
+      if(readOnly || !awaitingConfirmation(view)){card.confirm.hidden=card.cancel.hidden=true;}
       else {card.confirm.hidden=card.cancel.hidden=false;}
     }
     function choose(card,accept){
-      const v=card.view;if(readOnly || !v.can_confirm || !card.reviewed)return;
+      const v=card.view;if(readOnly || !awaitingConfirmation(v) || !card.reviewed)return;
       let message=accept?`Confirm goal proposal ${v.id}: ${v.action} ${v.label}.`:`Cancel goal proposal ${v.id} for ${v.label}.`;
       if(accept && v.plan.objective)message+=` Objective: ${v.plan.objective}`;
       if(accept && v.plan.token_budget)message+=` Token budget: ${v.plan.token_budget}.`;
@@ -354,7 +359,7 @@ window.GoalControls = (() => {
     }
     function create(view){
       const box=text("article","");box.className="reply request-card";
-      const title=text("h3",""),state=text("p",""),read=text("button","Review proposal and outcome");read.type="button";
+      const title=text("h3",""),state=text("p",""),read=text("button","Read proposed change");read.type="button";
       state.setAttribute("role","status");
       const body=text("div","");body.className="reply-text";body.hidden=true;
       const confirm=text("button","Confirm in conversation"),cancel=text("button","Decline in conversation"),dismiss=text("button","Dismiss");
@@ -381,7 +386,7 @@ window.GoalControls = (() => {
           if(v.result)card.body.append(text("p",v.result.followup_outcome?`Follow-up: ${v.result.followup_outcome}. ${v.result.error||""}`:v.result.error||v.result.meaning||"Outcome retained."));
           card.body.hidden=false;card.reviewed=true;
         }
-        render(card,{...card.view,...v});
+        render(card,{...card.view,...v});updateAvailability();
       }catch(e){if(owns(card,owned)){card.reviewed=false;card.confirm.disabled=card.cancel.disabled=true;card.note.textContent="Current proposal unavailable. Nothing changed; refresh before choosing.";}}
       finally{if(owns(card,owned))card.read.disabled=false;}
     }
@@ -390,15 +395,11 @@ window.GoalControls = (() => {
       message.textContent="";
       const seen=new Set();
       for(const v of page.items){seen.add(v.id);const card=cards.get(v.id)||create(v);render(card,{...card.view,...v});}
-      cursor=cursor?Math.min(cursor,page.cursor||cursor):page.cursor;more.hidden=!page.more;updateAvailability();
+      updateAvailability();
       const absent=[...cards.values()].filter(c=>!seen.has(c.id)&&!closed(c.view.phase));
       const selected=absent.length?Array.from({length:Math.min(8,absent.length)},(_,n)=>absent[(probe+n)%absent.length]):[];probe+=selected.length;
       await Promise.all(selected.map(c=>detail(c)));
     }
-    more.addEventListener("click",async()=>{if(reading)return;reading=true;more.disabled=true;const owned=generation;
-      try{const page=await api(`interaction/goals?before=${cursor}`);if(owned===generation)await observe(page);}
-      catch(_){if(owned===generation)message.textContent="Older controls unavailable. Nothing changed; refresh to reconnect.";}
-      finally{if(owned===generation){reading=false;more.disabled=false;}}});
     return {observe,reset};
   }
   return {mount};
@@ -529,7 +530,7 @@ window.HumanTaskControls = (() => {
       }catch(e){if(token===generation){for(const card of cards.values()){card.unavailable=true;controls(card);}section.hidden=false;state.textContent='Human actions unavailable. Refresh to reconnect.';if([401,403].includes(e.status))unauthorized(e);}}
       finally{if(token===generation){reading=false;more.disabled=false;}}
     }
-    more.addEventListener('click',()=>refresh(cursor));return {refresh,reset,observeInput,attentionItems:()=>[...cards.values()].filter(c=>c.view&&!terminal(c.view)).map(c=>({id:`task:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:c.view.title,box:c.box,open:()=>detail(c)}))};
+    more.addEventListener('click',()=>refresh(cursor));return {refresh,reset,observeInput,attentionItems:()=>[...cards.values()].filter(c=>['pending','answering','unknown'].includes(c.view?.state)).map(c=>({id:`task:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:c.view.title,box:c.box,open:()=>detail(c)}))};
   }
   return {mount};
 })();
