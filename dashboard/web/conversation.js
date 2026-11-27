@@ -2292,7 +2292,30 @@ window.Conversation = (() => {
       if(active!==selected || generation!==owned)return;
       stopFailedSpeech(selected,"Audio decoding stopped. Your text and playback position remain available.");
     }
-    async function startPlayback() {
+    const continuationLeadSeconds = 2;
+    const continuationProofMaxMs = 2400;
+    function verifyBufferedContinuation(selected) {
+      const prepared = prefetched;
+      if (!selected?.auto || selected.segmentEnded || selected.verifying || selected.streaming
+        || selected.source.kind === "integrator_live" || selected.source.kind === "native_question"
+        || selected.next == null || selected.end !== selected.next || !prepared?.buffered
+        || prepared.source.id !== selected.source.id || prepared.source.revision !== selected.source.revision
+        || prepared.offset !== selected.next
+        || prepared.continuationCheck?.generation === generation || audio.paused || audio.muted
+        || document.hidden || window.navigator?.onLine===false || voiceSuspended || captureBusy
+        || !enabled || !playbackAllowed() || sessionMuted(selected.source)) return;
+      const remaining = audio.duration - audio.currentTime;
+      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > continuationLeadSeconds) return;
+      prepared.continuationCheck = {
+        previous: selected,
+        generation,
+        binding,
+        result: part(prepared.source, prepared.offset)
+          .then(value=>({value,verifiedAt:performance.now()}),error=>({error}))
+      };
+    }
+
+    async function startPlayback(continuationCheck) {
       const selected = active;
       if (!selected || !blobUrl || !playbackAllowed() || !enabled || captureBusy
         || workspaceAudioScope!==undefined&&sessionMuted(selected.source)) return;
@@ -2303,9 +2326,16 @@ window.Conversation = (() => {
       // Unlock this element on a user gesture; source validation happens muted.
       try {
         const started = audio.play();
-        const check = part(selected.source, selected.offset);
-        let [,verified]=await Promise.all([started, check]);
+        const check = continuationCheck?.result || part(selected.source, selected.offset).then(value=>({value}));
+        const [,observed]=await Promise.all([started, check]);
         if (active !== selected || generation !== owned) return;
+        if(observed.error)throw observed.error;
+        let verified=observed.value;
+        if(continuationCheck && (continuationCheck.binding!==binding || document.hidden
+          || window.navigator?.onLine===false || performance.now()-observed.verifiedAt>continuationProofMaxMs)){
+          verified=await part(selected.source, selected.offset);
+          if(active!==selected || generation!==owned)return;
+        }
         async function validatePrefix(value){
           if(selected.end===undefined)return value;
           const chars=Array.from(value.text),count=selected.end-selected.offset;
@@ -2348,6 +2378,7 @@ window.Conversation = (() => {
         }catch{}
         followPlayback();
         prefetchNext(selected);
+        verifyBufferedContinuation(selected);
       } catch (e) {
         if (active !== selected || generation !== owned) return;
         selected.verifying = false;
@@ -2427,7 +2458,12 @@ window.Conversation = (() => {
         if(next===null)return;
         const prepare=offset=>{
           const controller=new AbortController(),source=selected.source,waiting={controller,source,offset};
-          waiting.result=requestAudio(source,offset,controller).then(value=>({value}),error=>({error}));return waiting;
+          waiting.result=requestAudio(source,offset,controller).then(value=>{
+            waiting.buffered=!!value.blob&&!value.streaming;
+            if(waiting===prefetched)verifyBufferedContinuation(active);
+            return {value};
+          },error=>({error}));
+          return waiting;
         };
         if(!prefetched)prefetched=prepare(next);
         // Only finalized WAV Live readings advertise the second exact boundary.
@@ -2462,6 +2498,10 @@ window.Conversation = (() => {
       if(captureBusy)return;
       const key=preparationKey(source,offset);
       const prepared=queuedPreparations.get(key) || (prefetched?.source?.id===source.id && prefetched.source.revision===source.revision && prefetched.offset===offset?prefetched:undefined);
+      const proof=prepared?.continuationCheck;
+      const continuationCheck=chain===active && chain?.segmentEnded && proof?.previous===chain
+        && proof.generation===generation && proof.binding===binding && !document.hidden
+        && window.navigator?.onLine!==false ? proof : undefined;
       const following=prepared?.following;
       if(following)prepared.controller.signal.removeEventListener("abort",prepared.abortFollowing);
       if(prepared===prefetched)prefetched=undefined;
@@ -2496,7 +2536,7 @@ window.Conversation = (() => {
         if(active!==selected)return;
         audio.src = blobUrl;
         toggle.disabled = false;
-        return await startPlayback();
+        return await startPlayback(continuationCheck);
       } catch (e) {
         if (active !== selected || generation !== owned) return;
         stop();voiceBusy=false;
@@ -2509,7 +2549,7 @@ window.Conversation = (() => {
     audio.addEventListener("error",()=>{void audioDecodeFailed();});
     audio.addEventListener("nativefocusloss",()=>pause("audio-focus"));
     audio.addEventListener("pause",()=>{if(active && !active.verifying && !requestAbort){playLabel("Play audio");playerStatus();presentState({playback:undefined});}});
-    audio.addEventListener("timeupdate",()=>followPlayback());
+    audio.addEventListener("timeupdate",()=>{followPlayback();verifyBufferedContinuation(active);});
     audio.addEventListener("playing",()=>{
       if(active && !active.verifying && !audio.muted){if(active.queued)timing?.source(active.source,true);playLabel("Pause audio");playerStatus();presentState({playback:"playing"});}
     });

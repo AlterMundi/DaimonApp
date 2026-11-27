@@ -250,8 +250,11 @@ They never send native Stop, interrupt a worker or discard its original reply.
 Hidden/deactivated views pause playback; return/reconnect refreshes sources without
 automatically resuming audio. A stopped or replaced selection owns a generation
 fence so late synthesis and stale source checks cannot control a newer selection.
-The next part is requested only after the selected audio actually ends and is
-validated again before playback. A changed source requires a new selection.
+During the last two seconds of ordinary buffered playback, the browser can
+verify the next part if it has already received and checked the complete audio.
+Automatic continuation uses that exact source check for up to 2.4 seconds after
+it returns. First play, explicit resume and an expired check require a fresh
+read. A changed source requires a new selection.
 
 Complete audio remains in the private server cache for an authorized reconnect;
 browser audio URLs are temporary and released on Stop/page exit. No browser

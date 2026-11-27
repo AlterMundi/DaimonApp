@@ -170,7 +170,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       items:selected.map(source), cursor:{delivery:0,native:selected.at(-1) || cursor},
       newest:{delivery:0,native:Math.max(0,...selected)}, more:numbers.length > 8};
   };
-  const context = vm.createContext({crypto:require("node:crypto").webcrypto,Date:optionsForFixture.confirmNow===undefined?Date:class extends Date{static now(){return optionsForFixture.confirmNow;}},window:{navigator:{mediaSession,clipboard:options.copyRich?{write:async items=>{copied.push(await (await items[0].data['text/plain']).text());}}:{writeText:async text=>{if(options.copyDenied)throw Error("Clipboard permission denied");copied.push(text);}}},ClipboardItem:options.copyRich?class{constructor(data){this.data=data;}}:undefined,localStorage:options.followStorage?{getItem:key=>options.followStorage.get(key)??null,setItem:(key,value)=>options.followStorage.set(key,value)}:undefined,addEventListener(name,fn) {subscribe(windowEvents,name,fn);}}, document,
+  const context = vm.createContext({performance:options.monotonic?{now:options.monotonic}:performance,crypto:require("node:crypto").webcrypto,Date:optionsForFixture.confirmNow===undefined?Date:class extends Date{static now(){return optionsForFixture.confirmNow;}},window:{navigator:{mediaSession,clipboard:options.copyRich?{write:async items=>{copied.push(await (await items[0].data['text/plain']).text());}}:{writeText:async text=>{if(options.copyDenied)throw Error("Clipboard permission denied");copied.push(text);}}},ClipboardItem:options.copyRich?class{constructor(data){this.data=data;}}:undefined,localStorage:options.followStorage?{getItem:key=>options.followStorage.get(key)??null,setItem:(key,value)=>options.followStorage.set(key,value)}:undefined,addEventListener(name,fn) {subscribe(windowEvents,name,fn);}}, document,
     location:{href:"https://fixture.invalid/?view=conversation"}, history:{replaceState() {}},
     URL, URLSearchParams, AbortController, setTimeout:timeout, clearTimeout:cancelTimeout, TextEncoder, Blob, crypto:options.immediateHash?{...require("node:crypto"),subtle:{digest:(_algorithm,bytes)=>Promise.resolve(require("node:crypto").createHash('sha256').update(new Uint8Array(bytes)).digest())}}:options.hashHold?{...require("node:crypto"),subtle:{digest:(algorithm,bytes)=>options.hashHold.active?new Promise(resolve=>options.hashHold.releases.push(()=>resolve(require("node:crypto").createHash('sha256').update(bytes).digest()))):require("node:crypto").subtle.digest(algorithm,bytes)}}:require("node:crypto"),
     fetch:(_route, options) => {
@@ -1162,6 +1162,27 @@ function boot(readOnly=false,standalone=false,options={}) {
   early.ended=true;const continuing=early.handlers.ended();assert.deepEqual(incremental.clock.pending(),[60]);incremental.clock.fire(60);await continuing;await until(()=>incremental.audioCalls.length===3&&!early.paused).catch(e=>{throw Error(JSON.stringify({calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-state').textContent,audioState:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120,420],'Continuation consumes its exact cached attempt and prepares only the next segment');
   incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(60);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
+  for (const expiry of [1000,3000]) {
+    let now=0;
+    const continued=boot(false,true,{clock:true,incremental:true,monotonic:()=>now});
+    continued.audio();continued.replyTexts.set('native:9','Measured sentence. '.repeat(80));await continued.ui.refresh();
+    continued.nodes.get('#conversation-voice-replies').handlers.click();continued.addReplies(1);await continued.ui.refresh();
+    const boundaryPlayer=continued.nodes.get('#conversation-audio');
+    await until(()=>continued.audioCalls.length===2 && !boundaryPlayer.paused && !boundaryPlayer.muted);
+    const reads=()=>continued.partReads.filter(read=>read.source==='native:9' && read.offset===120).length;
+    assert.equal(reads(),0);
+    boundaryPlayer.duration=4;boundaryPlayer.currentTime=2.5;
+    await until(()=>{boundaryPlayer.handlers.timeupdate();return reads()===1;});
+    assert(!boundaryPlayer.muted,'The first segment remains audible during the next exact read');
+    await new Promise(resolve=>setImmediate(resolve));
+    now=expiry;
+    boundaryPlayer.ended=true;const handoff=boundaryPlayer.handlers.ended();
+    continued.clock.fire(60);await handoff;
+    await until(()=>!boundaryPlayer.paused && !boundaryPlayer.muted);
+    assert.equal(reads(),expiry>2400?2:1,'Only a fresh verification from this handoff avoids a second read');
+    assert.equal(continued.audioCalls.filter(call=>call.offset===120).length,1);
+    continued.ui.stop();
+  }
   const firstBody={},heldSignals=[],heldFuture=new Map();
   const earlyAudio=boot(false,true,{clock:true,incremental:true,holdFirstBody:firstBody,preparationSignals:heldSignals,futureReleases:heldFuture});
   earlyAudio.audio();earlyAudio.replyTexts.set('native:9','Measured sentence. '.repeat(80));await earlyAudio.ui.refresh();
