@@ -333,34 +333,51 @@ pub(super) fn views_on(
     native: Option<i64>,
     all: bool,
 ) -> Result<Vec<Value>> {
-    goal_return_audiences_on(conn, human, None)?;
-    let mut q=conn.prepare("SELECT a.id,a.name,a.sha256,a.bytes,a.expires_at,a.source_session,a.source_local,(a.phase='ready' AND julianday(a.expires_at)>julianday('now') AND b.present=1),r.id,m.rowid FROM interaction_artifacts a JOIN interaction_artifact_audiences v ON v.artifact=a.id JOIN sessions e ON e.id=v.session_id JOIN sessions s ON s.id=a.source_session JOIN users u ON u.tg_user_id=a.human_id LEFT JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 JOIN interaction_native_messages m ON m.native_thread=a.native_thread AND m.native_turn=a.native_turn AND m.item_id=a.native_item LEFT JOIN interaction_results r ON r.native_thread=a.native_thread AND r.native_turn=a.native_turn AND r.item_id=a.native_item WHERE a.human_id=?1 AND v.human_id=?1 AND e.creator_user_id=?1 AND s.creator_user_id=?1 AND u.allowed=1 AND e.id=?2 AND (?3 OR r.id=?4 OR m.rowid=?5) ORDER BY a.rowid DESC LIMIT ?6")?;
+    let mut q = conn.prepare(&format!(
+        "SELECT a.id,a.name,a.sha256,a.bytes,a.expires_at,a.source_session,a.source_local,
+           (a.phase='ready' AND julianday(a.expires_at)>julianday('now') AND b.present=1),r.id,m.rowid
+         FROM interaction_artifacts a JOIN sessions e ON e.id=?2
+         JOIN sessions s ON s.id=a.source_session JOIN users u ON u.tg_user_id=a.human_id
+         LEFT JOIN interaction_artifact_blobs b ON b.sha256=a.sha256
+         JOIN interaction_native_messages m ON m.native_thread=a.native_thread
+           AND m.native_turn=a.native_turn AND m.item_id=a.native_item
+         LEFT JOIN interaction_results r ON r.native_thread=a.native_thread
+           AND r.native_turn=a.native_turn AND r.item_id=a.native_item
+         WHERE a.human_id=?1 AND e.creator_user_id=?1 AND s.creator_user_id=?1 AND u.allowed=1
+           AND (?3 OR r.id=?4 OR m.rowid=?5)
+           AND (EXISTS(SELECT 1 FROM interaction_artifact_audiences v
+                  WHERE v.artifact=a.id AND v.session_id=e.id AND v.human_id=?1)
+                OR EXISTS({GOAL_RETURN_AUDIENCE_SQL}
+                  AND candidate.id=a.id AND c.session_id=e.id))
+         ORDER BY a.rowid DESC LIMIT ?6"
+    ))?;
     Ok(q.query_map(params![human,entry,all,result,native,if all{128}else{20}],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"sha256":r.get::<_,Option<String>>(2)?,"bytes":r.get::<_,Option<i64>>(3)?,"expires_at":r.get::<_,String>(4)?,"source_session":r.get::<_,i64>(5)?,"source_local":r.get::<_,i64>(6)?,"available":r.get::<_,bool>(7)?,"result_id":r.get::<_,Option<String>>(8)?,"native_source":r.get::<_,Option<i64>>(9)?.map(|id|format!("native:{id}"))})))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// Goal collectors return canonical native items, without routed coverage
-/// envelopes. Reuse their acknowledged execution and frozen presentation input,
-/// never a later direct return selection. Read-time materialization also fixes
-/// already copied files and acknowledgment/copy races without replaying work.
-fn goal_return_audiences_on(conn: &Connection, human: i64, id: Option<&str>) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO interaction_artifact_audiences(artifact,session_id,human_id)
-         SELECT a.id,c.session_id,a.human_id FROM interaction_artifacts a
-         JOIN interaction_native_messages m ON m.local_turn=a.source_local
-           AND m.native_thread=a.native_thread AND m.native_turn=a.native_turn AND m.item_id=a.native_item
-         JOIN turns t ON t.id=m.local_turn AND t.native_thread_id=m.native_thread AND t.session_id=a.source_session
-         JOIN conversation_inputs c ON c.id=m.presentation_input AND c.human_id=a.human_id
-         JOIN sessions e ON e.id=c.session_id AND e.creator_user_id=a.human_id
-         JOIN sessions s ON s.id=a.source_session AND s.creator_user_id=a.human_id
-         JOIN users u ON u.tg_user_id=a.human_id AND u.allowed=1
-         WHERE a.human_id=?1 AND t.from_user_id=?1 AND (m.phase='final_answer' OR m.phase IS NULL)
-           AND (?2 IS NULL OR a.id=?2)
+/// Goal collectors use their acknowledged execution and frozen presentation
+/// input. Resolve the same audience for projection and for durable file access.
+const GOAL_RETURN_AUDIENCE_SQL: &str = "SELECT candidate.id,c.session_id,candidate.human_id FROM interaction_artifacts candidate
+         JOIN interaction_native_messages m ON m.local_turn=candidate.source_local
+           AND m.native_thread=candidate.native_thread AND m.native_turn=candidate.native_turn AND m.item_id=candidate.native_item
+         JOIN turns t ON t.id=m.local_turn AND t.native_thread_id=m.native_thread AND t.session_id=candidate.source_session
+         JOIN conversation_inputs c ON c.id=m.presentation_input AND c.human_id=candidate.human_id
+         JOIN sessions goal_entry ON goal_entry.id=c.session_id AND goal_entry.creator_user_id=candidate.human_id
+         JOIN sessions s ON s.id=candidate.source_session AND s.creator_user_id=candidate.human_id
+         JOIN users u ON u.tg_user_id=candidate.human_id AND u.allowed=1
+         WHERE candidate.human_id=?1 AND t.from_user_id=?1 AND (m.phase='final_answer' OR m.phase IS NULL)
            AND EXISTS(SELECT 1 FROM interaction_goal_controls g WHERE g.human_id=?1
-             AND g.entry_chat=e.chat_id AND g.entry_topic=e.thread_id AND g.phase='acknowledged'
+             AND g.entry_chat=goal_entry.chat_id AND g.entry_topic=goal_entry.thread_id AND g.phase='acknowledged'
              AND json_extract(g.doc,'$.worker_execution.local')=m.local_turn
              AND json_extract(g.doc,'$.worker_execution.native')=m.native_thread)
            AND NOT EXISTS(SELECT 1 FROM interaction_results r WHERE r.native_thread=m.native_thread
-             AND r.native_turn=m.native_turn AND r.item_id=m.item_id)",
+             AND r.native_turn=m.native_turn AND r.item_id=m.item_id)";
+
+fn goal_return_audiences_on(conn: &Connection, human: i64, id: Option<&str>) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO interaction_artifact_audiences(artifact,session_id,human_id)
+             {GOAL_RETURN_AUDIENCE_SQL} AND (?2 IS NULL OR candidate.id=?2)"
+        ),
         params![human, id],
     )?;
     Ok(())
@@ -672,6 +689,35 @@ mod tests {
                 [json!({"worker_execution":{"local":local,"native":"old-native"}}).to_string()],
             )
             .unwrap();
+        {
+            let reader = s.presentation_reader.lock().unwrap();
+            let source_row: i64 = reader
+                .query_row(
+                    "SELECT rowid FROM interaction_native_messages WHERE local_turn=?1 AND item_id='final'",
+                    [local],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                views_on(&reader, 100, entry_id, None, Some(source_row), false).unwrap()[0]["id"],
+                id
+            );
+            assert!(
+                views_on(&reader, 100, other_id, None, Some(source_row), false)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                reader
+                    .query_row(
+                        "SELECT count(*) FROM interaction_artifact_audiences WHERE artifact=?1 AND session_id=?2",
+                        params![id, entry_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+        }
         assert_eq!(s.artifact_get(100, entry, &id).unwrap().id, id);
         assert_eq!(
             s.artifact_list(100, entry).unwrap()["jobs"][0]["phase"],

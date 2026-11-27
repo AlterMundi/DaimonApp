@@ -131,6 +131,7 @@ pub const INSTANCE_LOCK_LOST_ERROR: &str = "Telecodex database instance lock was
 
 pub struct Store {
     conn: Mutex<Connection>,
+    presentation_reader: Mutex<Connection>,
     instance_id: String,
 }
 
@@ -223,11 +224,16 @@ impl Store {
             .with_context(|| format!("failed to open sqlite database {}", db_path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        let presentation_reader =
+            Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .context("Could not open the canonical presentation reader")?;
+        presentation_reader.busy_timeout(std::time::Duration::from_secs(2))?;
         let instance_id = Uuid::now_v7().to_string();
         let stale_cutoff = stale_instance_cutoff();
         Self::claim_instance_lock(&mut conn, &instance_id, &stale_cutoff, external_bot_id)?;
         let store = Self {
             conn: Mutex::new(conn),
+            presentation_reader: Mutex::new(presentation_reader),
             instance_id,
         };
         store.init_schema()?;

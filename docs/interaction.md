@@ -1436,6 +1436,13 @@ rather than injecting it as new human speech. Native worker progress snapshots
 its web source at first observation. Duplicate native observations retain that
 original scope, and old progress without a recorded web source is not imported.
 
+Exact saved text parts and the source checks for ordinary audio resolve through
+a read-only SQLite connection, using one committed snapshot for each part.
+An in-progress journal write can finish independently of these reads. The
+audio route still checks the exact source again before releasing the waveform.
+Visibility, revision and offset checks use the same rules as the canonical
+timeline.
+
 Compact worker updates offer **Reply to this update** when the receiving native
 backend advertises `can_reply_updates`. The selection freezes that source ID and
 revision even when a later update replaces the preview. Native worker progress

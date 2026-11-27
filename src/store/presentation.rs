@@ -802,9 +802,14 @@ impl Store {
         revision: &str,
         offset: usize,
     ) -> Result<Value> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
+        // Resolve the entry, source and visibility in one committed snapshot.
+        let mut reader = self
+            .presentation_reader
+            .lock()
+            .expect("presentation reader mutex poisoned");
+        let snapshot = reader.transaction()?;
         let mut source =
-            source_on(&conn, human, entry, id)?.context("Presentation source unavailable")?;
+            source_on(&snapshot, human, entry, id)?.context("Presentation source unavailable")?;
         if source["revision"].as_str() != Some(revision) {
             bail!("Presentation source revision changed");
         }
@@ -821,6 +826,7 @@ impl Store {
         source["offset"] = json!(offset);
         source["next_offset"] = if end < chars { json!(end) } else { Value::Null };
         source["schema"] = json!("telecodex.presentation-part/v1");
+        snapshot.commit()?;
         Ok(source)
     }
 }
@@ -1860,6 +1866,43 @@ mod tests {
             source_on(&conn, 100, entry, &format!("native:{direct}"))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn canonical_part_reads_committed_state_while_writer_is_held() {
+        let (_file, store, entry, _, _, _) = setup();
+        let list = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap();
+        let source = &list["items"][0];
+        let id = source["id"].as_str().unwrap();
+        let revision = source["revision"].as_str().unwrap();
+
+        std::thread::scope(|scope| {
+            let mut writer = store.conn.lock().unwrap();
+            let changing = writer.transaction().unwrap();
+            changing
+                .execute("UPDATE users SET allowed=0 WHERE tg_user_id=100", [])
+                .unwrap();
+
+            let (result, receive) = std::sync::mpsc::sync_channel(1);
+            let store_ref = &store;
+            scope.spawn(move || {
+                result
+                    .send(store_ref.interaction_presentation_part(100, entry, id, revision, 0))
+                    .unwrap();
+            });
+
+            let before_commit = receive.recv_timeout(std::time::Duration::from_secs(2));
+            changing.commit().unwrap();
+            drop(writer);
+            assert_eq!(before_commit.unwrap().unwrap()["revision"], revision);
+        });
+        assert!(
+            store
+                .interaction_presentation_part(100, entry, id, revision, 0)
+                .is_err()
         );
     }
 
