@@ -971,6 +971,7 @@ pub(super) async fn run_routed_portable(
     {
         super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
     }
+    super::topic_publications::wake(app.shared.clone(), input.target);
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

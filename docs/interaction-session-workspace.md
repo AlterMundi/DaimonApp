@@ -131,8 +131,9 @@ For an active portable topic, the selected Conversation reads completed human
 exchanges from the existing Gateway journal, scoped to the actual harness,
 owner and current logical generation. It includes ordinary Claude replies that
 were also returned to the general conversation. Portable Raw currently exposes
-the same exchanges as the ordinary view. Internal dependency inputs and results
-retain their frozen audience in either mode.
+the same exchanges as the ordinary view. An explicitly selected work report appears as an assistant message with no
+synthetic user message. Other dependency inputs and results retain their frozen
+audience in either mode.
 
 ## Qualification and receiving
 

@@ -1138,6 +1138,7 @@ impl Store {
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
             [input.target_session],
         )?;
+        super::topic_publications::portable_report_on(&tx, input, local, &deliveries)?;
         tx.commit()?;
         Ok(deliveries)
     }

@@ -200,7 +200,8 @@ class PortableHistory(unittest.TestCase):
                 CREATE TABLE interaction_instructions(sequence, input_id, doc, session_id, phase,id);
                 CREATE TABLE interaction_sources(id, human_id, doc,channel,event_id);
                 CREATE TABLE interaction_session_authors(input_id);
-                CREATE TABLE interaction_results(local_turn,native_thread,native_turn,item_id,body);
+                CREATE TABLE interaction_results(id,local_turn,native_thread,native_turn,item_id,body);
+                CREATE TABLE topic_publications(id,kind,source,session_id,human_id,local_turn);
                 CREATE TABLE turns(id, session_id, from_user_id, execution_harness,
                   execution_generation, status, assistant_text, started_at, completed_at, native_thread_id);
                 INSERT INTO users VALUES(10,1);
@@ -215,8 +216,8 @@ class PortableHistory(unittest.TestCase):
                            (sequence,sequence,json.dumps({'local_turn':sequence,'native_turn':f'turn{sequence}'}),f'instruction{sequence}'))
                 db.execute("INSERT INTO turns VALUES(?,20,10,'claude',?,?,?,'start','finish','thread')",
                            (sequence,generation,status,answer))
-                db.execute("INSERT INTO interaction_results VALUES(?,'thread',?,'final',?)",
-                           (sequence,f'turn{sequence}',answer))
+                db.execute("INSERT INTO interaction_results VALUES(?,?,'thread',?,'final',?)",
+                           (sequence,sequence,f'turn{sequence}',answer))
             exchange(1,'First')
             exchange(2,'Private result')
             exchange(3,'Old generation','old')
@@ -234,6 +235,10 @@ class PortableHistory(unittest.TestCase):
             revision=page['revision']
             self.assertEqual(read_portable(db,20,10,'claude',after=end,revision=revision)['items'],[])
             self.assertEqual(read_portable(db,20,10,'claude',before=10,revision=revision)['after'],4)
+            db.execute("INSERT INTO topic_publications VALUES(1,'portable_report',2,20,10,2)")
+            report=read_portable(db,20,10,'claude')
+            self.assertEqual([item['text'] for item in report['items']],
+                             ['Human 1','First','Private result','Human 5','Last'])
             exchange(6,'<daimon-result>{"requests":[],"covered":[]}</daimon-result>')
             empty=read_portable(db,20,10,'claude',after=end,revision=revision)
             self.assertEqual([v['text'] for v in empty['items']],['Human 6'])
