@@ -2247,6 +2247,8 @@ window.Conversation = (() => {
       $("#conversation-refresh").disabled = true;
       $("#conversation-older").disabled = true;
       try {
+        const previousBinding=binding;
+        if(previousBinding)void workspace?.refresh(previousBinding);
         if (!initialized) {
           newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
           await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before");
@@ -2264,7 +2266,7 @@ window.Conversation = (() => {
         // Saved input receipts and transcripts have their own bounded reader.
         // Sound, questions and presentation must not hold their readback.
         saved ||= refreshSavedInputs();
-        void workspace?.refresh(binding);
+        if(binding!==previousBinding)void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input
         // history, Telegram and inspector reads do not gate useful playback.
         const questionsCurrent=readOnly || await requestControls.refresh();

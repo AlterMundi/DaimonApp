@@ -71,6 +71,7 @@ function boot(readOnly=false,standalone=false,options={}) {
       return budgetControlReceipts.get(body.nonce);
     }
     if(pageFailure && url.pathname==="/interaction"){const value=typeof pageFailure==='string'?{name:pageFailure}:pageFailure;pageFailure=false;throw Object.assign(Error("Synthetic network suspension"),value);}
+    if(url.pathname==="/interaction" && options.beforeTimeline)await options.beforeTimeline();
     if(url.pathname==='/interaction/telegram-inputs'){
       if(options.telegramDenied)throw Object.assign(Error('Telegram observation denied'),{status:403});
       const before=Number(url.searchParams.get('before')),after=url.searchParams.get('direction')==='after';
@@ -2420,6 +2421,28 @@ function boot(readOnly=false,standalone=false,options={}) {
   workspace.valid=false;draft.value='Must not fall back to integration';const count=fixture.originals.size;
   await form.requestSubmit();assert.equal(fixture.originals.size,count);assert.match(fixture.nodes.get('#conversation-send-state').textContent,/Select your session again/);
   fixture.ui.stop();console.log('Workspace Conversation input: frozen text/voice targets across attachment preparation and stale-pin refusal passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// A slow general timeline must not block the selected-session reader.
+(async()=>{
+  const started=[];
+  const options={workspace:{refresh:binding=>started.push(binding),reset(){},syncAudio(){},pinState(){},capture(){}}};
+  const f=boot(false,true,options);
+  await f.ui.refresh();
+  assert.deepEqual(started,['fixture']);
+  let release,entered;
+  const observing=new Promise(resolve=>{entered=resolve;});
+  options.beforeTimeline=()=>{
+    delete options.beforeTimeline;
+    entered();
+    return new Promise(resolve=>{release=resolve;});
+  };
+  const pending=f.ui.refresh();
+  await observing;
+  assert.deepEqual(started,['fixture','fixture'],'Workspace refresh begins even while the general timeline is blocked');
+  release();await pending;
+  assert.equal(started.length,2,'Each refresh reads the same binding once');
+  f.ui.stop();
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
 // Matrix originals and own response intents remain attributed, refreshable and contextual.
