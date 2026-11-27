@@ -230,6 +230,21 @@ try:
     frame.wait_for_function("document.querySelector('#conversation-message').value==='' && !document.querySelector('#conversation-send').disabled")
     assert frame.evaluate('fixtureInputs.length')==3
     prior_messages=page.evaluate('messages.length');frame.locator('#conversation-files').set_input_files({'name':'voice-notes.txt','mimeType':'text/plain','buffer':b'synthetic voice attachment'});frame.wait_for_function("document.querySelector('#conversation-files-state').textContent.includes('selected')");frame.locator('#conversation-talk').click();frame.wait_for_function('mediaRequests===1')
+    discard=frame.get_by_role('button',name='Discard recording',exact=True)
+    discard.wait_for()
+    frame.locator('#conversation-runtime').evaluate("(label)=>{label.hidden=false;label.textContent='Codex · gpt-6.2-sol · medium';}")
+    for replying in (False,True):
+     frame.locator('#conversation-focus').evaluate('(focus,replying)=>{focus.hidden=!replying;}',replying)
+     cross=discard.bounding_box()
+     send=frame.locator('#conversation-send').bounding_box()
+     attachment=frame.locator('#conversation-visual > summary').bounding_box()
+     runtime=frame.locator('#conversation-runtime').bounding_box()
+     gap=send['x']-cross['x']-cross['width']
+     assert cross['width']==44 and cross['height']==44 and 10<=gap<=20,(cross,send,gap)
+     assert abs(cross['y']+cross['height']/2-send['y']-send['height']/2)<2,(cross,send)
+     assert attachment['x']+attachment['width']<=cross['x'],(cross,attachment)
+     assert runtime and runtime['x']+runtime['width']<=cross['x'],(cross,runtime)
+    frame.locator('#conversation-focus').evaluate('(focus)=>{focus.hidden=true;}')
     frame.locator('#conversation-send').click();page.wait_for_function("messages.some(m=>m.type==='status'&&m.phase==='accepted'&&m.id===messages.filter(p=>p.type==='prepare').at(-1).id)",timeout=5000)
     assert posts and posts[-1]['files'][-1]['name']=='holodeck-situation.json'
     assert page.evaluate("messages.filter(m=>m.type==='prepare').at(-1).id")==posts[-1]['id']
