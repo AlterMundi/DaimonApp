@@ -168,7 +168,7 @@ impl Store {
         if !super::workflows::native_visible_on(&conn, local)? {
             return Ok(false);
         }
-        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN native_collections n ON n.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)",params![local,session,human,thread],|r|r.get(0))?;
+        let valid:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM turns t JOIN native_collections n ON n.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL AND NOT ({ONLY_INTERNAL_HANDOFF}))"),params![local,session,human,thread],|r|r.get(0))?;
         if !valid {
             return Ok(false);
         }
@@ -206,8 +206,8 @@ impl Store {
         if !super::workflows::native_visible_on(&conn, local)? {
             return Ok(false);
         }
-        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)
-            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages WHERE native_thread=?4 AND native_turn=?5 AND item_id=?6)",params![local,session,human,thread,physical,item],|r|r.get(0))?;
+        let valid:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL AND NOT ({ONLY_INTERNAL_HANDOFF}))
+            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages WHERE native_thread=?4 AND native_turn=?5 AND item_id=?6)"),params![local,session,human,thread,physical,item],|r|r.get(0))?;
         if !valid {
             return Ok(false);
         }
