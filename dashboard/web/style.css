@@ -570,11 +570,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .artifact-file { display:flex; align-items:center; flex-wrap:wrap; gap:.55rem; margin:.4rem 0; min-width:0; }
 .artifact-file button { max-width:100%; overflow-wrap:anywhere; text-align:left; }
 #conversation-audio-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; flex-shrink:0; }
-#conversation-sound summary { display:flex; flex-wrap:wrap; gap:8px; }
-#conversation-sound-status { color:var(--muted); font-size:14px; }
-#conversation-sound label { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-#conversation-sound-score { padding-inline-start:1.4em; overflow-wrap:anywhere; }
-
 .standalone-conversation { background:radial-gradient(ellipse at 50% 0%,color-mix(in srgb,var(--accent) 7%,var(--bg)),var(--bg) 65%); background-color:var(--bg); }
 .standalone-conversation main { max-width:960px; gap:8px; padding-inline:24px; }
 .standalone-conversation header:not(.voice-studio-intro) { border:0; padding:8px 0; margin:0; }
@@ -621,7 +616,7 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation-audio-tools button { padding-inline:14px; font-size:14px; min-height:44px; }
 .standalone-conversation #conversation-voice #conversation-talk { border-radius:100px; min-width:108px; min-height:52px; color:var(--accent); border-color:var(--accent); }
 .standalone-conversation #conversation-talk[aria-pressed="true"] { background:var(--accent); color:var(--bg); box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 14%,transparent); }
-.standalone-conversation #conversation-sound-feedback,.standalone-conversation #conversation-voice-state { flex-basis:100%; margin:0; font-size:14px; overflow-wrap:anywhere; }
+.standalone-conversation #conversation-voice-state { flex-basis:100%; margin:0; font-size:14px; overflow-wrap:anywhere; }
 .standalone-conversation #conversation-send-state:empty,.standalone-conversation #conversation-voice-state:empty { display:none; }
 .standalone-conversation #conversation-player:not([hidden]) { grid-row:6; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:4px 8px; padding-top:4px; min-height:max-content; max-height:none; overflow:visible; }
 .standalone-conversation #conversation-player > .conversation-tools { display:contents; }
@@ -650,9 +645,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 @media(prefers-reduced-motion:reduce) { #conversation-companion pre { animation:none; } }
 
 /* Listening controls belong to the independent conversation, not diagnostics. */
-#conversation-sound-controls { display:flex; align-items:center; justify-content:center; gap:12px; flex-basis:100%; color:var(--muted); font-size:14px; }
-#conversation-sound-controls input { width:min(180px,45vw); min-height:36px; accent-color:var(--accent); }
-
 /* Worker commentary is inspectable below; the chat keeps one latest update per session. */
 .standalone-conversation #conversation-replies { overflow:visible; min-height:0; }
 .standalone-conversation #conversation-replies > section:has(#conversation-answers) { display:none; }
@@ -788,9 +780,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 .standalone-conversation #conversation:has(#conversation-visual[open]) { overflow:visible; }
 
 /* Beacon belongs to the fixed presence; its detailed controls stay under the hood. */
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { width:44px; height:44px; min-width:44px; padding:6px; font-size:0; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before { content:"≈"; font-size:24px; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"] { color:var(--bg); background:var(--accent); }
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto auto 44px; }
 .standalone-conversation #conversation-audio-tools { height:auto; }
 .standalone-conversation #conversation-audio-tools:has(#conversation-player[hidden]) { display:none; }
@@ -807,11 +796,6 @@ main > #conversation { overflow: auto; overscroll-behavior: contain; }
 #conversation-compose #conversation-voice-discard { position:relative; display:grid; place-items:center; font-size:0; border-radius:14px; border-width:1px; background:color-mix(in srgb,var(--danger) 12%,var(--panel)); color:var(--danger); }
 #conversation-compose #conversation-voice-discard::before,#conversation-compose #conversation-voice-discard::after { content:""; position:absolute; left:50%; top:50%; width:16px; height:2px; border-radius:2px; background:currentColor; transform:translate(-50%,-50%) rotate(45deg); }
 #conversation-compose #conversation-voice-discard::after { transform:translate(-50%,-50%) rotate(-45deg); }
-
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle { display:grid; place-items:center; padding:0; border:0; background:transparent; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--line); border-radius:50%; font-size:17px; }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"] { background:transparent; color:var(--bg); }
-.standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"]::before { background:var(--accent); }
 
 /* Reply playback sits beside the composer; its controls never create a bottom row. */
 .standalone-conversation main > #conversation { grid-template-rows:auto minmax(0,1fr) auto 44px; }
@@ -1221,7 +1205,7 @@ html[data-style-policy="authored"] .standalone-conversation.conversation-header-
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools {position:absolute;right:0;top:46px;display:flex;gap:4px;width:auto;max-width:148px;padding:0;z-index:1;align-self:start;flex-wrap:wrap;}
 html[data-style-policy="authored"] .standalone-conversation .apps-return {color:var(--ink);min-height:44px;display:grid;place-items:center;border:0;border-radius:0;font-size:0;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .apps-launcher {position:absolute;right:0;top:-46px;}
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) :is(#conversation-settings-open,#conversation-sound-toggle,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
+html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) :is(#conversation-settings-open,.pending-local-all) {border-color:transparent;background:transparent;width:44px;min-width:44px;height:44px;padding:8px;}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-account {position:absolute;right:0;bottom:4px;max-width:calc(100% - 158px);font-size:14px;}
 html[data-style-policy="authored"] .standalone-conversation .heartbeat-heart {font-size:16px;min-width:28px;}
 html[data-style-policy="authored"] .standalone-conversation #conversation-dock:has(#conversation-player:not([hidden])) {grid-template-columns:36px minmax(0,1fr);gap:4px;}
@@ -1374,11 +1358,6 @@ html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbea
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::before {background:#bf906799;}
 html[data-style-policy="authored"] .standalone-conversation :is(dialog,.heartbeat-menu,#conversation-attachment-sheet,.session-rail,.composer-notice-panel,.pending-panel,#operations[data-conversation-overlay="true"][open],.native-share-offer)::after {inset:1px;background:linear-gradient(145deg,#1c2d3b,#0b1722);box-shadow:inset 0 0 0 5px #0a141d66,inset 0 0 0 6px #77d4e019;}
 html[data-style-policy="authored"] .control-icon {stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;fill:none;}
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle::before {
- content:"";border:0;border-radius:0;width:24px;height:24px;background:currentColor;
- mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 8c3-8 6 8 9 0s6 8 9 0M3 16c3-8 6 8 9 0s6 8 9 0'/%3E%3C/g%3E%3C/svg%3E") center/contain no-repeat;
-}
-html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) #conversation-sound-toggle[aria-pressed="true"]::before {background:var(--accent);}
 html[data-style-policy="authored"] .standalone-conversation header:not(.voice-studio-intro) .header-tools .pending-count {font-size:14px;}
 
 /* One destination/notice row above a full-width writing line. */
@@ -1502,3 +1481,4 @@ html body.conversation-surface #feedback:empty {display:none;}
 #conversation-history-menu:has(button:not([hidden])) { display:block; }
 #conversation-history-menu summary { cursor:pointer; color:var(--muted); }
 #conversation-history-menu:not([open]) > :not(summary) { display:none; }
+.pending-panel :is(#conversation-request-cards,#conversation-task-cards,#internal-request-cards,#internal-task-cards) { display:none; }

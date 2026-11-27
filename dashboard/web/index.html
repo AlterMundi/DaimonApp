@@ -21,7 +21,6 @@
     <script src="assets/companion.js" defer></script>
     <script src="assets/voice-studio.js" defer></script>
     <script src="assets/avatar-workshop.js" defer></script>
-    <script src="assets/sonic.js" defer></script>
     <script src="assets/pcm-speech.js" defer></script>
     <script src="assets/speech-stream.js" defer></script>
     <script src="assets/live-speech.js" defer></script>
@@ -50,7 +49,7 @@
           <div class="identity-title"><h1>Sessions</h1>
           <div id="client-build" hidden></div></div>
         </div>
-        <div class="header-tools"><span class="apps-launcher"><a class="apps-return" href="https://apps.dmn.homes/" aria-label="Back to Apps"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Apps</span></a><button id="conversation-alerts-toggle" class="apps-alerts" type="button" hidden aria-label="Open alerts" title="Open alerts" aria-controls="operations" aria-expanded="false"></button></span><span id="provider">Telecodex</span><button id="conversation-settings-open" type="button" hidden aria-label="Conversation settings" aria-controls="conversation-settings" title="Conversation settings"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--bg)"/><circle cx="16" cy="12" r="2" fill="var(--bg)"/><circle cx="10" cy="18" r="2" fill="var(--bg)"/></svg></button><button id="conversation-goals-open" type="button" hidden>Work decisions</button>
+        <div class="header-tools"><span class="apps-launcher"><a class="apps-return" href="https://apps.dmn.homes/" aria-label="Back to Apps"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Apps</span></a><button id="conversation-alerts-toggle" class="apps-alerts" type="button" hidden aria-label="Open alerts" title="Open alerts" aria-controls="operations" aria-expanded="false"></button></span><span id="provider">Telecodex</span><button id="conversation-settings-open" type="button" hidden aria-label="Conversation settings" aria-controls="conversation-settings" title="Conversation settings"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--bg)"/><circle cx="16" cy="12" r="2" fill="var(--bg)"/><circle cx="10" cy="18" r="2" fill="var(--bg)"/></svg></button><button id="conversation-goals-open" type="button" hidden>Review goal change</button>
         </div>
       </header>
       <div id="feedback" role="status" aria-live="polite">
@@ -134,9 +133,6 @@
 <button id="conversation-send" type="submit" disabled>Send</button></div>
         </form>
         <div id="conversation-audio-tools">
-        <div class="conversation-tools"><button id="conversation-sound-toggle" type="button" aria-pressed="false">≈ Beacon</button></div>
-        <div id="conversation-sound-controls" hidden><label for="conversation-sound-volume">Beacon volume</label><input id="conversation-sound-volume" type="range" min="0" max="1" step="0.05" value="0.3"></div>
-        <p id="conversation-sound-feedback" class="note" role="status" aria-live="polite" hidden></p>
 
         <section id="conversation-player" aria-label="Reply audio">
           <div class="conversation-tools"><strong id="conversation-playing">Audio</strong><button id="conversation-voice-replies" class="voice-output-toggle" type="button" data-voice-state="off" aria-pressed="false" aria-label="Enable spoken replies" title="Enable spoken replies"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 9h4l5-4v14l-5-4H3z"/><path class="voice-waves" d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="voice-muted" d="m17 10 4 4m0-4-4 4"/><path class="voice-paused" d="M17 9v6m4-6v6"/></svg></button></div>
@@ -150,7 +146,6 @@
           <div class="conversation-tools"><h2 id="conversation-settings-title">Conversation settings</h2><form method="dialog"><button type="submit">Close</button></form></div>
           <div id="conversation-voice-choice" class="conversation-tools" hidden><label for="conversation-voice-engine">Avatar</label><select id="conversation-voice-engine" aria-label="Avatar voice provider"><option value="provider">Current voice</option><option value="conversation" disabled>Conversation voice</option><option value="codex">OpenAI · Codex voice</option><option value="gpt-live">OpenAI · GPT-Live comparison</option><option value="gpt-live-native" disabled>OpenAI · GPT-Live + CompAII</option></select></div>
           <div id="conversation-services-choice" class="conversation-tools" hidden><label for="conversation-services-engine">Conversation services</label><select id="conversation-services-engine"><option value="current">Current voice</option><option value="openai">OpenAI only · hear and speak</option></select><span class="note">OpenAI uses the API credit balance.</span></div>
-          <div class="conversation-tools" id="conversation-sound"><span id="conversation-sound-status" hidden>Off</span></div>
         <details id="conversation-coordination" hidden><summary>Coordination budgets</summary>
           <p class="note">Limits apply to explicitly funded coordination. Ordinary conversation stays separate.</p>
           <button id="conversation-coordination-refresh" type="button">Refresh budgets</button>
@@ -158,13 +153,12 @@
           <ol id="conversation-coordination-episodes" class="session-status-list"></ol>
         </details>
         </dialog>
-        <dialog id="conversation-goal-review" aria-label="Work decisions">
+        <dialog id="conversation-goal-review" aria-label="Goal change">
           <form method="dialog"><button type="submit">Close</button></form>
         <section id="conversation-goals" hidden aria-labelledby="conversation-goals-title">
-          <h2 id="conversation-goals-title">Decisions about work</h2>
+          <h2 id="conversation-goals-title">Changes awaiting your confirmation</h2>
           <p id="conversation-goal-state" class="note" role="status"></p>
           <div id="conversation-goal-cards"></div>
-          <button id="conversation-goals-more" type="button" hidden>More retained controls</button>
         </section>
         </dialog>
         <div id="conversation-history">
