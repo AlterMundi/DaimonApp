@@ -25,7 +25,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const reference=(n,revision='a')=>({source:`session:${n}`,revision:revision.repeat(64)});
   const observedAt=Date.now()/1000;
   const row=(id,title,n)=>({id,title,audio_key:`100:${n}`,destination:reference(n),latest_reply:{...reference(n),source:`session:${n}/42`},fresh:true,execution:'idle',goal_state:'absent',last_activity_at:observedAt});
-  let sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,resultRevision,now=Date.now();
+  let pendingItems, completedItems, sessions=[row('b','Busy work',7),row('a','Earlier work',8),{...row('entry','Conversation',1),is_entry:true,destination:null,latest_reply:null}],deny=false,held,truncated=false,failHistory=false,failWorkspace=false,historyFailures=[],scanPage=false,resultRevision,now=Date.now();
   const timers=new Map();let timerId=0;const noticePanel=noticeHost?new Element('aside'):undefined;if(noticePanel)root.append(noticePanel);
   const reads=[],targets=[],replies=[],focuses=[],audioCalls=[],mutes=new Set(),solos=new Set();
   async function api(route){
@@ -37,7 +37,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     if(held){const hold=held;held=undefined;return hold;}
     if(historyFailures.length)throw Object.assign(Error('Synthetic replaced history'),{status:historyFailures.shift()});
     if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
-    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage};
+    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:completedItems||[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage,pending_items:pendingItems,links_input_ids:true};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
   const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
@@ -49,7 +49,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   const rows=()=>all().filter(n=>n.className==='session-row');
   return {storage,root,timeline,control,noticePanel,reads,targets,replies,focuses,audioCalls,rows,all,byText,byLabel,reference,
     failHistory:value=>{failHistory=value;},failOnce:status=>historyFailures.push(status),advance:ms=>{now+=ms;for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.fn();}},scanPage:value=>{scanPage=value;},failWorkspace:value=>{failWorkspace=value;},setSessions:value=>{sessions=value;},setTruncated:value=>{truncated=value;},getSessions:()=>sessions,deny:()=>{deny=true;},
-    resultHistory:value=>{resultRevision=value;},
+    resultHistory:value=>{resultRevision=value;},pending:value=>{pendingItems=value;},completed:value=>{completedItems=value;},
     showResult(visible=true){observer.callback([...observer.nodes].map(target=>({
       target,isIntersecting:visible,intersectionRatio:visible?1:0
     })));},
@@ -77,6 +77,32 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   quiet.failWorkspace(true);await quiet.control.refresh('binding');quiet.control.reset();quiet.advance(9000);
   assert.equal(quiet.byLabel('Retry session status').hidden,true,'Old binding notices cannot reappear after reset');
 
+  const saved=boot();await saved.control.refresh('binding');
+  saved.byText('Busy work').click();await tick();
+  const inputId='a1111111-1111-4111-8111-111111111111';
+  const original={kind:'message',role:'user',id:'pending-original',input_id:inputId,text:'Please start the selected work',pending:true};
+  const start=saved.reads.length;
+  saved.control.previewSubmission(saved.reference(7,'b'),inputId,original.text);
+  assert.equal(saved.all().filter(node=>node.dataset.inputId===inputId).length,0,'Another revision cannot acquire the local text');
+  saved.control.previewSubmission(saved.reference(7),inputId,original.text);
+  assert.equal(saved.reads.length,start,'Local display precedes the network');
+  const visible=()=>saved.all().filter(node=>node.dataset.inputId===inputId);
+  assert.equal(visible().length,1);
+  assert.match(visible()[0].textContent,/Sending/);
+  saved.control.settlePreview(inputId,'Message saved.');
+  assert.match(visible()[0].textContent,/Message saved/);
+  saved.pending([original]);
+  saved.control.observeSubmission(saved.reference(7,'b'));await tick();
+  assert.equal(saved.reads.length,start,'A change to the selected revision fences the immediate refresh');
+  saved.control.observeSubmission(saved.reference(7));await tick();
+  assert.equal(saved.reads.length,start+1,'Admission refreshes only the selected history');
+  assert.match(saved.reads.at(-1),/^interaction\/sessions\/b\?/);
+  assert.equal(visible().length,1);
+  assert.equal(visible()[0].dataset.event,'pending-original','The retained input replaces the local preview');
+  saved.pending([]);saved.completed([{...original,id:'completed-original',pending:false,position:150,next_position:160}]);
+  saved.control.observeSubmission(saved.reference(7));await tick();
+  assert.equal(visible().length,1);
+  assert.equal(visible()[0].dataset.event,'completed-original','The final history supersedes the pending input');
   const general=boot({daimonName:'CompAII'}),entry=general.getSessions().find(row=>row.is_entry);
   entry.title='Daimon Interaction';entry.last_activity_at=1;
   general.getSessions()[0].execution='working';await general.control.refresh('binding');
