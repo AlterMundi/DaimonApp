@@ -156,7 +156,6 @@ window.Conversation = (() => {
       const build=$("#client-build"),name=$("#conversation-companion .companion-name");
       if(build && name)name.before(build);
       if(tools && beacon){tools.insertBefore(beacon,tools.firstChild);beacon.title="Session sound · Beacon";}
-      $("#conversation-sound").append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
       const compose = $("#conversation-compose"), playback = $("#conversation-audio-tools");
       const dock = node("div"); dock.id = "conversation-dock";
       const bar = node("div"); bar.id = "conversation-compose-bar";
@@ -165,6 +164,7 @@ window.Conversation = (() => {
     }
     const avatarWorkshop=standalone&&!readOnly?window.AvatarWorkshopUI?.mount({api,headers}):undefined;
     const companion=standalone?window.ConversationCompanion?.mount({onArtisticRest:rest=>avatarWorkshop?.artisticRest(rest)}):undefined;
+    $("#conversation-sound")?.append($("#conversation-sound-controls"),$("#conversation-sound-feedback"));
     const sound=window.ConversationSound?.mount({api,unauthorized:failed,getAuthority:fileCredential,onState:value=>companion?.sonic?.(value)});
     let headerSignal,headerSignalAt=-Infinity;
     const headerMotion=window.matchMedia?.('(prefers-reduced-motion: reduce)');
@@ -188,20 +188,13 @@ window.Conversation = (() => {
     window.addEventListener('pagehide',clearHeaderSignal);
     headerMotion?.addEventListener?.('change',()=>{if(headerMotion.matches)clearHeaderSignal();});
     const presentState=(patch,updateVoice=true)=>{showHeaderSignal(patch);if(Object.hasOwn(patch,'outputLevel')){avatarWorkshop?.speechLevel?.(patch.outputLevel);hostSurface?.playback(patch.outputLevel);}else if(patch.playback&&patch.playback!=='playing')hostSurface?.playback(0);companion?.update(patch);sound?.update(patch);if(updateVoice)voiceMode?.update(patch);};
-    let inspectorReturnFocus;
-    if(standalone){
-      const inspector=$("#conversation-diagnostics"),inspectButton=$("#conversation-inspect");
-      inspector.open=false;inspectButton.hidden=false;
-      inspector.setAttribute("role","region");inspector.setAttribute("aria-label","Under the hood");
-      const placeInspector=()=>{const header=$("header");if(header?.getBoundingClientRect)inspector.style.setProperty("--inspector-top",`${header.getBoundingClientRect().bottom+8}px`);};
-      inspectButton.addEventListener("click",()=>{inspector.open=!inspector.open;placeInspector();if(inspector.open)inspector.querySelector?.("summary")?.focus?.();});
-      inspector.addEventListener("toggle",()=>{inspectButton.setAttribute("aria-expanded",String(inspector.open));if(inspector.open)placeInspector();else {const target=inspectorReturnFocus||inspectButton;inspectorReturnFocus=undefined;target.focus?.({preventScroll:true});}});
-      document.addEventListener("keydown",event=>{if(event.key==="Escape" && inspector.open){inspector.open=false;inspectButton.focus?.();}});
-      window.addEventListener("resize",placeInspector);
-      if(window.ResizeObserver)new window.ResizeObserver(placeInspector).observe($("header"));
-      const apps=$(".apps-return");if(apps){apps.title="Apps";apps.setAttribute("aria-label","Apps");}
-      placeInspector();
+    const settings=$("#conversation-settings"), settingsButton=$("#conversation-settings-open");
+    if(settingsButton && settings){
+      settingsButton.hidden=readOnly;
+      settingsButton.addEventListener("click",()=>settings.showModal());
     }
+    const decisionDialog=$("#conversation-goal-review"), decisionButton=$("#conversation-goals-open");
+    decisionButton?.addEventListener("click",()=>decisionDialog?.showModal());
     const budgetView=$("#conversation-coordination"),budgetRefresh=$("#conversation-coordination-refresh"),budgetStatus=$("#conversation-coordination-status"),budgetEpisodes=$("#conversation-coordination-episodes");
     let canBudgets=false,budgetLoading=false,budgetControlBusy=false;
     const pendingBudgetControls=new Map();
@@ -320,9 +313,9 @@ window.Conversation = (() => {
       if(readOnly || posting || draft.value.trim())return false;
       pendingNavigation?.close(false);voiceMode?.close();voiceContext=undefined;selectFocus({source:`task:${task.id}`,revision:task.revision,context_only:true},`${task.label} · ${task.title}`);return true;
     }});
-    const goalControls=window.GoalControls?.mount({api,getBinding:()=>binding,readOnly,onChoose:message=>{
+    const goalControls=window.GoalControls?.mount({api,getBinding:()=>binding,readOnly,onAvailable:available=>{if(decisionButton)decisionButton.hidden=readOnly||!available;},onChoose:message=>{
       if(readOnly || posting || draft.value.trim())return false;
-      pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draftState?.change(message);draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
+      decisionDialog?.close?.();pendingNavigation?.close(false);voiceMode?.close();clearFocus();voiceContext=undefined;draft.value=message;draftState?.change(message);draft.focus?.();compose.scrollIntoView?.({block:"nearest"});return true;
     }});
     if(standalone && !readOnly && !hostSurface){
       const inflight=new Map();
@@ -351,7 +344,7 @@ window.Conversation = (() => {
     }
     if(standalone && !readOnly)pendingNavigation=window.AttentionCarousel?.mount({
       line:$("header .header-tools"),panel:$("#conversation-attention"),localOnly:true,onChange:count=>voiceMode?.attention(count),
-      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...(goalControls?.attentionItems?.()||[]),...internalAttentionItems()]
+      getItems:()=>[...(requestControls.attentionItems?.()||[]),...(taskControls?.attentionItems?.()||[]),...internalAttentionItems()]
     });
     const attachedFiles = readOnly ? undefined : window.FileInput?.mount({headers,getBinding:()=>binding,unauthorized:failed,maxFiles:8-(hostSurface?.reservedFiles||0),maxBytes:40*1024*1024-(hostSurface?.reservedBytes||0)});
     const visual = readOnly ? undefined : window.VisualInput?.mount({headers,getBinding:()=>binding,unauthorized:failed});
@@ -378,15 +371,7 @@ window.Conversation = (() => {
       input.scrollTop=input.scrollHeight;if(value.resumed){input.focus?.();input.setSelectionRange?.(input.value.length,input.value.length);}
     }
     const microphone = readOnly ? undefined : window.VoiceInput?.mount({api,headers,beforeOriginal:hostSurface?value=>hostSurface.prepare(value):undefined,onOriginalAttempt:value=>hostSurface?.attempt?.(value),onOriginalDiscard:value=>hostSurface?.discard?.(value),getBinding:()=>binding,onTranscript:previewTranscript,canEditDraft:()=>lastVoiceCapabilities?.can_download_files===true,onTiming:(id,stage,detail)=>{timing?.mark(id,stage,detail);hostSurface?.status({id,phase:stage},true);},onInput:(value,version)=>{if(editedPreview?.id===value.id&&editedPreview.binding===binding){if(draft.value===editedPreview.text)draft.value=editedPreview.draft;editedPreview=undefined;}hostSurface?.status(value);retainedCorrection(value);voiceSession?.release(value.id);voiceMode?.update({sent:true});inputCard(value);if(timeline)timeline.scrollTop=timeline.scrollHeight;if(version===focusVersion)clearFocus();},getReply:()=>{const reference=inputReference();return reference&&({reference,version:focusVersion});},getPlayback:()=>playbackContext(true),getTranscriptionProfile:()=>conversationServices==='openai'?(lastVoiceCapabilities?.can_openai_live_result?'openai-live':'openai'):(lastVoiceCapabilities?.can_previous_live_result?'previous-live':lastVoiceCapabilities?.voice_services_default==='openai'?'previous':undefined),getCaptureQuestions:()=>canLimitCaptureQuestions?requestControls.captureQuestions():undefined,getFiles:()=>attachedFiles?.capture(),onFilesSent:refs=>attachedFiles?.consumed(refs),getVisual:()=>visual?.captureForVoice?visual.captureForVoice():visual?.capture(),onVisualSent:reference=>visual?.consumed(reference),pauseAudio:beginVoiceCapture,getLevelSink:value=>hostSurface?.microphoneSink(value),onLevel:value=>{if(!value)hostSurface?.silenceMicrophone();presentState({inputLevel:value});},onActivity:(value,detail)=>{captureBusy=voiceMode?.active&&voiceModePrevious?.continuous?!!voiceSession?.floor:value;presentState({capture:detail?.phase,uploading:detail?.uploading,transcribing:detail?.transcribing,pending:detail?.pending,message:detail?.message,remaining:detail?.remaining});if(!captureBusy){if(voiceEnabled && active?.interrupted)toggle.disabled=!blobUrl;drainVoice();}},unauthorized:failed,telegram,onLocalDiscard:id=>voiceSession?.release(id)});
-    const graph = readOnly || standalone ? window.RoutingGraph?.mount({inspect:selection=>{
-      const card=selection.input?inputs.get(selection.input):cards.get(selection.source);
-      if(!card)return;
-      if(selection.input){$("#conversation-sent").open=true;card.trace.open=true;readTrace(card);}
-      if(timeline && card.source?.kind==="worker_progress")$("#conversation-diagnostics").open=true;
-      (selection.input?card.trace:card.box).scrollIntoView({block:"nearest"});
-    }}) : undefined;
     document.body.classList.toggle("standalone-conversation",standalone);
-    if(graph){$("#conversation-flow").hidden=false;$("#conversation-flow").open=readOnly;}
     const timeline = standalone ? $("#conversation-timeline") : undefined;
     const headerBehavior=timeline?window.ConversationHeader?.mount({timeline}):undefined;
     const responseDraft=node("article",undefined,"reply response-draft");
@@ -405,15 +390,14 @@ window.Conversation = (() => {
         else $("#conversation-answers").append(responseDraft);
       }
     }
-    const historyTools=timeline?node("div",undefined,"conversation-tools timeline-history"):undefined;
+    const historyTools=timeline?node("details",undefined,"conversation-history-menu"):undefined;
     if(timeline){
-      const diagnostics=$("#conversation-diagnostics");
-      diagnostics.open=false;
-      diagnostics.querySelector?.(".conversation-diagnostics-content")?.prepend($("#conversation-observation"));
-      timeline.hidden=false;$("#conversation-replies").hidden=false;$("#conversation-sent").hidden=false;
+      timeline.hidden=false;
+      $("#conversation-history").hidden=true;
       $("#conversation-inputs-older").textContent="Earlier messages";
-      historyTools.append($("#conversation-inputs-older"),$("#conversation-older"),$("#conversation-telegram-older"));
-      diagnostics.querySelector?.(".conversation-diagnostics-content")?.append(historyTools);
+      historyTools.id="conversation-history-menu";
+      historyTools.append(node("summary","History"),$("#conversation-inputs-older"),$("#conversation-older"),$("#conversation-telegram-older"));
+      $("#conversation-observation").append(historyTools);
     }
     function atTimelineEnd() {return !!timeline && !followingSpeech() && timeline.scrollHeight-timeline.scrollTop-timeline.clientHeight<80;}
     function arrangeTimelineReplies() {
@@ -467,29 +451,6 @@ window.Conversation = (() => {
       timeline.insertBefore(box,following||null);
       arrangeTimelineReplies();
       if(nearEnd)timeline.scrollTop=timeline.scrollHeight;
-    }
-    let graphCursor=0, graphReading=false;
-    const inspectorDetails=$("#conversation-diagnostics"), routingDetails=$("#conversation-flow");
-    function routingGraphVisible() {
-      return graph && inspectorDetails?.open && routingDetails?.open;
-    }
-    for (const details of [inspectorDetails, routingDetails]) {
-      details?.addEventListener("toggle", () => { void refreshRoutingGraph(); });
-    }
-    async function refreshRoutingGraph() {
-      if (!routingGraphVisible() || graphReading) return;
-      graphReading=true;
-      const owned=inputGeneration;
-      const closed=[...inputs.values()].filter(card=>!card.trace.open);
-      try {
-        for(let n=0; n<Math.min(6,closed.length); n++){
-          if(owned!==inputGeneration || !routingGraphVisible()) break;
-          await readTrace(closed[graphCursor%closed.length]);
-          if(owned!==inputGeneration) return;
-          graphCursor=(graphCursor+1)%closed.length;
-        }
-        if(owned===inputGeneration && routingGraphVisible()) graph.flush();
-      } finally { graphReading=false; }
     }
     const cards = new Map(),progressCards=new Map(),settledProgress=new Map(),replyAnchors=new Map();
     // Device-local audio attention, scoped to this conversation binding. No
@@ -625,7 +586,7 @@ window.Conversation = (() => {
     const foregroundCards=new Map();let foregroundBefore=0,foregroundNewest=0,foregroundReading=false;
     const foregroundOlder=$("#conversation-foreground-older");foregroundOlder.hidden=true;
     historyTools?.append(foregroundOlder);
-    const voiceHistoryPanel=node('section',undefined,'voice-history-controls');voiceHistoryPanel.hidden=true;voiceHistoryPanel.append(node('h3','Voice history'));$('#conversation-diagnostics .conversation-diagnostics-content')?.append(voiceHistoryPanel);
+    const voiceHistoryPanel=node('section',undefined,'voice-history-controls');voiceHistoryPanel.hidden=true;voiceHistoryPanel.append(node('h3','Voice history'));(historyTools || $("#conversation-history")).append(voiceHistoryPanel);
     const codexHistoryOlder=node('button','Earlier voice conversation');codexHistoryOlder.type='button';codexHistoryOlder.hidden=true;
     const codexHistoryTools=node('div',undefined,'conversation-tools timeline-history');codexHistoryTools.hidden=true;
     codexHistoryTools.dataset.timelineTime='-Infinity';codexHistoryTools.dataset.timelineKey='voice-history';
@@ -1109,7 +1070,7 @@ window.Conversation = (() => {
       liveUsage?.reset();
       voiceMode?.close();showResponseDraft();
       companion?.reset();sound?.reset();goalControls?.reset();presentationProfile=undefined;replyAnchors.clear();
-      disableVoice();graph?.reset();graphCursor=0;timeline?.replaceChildren();
+      disableVoice();timeline?.replaceChildren();
       codexVoiceSession?.resetHistory?.();codexHistoryTools.hidden=codexHistoryOlder.hidden=true;voiceHistoryPanel.append(codexHistoryTools);
       publicLiveSession?.resetHistory?.();publicHistoryTools.hidden=publicHistoryOlder.hidden=true;voiceHistoryPanel.append(publicHistoryTools);
       foregroundCards.clear();foregroundBefore=foregroundNewest=0;foregroundOlder.hidden=true;
@@ -1130,8 +1091,6 @@ window.Conversation = (() => {
         const value=await api(`interaction/inputs/${encodeURIComponent(card.value.id)}/trace`);
         if(owned!==inputGeneration || inputs.get(card.value.id)!==card)return;
         if(value.id!==card.value.id || value.schema!=="telecodex.conversation-trace/v1")throw new Error("Wrong routing observation");
-        graph?.trace(value);
-        if(graph && !card.trace.open)return;
         const original=node("section");
         original.append(node("h3",value.voice?"Voice transcript":"Original text"),node("p",value.text||"No transcript is confirmed yet.","reply-text"));
         traceTextMore(card,original,original.children[1],"original",value.text_next_offset);
@@ -1333,7 +1292,7 @@ window.Conversation = (() => {
         taskControls?.observeInput?.(card.value);
         renderRetry(card);
         if (card.value.id === latestComposerId) inputNotice(card.value);
-        renderRoute(card);graph?.input(card.value);inputActivity();return card;
+        renderRoute(card);inputActivity();return card;
       }
       // Native acceptance and retirement cannot be undone by a late snapshot.
       if (["answered","matrix_requested","retained_unsent"].includes(card.value.phase) || claudeReplied(card.value.phase) ||
@@ -1396,7 +1355,7 @@ window.Conversation = (() => {
       }else container.insertBefore(card.box, following || null);
       placeClaudeReply(card);
       card.box.dataset.inputId=card.value.id;textObserver?.observe(card.box);queueText(card);
-      graph?.input(card.value);
+
       inputActivity();
       return card;
     }
@@ -1617,7 +1576,7 @@ window.Conversation = (() => {
       if(active===selected)followPlayback();
     }
     function followPlayback(force=false){
-      if(!followingSpeech() || $("#conversation-diagnostics").open)return;
+      if(!followingSpeech() || settings?.open || decisionDialog?.open)return;
       const card=followCard();
       if(!card || !timeline?.contains?.(card.box))return;
       const selected=active, viewport=timeline.getBoundingClientRect();
@@ -2151,7 +2110,6 @@ window.Conversation = (() => {
       if(source.current===false || source.correction_pending || source.native_binding_current===false
         || speechPositions.get(source.id)?.revision!==source.revision)forgetPosition(source);
       positionLabel(card);
-      if(!progress && !technicalVisibility)graph?.result(source);
       sessionProgress(source);
       if(technicalVisibility){
         textObserver?.unobserve(card.box);
@@ -2174,7 +2132,6 @@ window.Conversation = (() => {
       if(standalone){
         const profile=value.presentation_profile==="explorer"?"explorer":"simple";
         if(profile!==presentationProfile){
-          $("#conversation-diagnostics").open=profile==="explorer";
           document.body.dataset.presentationProfile=profile;
           presentationProfile=profile;
         }
@@ -2335,10 +2292,8 @@ window.Conversation = (() => {
           : "No replies yet. Work can continue while this view is closed.";
         if(!readOnly){await taskControls?.refresh();await internalControls?.refresh();}
         await refreshTelegram();
-        void sound?.refresh({observeOnly:standalone || $("#conversation-diagnostics").open});
+        void sound?.refresh();
         for(const card of inputs.values())if(card.trace.open)await readTrace(card);
-        graph?.flush();
-        void refreshRoutingGraph();
         drainVoice();
       } catch (e) { failed(e); }
       finally { reading = false; $("#conversation-refresh").disabled = false; $("#conversation-older").disabled = false;

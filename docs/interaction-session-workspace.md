@@ -186,8 +186,9 @@ attachment, microphone and Send controls; notices remain in the upward popover
 without expanding the input or changing its draft. Compact-header mode also hides the pending/status lane; reverse scrolling
 restores it without changing its content or pending tasks.
 
-Routing maps and saved-input routing-path disclosures remain in Under the hood,
-without per-message map shortcuts or routing details in the conversation.
+The routing monitor and its graph are retired from Conversation. The
+`conversation-under-the-hood` tag preserves the previous implementation and
+the existing receiver still owns the retained routing evidence.
 
 Session rows use one compact line for the title and four borderless reply, pin,
 mute and solo controls, followed by the readable status. Each control has a

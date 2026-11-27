@@ -182,9 +182,10 @@ window.ConversationSound = (() => {
   }
   function mount({api,unauthorized=()=>{},getAuthority=()=>"",onState=()=>{},now=()=>performance.now()}={}) {
     const button=document.querySelector("#conversation-sound-toggle"),status=document.querySelector("#conversation-sound-status"),score=document.querySelector("#conversation-sound-score"),volume=document.querySelector("#conversation-sound-volume");
-    if(!button || !status || !score || !volume)return;
+    if(!button || !status || !volume)return;
     const feedback=document.querySelector("#conversation-sound-feedback"),controls=document.querySelector("#conversation-sound-controls");
-    function setStatus(detail,brief=detail){status.textContent=detail;if(feedback){feedback.textContent=brief;feedback.hidden=detail==="Off";}if(controls)controls.hidden=!enabled;}
+    if(controls)controls.hidden=false;
+    function setStatus(detail,brief=detail){status.textContent=detail;if(feedback){feedback.textContent=brief;feedback.hidden=detail==="Off";}}
     let enabled=false,suspended=false,generation=0,authority,request,frame,vocabulary,catalog,received=0,requestElapsed=0,expiry,local={};
     const statusList=document.querySelector("#conversation-session-status"),statusNote=document.querySelector("#conversation-session-status-note"),inspector=document.querySelector("#conversation-diagnostics");
     let statusFrame,statusReceived=0,statusClock;
@@ -200,7 +201,7 @@ window.ConversationSound = (() => {
     inspector?.addEventListener("toggle",drawStatus);
     const engine=renderer({changed(running){suspended=!running;if(enabled){button.textContent=running?"≈ Mute Beacon":"≈ Resume Beacon";if(!running)setStatus("Audio suspended · tap to resume");}}});
     const voiceLevel=()=>local.conversationOnly===true || local.sessionScoped===true || ["permission","recording","finalizing"].includes(local.capture) || local.uploading===true ? 0 : ["playing","preparing"].includes(local.playback) ? 0.18 : 1;
-    function disable(){enabled=false;authority=undefined;generation++;clearTimeout(expiry);request=undefined;frame=undefined;engine.stop();button.setAttribute("aria-pressed","false");button.textContent="≈ Beacon";setStatus("Off");score.replaceChildren();}
+    function disable(){enabled=false;authority=undefined;generation++;clearTimeout(expiry);request=undefined;frame=undefined;engine.stop();button.setAttribute("aria-pressed","false");button.textContent="≈ Beacon";setStatus("Off");score?.replaceChildren();}
     function draw(){
       if(!enabled || !frame || !vocabulary)return;
       const elapsed=Math.max(0,now()-received)+requestElapsed,composition=plan(frame,vocabulary,elapsed);
@@ -210,8 +211,8 @@ window.ConversationSound = (() => {
       const gain=voiceLevel(),silent=gain===0,lowered=gain>0 && gain<1;
       engine.setDucking(gain);
       setStatus(!played.running?"Audio suspended · tap to resume":Number(volume.value)===0?"Muted · state labels remain available":silent?(local.sessionScoped?"Quiet in the selected conversation":"Quiet during voice capture"):lowered?"Lowered under reply audio":`${played.voices.length} session voices · ${composition.unconfirmed} unconfirmed · ${composition.omitted+played.dropped} omitted${composition.truncated?" · additional sources unavailable":""}`, !played.running?"Beacon paused · tap to resume":Number(volume.value)===0?"Beacon muted":silent?(local.sessionScoped?"Beacon quiet in the selected conversation":"Beacon quiet while you speak"):lowered?"Beacon softly under reply audio":played.voices.length?`Beacon · ${played.voices.length} session voice${played.voices.length===1?"":"s"}${composition.unconfirmed?" · some state unconfirmed":""}`:"Beacon quiet · no active session voices");
-      const rows=composition.sources.map(source=>{const row=document.createElement("li");
-        const notes=source.components.map(key=>`F${vocabulary.components[key]}`);row.textContent=`${source.label||source.id} · ${source.state.replaceAll("_"," ")} · ${notes.length?notes.join(" + "):"quiet"}${played.voices.some(v=>v.id===source.id)?"":" · outside this mix"}`;return row;});score.replaceChildren(...rows);
+      const rows=score&&composition.sources.map(source=>{const row=document.createElement("li");
+        const notes=source.components.map(key=>`F${vocabulary.components[key]}`);row.textContent=`${source.label||source.id} · ${source.state.replaceAll("_"," ")} · ${notes.length?notes.join(" + "):"quiet"}${played.voices.some(v=>v.id===source.id)?"":" · outside this mix"}`;return row;});if(score)score.replaceChildren(...rows);
       clearTimeout(expiry);
       const remaining=frame.sources.map(s=>20001-(frame.observed_at*1000-Number(s.observed_at)*1000+elapsed)).filter(t=>Number.isFinite(t)&&t>0);
       if(remaining.length)expiry=setTimeout(()=>{try{draw();}catch{engine.stop();}},Math.min(...remaining));

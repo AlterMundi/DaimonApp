@@ -330,12 +330,13 @@ window.GoalControls = (() => {
     : ({awaiting_confirmation:"Your choice is needed.",prepared:"Authorized; not submitted yet.",claimed:"Waiting for the selected session.",submitted:"Applying your instruction; confirmation pending.",
       acknowledged:"Instruction acknowledged. Work and reply may continue.",cancelled:"Proposal cancelled.",superseded:"Replaced by a later instruction.",rejected:"Not applied; review the current goal.",
       known_unsent:"Saved; not sent.",retained_unsent:"Saved; not sent after restart.",uncertain:"Outcome unconfirmed. Nothing will be repeated.",partial:"Part of this instruction applied. Check the retained outcome before continuing."})[view.phase] || "Control outcome unavailable.";
-  function mount({api,getBinding,onChoose,readOnly=false}) {
+  function mount({api,getBinding,onChoose,onAvailable=()=>{},readOnly=false}) {
     const section=document.querySelector("#conversation-goals"),list=document.querySelector("#conversation-goal-cards"),more=document.querySelector("#conversation-goals-more");
     const message=document.querySelector("#conversation-goal-state");
     const cards=new Map();let generation=0,cursor=0,reading=false,probe=0;
     const owns=(card,owned)=>generation===owned && cards.get(card.id)===card;
-    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();section.hidden=true;cursor=0;reading=false;more.hidden=true;message.textContent="";}
+    function updateAvailability(){section.hidden=!cards.size && more.hidden;onAvailable(!section.hidden);}
+    function reset(){generation++;for(const card of cards.values())card.box.remove();cards.clear();list.replaceChildren();cursor=0;reading=false;more.hidden=true;message.textContent="";updateAvailability();}
     function render(card,view){
       card.view=view;card.title.textContent=`${({start:"Start",resume:"Resume",pause:"Pause",clear:"Clear",edit:"Edit",replace:"Replace"})[view.action]||"Review"} · ${view.label}`;
       card.state.textContent=status(view);card.dismiss.hidden=!closed(view.phase);
@@ -362,7 +363,7 @@ window.GoalControls = (() => {
       actions.append(confirm,cancel,dismiss);box.append(title,state,read,body,actions,note);list.append(box);
       const card={id:view.id,box,title,state,read,body,confirm,cancel,dismiss,note,reviewed:false,version:0};cards.set(view.id,card);
       read.addEventListener("click",()=>detail(card,true));confirm.addEventListener("click",()=>choose(card,true));cancel.addEventListener("click",()=>choose(card,false));
-      dismiss.addEventListener("click",()=>{if(!closed(card.view.phase))return;cards.delete(card.id);box.remove();section.hidden=!cards.size && more.hidden;});
+      dismiss.addEventListener("click",()=>{if(!closed(card.view.phase))return;cards.delete(card.id);box.remove();updateAvailability();});
       render(card,view);return card;
     }
     async function detail(card,review=false){
@@ -389,7 +390,7 @@ window.GoalControls = (() => {
       message.textContent="";
       const seen=new Set();
       for(const v of page.items){seen.add(v.id);const card=cards.get(v.id)||create(v);render(card,{...card.view,...v});}
-      cursor=cursor?Math.min(cursor,page.cursor||cursor):page.cursor;more.hidden=!page.more;section.hidden=!cards.size && more.hidden;
+      cursor=cursor?Math.min(cursor,page.cursor||cursor):page.cursor;more.hidden=!page.more;updateAvailability();
       const absent=[...cards.values()].filter(c=>!seen.has(c.id)&&!closed(c.view.phase));
       const selected=absent.length?Array.from({length:Math.min(8,absent.length)},(_,n)=>absent[(probe+n)%absent.length]):[];probe+=selected.length;
       await Promise.all(selected.map(c=>detail(c)));
@@ -398,7 +399,7 @@ window.GoalControls = (() => {
       try{const page=await api(`interaction/goals?before=${cursor}`);if(owned===generation)await observe(page);}
       catch(_){if(owned===generation)message.textContent="Older controls unavailable. Nothing changed; refresh to reconnect.";}
       finally{if(owned===generation){reading=false;more.disabled=false;}}});
-    return {observe,reset,attentionItems:()=>[...cards.values()].filter(c=>c.view?.current&&c.view.can_confirm&&!closed(c.view.phase)).map(c=>({id:`goal:${c.id}`,created_at:c.view.created_at,label:c.view.label,title:status(c.view),box:c.box,open:()=>detail(c,true)}))};
+    return {observe,reset};
   }
   return {mount};
 })();

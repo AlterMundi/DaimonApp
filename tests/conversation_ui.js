@@ -205,7 +205,6 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
-  if(options.routingGraph)context.window.RoutingGraph={mount:()=>options.routingGraph};
   if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],canReconnect(){return !this.active;},reconnect(){continuousCalls.push(['reconnect']);this.start();},start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);return options.continuousHold?.();},release:id=>continuousCalls.push(['release',id])};}};
@@ -561,13 +560,8 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(replacement.nodes.get('#conversation-timeline').children.find(c=>c.dataset.sourceId==='native:8').children[2].textContent,'New answer '.repeat(250),'late text from an earlier revision must not overwrite its replacement');
   const profile=boot(false,true);
   profile.profile("explorer");await profile.ui.refresh();
-  assert.equal(profile.nodes.get("#conversation-diagnostics").open,true);
-  profile.nodes.get("#conversation-diagnostics").open=false;await profile.ui.refresh();
-  assert.equal(profile.nodes.get("#conversation-diagnostics").open,false,"polling cannot override a person's read-only panel choice");
-  profile.profile("simple");await profile.ui.refresh();
-  assert.equal(profile.nodes.get("#conversation-diagnostics").open,false);
-  profile.nodes.get("#conversation-diagnostics").open=true;await profile.ui.refresh();
-  assert.equal(profile.nodes.get("#conversation-diagnostics").open,true,"simple still permits looking under the hood");
+  assert(!profile.nodes.has("#conversation-diagnostics"),"Presentation profiles cannot revive the retired inspector");
+  assert.equal(profile.nodes.get("#conversation-settings-open").hidden,false,"Conversation preferences have their own entry");
   const single=boot(false,true);
   single.originals.set('between',{id:'between',text:'A direction while work continues',sequence:1,phase:'accepted',received_at:'2024-01-01T00:00:04.500Z'});
   await single.ui.refresh();
@@ -612,8 +606,8 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(order().at(-2),'input:reply-earlier','A different source revision is not silently used as the reply parent');
   threaded.ui.stop();
   const stream=single.nodes.get('#conversation-timeline');
-  const diagnosticHistoryPanel=single.nodes.get('#conversation-diagnostics .conversation-diagnostics-content').children.find(c=>c.className==='voice-history-controls');
-  assert(diagnosticHistoryPanel?.children.some(c=>c.dataset.timelineKey==='voice-history'),'Engine-specific retrieval stays available under diagnostics');
+  const diagnosticHistoryPanel=single.nodes.get('#conversation-observation').children.find(c=>c.id==='conversation-history-menu').children.find(c=>c.className==='voice-history-controls');
+  assert(diagnosticHistoryPanel?.children.some(c=>c.dataset.timelineKey==='voice-history'),'Engine-specific retrieval stays available from History');
   assert(!stream.children.some(c=>c.dataset.timelineKey?.startsWith('voice-history')),'History retrieval controls do not occupy the ordinary conversation');
   const messageCards=()=>stream.children.filter(c=>c.dataset.timelineKey&&!c.dataset.timelineKey.startsWith('voice-history'));
   assert.deepEqual(messageCards().map(c=>c.dataset.timelineKey),['native:1','native:2','native:3','native:4','input:between','native:5','native:6','native:7','native:8']);
@@ -621,7 +615,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(stream.children.find(c=>c.dataset.timelineKey==='input:between').children[0].textContent,'You');
   await single.ui.refresh();
   assert.equal(messageCards().length,9,'Refreshing keeps one card per saved input or native item');
-  assert.equal(single.nodes.get('#conversation-replies').hidden,false,'raw session updates remain available inside collapsed inspection');
+  assert.equal(single.nodes.get('#conversation-history').hidden,true,'The legacy layout does not appear beside the standalone timeline');
   // Real browser review exposed lost follow mode when an existing voice card
   // grows from a placeholder into its transcript. Measure before DOM mutation.
   const follow=boot(false,true,{capture:true});await follow.ui.refresh();
@@ -2264,24 +2258,6 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(monitor.requests.filter(r=>r.trace).length,1);
   assert.equal(monitor.requests.find(r=>r.trace).body,undefined,'Trace reads cannot submit or retry an input');
   assert.equal(monitor.originals.size,1);
-  const graphTraces=[];
-  const graphFixture=boot(false,true,{routingGraph:{input(){},result(){},reset(){},flush(){},trace(value){graphTraces.push(value.id);}}});
-  graphFixture.originals.set('graph-original',{id:'graph-original',text:'Saved input',sequence:1,phase:'accepted'});
-  await graphFixture.ui.refresh();
-  assert.equal(graphFixture.requests.filter(r=>r.trace).length,0,'Ordinary refresh skips unseen diagnostic traces');
-  const graphInspector=graphFixture.nodes.get('#conversation-diagnostics'),routingDetails=graphFixture.nodes.get('#conversation-flow');
-  graphInspector.open=true;
-  graphInspector.handlers.toggle();
-  assert.equal(graphFixture.requests.filter(r=>r.trace).length,0,'Opening the inspector alone skips collapsed routing traces');
-  routingDetails.open=true;
-  routingDetails.handlers.toggle();
-  await new Promise(setImmediate);
-  assert.deepEqual(graphTraces,['graph-original'],'Opening the routing monitor reads its exact retained trace');
-  graphInspector.open=false;
-  graphInspector.handlers.toggle();
-  await graphFixture.ui.refresh();
-  assert.equal(graphFixture.requests.filter(r=>r.trace).length,1,'Closing the inspector stops background trace reads');
-  graphFixture.ui.stop();
   const paginated=boot();paginated.originals.set('long-trace',{id:'long-trace',text:'Complete immutable original',longTrace:true,sequence:1,phase:'accepted'});
   await paginated.ui.refresh();const longPath=paginated.nodes.get('#conversation-inputs').children[0].children[6];
   longPath.open=true;await longPath.children[3].handlers.click();

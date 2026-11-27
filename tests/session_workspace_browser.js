@@ -12,6 +12,7 @@ const imageCase=process.env.QUALIFICATION_IMAGE_PREVIEW==='1';let imageAccess=tr
 const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==','base64');
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
 const unifiedAttentionCase=process.env.QUALIFICATION_UNIFIED_ATTENTION==='1';
+const settingsCase=process.env.QUALIFICATION_SETTINGS_AND_DECISIONS==='1';
 const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
 const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=headerSignalCase||hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
@@ -27,6 +28,8 @@ const codexActivityCase=avatarSpeechCase||process.env.QUALIFICATION_CODEX_ACTIVI
 const codexCase=codexActivityCase||process.env.QUALIFICATION_CODEX==='1',listenCase=process.env.QUALIFICATION_LISTEN==='1';let uploadFailed=false,pendingQuestion=unifiedAttentionCase||hudCase||!!nativeDecisionCase,questionPosts=0;const voiceUploads=[];
 const publicRoot=path.resolve('dashboard/web'),binding='a'.repeat(64),revision='b'.repeat(64),posts=[],errors=[],sockets=new Set();
 const ref=n=>({source:`session:${n}`,revision});
+const goalProposal={id:'proof-of-work-choice',binding,current:true,can_confirm:true,phase:'awaiting_confirmation',
+ action:'pause',label:'Garden',reason:'Pause until the next review.',plan:{expected:{}}};
 const sessions=[{id:'1'.repeat(24),title:'Materials · Results ready for a closer look',audio_key:'100:7',destination:ref(7),latest_reply:{...ref(7),source:'session:7/42'},fresh:true,execution:'idle',goal_state:'absent',result_available:true},
 {id:'2'.repeat(24),title:'Garden · Waiting for your choice',audio_key:'100:8',destination:ref(8),latest_reply:{...ref(8),source:'session:8/43'},fresh:true,human_action_pending:true,execution:'working',goal_state:'blocked'},
 {id:'3'.repeat(24),title:'Conversation',audio_key:'100:1',destination:null,is_entry:true,fresh:true,execution:'working',goal_state:'active'}];
@@ -121,7 +124,9 @@ const server=http.createServer(async(req,res)=>{
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
-  if(route==='interaction')return json({...base(),items:sources,cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase||imageCase&&imageAccess,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{binding,items:unifiedAttentionCase?[retainedGoal]:[],more:false}});
+  if(route===`interaction/goals/${goalProposal.id}`)return json(goalProposal);
+  if(route==='interaction')return json({...base(),items:sources,
+   cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase||imageCase&&imageAccess,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{binding,items:settingsCase?[goalProposal]:unifiedAttentionCase?[retainedGoal]:[],cursor:1,more:false}});
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -314,6 +319,30 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   }
   (report.appearanceTransitions??=[]).push(stage);
  }
+ if(settingsCase){
+  assert.equal(await page.locator('#conversation-diagnostics').count(),0);
+  assert.equal(await page.locator('script[src*="routing_graph.js"],script[src*="timing.js"],script[src*="live-usage.js"]').count(),0);
+  const input=page.locator('#conversation-message');
+  await input.fill('Keep my draft.');
+  await page.getByRole('button',{name:'Conversation settings',exact:true}).click();
+  const settings=page.getByRole('dialog',{name:'Conversation settings'});
+  await settings.getByRole('slider',{name:'Beacon volume'}).waitFor();
+  await settings.getByRole('button',{name:'Close',exact:true}).click();
+  assert.equal(await input.inputValue(),'Keep my draft.');
+  await page.getByRole('button',{name:'For you · 0 pending requests',exact:true}).click();
+  const forYou=page.getByRole('dialog',{name:'For you'});
+  assert.equal(await forYou.getByRole('button',{name:/Review proposal/}).count(),0);
+  await forYou.getByRole('button',{name:'Close',exact:true}).click();
+  await page.getByRole('button',{name:'Work decisions',exact:true}).click();
+  const decisions=page.getByRole('dialog',{name:'Work decisions'});
+  await decisions.getByRole('button',{name:'Review proposal and outcome',exact:true}).click();
+  await decisions.getByText('Pause until the next review.').waitFor({state:'visible',timeout:5000});
+  await decisions.getByRole('button',{name:'Close',exact:true}).click();
+  assert.equal(await input.inputValue(),'Keep my draft.');
+  assert.equal(posts.length,0);
+  assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-settings-and-work-decisions';return;
+ }
  if(unifiedAttentionCase){
   await page.getByRole('button',{name:'For you · 3 pending requests',exact:true}).waitFor();
   assert.equal(await page.locator('.pending-carousel').count(),0,'No rotating pending line remains');
@@ -326,7 +355,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.match(await panel.textContent(),/A routed decision/);
   assert.equal(await panel.getByText('Workshop · One shared task',{exact:true}).filter({visible:true}).count(),1);
   assert.equal(await panel.locator('.for-you-items > *').count(),3);
-  assert.equal(await panel.getByText('Edit · Earlier goal',{exact:true}).isVisible(),true,'Retained outcomes stay reviewable outside the pending stream');
+  assert.equal(await panel.getByText('Edit · Earlier goal',{exact:true}).count(),0,'Retained work outcomes stay out of For you');
   const internal=panel.locator('.for-you-items button').filter({hasText:'Read request'}).first();
   if(await internal.count())await internal.click();
   await panel.getByRole('button',{name:'Close',exact:true}).click();
@@ -523,11 +552,14 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    await page.evaluate(()=>{const message=document.querySelector('#conversation-send-state');message.textContent='';delete message.dataset.attention;});
    await page.screenshot({path:path.join(output,`hud-${width}-${height}.png`)});
    if(width===375&&height===812){
-    const inspect=page.getByRole('button',{name:'Under the hood',exact:true});
-    await inspect.click();assert(await page.getByRole('region',{name:'Under the hood',exact:true}).isVisible());
-    assert(await page.locator('#client-build').isVisible(),'Client version remains available in the explicit technical area');
-    await page.screenshot({path:path.join(output,'hud-inspector.png')});await inspect.click();
-    assert.equal(await page.locator('#client-build').isVisible(),false,'Closing technical details removes build diagnostics from view');
+    assert.equal(await page.getByRole('button',{name:'Under the hood',exact:true}).count(),0);
+    await page.getByRole('button',{name:'Conversation settings',exact:true}).click();
+    const settings=page.getByRole('dialog',{name:'Conversation settings',exact:true});
+    assert(await settings.isVisible());
+    const bounds=await settings.boundingBox();
+    assert(bounds&&bounds.x>=0&&bounds.x+bounds.width<=width,'Settings fit the phone viewport');
+    await page.screenshot({path:path.join(output,'hud-settings.png')});
+    await settings.getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:/^Open alerts/}).click();
     const alerts=await page.locator('#operations').boundingBox();
     assert(alerts&&alerts.x>=0&&alerts.x+alerts.width<=width&&alerts.y+alerts.height<=height,'Alerts panel fits the phone');
@@ -588,11 +620,11 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
 
  await page.locator('.session-workspace-toolbar').waitFor({state:'visible',timeout:12000});
  assert.equal(await page.locator('#conversation-compose #conversation-voice-engine').count(),0,'Voice engine is not an ordinary composer control');
- assert.equal(await page.locator('#conversation-diagnostics #conversation-voice-engine').count(),1,'Development voice selection lives under the hood');
+ assert.equal(await page.locator('#conversation-settings #conversation-voice-engine').count(),1,'Voice selection lives in Conversation settings');
  async function selectEngine(value){
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.getByRole('button',{name:'Conversation settings',exact:true}).click();
   await page.locator('#conversation-voice-engine').selectOption(value);
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-settings').getByRole('button',{name:'Close',exact:true}).click();
  }
 
  if(avatarSpeechCase){
@@ -619,9 +651,8 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  if(publicCase){
   await page.locator('#conversation-timeline').getByText('Una corrección guardada.',{exact:true}).waitFor();
   assert.equal(await page.locator('#conversation-timeline .timeline-history').count(),0,'Voice history tools do not occupy the current reading area');
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-history-menu > summary').click();
   await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   await page.locator('#conversation-timeline').getByText('Una respuesta anterior.',{exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'Reading source history never opens voice');
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','Public Live never replaces the default');
@@ -686,17 +717,16 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   assert.equal(posts.length,0);assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   report.state='qualified-native-reload-prefix-recovery';report.beforePCM=before;report.recovered=recovered;report.voiceUploads=voiceUploads;report.ordinaryInputs=posts.length;
  }else if(codexCase){
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.getByRole('button',{name:'Conversation settings',exact:true}).click();
   await page.locator('#conversation-voice-choice').waitFor({state:'visible'});
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-settings').getByRole('button',{name:'Close',exact:true}).click();
   assert.equal(await page.locator('#conversation-voice-engine').inputValue(),'provider','OpenAI never replaces the default');
   assert.equal(await page.evaluate(()=>codexFixture.opens),0);
   await page.locator('#conversation-message').fill('My draft survives voice history reading.');
   await page.screenshot({path:path.join(output,'codex-history-desktop.png')});
   assert.equal(await page.locator('#conversation-timeline .timeline-history').count(),0,'Voice history tools do not occupy the current reading area');
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+  await page.locator('#conversation-history-menu > summary').click();
   await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).click();
-  await page.getByRole('button',{name:'Under the hood',exact:true}).click();
   await page.getByText('Earlier retained voice source 1',{exact:true}).waitFor({state:'visible'});
   assert.equal(await page.getByRole('button',{name:'Earlier voice conversation',exact:true}).isVisible(),false);
   assert.equal(await page.evaluate(()=>codexFixture.opens),0,'History reading opens no voice connection');
@@ -770,10 +800,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   report.state='qualified-codex-synthetic-browser';report.voiceUploads=voiceUploads;report.attention={reviewKeptCapture:true,exactQuestionReply:true,unsentDraftPreserved:true,decisionPosts:questionPosts,...(listenCase?{listenAfterClosure:true}:{} )};report.viewports=['1280x800','390x844'];
  }else{
  assert.equal(await page.getByRole('button',{name:'Show routing map',exact:true}).count(),0,'Messages have no routing-map shortcut');
- await page.getByRole('button',{name:'Under the hood',exact:true}).click();
- await page.locator('#conversation-flow > summary').click();
- assert(await page.locator('#routing-graph-viewport').isVisible(),'Routing map remains under the hood');
- await page.getByRole('button',{name:'Under the hood',exact:true}).click();
+ assert.equal(await page.locator('#routing-graph-viewport').count(),0,'Conversation does not ship the retired routing graph');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  async function bottomMenu(){
   const rect=async selector=>page.locator(selector).evaluate(node=>{const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};});
@@ -887,7 +914,7 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
  assert.equal(await page.evaluate(()=>workspaceFixture.microphone.getReply().reference.source),'session:7');
  await page.getByRole('button',{name:'Send to the conversation',exact:true}).click();
  assert.equal(await page.locator('#conversation-timeline .routing-trace').count(),0,'Conversation messages have no routing-path disclosure');
- assert(await page.locator('#conversation-diagnostics #conversation-inputs .routing-trace').count()>0,'Routing evidence remains under the hood');
+ assert.equal(await page.locator('#conversation-diagnostics').count(),0,'Conversation no longer ships the technical inspector');
  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
  await page.locator('.session-row').filter({has:page.getByRole('button',{name:sessions[0].title,exact:true})}).getByRole('button',{name:'Reply to the latest message',exact:true}).click();
  assert.equal(await page.locator('.session-rail').isVisible(),false,'Reply collapses the menu');

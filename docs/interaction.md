@@ -467,7 +467,7 @@ allowances. The continuing Interaction integrator remains the conversation owner
 I/O is an ingress/egress adapter, never a second reasoning session. This view
 adds no peer attention, executor, inference route or default spending allowance.
 
-When configured and granted, **Under the hood → Coordination budgets** reads the
+When configured and granted, **Conversation settings → Coordination budgets** reads the
 existing authoritative Matrix journal on opening or explicit Refresh. There is
 no polling, browser balance cache or second accounting database. Each card shows
 the exact approved objective, participants, expiry, queued/admitted work, and

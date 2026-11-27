@@ -4,7 +4,7 @@ The independent conversation client offers **Beacon**, off by default. Clicking 
 deliberately unlocks this browser's Web Audio context. It does not record audio,
 start inference or alter work. Activation, suspension, quieting, errors and mute are visible in the conversation.
 The volume appears there when listening is activated; the detailed score remains
-under **Under the hood**. Muting, Stop audio, leaving the conversation, hiding the document or
+in **Conversation settings**. Muting, Stop audio, leaving the conversation, hiding the document or
 going offline closes its owned context and cancels transitions. Returning does
 not resume playback without another click.
 
