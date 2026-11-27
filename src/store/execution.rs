@@ -106,8 +106,9 @@ impl Store {
         anyhow::ensure!(valid, "Codex native submission binding changed");
         if let Some((id, human)) = routed {
             anyhow::ensure!(
-                super::dialogue::dispatched_source_on(&tx, id, human, &self.instance_id)?,
-                "Routed original retired before Codex submission"
+                super::dialogue::dispatched_source_on(&tx, id, human, &self.instance_id)?
+                    && super::session_requests::session_input_allowed_on(&tx, id, human)?,
+                "Routed original or handoff retired before Codex submission"
             );
         }
         tx.commit()?;
