@@ -229,12 +229,19 @@ async def bind_voice_actor(provider, authorize, socket, meta, *, require_voice=T
     if require_voice and not getattr(provider, 'receiver', {}).get('voice'):
         raise ValueError('Voice input unavailable')
     actor=VoiceActor(authorize,request,session['human'])
-    async def recheck():
-        await actor()
+
+    async def check_binding():
         value = await asyncio.to_thread(provider.presentation, f'input list {2**63-1} after')
         if value['binding'] != meta['binding']:
             raise ValueError('Conversation binding changed')
-    await recheck()
+
+    async def recheck():
+        await actor()
+        await check_binding()
+
+    # The session and CSRF were verified in this same admission. Subsequent
+    # provider, source and delivery boundaries still obtain a fresh verdict.
+    await check_binding()
     admit_voice(socket.scope)
     return session, recheck, actor
 
