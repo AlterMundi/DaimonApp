@@ -761,6 +761,12 @@ class Companion(unittest.TestCase):
         self.assertEqual(requests, [f"presentation part {self.body['source']} {self.body['revision']} 0"]*3)
         self.assertEqual(self.speech.calls, [])
 
+    def test_exact_part_connection_reset_is_temporarily_unavailable(self):
+        with patch.object(self.provider, 'presentation_part', side_effect=ConnectionResetError):
+            result = self.client.get('/api/interaction/part', params=self.body, headers=self.headers)
+        self.assertEqual(result.status_code, 503)
+        self.assertEqual(self.speech.calls, [])
+
     def test_explicit_speech_profile_has_no_default_fallback_and_reuses_capacity(self):
         from unittest.mock import AsyncMock
         from dashboard.speech import Speech
