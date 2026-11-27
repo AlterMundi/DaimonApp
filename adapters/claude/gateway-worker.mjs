@@ -456,8 +456,9 @@ async function main() {
     const sessionInstructions = first?.sessionInstructions;
     const historySeed = first?.historySeed;
     const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
-      && typeof historySeed.source === 'string' && historySeed.source.startsWith('delivery:')
-      && UUID.test(historySeed.source.slice('delivery:'.length))
+      && typeof historySeed.source === 'string'
+      && ['delivery:', 'telegram-result:'].some(prefix =>
+        historySeed.source.startsWith(prefix) && UUID.test(historySeed.source.slice(prefix.length)))
       && typeof historySeed.revision === 'string' && /^[a-f0-9]{64}$/.test(historySeed.revision)
       && typeof historySeed.assistant === 'string' && !!historySeed.assistant.trim();
     const attachments = first?.attachments;

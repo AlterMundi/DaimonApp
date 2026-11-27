@@ -96,8 +96,15 @@ the selected text digest at capture and verifies the original source and
 destination at preparation. A changed delivery status can preserve the same
 text; a different result or topic cannot supply the quote. This uses the
 normal run queue when a Claude turn is busy. If an explicitly selected result
-cannot be supplied, Gateway retains the original without submitting it. Other
-explicit replies do not use the latest-exchange fallback. Native goal commands and
+cannot be supplied, Gateway retains the original without submitting it.
+For Telegram replies, Gateway resolves the quoted message ID from the
+retained incoming update and matches a publication receipt to an owned final
+result in the current topic generation. It uses the canonical result body
+even when a Telegram reply points to one part of a split publication. It does
+not import the nested Telegram reply text. A prepared quote is revalidated
+before submission. An identified result whose text was withheld, exceeds the
+context bound, or belongs to a retired generation leaves the input retained.
+Other replies keep their existing path. Native goal commands and
 unpaired or peer inputs keep their existing submission path. Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
