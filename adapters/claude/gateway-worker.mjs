@@ -473,6 +473,7 @@ async function main() {
     const sessionInstructions = first?.sessionInstructions;
     const workspace = first?.workspace;
     const historySeed = first?.historySeed;
+    const projectCheckpoint = first?.projectCheckpoint;
     const validExchange = exchange => closed(exchange, ['turn', 'human', 'assistant', 'harness', 'nativeThread'])
       && ['codex', 'claude'].includes(exchange.harness)
       && typeof exchange.nativeThread === 'string' && exchange.nativeThread.length <= 128
@@ -507,7 +508,8 @@ async function main() {
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
       ...(workspace === undefined ? [] : ['workspace']),
-      ...(historySeed === undefined ? [] : ['historySeed'])])
+      ...(historySeed === undefined ? [] : ['historySeed']),
+      ...(projectCheckpoint === undefined ? [] : ['projectCheckpoint'])])
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
       || (historySeed !== undefined && (!fullAccess
@@ -515,6 +517,9 @@ async function main() {
           || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
           || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())))
         || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
+      || (projectCheckpoint !== undefined && (!fullAccess || nativeGoalCommand
+        || typeof projectCheckpoint !== 'string' || !projectCheckpoint.trim()
+        || projectCheckpoint.includes('\0') || Buffer.byteLength(projectCheckpoint) > 8 * 1024))
       || (routedHostAccess && !routedHuman)
       || (routedHuman && first.humanOriginal)
       || (controllerSelected && !fullAccess)
@@ -737,7 +742,8 @@ async function main() {
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
-        historySeed: recoveredHistory },
+        historySeed: recoveredHistory,
+        projectCheckpoint: !resume || recoveredHistory ? projectCheckpoint : undefined },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,

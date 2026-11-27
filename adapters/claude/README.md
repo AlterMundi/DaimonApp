@@ -98,12 +98,23 @@ including the body binding, memory and tools, continue to partition native
 history. Verify a resumed turn and the new installed skill before reporting
 receiving adoption.
 
-For paired topic inputs, Gateway can supply the last completed exchange from
-the current logical topic generation and the same Claude embodiment. It reads
-the retained original and its completed reply, keeping both whole within the
-12 KiB encoded context bound. A compatible native resume takes precedence.
-The adapter labels the older exchange as historical data and keeps it separate
-from the current original. When Claude reports missing native history before
+For paired topic inputs, Gateway can supply up to three completed exchanges
+from the current logical topic generation, with one exchange per native lineage.
+It reads the retained originals and completed replies, keeping each exchange
+whole within the 12 KiB encoded context bound. A compatible native resume takes
+precedence, and the worker omits exchanges already in that native session.
+The adapter labels the older exchanges as historical data and keeps them
+separate from the current original.
+
+A project's active checkpoint may be kept as UTF-8 `CONTINUITY.md` (up to 8 KiB)
+in the Gateway-claimed conversation folder. Install it as an owner-only regular
+file and replace it atomically when the project state changes. The Gateway uses
+the conversation's own folder claim even when the working directory is a
+different project checkout. On a fresh Claude session or when supplying retained
+history across a gap, the worker attaches the checkpoint as a separate data
+block. Prefer dated status, verifiable revisions and source pointers. The file
+carries no approvals or instructions. Missing or invalid files leave ordinary
+conversation delivery available. When Claude reports missing native history before
 submission, Gateway retains that result. This path does not resubmit that
 input. A paired Conversation reply to a canonical result carries the exact
 selected text to either a resumed or fresh Claude context. Gateway retains

@@ -18,6 +18,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub session_instructions: Option<&'a str>,
     pub workspace: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
+    pub project_checkpoint: Option<&'a str>,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
@@ -119,6 +120,7 @@ pub(in crate::app) async fn execute_worker(
         session_instructions,
         workspace,
         history_seed,
+        project_checkpoint,
         text,
         attachments,
         body,
@@ -188,6 +190,9 @@ pub(in crate::app) async fn execute_worker(
             }
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
+            }
+            if let Some(checkpoint) = project_checkpoint {
+                start["projectCheckpoint"] = json!(checkpoint);
             }
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume.first());
@@ -664,6 +669,7 @@ pub(super) async fn run_portable_turn(
                 session_instructions: None,
                 workspace: None,
                 history_seed: None,
+                project_checkpoint: None,
                 text: &input.text,
                 attachments: &[],
                 body: body.clone(),
@@ -787,14 +793,19 @@ pub(super) async fn run_routed_portable(
             && routed_host_access
             && request.attachments.is_empty()
             && super::routing::native_claude_goal(&request.prompt);
-        let history_seed = if engine == ForegroundEngine::Claude
+        let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
             && !native_goal_command
         {
-            store.routed_claude_history_seed(input, local, &body)?
+            (
+                store.routed_claude_history_seed(input, local, &body)?,
+                store
+                    .topic_folder_claim(input.target, input.human_id)?
+                    .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim)),
+            )
         } else {
-            None
+            (None, None)
         };
         // CREATE_ONLY adapters require a distinct coordinate for each attempt.
         let attempt = uuid::Uuid::new_v4().to_string();
@@ -813,6 +824,7 @@ pub(super) async fn run_routed_portable(
                 workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                     .then_some(session.cwd.as_path()),
                 history_seed: history_seed.as_ref(),
+                project_checkpoint: project_checkpoint.as_deref(),
                 text: &request.prompt,
                 attachments: &request.attachments,
                 body: body.clone(),

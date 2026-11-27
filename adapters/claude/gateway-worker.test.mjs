@@ -128,7 +128,10 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const fromCodex = text === 'Synthetic prior Codex exchange.';
                 const recovered = text === 'Synthetic split Claude exchange.';
                 if (expectedQuote || fromCodex || recovered) assert.ok(Array.isArray(content), text);
-                if (recovered) assert.equal(options.resume, ${JSON.stringify(priorSessionId)});
+                if (recovered) {
+                  assert.equal(options.resume, ${JSON.stringify(priorSessionId)});
+                  assert.equal(content[1].text, 'Gateway project checkpoint (JSON):\\n' + JSON.stringify('Verified branch and commit.'));
+                }
                 assert.equal(Array.isArray(content), options.systemPrompt.append.includes('Gateway attached retained context'));
                 if (Array.isArray(content)) {
                   const seed = recovered ? ${JSON.stringify({ exchanges: [earlierSeed] })}
@@ -331,7 +334,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             ...(decision === 'quoted-resume' ? { historySeed: exactQuote } : {}),
             ...(decision === 'telegram-quoted-resume' ? { historySeed: telegramQuote } : {}),
             ...(decision === 'codex-seeded-resume' ? { historySeed: codexSeed } : {}),
-            ...(decision === 'split-history-resume' ? { historySeed: splitHistory } : {}),
+            ...(decision === 'split-history-resume'
+              ? { historySeed: splitHistory, projectCheckpoint: 'Verified branch and commit.' } : {}),
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
           }) + '\n');
           const firstLine = await lines.next();
