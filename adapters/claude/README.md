@@ -147,7 +147,12 @@ Gateway can attach its exact original and final answer to a resumed or fresh
 Claude thread. It checks the logical owner and generation, the physical
 receipt, and whether multiple originals could have produced the answer. Native
 history remains in its own harness. This currently covers routed originals and
-direct Telegram originals with matching receipts.
+direct Telegram originals with matching receipts. When the topic returns to
+Codex, its existing native thread is resumed. At the first paired turn after
+completed Claude work, Gateway supplies the same topic's owned Claude
+exchanges and available project checkpoint as named untrusted native context.
+The original input keeps its existing contents and delivery identity. Gateway
+checks the selected context again before native submission.
 
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
@@ -487,5 +492,8 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF=1` for the first Claude turn in a
   topic previously served by Codex. The provider sees the exact prior request
   and reply as historical context, and the original Codex binding remains.
+  Add `FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP=1` to switch back and check the
+  first Codex submission receives the Claude exchange as untrusted context
+  and the next ordinary Codex turn follows its existing native history.
 
 All Matrix identities, user input and provider output are synthetic.

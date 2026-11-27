@@ -676,6 +676,57 @@ timeout_seconds=5
             self.assertNotEqual(provider.codex_handoff_native, codex)
             self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
                              [(codex,)])
+            if os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP") != "1":
+                return
+
+            claude_prompt = provider.original
+            calls_before_switch = list(provider.calls)
+            journey.idle()
+            journey.stop()
+            config = journey.config.read_text()
+            selected = 'name="Alpha"\nharness="claude"'
+            self.assertIn(selected, config)
+            folder_root = journey.root / "conversation-folders"
+            folder_root.mkdir(mode=0o700)
+            config = config.replace("[interaction]\n",
+                "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
+            journey.config.write_text(config.replace(selected, 'name="Alpha"', 1))
+            journey.start()
+            journey.wait_control_socket(journey.socket)
+            session = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0][0]
+            adopted = journey.read("topics", "workspace", "adopt", "7", str(session))["result"]
+            self.assertTrue(adopted["folder_ready"])
+            checkpoint = Path(adopted["conversation_folder"]) / "CONTINUITY.md"
+            checkpoint.touch(mode=0o600, exist_ok=False)
+            checkpoint.write_text("Synthetic design checkpoint at revision two.")
+
+            def native_start(original):
+                offset = len(journey.rpc)
+                journey.admit(original, topic=7)
+                def matching():
+                    return [r["params"] for r in journey.rpc[offset:] if r.get("method") == "turn/start"
+                            and any(i.get("text") == original for i in r["params"].get("input", []))]
+                journey.wait(matching, seconds=25)
+                self.assertEqual(len(matching()), 1)
+                request = matching()[0]
+                self.assertEqual(request["threadId"], codex)
+                self.assertEqual(len(request["input"]), 1)
+                journey.idle()
+                return request.get("additionalContext") or {}
+
+            context = native_start("Continue the design back in Codex.")
+            fragments = [value for key, value in sorted(context.items())
+                         if key.startswith("gateway.history.") and key != "gateway.history.source"]
+            self.assertTrue(fragments, "The resumed Codex turn received no Claude context")
+            self.assertTrue(all(f["kind"] == "untrusted" and f["name"] == "gateway_history" for f in fragments))
+            seed = json.loads("".join(f["value"] for f in fragments))
+            self.assertEqual(seed["ownedExchanges"]["human"], claude_prompt)
+            self.assertIn(ANSWER, seed["ownedExchanges"]["assistant"])
+            self.assertEqual(seed["ownedExchanges"]["nativeThread"], provider.codex_handoff_native)
+            self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
+            later = native_start("Continue normally in Codex.")
+            self.assertFalse(any(key.startswith("gateway.history.") for key in later))
+            self.assertEqual(provider.calls, calls_before_switch)
 
         def _telegram_skill_refresh(self, journey, provider):
             def submit(text):
