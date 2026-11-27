@@ -1557,6 +1557,11 @@ the audio transport. With `prior_visit_context = false`, startup sends the
 current integrating context, without the previous physical visit's transcript
 or automatic delivery of earlier visits' results into the new voice session.
 Original recordings, transcripts and delivered native work remain readable.
+The startup window reserves space for the newest retained Conversation input
+before filling the remainder with recent results. A long intervening progress
+update can keep its exact source reference without displacing that input.
+Sources in the resulting window remain in observation order with capture
+coordinates for originals.
 
 The GPT-Live WebRTC data channel supplies immediate local Avatar captions.
 The authenticated sideband still retains the canonical transcript deltas and

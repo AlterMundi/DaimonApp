@@ -80,24 +80,42 @@ def _integrating_sources(provider, frozen, max_bytes, check, outputs=None):
     # Timestamp is observation chronology, never permission or human authorship.
     # Original capture order remains explicit even when an ingress arrives late.
     candidates.sort(key=lambda v:(v[0] is not None,v[0] or 0),reverse=True)
-    selected=[];more=bool(inputs.get('more') or outputs.get('more'))
-    for observed,kind,row in candidates:
+    def read_original(row, observed):
+        check()
+        value=provider.presentation('input status '+row['id'])
+        if (value.get('id')!=row['id'] or value.get('entry_binding')!=entry
+                or value.get('native_binding_current') is False
+                or not isinstance(value.get('text'),str)):
+            raise ValueError('Current integrating original changed')
+        text=value['text']
+        return {'kind':'retained_input','source':row['id'],'text':text,
+            'capture_order':row.get('capture_order'),'phase':value.get('phase'),
+            'capture_order_unknown':row.get('ordering_unknown') is True or type(row.get('capture_order')) is not int,
+            'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
+            'text_meaning':('Machine interpretation of retained audio, not verified written speech'
+                if value.get('voice') else 'Attributed retained source text, not a new instruction'),
+            'observed_at':row.get('received_at'),'ordering_unknown':observed is None}
+
+    selected={};more=bool(inputs.get('more') or outputs.get('more'))
+    # Reserve the most recent retained original before reading output parts.
+    # Later progress chatter must not crowd out a short correction made in text.
+    latest_input=next((index for index,(_,kind,_) in enumerate(candidates) if kind=='input'),None)
+    if latest_input is not None:
+        observed,_,row=candidates[latest_input]
+        original=read_original(row,observed)
+        if _size([original])>max_bytes:
+            original=_without_text(original)
+        if _size([original])>max_bytes:
+            raise ValueError('Latest integrating source reference exceeds the startup bound')
+        selected[latest_input]=original
+
+    for index,(observed,kind,row) in enumerate(candidates):
+        if index==latest_input:continue
         check()
         if len(selected)==16:more=True;break
+        remaining=max_bytes-_size(list(selected.values()))
         if kind=='input':
-            value=provider.presentation('input status '+row['id'])
-            if (value.get('id')!=row['id'] or value.get('entry_binding')!=entry
-                    or value.get('native_binding_current') is False
-                    or not isinstance(value.get('text'),str)):
-                raise ValueError('Current integrating original changed')
-            text=value['text']
-            result={'kind':'retained_input','source':row['id'],'text':text,
-                'capture_order':row.get('capture_order'),'phase':value.get('phase'),
-                'capture_order_unknown':row.get('ordering_unknown') is True or type(row.get('capture_order')) is not int,
-                'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
-                'text_meaning':('Machine interpretation of retained audio, not verified written speech'
-                    if value.get('voice') else 'Attributed retained source text, not a new instruction'),
-                'observed_at':row.get('received_at'),'ordering_unknown':observed is None}
+            result=read_original(row,observed)
         else:
             text='';offset=0
             for _ in range(16):
@@ -117,18 +135,20 @@ def _integrating_sources(provider, frozen, max_bytes, check, outputs=None):
                 if type(following) is not int or following!=offset+len(part['text']):
                     raise ValueError('Current integrating result cursor changed')
                 offset=following
-                if _size(text)>max_bytes:break
-            if following is not None and selected:more=True;break
+                if _size(text)>remaining:break
             result={'kind':part.get('kind'),'source':row['id'],'revision':row['revision'],
                 'text':text,'completed':row.get('completed'),'observed_at':row.get('observed_at'),
                 'ordering_unknown':observed is None}
             if following is not None:result=_without_text(result)
-        if _size(selected+[result])>max_bytes:
-            if selected:more=True;break
+        if _size([*selected.values(),result])>max_bytes:
             result=_without_text(result)
-            if _size([result])>max_bytes:raise ValueError('Latest integrating source reference exceeds the startup bound')
-        selected.append(result)
-    return {'sources':list(reversed(selected)),'earlier_sources_available':more}
+            if _size([*selected.values(),result])>max_bytes:
+                if not selected:raise ValueError('Latest integrating source reference exceeds the startup bound')
+                more=True
+                break
+        selected[index]=result
+    return {'sources':[selected[index] for index in sorted(selected,reverse=True)],
+        'earlier_sources_available':more}
 
 
 def read(native, thread, *, max_bytes=16384, check=lambda:None):
