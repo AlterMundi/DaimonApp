@@ -1087,6 +1087,21 @@ async fn admit_message(
 fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> Result<String> {
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     let author = shared.store.interaction_author(&i.id, i.human_id)?;
+    if matches!(
+        source.channel.as_str(),
+        "local-session" | "local-session-result"
+    ) && i
+        .target_execution
+        .as_ref()
+        .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+    {
+        return crate::interaction::local_claude_packet(
+            i,
+            author
+                .as_ref()
+                .context("Attributed Claude handoff has no author")?,
+        );
+    }
     let original = shared
         .store
         .interaction_original_provenance(&i.id, i.human_id)?;
@@ -1386,6 +1401,13 @@ fn queue_root(
             &packet(shared, i, None)?,
         )?
     };
+    anyhow::ensure!(
+        !i.target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+            || prompt.len() <= 16 * 1024,
+        "The complete Claude input exceeds the native byte limit"
+    );
     let epoch = i
         .admission_epoch
         .clone()

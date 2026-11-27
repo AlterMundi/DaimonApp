@@ -65,7 +65,7 @@ try:
         if(route==='interaction/draft')return draftRead(body);
         if(route==='interaction/inputs'&&body){
           const {binding,...original}=body;
-          const receipt={...original,entry_binding,phase:original.target==='claude'?'matrix_received':'accepted'};
+          const receipt={...original,entry_binding,phase:window.fixtureInitialPhase || (original.target==='claude'?'matrix_received':'accepted')};
           fixtureInputs.push(receipt);
           if(window.fixtureHoldAck)await new Promise(resolve=>window.fixtureReleaseAck=resolve);
           if(window.fixtureLoseAck)throw Error('Controlled lost acknowledgement');
@@ -80,7 +80,7 @@ try:
           return {id,source:'claude-reply',text,offset,next_offset:offset+text.length<fixtureFullReply.length?offset+text.length:null};
         }
         if(route.startsWith('interaction/inputs/')){
-          const receipt=fixtureInputs.find(input=>route.endsWith(input.id));
+          const receipt=fixtureInputs.find(input=>route.endsWith(input.id)) ?? (route.endsWith(window.fixtureStatusOnly?.id)?window.fixtureStatusOnly:undefined);
           if(!receipt)throw Error('No fixture receipt');
           if(window.fixtureHoldInputStatus){
             return await new Promise(resolve=>window.fixtureReleaseInputStatus=resolve);
@@ -129,10 +129,12 @@ try:
     page.unroute('**/fixture-draft')
     assert frame.locator('#conversation-target').count()==0
     assert other.get_by_label('Talk to').count()==0
+    other.evaluate("window.fixtureInitialPhase='retained'")
     other.locator('#conversation-message').fill('Private Claude fixture original')
     other.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
     other.wait_for_function('fixtureInputs.length===1')
     retained=other.evaluate('fixtureInputs[0]')
+    other.evaluate('delete window.fixtureInitialPhase')
     assert 'target' not in retained and retained['text']=='Private Claude fixture original'
     assert not ({'files','reply','playback','visual'} & set(retained))
     card=other.locator(f'[data-input-id="{retained["id"]}"]')
@@ -248,6 +250,23 @@ try:
     frame.wait_for_function('fixtureInputs.length===1 && document.querySelector("#conversation-message").value===""')
     assert frame.evaluate('fixtureInputs[0]')==frozen
     assert not page.evaluate("messages.some(m=>m.type==='prepare')")
+    frame.evaluate('window.fixtureLoseAck=true')
+    text='Read the confirmed message even outside the current history window.'
+    frame.locator('#conversation-message').fill(text)
+    frame.locator('#conversation-compose').evaluate('(form)=>form.requestSubmit()')
+    frame.get_by_text('This message may already have been sent.').wait_for()
+    status_only=frame.evaluate('''()=>{const {id,entry_binding,phase}=fixtureInputs.at(-1);
+      return {id,entry_binding,phase,received_at:'2026-11-25T01:01:00Z'};}''')
+    page.reload();frame=page.frames[1];frame.wait_for_function('!!window.Conversation');frame.evaluate(mount)
+    frame.evaluate('(receipt)=>window.fixtureStatusOnly=receipt',status_only)
+    warning=frame.get_by_text('This message may already have been sent.')
+    warning.wait_for()
+    message=frame.locator('#conversation-timeline [data-input-id="'+status_only['id']+'"]')
+    assert message.count()==0
+    warning.locator('..').get_by_role('button',name='Check message status').click()
+    message.get_by_text(text,exact=True).wait_for()
+    assert not warning.is_visible()
+    assert frame.evaluate('fixtureInputs.length')==0
     results.append({'width':width,'text_original_id':original['id'],'synthetic_audio_original_id':posts[-1]['id'],'composer_visible':True,'draft_reloaded_and_synced':True,'private_payload_to_parent':False});page.close()
   finally:browser.close()
 finally:

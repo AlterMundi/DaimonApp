@@ -714,6 +714,14 @@ hearing are separate acceptance from source/HTTP/queue fixtures.
 
 ## Editing a live dictation draft
 
+Prepared dictation reads the recognizer continuously while authorizing the
+next browser update. Each partial is a complete transcript snapshot. A newer
+snapshot can replace one still waiting to be displayed. The final transcript
+supersedes outstanding previews and gets a fresh access and binding check
+before the exact WAV-linked receipt is stored. Audio input, receipt identity
+and the manual Send action are unchanged.
+
+
 Touching or typing in an editable live-caption composer pauses its current PCM
 capture and visible countdown. **Continue listening** resumes the same recorder
 and recognition socket, puts the cursor at the end and appends subsequent words

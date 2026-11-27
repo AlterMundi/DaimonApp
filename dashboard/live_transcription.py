@@ -339,6 +339,8 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
         owner = None
         incoming = None
         detector_reader = None
+        partial_sender = None
+        pending_partial = None
         sending = asyncio.Lock()
         async def observe_failure(boundary, operation, *args):
             try:
@@ -418,14 +420,35 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                 diagnostic['stage'] = 'provider_open'
                 stream = await asyncio.to_thread(open_provider)
                 ready, finished = asyncio.Event(), asyncio.Event()
+                async def publish_partials():
+                    nonlocal pending_partial
+                    while pending_partial is not None:
+                        await recheck()
+                        value, pending_partial = pending_partial, None
+                        await send(value)
+
+                async def next_provider_event():
+                    current = partial_sender
+                    if current is None:
+                        return await asyncio.to_thread(stream.receive)
+                    read = asyncio.create_task(asyncio.to_thread(stream.receive))
+                    try:
+                        done, _ = await asyncio.wait((read, current), return_when=asyncio.FIRST_COMPLETED)
+                        if current in done:
+                            await current  # Authorization refusal must terminate the visit.
+                        return await read
+                    finally:
+                        if not read.done():
+                            read.cancel()
+
                 async def receive_provider():
-                    nonlocal stream
+                    nonlocal stream, pending_partial, partial_sender
                     opening_deadline=time.monotonic()+8
                     while True:
                         try:
                             if not ready.is_set() and time.monotonic()>=opening_deadline:
                                 raise TranscriptionUnavailable('Streaming readiness unavailable')
-                            event = await asyncio.to_thread(stream.receive)
+                            event = await next_provider_event()
                         except (OSError,ValueError,TranscriptionUnavailable):
                             # No PCM can be accepted before ready. Once advertised,
                             # never replay this capture into another paid stream.
@@ -440,14 +463,30 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                             stream=await asyncio.to_thread(open_provider,candidate_index+1)
                             opening_deadline=time.monotonic()+8
                             continue
-                        if event['type']=='ready': ready.set()
-                        if event['type'] in ('ready','partial'):
+                        if event['type']=='ready':
                             await recheck()
+                            ready.set()
                             await send(event)
+                        elif event['type']=='partial':
+                            # A partial is a complete replaceable snapshot. Drain
+                            # provider events while checking the next browser update.
+                            if partial_sender is not None and partial_sender.done():
+                                await partial_sender
+                                partial_sender = None
+                            pending_partial = event
+                            if partial_sender is None:
+                                partial_sender = asyncio.create_task(publish_partials())
                         elif event['type']=='final':
                             if mode=='captions':
                                 raise ValueError('Live captions are not a confirmed transcript')
                             elapsed('provider_final')
+                            # The exact final transcript supersedes queued previews.
+                            pending_partial = None
+                            if partial_sender is not None:
+                                partial_sender.cancel()
+                                with suppress(asyncio.CancelledError):
+                                    await partial_sender
+                                partial_sender = None
                             diagnostic['stage'] = 'final_authorization'
                             preparation_started['final_authorization'] = time.monotonic()
                             await recheck()
@@ -546,6 +585,10 @@ def install(app, config, provider, authorize, origins, *, configuration='streami
                         with suppress(asyncio.CancelledError,Exception):reader.result()
                 if incoming is not None:
                     incoming.cancel()
+                if partial_sender is not None:
+                    partial_sender.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await partial_sender
                 if detector_reader is not None:
                     detector_reader.cancel()
                 if detector_reader is not None:

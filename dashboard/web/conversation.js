@@ -883,10 +883,17 @@ window.Conversation = (() => {
     draftStatus.append(draftNote,draftPrimary,draftOther);
     const draftState=readOnly?undefined:window.ConversationSurface?.mountDraft?.({field:draft,api,
       busy:()=>posting||captureBusy||!!transcriptPreview,
-      async check(id){
+      async check(id,text){
         const owned=inputGeneration,selected=inputBinding;
-        const receipt=await api(`interaction/inputs/${encodeURIComponent(id)}`);
-        if(owned===inputGeneration&&selected===inputBinding)return draftReceipt(receipt);
+        const result=await api(`interaction/inputs/${encodeURIComponent(id)}`);
+        if(owned!==inputGeneration||!selected||selected!==inputBinding||result.id!==id||!result.phase)return;
+        const receipt=draftReceipt(result);
+        if(receipt.binding!==selected)return;
+        // The exact confirmed original may no longer be in the loaded history
+        // window. Project it before the draft receipt releases the composer.
+        if(!latestComposerId)latestComposerId=id;
+        inputCard({...receipt,text},++inputObservation,selected);
+        return receipt;
       },
       async retry(original){
         if(posting||captureBusy||!ready||original.binding!==binding||inputBinding!==binding)return;
@@ -896,7 +903,8 @@ window.Conversation = (() => {
         const receipt=draftReceipt(result);
         if(receipt.binding!==original.binding)return;
         hostSurface?.status(result);
-        inputCard(result,++inputObservation,original.binding);
+        if(!latestComposerId)latestComposerId=original.id;
+        inputCard({...receipt,text:original.text},++inputObservation,original.binding);
         return receipt;
       },
       show(state,primary,other){
@@ -1473,19 +1481,25 @@ window.Conversation = (() => {
         hostSurface?.attempt?.({id,binding:selectedBinding});
         const original={binding:selectedBinding,id,text,...(reply?{reply}:{}),...(selectedVisual?{visual:selectedVisual}:{}),...(selectedFiles?.length?{files:selectedFiles}:{}),...(playback?{playback}:{})};
         draftState?.attempt(original);
+        workspace?.previewSubmission?.(reply,id,text);
         const result=await api("interaction/inputs",original);
         if (owned !== inputGeneration) return;
         if(result.id!==id || result.binding!==undefined&&result.binding!==selectedBinding || !result.phase)throw Error('Wrong message receipt');
         hostSurface?.status(result);retainedCorrection(result);
         const confirmed = inputCard(result, observation,selectedBinding);
+        if(result.phase==="accepted"||result.phase==="routed"){
+          workspace?.settlePreview?.(id,result.routing?.phase==="queued"?"Saved. Waiting for this session.":"Message saved.");
+          workspace?.observeSubmission?.(reply);
+        }else workspace?.settlePreview?.(id,phaseText(confirmed.value));
         visual?.consumed(selectedVisual);attachedFiles?.consumed(selectedFiles);
         if(focusAtSubmit===focusVersion)clearFocus();
         if (draft.value === text) draft.value = "";
         inputNotice(confirmed.value);
       } catch (e) {
         if (owned !== inputGeneration) return;
-        if(e.visualReselection){draftState?.unsent(id);inputCard({id,phase:"reselection"},observation);composerNotice("Select the image again, then send. This attempt did not submit the message.");return;}
+        if(e.visualReselection){workspace?.settlePreview?.(id,"discarded");draftState?.unsent(id);inputCard({id,phase:"reselection"},observation);composerNotice("Select the image again, then send. This attempt did not submit the message.");return;}
         const retained = inputs.get(id)?.value;
+        workspace?.settlePreview?.(id,retained?.phase?phaseText(retained):"Submission unconfirmed.");
         if (id === latestComposerId) {
           if(retained?.phase)inputNotice(retained);
           else composerNotice("Submission unconfirmed. Check this message status; it will not be resent automatically.");

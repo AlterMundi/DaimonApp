@@ -1710,3 +1710,10 @@ the existing owner-scoped visit status and revision-fenced event reader. A
 newer visit from another window does not replace that transcript. Retry reads
 the same failed visit; incomplete snapshots and changed owners stay out of
 Conversation. Ordinary earlier-history paging keeps its own cursor.
+
+
+An authenticated explicit close retains its existing 30-second provider drain
+if the browser disconnects or a close notification cannot reach it. The server
+continues checking the same actor and native binding. It stores any confirmed
+final usage from the already attached trusted sideband. Browser loss before
+a close never creates a close intent, and an uncertain command is never retried.

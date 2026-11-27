@@ -7,13 +7,6 @@ use crate::{
 use anyhow::bail;
 use serde_json::Value;
 
-struct PriorExecution {
-    status: String,
-    session: Option<String>,
-    scope: Option<String>,
-    body: Option<String>,
-}
-
 pub(super) fn telegram_original_epoch(
     conn: &Connection,
     source: &SourceInput,
@@ -226,14 +219,13 @@ impl Store {
             "Routed input retired before native preparation"
         );
         let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
-        let paired = if source.channel == "conversation" {
-            super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
-                .paired_actor
-        } else {
-            // A retained same-session result may continue its opted-in, already
-            // authorized parent, while a new session-authored request has no
-            // independent grant to the paired human's host tools.
-            source.channel != "local-session"
+        let paired = match source.channel.as_str() {
+            "conversation" => {
+                super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?
+                    .paired_actor
+            }
+            "local-session" => super::session_requests::paired_request_parent_on(&tx, &current)?,
+            _ => true,
         };
         let local =
             super::record_turn_started_on(&tx, current.target_session, request, Some(&current.id))?;
@@ -262,36 +254,55 @@ impl Store {
         Ok((local, paired))
     }
 
-    pub(crate) fn routed_claude_continuation(
+    pub(crate) fn routed_claude_continuations(
         &self,
         local: i64,
         body: &Value,
-    ) -> Result<Option<ClaudeContinuation>> {
+    ) -> Result<Vec<ClaudeContinuation>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        let prior: Option<PriorExecution> = conn.query_row(
-            "SELECT p.status,p.native_thread_id,p.execution_native_scope,p.execution_body
-             FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
-             WHERE p.id<t.id AND p.execution_harness='claude' AND p.execution_generation=t.execution_generation
-               AND (p.native_thread_id IS NOT NULL OR p.execution_native_scope='resume_unavailable')
-               AND NOT EXISTS (SELECT 1 FROM interaction_instructions i
-                 WHERE i.session_id=p.session_id AND i.phase='rejected'
-                 AND json_extract(i.doc,'$.local_turn')=p.id
-                 AND json_type(i.doc,'$.subscription_limit')='object')
-             ORDER BY p.id DESC LIMIT 1",[local],|r|Ok(PriorExecution { status:r.get(0)?, session:r.get(1)?, scope:r.get(2)?, body:r.get(3)? }),
-        ).optional()?;
-        let Some(PriorExecution {
-            status,
-            session: Some(session_id),
-            scope: Some(scope),
-            body: Some(identity),
-        }) = prior
-        else {
-            return Ok(None);
-        };
-        Ok((status == "completed"
-            && valid_claude_scope(&scope)
-            && serde_json::from_str::<Value>(&identity)? == *body)
-            .then_some(ClaudeContinuation { session_id, scope }))
+        // The worker has already been selected for this authenticated body.
+        // A manifest-only update preserves local history for the same incarnation.
+        // The worker and Gateway still require the exact effective scope before exposure.
+        let mut entries = conn.prepare(
+            "WITH prior AS (
+                SELECT p.id,p.status,p.native_thread_id,p.execution_native_scope AS scope
+                FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
+                WHERE p.id<t.id AND p.execution_harness='claude'
+                  AND p.execution_generation=t.execution_generation
+                  AND (p.execution_native_scope='resume_unavailable'
+                       OR (p.native_thread_id IS NOT NULL
+                           AND json_extract(p.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
+                           AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId')
+                           AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?2,'$.incarnationId')))
+                  AND NOT EXISTS (SELECT 1 FROM interaction_instructions i
+                    WHERE i.session_id=p.session_id AND i.phase='rejected'
+                    AND json_extract(i.doc,'$.local_turn')=p.id
+                    AND json_type(i.doc,'$.subscription_limit')='object')
+             ), ranked AS (
+                SELECT *,row_number() OVER (PARTITION BY scope ORDER BY id DESC) AS position
+                FROM prior WHERE id>coalesce((SELECT max(id) FROM prior WHERE scope='resume_unavailable'),0)
+             )
+             SELECT native_thread_id,scope FROM ranked
+             WHERE position=1 AND status='completed' AND scope IS NOT NULL
+             ORDER BY id DESC LIMIT 8",
+        )?;
+        let rows = entries.query_map(params![local, serde_json::to_string(body)?], |row| {
+            Ok(ClaudeContinuation {
+                session_id: row.get(0)?,
+                scope: row.get(1)?,
+            })
+        })?;
+        let mut valid = Vec::new();
+        for row in rows {
+            let row = row?;
+            if valid_claude_scope(&row.scope)
+                && Uuid::parse_str(&row.session_id)
+                    .is_ok_and(|uuid| uuid.to_string() == row.session_id)
+            {
+                valid.push(row);
+            }
+        }
+        Ok(valid)
     }
 
     pub(crate) fn expose_routed_portable(
@@ -300,6 +311,7 @@ impl Store {
         local: i64,
         body: &Value,
         prepared: &Value,
+        paired_host_access: bool,
     ) -> Result<bool> {
         let harness = input
             .target_execution
@@ -337,6 +349,13 @@ impl Store {
         if current.phase != Phase::Queued
             || current.local_turn != Some(local)
             || !current_on(&tx, &current, &self.instance_id)?
+        {
+            return Ok(false);
+        }
+        if paired_host_access
+            && super::routing::source_on(&tx, &current.id, current.human_id)?.channel
+                == "local-session"
+            && !super::session_requests::paired_request_parent_on(&tx, &current)?
         {
             return Ok(false);
         }
@@ -449,12 +468,21 @@ impl Store {
                 )?;
             }
         }
-        let resume_unavailable = outcome["reason"] == "claude_resume_session_missing";
+        let missing = (outcome["reason"] == "claude_resume_session_missing")
+            .then_some(&outcome["resumeUnavailable"]);
+        let missing_scope =
+            missing.map(|candidate| candidate["scope"].as_str().unwrap_or("resume_unavailable"));
+        let missing_session = missing.and_then(|candidate| candidate["sessionId"].as_str());
+        let missing_body = outcome
+            .get("resumeUnavailableBody")
+            .map(serde_json::to_string)
+            .transpose()?;
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,
-            execution_native_scope=CASE WHEN ?5 THEN 'resume_unavailable' ELSE execution_native_scope END
+            execution_native_scope=coalesce(?5,execution_native_scope),
+            native_thread_id=coalesce(?7,native_thread_id),execution_body=coalesce(?8,execution_body)
             WHERE id=?4 AND status='running'
               AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?6)",
-            params![if reply.is_some() {"completed"} else {"failed"},reply,now_string(),local,resume_unavailable,self.instance_id])?==1,
+            params![if reply.is_some() {"completed"} else {"failed"},reply,now_string(),local,missing_scope,self.instance_id,missing_session,missing_body])?==1,
             "Routed result writer changed");
         tx.execute(
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
@@ -462,5 +490,66 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(deliveries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_continuations_keep_each_exact_scope_and_fence_uncertain_work() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let session = store.ensure_session(key, 100, &defaults).unwrap();
+        let body = serde_json::json!({"beingRef":"same", "embodimentId":"same", "incarnationId":"same","manifestHash":"selected"});
+        let prior_body = serde_json::json!({"beingRef":"same", "embodimentId":"same", "incarnationId":"same","manifestHash":"other"});
+        let first = "a".repeat(64);
+        let second = "b".repeat(64);
+        let third = "c".repeat(64);
+        let record = |status: &str, scope: &str, identity: &Value| {
+            let native = Uuid::new_v4().to_string();
+            let conn = store.conn.lock().unwrap();
+            let local = conn.query_row(
+                "INSERT INTO turns (session_id,from_user_id,prompt,status,started_at,native_thread_id,
+                     execution_harness,execution_generation,execution_native_scope,execution_body)
+                 VALUES (?1,100,'scope test',?2,'2026-11-26',?3,'claude','same',?4,?5) RETURNING id",
+                params![session.id,status,&native,scope,identity.to_string()], |r| r.get::<_, i64>(0),
+            ).unwrap();
+            (local, native)
+        };
+        let (_, one) = record("completed", &first, &body);
+        record("completed", &second, &body);
+        record("completed", &third, &body);
+        record("failed", &third, &body);
+        let (_, from_previous_manifest) = record("completed", &second, &prior_body);
+        let other_incarnation = serde_json::json!({
+            "beingRef":"same","embodimentId":"same","incarnationId":"retired","manifestHash":"selected"
+        });
+        record("completed", &second, &other_incarnation);
+        let (local, _) = record("running", "", &body);
+        let scopes = store.routed_claude_continuations(local, &body).unwrap();
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|c| c.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![from_previous_manifest.as_str(), one.as_str()]
+        );
+        record("failed", &first, &body);
+        let (next, _) = record("running", "", &body);
+        let scopes = store.routed_claude_continuations(next, &body).unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].session_id, from_previous_manifest);
+        record("failed", "resume_unavailable", &body);
+        let (next, _) = record("running", "", &body);
+        assert!(
+            store
+                .routed_claude_continuations(next, &body)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

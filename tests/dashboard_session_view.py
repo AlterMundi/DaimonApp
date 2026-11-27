@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Selected native history: bounded pagination, append races and private analysis."""
+from contextlib import closing
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
+import sqlite3
 import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from dashboard.session_view import read,MAX_LINE,TEXT_PART,WINDOW
+from dashboard.session_view import read,read_portable,MAX_LINE,TEXT_PART,WINDOW
 
 
 def encoded(value):return (json.dumps(value,ensure_ascii=False)+'\n').encode()
@@ -47,7 +49,7 @@ class SelectedHistory(unittest.TestCase):
                'Current attributed input:\n'+original+
                '\n\nSelected creation context (source data):\n{"private":"do not show"}\n'
                '\nReturn your answer followed by <daimon-result>')
-        resolve=lambda ident: original if ident==instruction else None
+        resolve=lambda ident: (original, "confirmed-original") if ident==instruction else None
         self.append(message('<environment_context>\nInternal only\n</environment_context>','user'),
                     message(managed,'user'),message(relay,'user'),
                     message(relay.replace(original,'Unmatched relay'),'user'),
@@ -65,6 +67,7 @@ class SelectedHistory(unittest.TestCase):
         same=read(self.path,'owned',event=first['position'],revision=ordinary['revision'])
         self.assertEqual(same['items'][0]['text'],prompt)
         routed=ordinary['items'][1]
+        self.assertEqual(routed['input_id'],'confirmed-original')
         self.assertEqual(read(self.path,'owned',event=routed['position'],revision=ordinary['revision'],
             routed_original=resolve)['items'][0]['text'],original)
     def test_conversation_hides_only_trailing_assistant_result_declarations(self):
@@ -185,5 +188,71 @@ class SelectedHistory(unittest.TestCase):
         self.append(message('x'*(MAX_LINE*4),channel='analysis'),message('Visible'))
         page=read(self.path,'owned');self.assertEqual([v['text']for v in page['items']],['Visible'])
         self.assertNotIn('xxx',json.dumps(page))
+
+
+class PortableHistory(unittest.TestCase):
+    def test_owned_generation_has_human_exchanges_only(self):
+        with closing(sqlite3.connect(':memory:')) as db:
+            db.executescript("""
+                CREATE TABLE conversation_entry_generations(session_id, generation);
+                CREATE TABLE sessions(id, creator_user_id);
+                CREATE TABLE users(tg_user_id, allowed);
+                CREATE TABLE interaction_instructions(sequence, input_id, doc, session_id, phase,id);
+                CREATE TABLE interaction_sources(id, human_id, doc,channel,event_id);
+                CREATE TABLE interaction_session_authors(input_id);
+                CREATE TABLE interaction_results(local_turn,native_thread,native_turn,item_id,body);
+                CREATE TABLE turns(id, session_id, from_user_id, execution_harness,
+                  execution_generation, status, assistant_text, started_at, completed_at, native_thread_id);
+                INSERT INTO users VALUES(10,1);
+                INSERT INTO sessions VALUES(20,10);
+                INSERT INTO conversation_entry_generations VALUES(20,'generation');
+                INSERT INTO interaction_session_authors VALUES(2);
+            """)
+            def exchange(sequence, answer, generation='generation', status='completed'):
+                db.execute("INSERT INTO interaction_sources VALUES(?,10,?,'conversation',?)",
+                           (sequence,json.dumps({'text':f'Human {sequence}'}),f'input{sequence}'))
+                db.execute("INSERT INTO interaction_instructions VALUES(?,?,?,20,'accepted',?)",
+                           (sequence,sequence,json.dumps({'local_turn':sequence,'native_turn':f'turn{sequence}'}),f'instruction{sequence}'))
+                db.execute("INSERT INTO turns VALUES(?,20,10,'claude',?,?,?,'start','finish','thread')",
+                           (sequence,generation,status,answer))
+                db.execute("INSERT INTO interaction_results VALUES(?,'thread',?,'final',?)",
+                           (sequence,f'turn{sequence}',answer))
+            exchange(1,'First')
+            exchange(2,'Private result')
+            exchange(3,'Old generation','old')
+            exchange(4,'Unreadable attempt',status='failed')
+            exchange(5,'Last')
+            exchange(7,'Unfinished',status='running')
+            exchange(8,'Private running',status='running')
+            db.execute('INSERT INTO interaction_session_authors VALUES(8)')
+            page=read_portable(db,20,10,'claude')
+            self.assertEqual([item['text'] for item in page['items']],
+                             ['Human 1','First','Human 5','Last'])
+            self.assertEqual([item['text'] for item in page['pending_items']], ['Human 7'])
+            self.assertEqual(page['pending_items'][0]['input_id'],'input7')
+            end=page['after']
+            revision=page['revision']
+            self.assertEqual(read_portable(db,20,10,'claude',after=end,revision=revision)['items'],[])
+            self.assertEqual(read_portable(db,20,10,'claude',before=10,revision=revision)['after'],4)
+            exchange(6,'<daimon-result>{"requests":[],"covered":[]}</daimon-result>')
+            empty=read_portable(db,20,10,'claude',after=end,revision=revision)
+            self.assertEqual([v['text'] for v in empty['items']],['Human 6'])
+            self.assertFalse(empty['more'])
+            end=empty['after']
+            exchange(0,'Recovered earlier admission')
+            self.assertEqual([v['text'] for v in read_portable(db,20,10,'claude',after=end,revision=revision)['items']],
+                             ['Human 0','Recovered earlier admission'])
+            db.execute("UPDATE turns SET status='completed' WHERE id=7")
+            db.execute("UPDATE interaction_results SET rowid=100 WHERE local_turn=7")
+            completed=read_portable(db,20,10,'claude',after=end,revision=revision)
+            self.assertEqual(completed['pending_items'],[])
+            self.assertEqual([item['text'] for item in completed['items']],
+                             ['Human 0','Recovered earlier admission','Human 7','Unfinished'])
+            self.assertEqual(completed['items'][2]['input_id'],'input7')
+            with self.assertRaises(ValueError):
+                read_portable(db,20,11,'claude')
+            db.execute("UPDATE conversation_entry_generations SET generation='replacement'")
+            with self.assertRaises(ValueError):
+                read_portable(db,20,10,'claude',after=end,revision=revision)
 
 if __name__=='__main__':unittest.main()

@@ -403,6 +403,32 @@ class Provider:
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
+    def portable_session_runtime(self, selected):
+        profile=self.receiver.get('interaction',{})
+        portable_harnesses=('claude','antigravity','goose')
+        expected=next((row.get('harness') for row in profile.get('targets',[])
+                       if profile.get('chat_id')==selected['chat_id']
+                       and row.get('topic_id')==selected['thread_id']),None)
+        try:
+            receipt=self.presentation('input workspace')
+        except ProviderUnavailable:
+            if expected in portable_harnesses:raise
+            return None
+        key=f"{selected['chat_id']}:{selected['thread_id']}"
+        portable=receipt.get('portable_status',{})
+        if not isinstance(portable,dict):
+            raise ProviderUnavailable('Portable routing inventory changed')
+        state=portable.get(key)
+        if state is None:
+            if expected in portable_harnesses:raise ProviderUnavailable('Selected portable route unavailable')
+            return None
+        runtime=state.get('runtime') if isinstance(state,dict) else None
+        harness=runtime.get('harness') if isinstance(runtime,dict) else None
+        if (harness not in portable_harnesses or state.get('session')!=selected['id']
+                or expected and harness!=expected):
+            raise ProviderUnavailable('Selected portable route changed')
+        return harness
+
     def session_view(self,ident,**window):
         """One explicitly selected owned root; never discover or open a model."""
         if not isinstance(ident,str) or not re.fullmatch('[a-f0-9]{24}',ident):
@@ -410,7 +436,24 @@ class Provider:
         self.assert_binding()
         if not self.authorized(self.human):raise ProviderUnavailable('Session audience unavailable')
         selected=next((r for r in self.bindings() if self.identity(r)==ident),None)
-        if selected is None or not selected.get('codex_thread_id'):
+        if selected is None:
+            raise ProviderUnavailable('Selected session binding is unavailable')
+        portable=self.portable_session_runtime(selected)
+        if portable:
+            from .session_view import portable_binding, read_portable
+            with closing(readonly(self.receiver['db_path'])) as db:
+                db.execute('BEGIN')
+                value=read_portable(db,selected['id'],self.human,portable,**window)
+            self.assert_binding()
+            current=next((r for r in self.bindings() if self.identity(r)==ident),None)
+            if current is None or self.portable_session_runtime(current)!=portable or not self.authorized(self.human):
+                raise ProviderUnavailable('Selected portable conversation changed')
+            with closing(readonly(self.receiver['db_path'])) as db:
+                _, revision=portable_binding(db,current['id'],self.human,portable)
+            if revision!=value['revision']:
+                raise ProviderUnavailable('Selected portable conversation generation changed')
+            return {**value,'session':ident,'title':current.get('session_title') or 'Untitled session'}
+        if not selected.get('codex_thread_id'):
             raise ProviderUnavailable('Selected session binding is unavailable')
         with closing(readonly(self.native_home/'state_5.sqlite')) as db:
             row=db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0',
@@ -423,13 +466,14 @@ class Provider:
         meta=path.stat()
         with closing(readonly(self.receiver['db_path'])) as db:
             def routed_original(instruction):
-                row=db.execute('''SELECT json_extract(src.doc,'$.text')
+                row=db.execute('''SELECT json_extract(src.doc,'$.text'),
+                    CASE WHEN src.channel='conversation' THEN src.event_id END
                     FROM interaction_instructions i JOIN interaction_sources src ON src.id=i.input_id
                     WHERE i.id=? AND i.session_id=? AND src.human_id=?
                       AND src.channel!='local-session'
                       AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=src.id)''',
                     (instruction,selected['id'],self.human)).fetchone()
-                return row[0] if row else None
+                return tuple(row) if row else None
             value=read(path,selected['codex_thread_id'],expected_file=(meta.st_dev,meta.st_ino),
                 routed_original=routed_original,**window)
         self.assert_binding()

@@ -143,7 +143,8 @@
       const id=pin?.id||null,view=expanded?.id||null;if(!binding||[id,view].some(v=>v!==null&&!/^[a-f0-9]{24}$/.test(v)))return;
       try{window.localStorage?.setItem(followKey,JSON.stringify({version:1,binding,id,view,all:showAll}));}catch{}
     }
-    let activeHistory,retryDirection,historyBusy=false,historyEpoch=0,observedAt=0,lastHistoryAttempt=0;
+    const localSubmissions=new Map();
+    let activeHistory,retryDirection,historyBusy=false,refreshAfterRead=false,historyEpoch=0,observedAt=0,lastHistoryAttempt=0;
     function selected(){return expanded||pin;}
     function capture(){const value=selected();if(value&&!value.is_entry&&!value.destination)throw Error('Your saved session is unavailable. Select a destination before sending.');return value?copy({selected:true,...(!value.is_entry?{reference:value.destination}:{})}):undefined;}
     function changed(){remember();renderSelection();onTarget();}
@@ -175,7 +176,7 @@
     }
     function pinSource(source){return setPin(sourceRow(source));}
     function leave(){historyEpoch++;historyBusy=false;view.hidden=true;timeline.hidden=false;clearHistory();renderSelection();}
-    function clearHistory(){historyEpoch++;historyBusy=false;activeHistory=undefined;resultObserver?.disconnect();visibleResults.clear();entries.replaceChildren();historyScrollTop=0;touchStart=undefined;historyStatus.textContent='';retryHistory.hidden=true;}
+    function clearHistory(){historyEpoch++;historyBusy=false;refreshAfterRead=false;activeHistory=undefined;localSubmissions.clear();resultObserver?.disconnect();visibleResults.clear();entries.replaceChildren();historyScrollTop=0;touchStart=undefined;historyStatus.textContent='';retryHistory.hidden=true;}
     function open(row,{restore=false}={}){
       if(row.is_entry){expanded={id:row.id,title:row.title,is_entry:true};leave();showRail(false);changed();if(!restore)focusComposer();return;}
       if(!row.destination){status.textContent='This session is unavailable for direct input. Its status remains visible.';return;}
@@ -282,12 +283,39 @@
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);
     }
+    function matchesDestination(reference){
+      const destination=expanded?.destination;
+      return allowed&&destination&&reference&&destination.source===reference.source&&destination.revision===reference.revision;
+    }
+    function observeSubmission(reference){
+      if(!matchesDestination(reference))return;
+      if(historyBusy){refreshAfterRead=true;return;}
+      void history(activeHistory?'after':undefined);
+    }
+    function previewSubmission(reference,id,text){
+      if(!matchesDestination(reference)||!activeHistory?.linksInputIds||technical||!text.trim())return;
+      if(localSubmissions.size>=8)return;
+      const item={id:'original:'+id,input_id:id,kind:'message',role:'user',text,pending:true,local:true};
+      localSubmissions.set(id,item);
+      appendItem(item);
+      entries.scrollTop=entries.scrollHeight;
+    }
+    function settlePreview(id,state){
+      const item=localSubmissions.get(id);
+      if(!item)return;
+      const box=[...entries.children].find(child=>child.dataset.event===item.id);
+      if(state==='discarded'){localSubmissions.delete(id);box?.remove();return;}
+      item.status=state;
+      if(box)box.children[2].textContent=state;
+    }
     function appendItem(item,prepend=false){
       const found=[...entries.children].find(box=>box.dataset.event===item.id);
       if(found)return;
       const ordinary=!technical&&item.kind==='message';
       const messageStyle=ordinary?'session-message reply'+(item.role==='user'?' human-message':''):'session-message';
       const box=el('article',undefined,messageStyle);box.dataset.event=item.id;box.dataset.position=String(item.position);box.dataset.end=String(item.next_position);
+      if(item.pending)box.dataset.pending="true";
+      if(item.input_id)box.dataset.inputId=item.input_id;
       const label=item.kind==='message'?(item.role==='user'?'Input':expanded?.title||'Daimon'):item.kind==='tool_call'?`>_ ${item.name||'Tool'}`:item.kind==='tool_output'?'Tool output':'Reasoning summary';
       const caption=el(ordinary?'h3':'h4',label);
       const text=el(item.kind==='message'?'div':'pre',item.text,ordinary?'reply-text':'session-message-text');
@@ -299,6 +327,7 @@
       };
       renderText();
       box.append(caption,text);
+      if(item.local)box.append(el('p',item.status||'Sending…','reply-status'));
       if(item.timestamp){
         const time=el('time');time.dateTime=item.timestamp;
         const stamp=new Date(item.timestamp);
@@ -321,7 +350,9 @@
           finally{if(owned===historyEpoch)more.disabled=false;}
         });box.append(more);
       }
-      if(prepend)entries.insertBefore(box,entries.children[0]||null);else entries.append(box);
+      if(prepend)entries.insertBefore(box,entries.children[0]||null);
+      else if(item.pending)entries.append(box);
+      else entries.insertBefore(box,[...entries.children].find(value=>value.dataset.pending)||null);
       if(ordinary&&resultId(item.result_revision)){
         box.dataset.resultRevision=item.result_revision;
         resultObserver?.observe(box);
@@ -329,9 +360,10 @@
     }
     function trimHistory(backward,keep){
       const size=box=>Math.max(box.textContent.length,Number(box.dataset.characters)||0);
-      let characters=[...entries.children].reduce((sum,box)=>sum+size(box),0);
-      while(entries.children.length>240 || characters>4*1024*1024){
-        const box=backward?entries.children[entries.children.length-1]:entries.children[0];
+      const messages=[...entries.children].filter(box=>!box.dataset.pending);
+      let characters=messages.reduce((sum,box)=>sum+size(box),0);
+      while(messages.length>240 || characters>4*1024*1024){
+        const box=backward?messages.pop():messages.shift();
         if(box===keep)break;
         characters-=size(box);
         if(backward){activeHistory.after=Number(box.dataset.position);activeHistory.moreAfter=true;}
@@ -350,7 +382,7 @@
       try{
         const result=await api(`interaction/sessions/${selection.id}?${query}`);if(owned!==historyEpoch)return;
         if(result.schema!=='daimon.session-view/v1'||!Array.isArray(result.items)||result.items.length>80)throw Error('Conversation unavailable');
-        if(!activeHistory){activeHistory={revision:result.revision,before:result.before,after:result.after,beforeScan:result.before_scan,afterScan:result.after_scan,hasEarlier:result.has_earlier,moreAfter:result.more};}
+        if(!activeHistory){activeHistory={linksInputIds:result.links_input_ids===true,revision:result.revision,before:result.before,after:result.after,beforeScan:result.before_scan,afterScan:result.after_scan,hasEarlier:result.has_earlier,moreAfter:result.more};}
         else if(direction==='before'){activeHistory.before=result.before;activeHistory.beforeScan=result.before_scan;activeHistory.hasEarlier=result.has_earlier;}else {activeHistory.after=result.after;activeHistory.afterScan=result.after_scan;activeHistory.moreAfter=result.more;}
         const previousHeight=entries.scrollHeight,previousTop=entries.scrollTop;
         const nearEnd=previousHeight-previousTop-entries.clientHeight<80;
@@ -359,6 +391,16 @@
         // Keep only a bounded DOM window. Removed messages remain in native
         // history and can be read again with its existing cursors.
         trimHistory(direction==='before');
+        if(direction!=='before'&&!technical){
+          for(const item of result.items)if(item.role==='user')localSubmissions.delete(item.input_id);
+          const pending=Array.isArray(result.pending_items)
+            ?result.pending_items.slice(0,8).filter(item=>item.pending===true&&item.role==='user'):[];
+          for(const item of pending)localSubmissions.delete(item.input_id);
+          pending.push(...localSubmissions.values());
+          const visible=new Set(pending.map(item=>item.id));
+          for(const box of [...entries.children])if(box.dataset.pending&&!visible.has(box.dataset.event))box.remove();
+          for(const item of pending)appendItem(item);
+        }
         historyStatus.textContent=result.skipped_records?'Some content could not be previewed.':entries.children.length?'':'No messages yet.';
         if(direction==='before')entries.scrollTop=previousTop+entries.scrollHeight-previousHeight;
         else if(!direction || direction==='after'&&nearEnd)entries.scrollTop=entries.scrollHeight;
@@ -376,7 +418,12 @@
           }
         }
       }
-      finally{if(owned===historyEpoch)historyBusy=false;}
+      finally{
+        if(owned===historyEpoch){
+          historyBusy=false;
+          if(refreshAfterRead){refreshAfterRead=false;void history(activeHistory?'after':undefined);}
+        }
+      }
     }
     function audioScope(){
       if(!allowed||!expanded)return;
@@ -395,7 +442,7 @@
       if(row?.destination?.revision===current.destination?.revision &&
           row?.destination?.source===current.destination?.source)return row?.runtime;
     }
-    return {refresh,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    return {refresh,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};

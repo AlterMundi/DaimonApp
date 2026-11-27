@@ -230,6 +230,50 @@ class LiveTranscription(unittest.TestCase):
         trusted=streaming_result({'streaming_cache_root':str(self.root/'prepared')},original,
                                  hashlib.sha256(original.read_bytes()).hexdigest())
         self.assertEqual(trusted,{'text':'Final words','streaming_model':'qwen-audio-3.0-realtime-plus'})
+    def test_partial_burst_keeps_latest_authorized_snapshot(self):
+        from dashboard.live_transcription import bind_voice_actor
+        checking, drained, release = threading.Event(), threading.Event(), threading.Event()
+        checks = 0
+        async def bind(*args, **kwargs):
+            session, original, actor = await bind_voice_actor(*args, **kwargs)
+            async def check():
+                nonlocal checks
+                checks += 1
+                if checks == 2:  # Provider readiness already consumed the first check.
+                    checking.set()
+                    while not release.is_set():
+                        await asyncio.sleep(.01)
+                await original()
+            return session, check, actor
+        def burst(stream, pcm):
+            stream.pcm += pcm
+            for revision in range(1, 12):
+                stream.events.put({'type':'partial','text':f'Current preview {revision}','revision':revision})
+        original_receive = Stream.receive
+        def receive(stream):
+            item = original_receive(stream)
+            if item.get('revision') == 11:
+                drained.set()
+            return item
+        pcm = b'\0\0' * 1600
+        with patch('dashboard.live_transcription.bind_voice_actor', side_effect=bind), \
+                patch.object(Stream, 'append', burst), patch.object(Stream, 'receive', receive), self.open() as ws:
+            ws.send_json(self.meta())
+            self.assertEqual(ws.receive_json()['type'], 'ready')
+            ws.send_bytes(pcm)
+            try:
+                self.assertTrue(checking.wait(1))
+                self.assertTrue(drained.wait(1), 'Home authorization must not stall the recognizer reader')
+            finally:
+                release.set()
+            self.assertEqual(ws.receive_json(), {'type':'partial','text':'Current preview 11','revision':11})
+            ws.send_json({'type':'finish'})
+            value = ws.receive_json()
+            self.assertEqual(value['type'], 'prepared')
+            self.assertEqual(value['source_sha256'], hashlib.sha256(wav_bytes(pcm)).hexdigest())
+        self.assertEqual(checks, 4)
+        self.assertEqual(self.provider.calls, [])
+
     def test_preparation_timing_separates_final_provider_and_receipt_without_storage(self):
         finish = Stream.finish
         def delayed_finish(stream):

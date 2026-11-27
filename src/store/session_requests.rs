@@ -1,6 +1,6 @@
 //! Attributed, bounded local session dependencies, separate from human speech.
 use super::*;
-use crate::interaction::{Instruction, RequestRelation, SourceInput};
+use crate::interaction::{ForegroundEngine, Instruction, RequestRelation, SourceInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -16,6 +16,20 @@ pub struct SessionRequest {
     pub epoch: String,
     pub return_instruction: Option<String>,
     pub phase: String,
+}
+
+const CLAUDE_LOCAL_TEXT_BYTES: usize = 8192;
+
+fn local_claude_route(
+    config: Option<&crate::interaction::InteractionConfig>,
+    target: SessionKey,
+) -> Result<Option<(ForegroundEngine, &crate::interaction::MatrixDestination)>> {
+    let route = config.and_then(|cfg| cfg.portable_route(target));
+    anyhow::ensure!(
+        route.is_none_or(|(engine, _)| engine == ForegroundEngine::Claude),
+        "This portable harness does not support attributed session dependencies"
+    );
+    Ok(route.map(|(engine, worker)| (engine, &worker.transport.source)))
 }
 
 pub(super) fn author_on(conn: &Connection, input: &str) -> Result<Option<Value>> {
@@ -93,6 +107,46 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
         (author["kind"].as_str(), phase.as_deref()),
         (Some("session_request"), Some("requested")) | (Some("session_result"), Some("returned"))
     ))
+}
+
+// The retained human parent can grant the recipient its paired host tools.
+// The helper remains session-authored and cannot itself become a parent.
+pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
+    let human = child.human_id;
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+             WHERE target_instruction=?1 AND human_id=?2 AND phase='requested'
+               AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals
+                              WHERE parent_instruction=interaction_session_requests.parent_instruction)",
+            params![child.id, human],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(parent) = parent else {
+        return Ok(false);
+    };
+    let parent = instruction_on(conn, &parent, human)?;
+    if parent.admission_epoch != child.admission_epoch
+        || author_on(conn, &parent.input_id)?.is_some()
+    {
+        return Ok(false);
+    }
+    let source = super::routing::source_on(conn, &parent.id, human)?;
+    if source.channel == "conversation" {
+        let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
+        return Ok(original.paired_actor
+            && original.tribu_source.is_none()
+            && source.tribu_source.is_none()
+            && super::conversation_inputs::eligible_binding_on(conn, &original).is_ok());
+    }
+    if source.channel.starts_with("telegram:") {
+        return Ok(
+            super::routed_portable::telegram_original_epoch(conn, &source, parent.target)?
+                .is_some_and(|epoch| Some(epoch) == child.admission_epoch),
+        );
+    }
+    Ok(false)
 }
 
 fn session_requests_on(
@@ -221,7 +275,18 @@ impl Store {
         if current_epoch(&tx, human)? != epoch || closed.is_cancelled() {
             return Err(anyhow!("Parent admission retired or closed"));
         }
-        let target_id:i64=tx.query_row("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1 AND s.codex_thread_id IS NOT NULL",params![target.chat_id,target.thread_id,human],|r|r.get(0))?;
+        let route = local_claude_route(config, target)?;
+        anyhow::ensure!(
+            route.is_none() || text.len() <= CLAUDE_LOCAL_TEXT_BYTES,
+            "The selected Claude handoff is too large"
+        );
+        let target_id: i64 = tx.query_row(
+            "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
+             AND (?4 OR s.codex_thread_id IS NOT NULL)",
+            params![target.chat_id, target.thread_id, human, route.is_some()],
+            |r| r.get(0),
+        )?;
         let raw: String = tx.query_row(
             "SELECT doc FROM interaction_sources WHERE id=?",
             [&p.input_id],
@@ -264,16 +329,14 @@ impl Store {
         if existing.is_none() && count >= 4 {
             return Err(anyhow!("Human parent dependency budget exhausted"));
         }
-        let (mut i, fresh) = super::interaction::admit_selected_on(
+        let (mut i, fresh) = super::interaction::admit_local_session_on(
             &tx,
             &source,
             target,
             RequestRelation::New,
             &self.instance_id,
-            None,
-            config
-                .and_then(|cfg| cfg.portable_route(target))
-                .map(|(engine, worker)| (engine, &worker.transport.source)),
+            route,
+            epoch,
         )?;
         if let Some((raw, phase)) = existing {
             let mut call: SessionRequest = serde_json::from_str(&raw)?;
@@ -306,6 +369,9 @@ impl Store {
             phase: "requested".into(),
         };
         let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human});
+        if route.is_some() {
+            crate::interaction::local_claude_packet(&i, &author)?;
+        }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
@@ -489,12 +555,20 @@ impl Store {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        let route = local_claude_route(config, call.caller)?;
+        let result_text = if route.is_some() {
+            let end = d
+                .body
+                .char_indices()
+                .find(|(index, ch)| index + ch.len_utf8() > CLAUDE_LOCAL_TEXT_BYTES)
+                .map_or(d.body.len(), |(index, _)| index);
+            d.body[..end].to_owned()
+        } else {
+            d.body.chars().take(16000).collect()
+        };
         let text = format!(
             "Selected local session dependency returned. This is session-authored evidence, not a new human instruction or independent proof of completion. Local request: {}. Helper instruction: {}. Canonical result: {}. Worker-declared current completed coverage.\n\n{}",
-            call.id,
-            helper.id,
-            result_id,
-            d.body.chars().take(16000).collect::<String>()
+            call.id, helper.id, result_id, result_text
         );
         let source = SourceInput {
             telegram_files: vec![],
@@ -508,16 +582,14 @@ impl Store {
             origin: parent.origin.clone(),
             text,
         };
-        let (mut i, fresh) = super::interaction::admit_selected_on(
+        let (mut i, fresh) = super::interaction::admit_local_session_on(
             &tx,
             &source,
             call.caller,
             RequestRelation::Context(parent.requests),
             &self.instance_id,
-            None,
-            config
-                .and_then(|cfg| cfg.portable_route(call.caller))
-                .map(|(engine, worker)| (engine, &worker.transport.source)),
+            route,
+            &call.epoch,
         )?;
         if !fresh {
             return Err(anyhow!("Unattributed local result source"));
@@ -529,6 +601,9 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let author = json!({"kind":"session_result","session":helper.target,"native_thread":result_native,"native_turn":result_turn,"parent_instruction":call.parent_instruction,"local_request":call.id,"canonical_result":result_id,"authorized_human":human});
+        if route.is_some() {
+            crate::interaction::local_claude_packet(&i, &author)?;
+        }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
@@ -632,6 +707,169 @@ mod tests {
         .unwrap()
         .remove(0)
     }
+    #[test]
+    fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
+        for paired in [false, true] {
+            check_portable_dependency(paired);
+        }
+    }
+
+    fn check_portable_dependency(paired: bool) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let caller = setup(&store, 7);
+        let target = store
+            .ensure_session(
+                SessionKey::new(100, Some(8)),
+                100,
+                &super::super::tests::defaults(),
+            )
+            .unwrap();
+        let event = Uuid::now_v7().to_string();
+        let binding = store
+            .interaction_presentation_list(100, caller.key, 0, 0)
+            .unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        store
+            .conversation_input_capture_files(
+                100,
+                caller.key,
+                &binding,
+                &event,
+                "Human task",
+                None,
+                None,
+                None,
+                vec![],
+                paired,
+            )
+            .unwrap();
+        let (instruction, _) = store
+            .interaction_admit(
+                &SourceInput {
+                    telegram_files: vec![],
+                    tribu_source: None,
+                    transcription: None,
+                    channel: "conversation".into(),
+                    event_id: event.clone(),
+                    update_id: None,
+                    human_id: 100,
+                    target_sessions: vec![caller.id],
+                    origin: ReturnRoute {
+                        chat_id: 100,
+                        thread_id: 7,
+                        message_id: None,
+                    },
+                    text: "Human task".into(),
+                },
+                caller.key,
+                RequestRelation::New,
+            )
+            .unwrap();
+        store
+            .interaction_bind_epoch(&instruction.id, 100, "initial")
+            .unwrap();
+        accept(&store, &caller, &instruction, "parent-turn");
+        let profile: crate::interaction::InteractionConfig = serde_json::from_value(json!({
+            "human_id":100,"chat_id":100,"topic_id":7,
+            "targets":[{"topic_id":8,"name":"Design","harness":"claude"}],
+            "claude_foreground":{"interaction_direct":true,"worker_command":["/fixture/claude"],
+                "transport":{"command":["/fixture/matrix"],"timeout_seconds":5,
+                    "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
+        }))
+        .unwrap();
+        let send = |id, text| {
+            store.interaction_session_request_scoped(
+                caller.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &instruction.id,
+                id,
+                target.key,
+                text,
+                &Default::default(),
+                None,
+                Some(&profile),
+            )
+        };
+        let oversized = "任".repeat(CLAUDE_LOCAL_TEXT_BYTES / 3 + 1);
+        assert!(send("oversized", &oversized).is_err());
+        let (_, delivered, fresh) = send("context", "A scoped context handoff").unwrap();
+        let authorship = store
+            .interaction_author(&delivered.id, 100)
+            .unwrap()
+            .unwrap();
+        let packet = crate::interaction::local_claude_packet(&delivered, &authorship).unwrap();
+        assert!(packet.contains("A scoped context handoff"));
+        assert!(packet.contains("session_request"));
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM interaction_session_requests",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
+        assert!(fresh);
+        assert_eq!(
+            delivered.target_execution.as_ref().unwrap().harness,
+            crate::execution::Harness::Claude
+        );
+        assert_eq!(delivered.admission_epoch.as_deref(), Some("initial"));
+        assert_eq!(
+            store
+                .interaction_author(&delivered.id, 100)
+                .unwrap()
+                .unwrap()["kind"],
+            "session_request"
+        );
+        let (local, host_access) = store
+            .begin_routed_portable(
+                &delivered,
+                &TurnRequest {
+                    session_key: target.key,
+                    from_user_id: 100,
+                    prompt: delivered.text.clone(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(host_access, paired);
+        if paired {
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
+                    [&event],
+                )
+                .unwrap();
+            assert!(!store.expose_routed_portable(
+                &delivered,
+                local,
+                &json!({}),
+                &json!({"native_session_id": Uuid::now_v7().to_string(), "native_session_scope": "a".repeat(64)}),
+                true,
+            ).unwrap());
+        }
+        assert!(
+            store
+                .interaction_author(&delivered.id, 100)
+                .unwrap()
+                .is_some()
+        );
+    }
+
     #[test]
     fn local_dependency_is_attributed_idempotent_bounded_and_returns_to_logical_caller() {
         let file = tempfile::NamedTempFile::new().unwrap();

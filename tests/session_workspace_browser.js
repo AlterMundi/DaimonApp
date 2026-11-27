@@ -19,6 +19,8 @@ const countdownCase=process.env.QUALIFICATION_COUNTDOWN==='1';
 const authCase=process.env.QUALIFICATION_AUTH==='1';let authDenied=false,readRejections=0,accessReads=0,writeRejected=false;
 const publicDefaultCase=process.env.QUALIFICATION_PUBLIC_DEFAULT==='1';
 const reloadCase=process.env.QUALIFICATION_RELOAD==='1',publicCase=publicDefaultCase||process.env.QUALIFICATION_PUBLIC_LIVE==='1';let prefixSupport=false;
+const selectedInputCase=process.env.QUALIFICATION_SELECTED_INPUT==='1';
+let releaseInput, selectedInput, selectedFinished=false;
 const nativeDecisionCase=process.env.QUALIFICATION_HOME_DECISIONS;let nativeDecisionGranted=nativeDecisionCase==='allowed';const nativeDecisionPosts=[];
 const avatarSpeechCase=process.env.QUALIFICATION_AVATAR_SPEECH==='1';
 const codexActivityCase=avatarSpeechCase||process.env.QUALIFICATION_CODEX_ACTIVITY==='1';
@@ -97,6 +99,13 @@ const server=http.createServer(async(req,res)=>{
   if(route==='interaction/sessions')return workspaceAllowed?json({schema:'daimon.session-workspace/v1',sessions}):json({detail:'Workspace grant revoked'},403);
   if(route.startsWith('interaction/sessions/')){
    const technical=url.searchParams.get('technical')==='true',after=url.searchParams.has('after');
+   if(selectedInputCase){
+    const input=selectedInput&&{id:'selected-original',input_id:selectedInput.id,kind:'message',role:'user',text:selectedInput.text};
+    return json({schema:'daimon.session-view/v1',revision:'c'.repeat(64),before:50,after:selectedFinished?150:100,has_earlier:false,more:false,
+     links_input_ids:!technical,pending_items:!technical&&input&&!selectedFinished?[{...input,pending:true}]:[],
+     items:selectedFinished&&input?[{...input,id:'completed-original',position:100,next_position:150}]:after?[]:
+     [{id:'retained',kind:'message',role:'assistant',text:'Selected session fixture ready.',position:50,next_position:100}]});
+   }
    return json({schema:'daimon.session-view/v1',revision:'c'.repeat(64),before:50,after:250,has_earlier:false,more:false,
     items:after?[]:[{id:'message',kind:'message',role:'user',text:'Show me what we discovered.',position:50,next_position:100},
      {id:'response',kind:'message',role:'assistant',text:'The first prototype is ready. Let us look together.',position:100,next_position:150},
@@ -105,6 +114,10 @@ const server=http.createServer(async(req,res)=>{
   }
   if(route==='interaction/inputs'&&req.method==='POST'){
    let raw='';for await(const block of req)raw+=block;const body=JSON.parse(raw);posts.push(body);
+   if(selectedInputCase){
+    await new Promise(resolve=>{releaseInput=resolve;});
+    selectedInput=body;
+   }
    const value={...body,phase:body.reply?'routed':'accepted',sequence:++seen,received_at:new Date().toISOString(),...(body.reply?{routing:{phase:'accepted',label:'Materials',target:{thread_id:7},instruction:'fixture-instruction'}}:{})};originals.push(value);return writeRejected?json({detail:"Synthetic lost authorization response"},401):json(value);
   }
   if(route==='interaction/inputs')return json({...base(),items:originals,cursor:seen,newest:seen});
@@ -251,6 +264,32 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
   await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
   await page.emulateMedia({reducedMotion:'reduce'});assert.equal(await page.locator('header > svg.voice-signal').evaluate(node=>getComputedStyle(node).display),'none');
   assert.equal(await page.evaluate(()=>headerMicrophoneRequests),0);assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));report.state='qualified-header-input-output-envelopes';return;
+ }
+ if(selectedInputCase){
+  await page.locator('#conversation-message').waitFor();
+  await page.getByRole('button',{name:'Show sessions',exact:true}).click();
+  await page.getByRole('button',{name:sessions[0].title,exact:true}).click();
+  await page.getByText('Selected session fixture ready.',{exact:true}).waitFor();
+  await page.locator('#conversation-message').fill('Show this selected input before the native turn finishes.');
+  const since=await page.evaluate(()=>performance.now());
+  await page.locator('#conversation-send').click();
+  const local=page.locator('.session-messages [data-event^="original:"]');
+  await local.getByText('Sending…',{exact:true}).waitFor({timeout:3000});
+  assert.equal(await local.count(),1);
+  report.click_to_visible_ms=Math.round((await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(performance.now()))))))-since);
+  assert(report.click_to_visible_ms<750,report.click_to_visible_ms);
+  assert(releaseInput&&posts.length===1&&!selectedInput);
+  releaseInput();
+  const admitted=page.locator('.session-messages [data-event="selected-original"]');
+  await admitted.waitFor({timeout:3000});
+  assert.equal(await page.locator('.session-messages [data-input-id="'+posts[0].id+'"]').count(),1);
+  assert.equal(await admitted.getAttribute('data-pending'),'true');
+  selectedFinished=true;
+  await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await page.locator('.session-messages [data-event="completed-original"]').waitFor({timeout:12000});
+  assert.equal(await page.locator('.session-messages [data-input-id="'+posts[0].id+'"]').count(),1);
+  assert.equal(posts.length,1);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-selected-input-before-receipt';return;
  }
  if(process.env.QUALIFICATION_COMPACT_AVATAR_HEADER==='1'){
   await page.waitForFunction(()=>authenticated&&sharedConversationConnected);
