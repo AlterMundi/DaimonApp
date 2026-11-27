@@ -325,9 +325,12 @@ operator.main()
                         arg.replace("{port}", str(config["providerPort"]))
                         for arg in json.loads(real_provider)
                     ]
-                if interaction and scripts:
+                dmk_write = telegram_topic and os.environ.get("FOREGROUND_TEST_TELEGRAM_DMK_WRITE") == "1"
+                if dmk_write and scripts is None:
+                    self.fail("The disposable DMK writer fixture needs CLAUDE_TEST_DMK_SCRIPTS")
+                if (interaction or dmk_write) and scripts:
                     python = os.environ.get("CLAUDE_TEST_DMK_PYTHON", sys.executable)
-                    selected, _ = selected_memory(root, python, scripts, being, provider.current, engine)
+                    selected, memory_db = selected_memory(root, python, scripts, being, provider.current, engine)
                     config["sharedDmk"] = {
                         "command": selected["command"][:-2],
                         "bindingFile": selected["command"][-1],
@@ -416,6 +419,24 @@ for await (const line of createInterface({ input: process.stdin })) {
                     helper.write_text("#!/bin/sh\nprintf 'Native shell %s.' 'readback marker'\n")
                     helper.chmod(0o700)
                     config["hostToolDirectory"] = str(host_bin)
+                    if dmk_write:
+                        writer = host_bin / "dmk"
+                        writer.write_text(
+                            f"#!/bin/sh\nexec /bin/bash {shlex.quote(str(scripts / 'hmk'))} \"$@\"\n"
+                        )
+                        writer.chmod(0o700)
+                        provider.memory_db = memory_db
+                        provider.memory_write_text = "A synthetic memory from the paired Claude turn."
+                        command_env = [f"PATH={Path(python).parent}:/usr/bin:/bin",
+                                       f"HMK_WORKSPACE_ROOT={root}",
+                                       f"HMK_AGENT_MEMORY_BASE={root}", f"HMK_DB_PATH={memory_db}"]
+                        command_line = ["env", *command_env, str(host_bin / "dmk"),
+                                        "memoryctl.py", "add-text", "--shelf", "library",
+                                        "--title", "Claude native writer fixture", "--raw",
+                                        provider.memory_write_text]
+                        provider.memory_write_command = shlex.join(command_line) + (
+                            " && printf 'Native DMK write accepted.'"
+                        )
                 profile.write_text(json.dumps(config))
                 original_host = ""
                 if interaction and not direct:
@@ -456,6 +477,8 @@ timeout_seconds=5
                                 self._telegram_quota(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
                                 self._telegram_cancel(journey, provider)
+                            elif dmk_write:
+                                self._telegram_dmk_write(journey, provider)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -603,6 +626,19 @@ timeout_seconds=5
             self.assertEqual(journey.read("matrix", engine, "run", json.dumps(selected))["result"], outcome)
             self.assertEqual(provider.calls, expected_calls)
             self.assertEqual(return_attempts, [])
+
+        def _telegram_dmk_write(self, journey, provider):
+            provider.original = "Read the selected fixture memory and save one synthetic record."
+            provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(provider.original, topic=7)
+            self.assertEqual(str(update), provider.human_original)
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=35)
+            self.assertIsNone(provider.failure)
+            with sqlite3.connect(provider.memory_db.as_uri() + "?mode=ro", uri=True) as connection:
+                rows = connection.execute(
+                    "SELECT raw FROM chapters WHERE title='Claude native writer fixture'"
+                ).fetchall()
+            self.assertEqual(rows, [(provider.memory_write_text,)])
 
         def _telegram_cancel(self, journey, provider):
             native_turns = journey.native_turns
@@ -1421,7 +1457,7 @@ if __name__ == "__main__":
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if interaction or direct or inverse:
         sys.path.insert(0, str(foreground.ROOT))
-    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction else None
+    dmk_scripts = os.environ.get("CLAUDE_TEST_DMK_SCRIPTS") if interaction or telegram_topic else None
     scripts = Path(sys.argv[4]) if engine != "claude" else Path(dmk_scripts) if dmk_scripts else None
     raise SystemExit(qualify(engine, gateway, executable, scripts,
                             interaction=interaction, direct=direct, mixed=mixed, inverse=inverse,

@@ -459,5 +459,8 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 - `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.
 - `FOREGROUND_TEST_TELEGRAM_CANCEL=1` for a topic-local Stop after exposure
   and retained uncertainty when Telegram redelivers the original update.
+- `FOREGROUND_TEST_TELEGRAM_DMK_WRITE=1` with `CLAUDE_TEST_DMK_SCRIPTS` for
+  paired MCP recall and one native write through the `dmk` wrapper. The test
+  reads back the exact synthetic record from the same disposable pool.
 
 All Matrix identities, user input and provider output are synthetic.
