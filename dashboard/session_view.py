@@ -257,3 +257,94 @@ def read(path,native,*,technical=False,revision=None,before=None,after=None,even
         'more':following<end,'skipped_records':skipped,
         'role_meaning':'Harness message roles; input can include attributed context, not verified human speech.',
         'source_meaning':'Read-only selected native history; no work, routing, hearing or hidden reasoning is established.'}
+
+
+def portable_binding(db, session, human, harness):
+    generation = db.execute('''SELECT g.generation FROM conversation_entry_generations g
+        JOIN sessions s ON s.id=g.session_id JOIN users u ON u.tg_user_id=s.creator_user_id
+        WHERE g.session_id=? AND s.creator_user_id=? AND u.allowed=1''',
+        (session, human)).fetchone()
+    if generation is None:
+        raise ValueError('Portable conversation binding is unavailable')
+    return generation[0], hashlib.sha256(json.dumps([session, human, harness, generation[0]]).encode()).hexdigest()
+
+
+def read_portable(db, session, human, harness, *, technical=False, revision=None,
+                  before=None, after=None, event=None, text_offset=0, scan=False):
+    """Project accepted human exchanges from the owning Gateway journal."""
+    if (type(technical) is not bool or scan
+            or sum(v is not None for v in (before, after, event)) > 1):
+        raise ValueError('Select one portable conversation window')
+    for offset in (before, after, event, text_offset):
+        if offset is not None and (type(offset) is not int or not 0 <= offset < 2**63):
+            raise ValueError('Invalid portable conversation offset')
+    if text_offset and event is None:
+        raise ValueError('Select a portable event for text continuation')
+    generation, identity = portable_binding(db, session, human, harness)
+    if (revision is not None or any(v is not None for v in (before, after, event))) and revision != identity:
+        raise ValueError('Portable conversation binding changed')
+    # Only an accepted human original can create an ordinary conversation pair.
+    # Local dependencies and their returns have their own frozen audience.
+    source = '''FROM interaction_instructions i
+        JOIN interaction_sources s ON s.id=i.input_id
+        JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
+        JOIN interaction_results r ON r.local_turn=t.id AND r.native_thread=t.native_thread_id
+          AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
+        WHERE i.session_id=? AND s.human_id=? AND i.phase='accepted'
+          AND t.session_id=i.session_id AND t.from_user_id=s.human_id
+          AND t.execution_harness=? AND t.execution_generation=? AND t.status='completed'
+          AND length(trim(r.body))>0
+          AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)'''
+    scope = (session, human, harness, generation)
+    ordered = after is not None
+    bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)
+    order = 'ASC' if ordered else 'DESC'
+    if event is not None:
+        where, bound = 'r.rowid=?', event // 2
+    else:
+        where = 'r.rowid>=?' if ordered else 'r.rowid<=?'
+    rows = db.execute(f'''SELECT r.rowid,t.started_at,t.completed_at,
+        json_extract(s.doc,'$.text'),r.body {source} AND {where}
+        ORDER BY r.rowid {order} LIMIT {MAX_ITEMS + 1}''', (*scope, bound))
+    items = deque()
+    total = 0
+    examined_through = after
+    for sequence, started, completed, original, answer in rows:
+        pair = [(sequence * 2, 'user', started, original),
+                (sequence * 2 + 1, 'assistant', completed, _conversation_answer(answer))]
+        for position, role, timestamp, text in (pair if ordered else reversed(pair)):
+            if (event is not None and position != event
+                    or after is not None and position < after
+                    or before is not None and position >= before):
+                continue
+            if not isinstance(text, str) or not text.strip():
+                if ordered:examined_through=position+1
+                continue
+            if text_offset > len(text):
+                raise ValueError('Portable event text offset is unavailable')
+            part = text[text_offset:text_offset+TEXT_PART]
+            item = {'kind':'message', 'role':role, 'position':position, 'next_position':position+1,
+                    'id':hashlib.sha256(f'{identity}:{position}'.encode()).hexdigest()[:32],
+                    'timestamp':timestamp, 'text':part, 'offset':text_offset,
+                    'next':text_offset+len(part), 'characters':len(text),
+                    'more':text_offset+len(part)<len(text)}
+            total += len(json.dumps(item, ensure_ascii=False).encode())
+            if len(items) == MAX_ITEMS or total > MAX_RESPONSE:
+                break
+            (items.append if ordered else items.appendleft)(item)
+            if ordered:examined_through=position+1
+        else:
+            continue
+        break
+    if event is not None and not items:
+        raise ValueError('Selected portable event is unavailable')
+    first = items[0]['position'] if items else bound * 2 if ordered else 0
+    following = (examined_through if ordered else
+                 items[-1]['next_position'] if items else 0)
+    earlier = db.execute(f'SELECT 1 {source} AND r.rowid*2<? LIMIT 1', (*scope, first)).fetchone()
+    newer = db.execute(f'SELECT 1 {source} AND r.rowid*2+1>=? LIMIT 1', (*scope, following)).fetchone()
+    return {'schema':'daimon.session-view/v1', 'revision':identity, 'technical':technical,
+            'items':list(items), 'before':first, 'after':following, 'has_earlier':bool(earlier),
+            'more':bool(newer), 'before_scan':False, 'after_scan':False, 'skipped_records':0,
+            'role_meaning':'Human originals and their retained assistant responses.',
+            'source_meaning':'Read-only portable conversation history.'}
