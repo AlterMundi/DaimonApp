@@ -62,6 +62,31 @@ impl Drop for OwnedProcessGroup {
 }
 
 #[cfg(unix)]
+fn attach_project_checkpoint(start: &mut Value, checkpoint: &str) -> Result<()> {
+    // Match the worker-pipes.mjs frame limit, excluding the line terminator.
+    const MAX_FRAME_BYTES: usize = 128 * 1024;
+    start["projectCheckpoint"] = json!(checkpoint);
+    if serde_json::to_vec(start)?.len() > MAX_FRAME_BYTES {
+        start
+            .as_object_mut()
+            .expect("worker start object")
+            .remove("projectCheckpoint");
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn checkpoint_yields_to_the_original_at_the_worker_frame_bound() {
+    let mut start = json!({"text": "x".repeat(128 * 1024 - 100)});
+    let original = start.clone();
+    attach_project_checkpoint(&mut start, &"\u{0001}".repeat(20)).unwrap();
+    assert_eq!(start, original);
+    attach_project_checkpoint(&mut start, "Verified revision.").unwrap();
+    assert_eq!(start["projectCheckpoint"], "Verified revision.");
+}
+
+#[cfg(unix)]
 pub(in crate::app) async fn execute_worker(
     command: &[String],
     engine: ForegroundEngine,
@@ -191,9 +216,6 @@ pub(in crate::app) async fn execute_worker(
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
             }
-            if let Some(checkpoint) = project_checkpoint {
-                start["projectCheckpoint"] = json!(checkpoint);
-            }
             start["freshNativeSessionId"] = json!(fresh_native);
             start["resume"] = json!(resume.first());
             if resume.len() > 1 {
@@ -211,6 +233,9 @@ pub(in crate::app) async fn execute_worker(
             }
             if controller.is_some() {
                 start["controller"] = json!(true);
+            }
+            if let Some(checkpoint) = project_checkpoint {
+                attach_project_checkpoint(&mut start, checkpoint)?;
             }
         }
         send(&mut input, start).await?;
