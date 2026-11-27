@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::bail;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 pub(super) fn telegram_original_epoch(
     conn: &Connection,
@@ -231,6 +232,110 @@ pub(super) fn claude_quoted_seed_on(
     Ok((serde_json::to_vec(&seed)?.len() <= 12 * 1024).then_some(seed))
 }
 
+pub(super) fn telegram_reply_message_on(
+    conn: &Connection,
+    source: &SourceInput,
+) -> Result<Option<i64>> {
+    if !source.channel.starts_with("telegram:") {
+        return Ok(None);
+    }
+    let (Some(update), Some(message)) = (source.update_id, source.origin.message_id) else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT json_extract(payload_json,'$.message.reply_to_message.message_id')
+         FROM incoming_updates WHERE update_id=?1
+           AND json_extract(payload_json,'$.message.message_id')=?2
+           AND json_extract(payload_json,'$.message.chat.id')=?3
+           AND json_extract(payload_json,'$.message.message_thread_id')=?4
+           AND json_extract(payload_json,'$.message.from.id')=?5
+           AND json_type(payload_json,'$.message.reply_to_message.message_id')='integer'",
+            params![
+                update,
+                message,
+                source.origin.chat_id,
+                source.origin.thread_id,
+                source.human_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum TelegramQuote {
+    Unrelated,
+    Unavailable,
+    Selected(Value),
+}
+
+pub(super) fn claude_telegram_quote_on(
+    conn: &Connection,
+    source: &SourceInput,
+    target: SessionKey,
+    message: i64,
+) -> Result<TelegramQuote> {
+    let mut results = conn.prepare(
+        "WITH receipts AS (
+            SELECT d.result_id AS id, instr(p.text,?7)=0 AS answer
+            FROM interaction_delivery_parts p
+            JOIN interaction_public_deliveries d ON d.id=p.delivery_id
+            WHERE p.message_id=?1 AND d.human_id=?2
+              AND json_extract(d.doc,'$.origin.chat_id')=?3
+              AND json_extract(d.doc,'$.origin.thread_id')=?4
+            UNION
+            SELECT p.source AS id, p.body=r.body AS answer FROM topic_publications p
+            JOIN topic_publication_parts x ON x.publication=p.id
+            JOIN interaction_results r ON r.id=p.source AND r.local_turn=p.local_turn
+            JOIN turns t ON t.id=r.local_turn AND t.session_id=p.session_id
+            JOIN sessions sender ON sender.id=p.session_id
+            WHERE x.message_id=?1 AND x.phase='sent' AND p.kind='portable_report'
+              AND p.human_id=?2 AND sender.chat_id=?3 AND sender.thread_id=?4
+              AND sender.creator_user_id=?2
+         )
+         SELECT r.id,r.body,max(receipts.answer)
+                AND coalesce(t.execution_generation=g.generation,0) AND t.status='completed'
+                AND (r.item_id='final' OR EXISTS (
+                   SELECT 1 FROM interaction_native_messages m
+                   WHERE m.local_turn=t.id AND m.native_thread=r.native_thread
+                     AND m.native_turn=r.native_turn AND m.item_id=r.item_id
+                     AND m.phase='final_answer'))
+         FROM receipts JOIN interaction_results r ON r.id=receipts.id
+         JOIN turns t ON t.id=r.local_turn
+         JOIN sessions s ON s.id=t.session_id
+         JOIN users u ON u.tg_user_id=s.creator_user_id AND u.allowed=1
+         JOIN conversation_entry_generations g ON g.session_id=s.id
+         WHERE t.from_user_id=?2 AND s.creator_user_id=?2 AND s.chat_id=?5 AND s.thread_id=?6
+         GROUP BY r.id LIMIT 2",
+    )?;
+    let mut rows = results.query(params![
+        message,
+        source.human_id,
+        source.origin.chat_id,
+        source.origin.thread_id,
+        target.chat_id,
+        target.thread_id,
+        crate::interaction::WITHHELD_RESULT_NOTICE
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(TelegramQuote::Unrelated);
+    };
+    let id: String = row.get(0)?;
+    let assistant: String = row.get(1)?;
+    let visible: bool = row.get(2)?;
+    if rows.next()?.is_some() || !visible || assistant.trim().is_empty() {
+        return Ok(TelegramQuote::Unavailable);
+    }
+    let revision = format!("{:x}", Sha256::digest(assistant.as_bytes()));
+    let seed = json!({"source":format!("telegram-result:{id}"),"revision":revision,
+                      "assistant":assistant});
+    if serde_json::to_vec(&seed)?.len() > 12 * 1024 {
+        return Ok(TelegramQuote::Unavailable);
+    }
+    Ok(TelegramQuote::Selected(seed))
+}
+
 fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
     let exchange: Option<(i64, String, String)> = conn.query_row(
         "SELECT prior.id,json_extract(source.doc,'$.text'),result.body
@@ -393,11 +498,19 @@ impl Store {
         Ok(valid)
     }
 
-    pub(crate) fn routed_claude_preserves_quote(&self, source: &SourceInput) -> Result<bool> {
-        if source.channel != "conversation" {
-            return Ok(false);
-        }
+    pub(crate) fn routed_claude_preserves_quote(
+        &self,
+        source: &SourceInput,
+        target: SessionKey,
+    ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
+        if source.channel != "conversation" {
+            let Some(message) = telegram_reply_message_on(&conn, source)? else {
+                return Ok(false);
+            };
+            return Ok(claude_telegram_quote_on(&conn, source, target, message)?
+                != TelegramQuote::Unrelated);
+        }
         let original =
             super::conversation_inputs::read_on(&conn, &source.event_id, source.human_id)?;
         Ok(original.paired_actor
@@ -439,13 +552,17 @@ impl Store {
                 return Ok(quote);
             }
             true
-        } else if let Some(update) = source.update_id {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM incoming_updates WHERE update_id=?1
-                    AND json_type(payload_json,'$.message.reply_to_message') IS NOT 'object')",
-                [update],
-                |row| row.get(0),
-            )?
+        } else if source.channel.starts_with("telegram:") {
+            if let Some(message) = telegram_reply_message_on(&conn, &source)? {
+                return match claude_telegram_quote_on(&conn, &source, input.target, message)? {
+                    TelegramQuote::Selected(seed) => Ok(Some(seed)),
+                    TelegramQuote::Unrelated => Ok(None),
+                    TelegramQuote::Unavailable => anyhow::bail!(
+                        "The selected Telegram reply is unavailable; original retained without submission"
+                    ),
+                };
+            }
+            true
         } else {
             false
         };
@@ -512,17 +629,25 @@ impl Store {
         }
         if let Some(quote) = history_seed.filter(|seed| seed["source"].is_string()) {
             let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
-            let original =
-                super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
-            let Some(reference) = original.reply.as_ref() else {
-                return Ok(false);
+            let resolved = if source.channel == "conversation" {
+                let original =
+                    super::conversation_inputs::read_on(&tx, &source.event_id, current.human_id)?;
+                if original.retired || !original.paired_actor {
+                    return Ok(false);
+                }
+                let Some(reference) = original.reply.as_ref() else {
+                    return Ok(false);
+                };
+                claude_quoted_seed_on(&tx, &original, reference, current.target)?
+            } else if let Some(message) = telegram_reply_message_on(&tx, &source)? {
+                match claude_telegram_quote_on(&tx, &source, current.target, message)? {
+                    TelegramQuote::Selected(seed) => Some(seed),
+                    _ => None,
+                }
+            } else {
+                None
             };
-            if harness != Harness::Claude
-                || !paired_host_access
-                || original.retired
-                || !original.paired_actor
-                || claude_quoted_seed_on(&tx, &original, reference, current.target)?.as_ref()
-                    != Some(quote)
+            if harness != Harness::Claude || !paired_host_access || resolved.as_ref() != Some(quote)
             {
                 return Ok(false);
             }

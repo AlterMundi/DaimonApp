@@ -967,6 +967,8 @@ pub fn visible_answer(text: &str) -> &str {
     }
 }
 
+pub(crate) const WITHHELD_RESULT_NOTICE: &str = "this earlier result does not report incorporating your correction. Its canonical text remains retained for inspection.";
+
 pub fn worker_result(text: &str) -> (&str, Option<Coverage>) {
     const START: &str = "\n<daimon-result>";
     const END: &str = "</daimon-result>";

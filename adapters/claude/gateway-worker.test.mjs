@@ -22,6 +22,8 @@ const original = 'Reply using this selected fixture original.';
 const historySeed = { turn: 12, human: 'Check the layout.', assistant: 'I can move the section next.' };
 const exactQuote = { source: 'delivery:37da8c68-c490-404d-93a4-e4d6741a4397',
   revision: 'a'.repeat(64), assistant: 'Earlier proposal selected by the paired human.' };
+const telegramQuote = { ...exactQuote,
+  source: exactQuote.source.replace('delivery:', 'telegram-result:') };
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
 test('worker sends one native input only after exact owner persistence decision',
@@ -112,15 +114,18 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
               for await (const request of prompt) {
                 const { content } = request.message;
                 const text = Array.isArray(content) ? content.at(-1).text : content;
+                const expectedQuote = text === 'Synthetic paired Telegram quote.'
+                  ? ${JSON.stringify(telegramQuote)} : text === 'Synthetic paired Conversation quote.'
+                    ? ${JSON.stringify(exactQuote)} : null;
+                if (expectedQuote) assert.ok(Array.isArray(content), text);
                 assert.equal(Array.isArray(content), options.systemPrompt.append.includes('Gateway attached retained context'));
                 if (Array.isArray(content)) {
-                  const seed = options.resume
-                    ? ${JSON.stringify(exactQuote)} : ${JSON.stringify(historySeed)};
+                  const seed = expectedQuote ?? ${JSON.stringify(historySeed)};
                   assert.equal(content[0].text, 'Gateway historical context (JSON):\\n' + JSON.stringify(seed));
                 }
                 const ownerDefault = text === 'Synthetic private default.';
                 const withMessaging = text === 'Synthetic paired chat tools.';
-                const paired = ownerDefault || withMessaging || text === 'Synthetic private tool grant.';
+                const paired = ownerDefault || withMessaging || !!expectedQuote || text === 'Synthetic private tool grant.';
                 assert.equal(!!options.mcpServers.matrix_chat, withMessaging);
                 for (const tool of matrixChatTools) {
                   assert.equal(options.allowedTools.includes('mcp__matrix_chat__' + tool), withMessaging);
@@ -207,7 +212,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         matrixStatusCommand: [...profile.matrixStatusCommand, '--binding', observerBinding, '--body-status'] };
       const refusedMessaging = ['messaging-foreign', 'messaging-foreign-socket', 'messaging-expired', 'messaging-broad-grant'];
       const decisions = ['disconnected', 'rejected', 'wrong-correlation', 'profile-changed', 'committed', 'result-lost', 'skill-changed-during-submission',
-        'updated-guidance-resume', 'quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
+        'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default',
         'subscription-committed', 'subscription-wrong-account', 'subscription-account-drift',
         'messaging-paired', 'messaging-unpaired', ...refusedMessaging];
       let restrictedScope;
@@ -265,22 +270,25 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         const exited = once(worker, 'close');
         const lines = createInterface({ input: worker.stdout })[Symbol.asyncIterator]();
         try {
-          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'changed-skill-metadata', 'messaging-paired', ...refusedMessaging].includes(decision);
+          const humanOriginal = ['committed', 'owner-default', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'messaging-paired', ...refusedMessaging].includes(decision);
           const text = decision === 'owner-default' ? 'Synthetic private default.'
             : decision === 'messaging-paired' ? 'Synthetic paired chat tools.'
+            : decision === 'telegram-quoted-resume' ? 'Synthetic paired Telegram quote.'
+            : decision === 'quoted-resume' ? 'Synthetic paired Conversation quote.'
             : humanOriginal ? 'Synthetic private tool grant.'
             : decision === 'result-lost' ? 'Synthetic loss after native input.' : original;
-          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'changed-skill-metadata'].includes(decision) ? hostScope
+          const previousScope = ['companion-after-human', 'companion-selected-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata'].includes(decision) ? hostScope
             : decision === 'companion-resume' ? restrictedScope : undefined;
           const resume = previousScope ? { sessionId: priorSessionId, scope: previousScope } : null;
           const alternateId = '37da8c68-c490-404d-93a4-e4d6741a4397';
           const hasAlternate = decision === 'companion-selected-resume';
           const expectedSession = hasAlternate ? alternateId
-            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume'].includes(decision) ? priorSessionId : nativeSessionId;
+            : ['companion-resume', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume'].includes(decision) ? priorSessionId : nativeSessionId;
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
             ...(['changed-skill-metadata', 'updated-guidance-resume'].includes(decision) ? { historySeed } : {}),
             ...(decision === 'quoted-resume' ? { historySeed: exactQuote } : {}),
+            ...(decision === 'telegram-quoted-resume' ? { historySeed: telegramQuote } : {}),
             ...(hasAlternate ? { resumeAlternates: [{ sessionId: alternateId, scope: restrictedScope }] } : {}),
           }) + '\n');
           const firstLine = await lines.next();
@@ -318,7 +326,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             }) + '\n');
           }
           const frame = JSON.parse((await lines.next()).value);
-          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
+          const completed = ['committed', 'subscription-committed', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'changed-skill-metadata', 'messaging-paired', 'messaging-unpaired'].includes(decision);
           const committed = completed || decision === 'result-lost';
           const outcome = completed
             ? { phase: 'completed', sessionId: expectedSession, text: 'Qualified fixture reply.' }
