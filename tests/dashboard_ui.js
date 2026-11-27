@@ -326,9 +326,8 @@ const hung = (options) => new Promise((resolve, reject) => {
   assert.equal(dates.children[3].datetime,new Date(dated.projection.updated_at*1000).toISOString());
   vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[],resolved_incidents:[{...dated,
     projection:{...dated.projection,processing_state:"resolved"}}]})+')',independent.context);
-  const datedHistory = independent.nodes.get("#incidents").children.find(n=>n.className==="incident-history");
-  assert.equal(datedHistory.open,false);
-  assert.equal(datedHistory.children[1].children[5].children[2].textContent," · Updated: ");
+  assert.equal(independent.nodes.get("#incidents").children.some(node=>node.className==="incident-history"),false);
+  assert.equal(activeArticle(),undefined);
   // Current and legacy memory producers identify DMK without hiding exact provenance.
   for (const producer of ["hmk-compaii", "dmk-oliva", "other-reporter"]) {
     const attributed = {...incident, projection:{...incident.projection,producer_id:producer,
@@ -352,22 +351,17 @@ const hung = (options) => new Promise((resolve, reject) => {
   await activeArticle().children.at(-1).handlers.click();
   assert.equal(JSON.parse(independent.requests.filter((r) => r.route === "api/alerts/acknowledge").at(-1).options.body).request_id,original);
   assert.equal(independent.requests.some((r) => r.route === "api/stop" || r.route === "api/resume"),false);
-  // Resolved history retains acknowledgment state without active attention.
+  // Once resolved, a record leaves the ordinary UI immediately.
   const resolved = {...incident, projection:{...incident.projection,processing_state:"resolved"}};
-  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[],resolved_incidents:[resolved]})+')',independent.context);
+  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[resolved],resolved_incidents:[resolved]})+')',independent.context);
   assert.equal(independent.nodes.get("#operations").dataset.attention,"false");
   assert.match(independent.nodes.get("#operations-summary").textContent,/0 open/);
   assert.doesNotMatch(independent.nodes.get("#operations-summary").textContent,/⚠|unacknowledged/);
-  const history = independent.nodes.get("#incidents").children.find((n) => n.className === "incident-history");
-  assert.equal(history.open,false);
-  assert.equal(history.children[1].dataset.processingState,"resolved");
-  assert.equal(history.children[1].dataset.acknowledgment,"unacknowledged");
-  assert.match(history.children[0].textContent,/1 unacknowledged/);
-  history.open=true;history.handlers.toggle();
-  resolved.acknowledgments=[{request_id:"ack-confirmed"}];
-  vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[],resolved_incidents:[resolved]})+')',independent.context);
-  assert.equal(independent.nodes.get("#operations").dataset.attention,"false");
-  assert.equal(independent.nodes.get("#incidents").children.find((n) => n.className === "incident-history").open,true);
+  assert.equal(activeArticle(),undefined);
+  assert.equal(independent.nodes.get("#incidents").children.some(node=>node.className==="incident-history"),false);
+  vm.runInContext('alerts('+JSON.stringify({...operations,state:"stale",incidents:[incident]})+')',independent.context);
+  assert.equal(activeArticle(),undefined);
+  assert.match(independent.nodes.get("#alerts-state").textContent,/could not be verified/);
   // Acknowledgment changes attention; it never moves an open failure into history.
   const acknowledgedOpen = {...incident,acknowledgments:[{request_id:"ack-confirmed"}]};
   vm.runInContext('alerts('+JSON.stringify({...operations,incidents:[acknowledgedOpen],resolved_incidents:[resolved]})+')',independent.context);
