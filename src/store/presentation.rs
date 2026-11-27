@@ -5,15 +5,21 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
+// A physical turn with only attributed coordination inputs belongs to the
+// native journal, including when it runs in the public conversation's thread.
+const ONLY_INTERNAL_HANDOFF: &str = "EXISTS(
+    SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id
+      WHERE i.session_id=t.session_id AND json_extract(i.doc,'$.local_turn')=t.id)
+    AND NOT EXISTS(SELECT 1 FROM interaction_instructions i
+      WHERE i.session_id=t.session_id AND json_extract(i.doc,'$.local_turn')=t.id
+      AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id))";
+
 // Worker progress is visible only through the return selection retained when
 // this native item was first observed. Later direct input never widens its scope.
 const NATIVE_VISIBILITY: &str = "t.execution_harness='codex' AND t.from_user_id=?3 AND s.creator_user_id=?3 AND
     ((t.session_id=?2 AND m.native_thread=?4 AND (m.phase IN ('commentary','final_answer') OR m.phase IS NULL))
       OR (EXISTS(SELECT 1 FROM conversation_inputs c
-          WHERE c.id=m.presentation_input AND c.human_id=?3 AND c.session_id=?2
-          AND NOT (EXISTS(SELECT 1 FROM interaction_instructions i JOIN interaction_session_authors a ON a.input_id=i.input_id WHERE json_extract(i.doc,'$.local_turn')=m.local_turn)
-            AND NOT EXISTS(SELECT 1 FROM interaction_instructions i WHERE json_extract(i.doc,'$.local_turn')=m.local_turn
-                AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=i.input_id))))
+          WHERE c.id=m.presentation_input AND c.human_id=?3 AND c.session_id=?2)
           AND (m.phase='commentary' OR (m.phase='final_answer' AND EXISTS(
               SELECT 1 FROM interaction_goal_controls g WHERE g.human_id=?3
               AND g.phase='acknowledged' AND json_extract(g.doc,'$.worker_execution.local')=m.local_turn
@@ -46,7 +52,7 @@ pub(super) fn heartbeat_progress_on(
         let mut q = conn.prepare(&format!(
             "SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
              JOIN sessions s ON s.id=t.session_id WHERE m.rowid>?1 AND t.session_id<>?2
-             AND m.phase='commentary' AND {NATIVE_VISIBILITY}
+             AND m.phase='commentary' AND {NATIVE_VISIBILITY} AND NOT ({ONLY_INTERNAL_HANDOFF})
              ORDER BY m.rowid LIMIT 4"
         ))?;
         Ok(
@@ -159,7 +165,7 @@ impl Store {
         if !super::workflows::native_visible_on(&conn, local)? {
             return Ok(false);
         }
-        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN native_collections n ON n.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)",params![local,session,human,thread],|r|r.get(0))?;
+        let valid:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM turns t JOIN native_collections n ON n.local_turn=t.id WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL AND NOT ({ONLY_INTERNAL_HANDOFF}))"),params![local,session,human,thread],|r|r.get(0))?;
         if !valid {
             return Ok(false);
         }
@@ -197,8 +203,8 @@ impl Store {
         if !super::workflows::native_visible_on(&conn, local)? {
             return Ok(false);
         }
-        let valid:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL)
-            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages WHERE native_thread=?4 AND native_turn=?5 AND item_id=?6)",params![local,session,human,thread,physical,item],|r|r.get(0))?;
+        let valid:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND t.native_thread_id=?4 AND t.status='running' AND t.completed_at IS NULL AND NOT ({ONLY_INTERNAL_HANDOFF}))
+            AND NOT EXISTS(SELECT 1 FROM interaction_native_messages WHERE native_thread=?4 AND native_turn=?5 AND item_id=?6)"),params![local,session,human,thread,physical,item],|r|r.get(0))?;
         if !valid {
             return Ok(false);
         }
@@ -562,7 +568,7 @@ impl Store {
         let mut stmt = conn.prepare(&format!(
             "SELECT m.rowid FROM interaction_native_messages m
             JOIN turns t ON t.id=m.local_turn JOIN sessions s ON s.id=t.session_id
-            WHERE m.rowid{comparison}?1 AND {NATIVE_VISIBILITY}
+            WHERE m.rowid{comparison}?1 AND {NATIVE_VISIBILITY} AND NOT ({ONLY_INTERNAL_HANDOFF})
             ORDER BY m.rowid {order} LIMIT 9"
         ))?;
         let natives = stmt
@@ -743,7 +749,7 @@ impl Store {
         // audible during later work only through its ordinary canonical record.
         let canonical: Option<i64> = conn.query_row(
             &format!("SELECT m.rowid FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn JOIN sessions s ON s.id=t.session_id
-                WHERE m.native_thread=?4 AND m.native_turn=?5 AND m.item_id=?6 AND t.session_id=?2 AND {NATIVE_VISIBILITY}"),
+                WHERE m.native_thread=?4 AND m.native_turn=?5 AND m.item_id=?6 AND t.session_id=?2 AND {NATIVE_VISIBILITY} AND NOT ({ONLY_INTERNAL_HANDOFF})"),
             params![0,session,human,native,fields[1],fields[2]],|r|r.get(0)).optional()?;
         let text = if let Some(row) = canonical {
             let source = source_on(&conn, human, entry, &format!("native:{row}"))?
@@ -915,7 +921,7 @@ pub(super) fn source_on(
              t.session_id=?2 AND m.native_thread=?4,s.chat_id,s.thread_id,
              s.codex_thread_id IS m.native_thread AND s.force_fresh_thread=0,t.id
              FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
-             JOIN sessions s ON s.id=t.session_id WHERE m.rowid=?1 AND {NATIVE_VISIBILITY}"),
+             JOIN sessions s ON s.id=t.session_id WHERE m.rowid=?1 AND {NATIVE_VISIBILITY} AND NOT ({ONLY_INTERNAL_HANDOFF})"),
              params![row,entry_session,human,entry_native],|r| {
                 let is_entry:bool=r.get(5)?;
                 let phase:Option<String>=r.get(3)?;
