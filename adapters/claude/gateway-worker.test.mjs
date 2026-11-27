@@ -51,7 +51,7 @@ test('worker sends one native input only after exact owner persistence decision'
       const skillResumeAnchor = [inventory(initialSkill),
         inventory(skillDocument('1.2.2', 'Older approved skill text.'))];
       const skillContinuity = {
-        layoutRevision: hash(JSON.stringify(['sample', skill, skillBody + '  version: "<semver>"\n'])),
+        layoutRevision: hash(JSON.stringify(['sample', skill, ['name: sample', 'metadata:', ['metadata.version', 'semver'], '']])),
         previousRevision: inventory(initialSkill),
       };
       assert.ok(!skillResumeAnchor.includes(inventory(updatedSkill)));
@@ -175,7 +175,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       foreignServer.listen(foreignSocket);
       await Promise.all([once(observerServer, 'listening'), once(foreignServer, 'listening')]);
       const binding = { schema: 'dm.agent-chat.binding/v1', client_config: chatClient, socket: chatSocket };
-      await writeFile(matrixMessaging, JSON.stringify({ command: [process.execPath, '--binding', chatBinding] }), { mode: 0o600 });
+      await writeFile(matrixMessaging, JSON.stringify({ command: [process.execPath, '-I', '-m', 'daimon_matrix.agent_chat', '--binding', chatBinding] }), { mode: 0o600 });
       await writeFile(chatBinding, JSON.stringify(binding), { mode: 0o600 });
       const chatGrant = {
         schema: 'dm.local.client-config/v3',

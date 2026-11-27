@@ -179,10 +179,11 @@ async function matrixMessaging(profile, fullAccess) {
   const connectionBytes = await privateBytes(profile.matrixMessaging, 128 * 1024);
   const { command } = JSON.parse(connectionBytes);
   const bindingFile = Array.isArray(command) ? command.at(-1) : undefined;
-  if (!Array.isArray(command) || command.length < 3 || command.length > 32
-      || !command.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 8192)
-      || !isAbsolute(command[0]) || command.at(-2) !== '--binding' || !isAbsolute(bindingFile)
-      || command.filter(arg => arg === '--binding').length !== 1) {
+  const moduleArgs = ['-I', '-m', 'daimon_matrix.agent_chat', '--binding'];
+  if (!Array.isArray(command) || command.length !== 6
+      || !command.every(arg => typeof arg === 'string' && arg.length > 0 && arg.length <= 4096)
+      || !isAbsolute(command[0]) || !isAbsolute(bindingFile)
+      || !moduleArgs.every((arg, index) => command[index + 1] === arg)) {
     throw new Error('Invalid native Matrix messaging connection');
   }
   const bindingBytes = await privateBytes(bindingFile, 16 * 1024);
@@ -232,7 +233,7 @@ async function matrixMessaging(profile, fullAccess) {
     throw new Error('Matrix messaging grant differs from the selected live body');
   }
   return {
-    server: nativeStdio(profile.home, [...command, 'mcp']),
+    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp']),
     tools: methods.map(method => method.replace('.', '_')),
     revision: createHash('sha256').update(connectionBytes).update(bindingBytes).update(clientBytes)
       .update(observerBytes).digest('hex'),
@@ -290,10 +291,10 @@ function skillFrontmatter(bytes, digest) {
     if (!indent) metadata = key === 'metadata' && value === undefined;
     if (value === undefined ? !!indent || !metadata : !validScalar(value)) return header[1];
     if (indent && key === 'version' && /^"[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?"$/.test(value)) {
-      lines[index] = '  version: "<semver>"';
+      lines[index] = ['metadata.version', 'semver'];
     }
   }
-  return lines.join('\n');
+  return lines;
 }
 
 async function sharedSkillInventory(root) {
