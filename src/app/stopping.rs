@@ -82,6 +82,14 @@ pub(super) async fn command(
         return matrix::owner(app, human, selected).await;
     }
     if let Some(selected) = args.strip_prefix("presentation ") {
+        if selected.starts_with("part ") {
+            let app = app.clone();
+            let selected = selected.to_owned();
+            return tokio::task::spawn_blocking(move || {
+                presentation::owner_read(&app, human, &selected)
+            })
+            .await?;
+        }
         return presentation::owner_read(app, human, selected);
     }
     if let Some(selected) = args.strip_prefix("requests ") {
