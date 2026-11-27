@@ -16,7 +16,7 @@ function boot(readOnly=false,standalone=false,options={}) {
     for(const [id,timer] of selected){gaps.delete(id);timer.fn();}
   }};
   const timeout=(fn,ms)=>{
-    if(options.clock && [180,450,1200].includes(ms)){const id={};gaps.set(id,{fn,ms});return id;}
+    if(options.clock && [60,180,450,1200].includes(ms)){const id={};gaps.set(id,{fn,ms});return id;}
     return setTimeout(fn,ms);
   };
   const cancelTimeout=id=>{if(gaps.has(id))gaps.delete(id);else clearTimeout(id);};
@@ -1165,9 +1165,9 @@ function boot(readOnly=false,standalone=false,options={}) {
   const early=incremental.nodes.get('#conversation-audio');await until(()=>incremental.audioCalls.length===2&&!early.paused).catch(error=>{throw Error(JSON.stringify({stage:'initial_incremental_playback',calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120],'Exactly one future segment prepares during current playback');
   incremental.ui.pause();early.beforeNodes[0].handlers.click();await until(()=>!early.paused&&!early.muted);assert.equal(incremental.audioCalls.length,2,'Resume reuses the owned future attempt');
-  early.ended=true;const continuing=early.handlers.ended();incremental.clock.fire(180);await continuing;await until(()=>incremental.audioCalls.length===3&&!early.paused).catch(e=>{throw Error(JSON.stringify({calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-state').textContent,audioState:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
+  early.ended=true;const continuing=early.handlers.ended();assert.deepEqual(incremental.clock.pending(),[60]);incremental.clock.fire(60);await continuing;await until(()=>incremental.audioCalls.length===3&&!early.paused).catch(e=>{throw Error(JSON.stringify({calls:incremental.audioCalls,state:incremental.nodes.get('#conversation-state').textContent,audioState:incremental.nodes.get('#conversation-audio-state').textContent,paused:early.paused,muted:early.muted}));});
   assert.deepEqual(incremental.audioCalls.map(x=>x.offset),[0,120,420],'Continuation consumes its exact cached attempt and prepares only the next segment');
-  incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(180);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
+  incremental.ui.stop();const stoppedCalls=incremental.audioCalls.length;incremental.clock.fire(60);await new Promise(r=>setImmediate(r));assert.equal(incremental.audioCalls.length,stoppedCalls,'Stop cannot revive prefetched speech');
   const firstBody={},heldSignals=[],heldFuture=new Map();
   const earlyAudio=boot(false,true,{clock:true,incremental:true,holdFirstBody:firstBody,preparationSignals:heldSignals,futureReleases:heldFuture});
   earlyAudio.audio();earlyAudio.replyTexts.set('native:9','Measured sentence. '.repeat(80));await earlyAudio.ui.refresh();
@@ -1179,8 +1179,14 @@ function boot(readOnly=false,standalone=false,options={}) {
   firstBody.release();
   await until(()=>!earlyAudioPlayer.paused&&!earlyAudioPlayer.muted);
   assert.deepEqual(earlyAudio.audioCalls.map(call=>call.offset),[0,120],'Playback reuses the successor already in flight');
+  earlyAudioPlayer.ended=true;
+  const handoff=earlyAudioPlayer.handlers.ended();
+  assert.deepEqual(earlyAudio.clock.pending(),[60],'The verified buffered boundary has a shorter cancelable handoff');
   earlyAudio.ui.stop();
-  assert.equal(heldSignals[1].aborted,true,'Stop cancels the early successor');
+  await handoff;
+  earlyAudio.clock.fire(60);
+  assert.equal(heldSignals[1].aborted,true,'Stop cancels the exact successor during the handoff');
+  assert.deepEqual(earlyAudio.audioCalls.map(call=>call.offset),[0,120],'The cancelled handoff cannot replay the successor');
 
   // Slow finalized-WAV voices use two exact future segments concurrently.
   const preparationSignals=[],futureReleases=new Map();
@@ -1190,13 +1196,13 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.deepEqual(buffered.audioCalls.map(x=>x.offset),[0,120,420],'Two future exact parts start before the current part ends');
   assert.deepEqual([...futureReleases.keys()],[120,420],'Both futures are in flight without waiting for either response');
   futureReleases.get(120)();
-  const originalMedia=bufferedPlayer.src;bufferedPlayer.ended=true;const bufferedContinue=bufferedPlayer.handlers.ended();buffered.clock.fire(180);await bufferedContinue;
+  const originalMedia=bufferedPlayer.src;bufferedPlayer.ended=true;const bufferedContinue=bufferedPlayer.handlers.ended();buffered.clock.fire(60);await bufferedContinue;
   await until(()=>buffered.audioCalls.length===4&&!bufferedPlayer.paused&&!bufferedPlayer.muted);
   assert.notEqual(bufferedPlayer.src,originalMedia);
   assert.deepEqual(buffered.audioCalls.map(x=>x.offset),[0,120,420,720],'Promotion consumes existing parts once and fills only one free future slot');
   assert.equal(preparationSignals[2].aborted,false,'Promoting its predecessor does not cancel the owned next part');
   buffered.ui.stop();assert(preparationSignals[2].aborted&&preparationSignals[3].aborted,'Stop cancels both future preparations');
-  const bufferedCount=buffered.audioCalls.length;buffered.clock.fire(180);await new Promise(r=>setImmediate(r));assert.equal(buffered.audioCalls.length,bufferedCount);assert.equal(buffered.nativePosts.length,0);
+  const bufferedCount=buffered.audioCalls.length;buffered.clock.fire(60);await new Promise(r=>setImmediate(r));assert.equal(buffered.audioCalls.length,bufferedCount);assert.equal(buffered.nativePosts.length,0);
 
   // Barge-in pauses the existing media immediately without canceling its
   // stream or any native work. Reload can restart the interrupted segment,
@@ -1237,7 +1243,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   const futureFailure=boot(false,true,{clock:true,incremental:true,failOffset:120});futureFailure.audio();futureFailure.replyTexts.set('native:9','Actual canonical text. '.repeat(40));await futureFailure.ui.refresh();
   futureFailure.nodes.get('#conversation-voice-replies').handlers.click();futureFailure.addReplies(1);await futureFailure.ui.refresh();
   const futurePlayer=futureFailure.nodes.get('#conversation-audio');await until(()=>futureFailure.audioCalls.length===2&&!futurePlayer.paused);
-  futurePlayer.ended=true;const futureEnd=futurePlayer.handlers.ended();futureFailure.clock.fire(180);await futureEnd;
+  futurePlayer.ended=true;const futureEnd=futurePlayer.handlers.ended();futureFailure.clock.fire(60);await futureEnd;
   assert.equal(futureFailure.audioCalls.filter(x=>x.offset===120).length,1,'Consuming a failed/uncertain future preparation never repeats its provider attempt');futureFailure.ui.stop();
 
   const nextBackground=boot(false,true,{clock:true});nextBackground.audio();await nextBackground.ui.refresh();

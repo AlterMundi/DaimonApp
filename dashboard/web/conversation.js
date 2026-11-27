@@ -1867,7 +1867,7 @@ window.Conversation = (() => {
       const previous=speechWait;speechWait=undefined;
       clearTimeout(previous.timer);previous.resolve(false);
     }
-    function waitForSpeech(kind, source) {
+    function waitForSpeech(kind, source, delay = speechGaps[kind]) {
       cancelSpeechWait();
       const owned=generation;
       return new Promise(resolve=>{
@@ -1877,7 +1877,7 @@ window.Conversation = (() => {
           if(speechWait!==waiting)return;
           speechWait=undefined;
           resolve(generation===owned && enabled && playbackAllowed() && !captureBusy && !voiceSuspended);
-        },speechGaps[kind]);
+        },delay);
       });
     }
     async function nextSpokenReply(kind="reply", source) {
@@ -2595,7 +2595,11 @@ window.Conversation = (() => {
       rememberPosition();
       if (selected.next !== null) {
         audioState("A short pause before continuing…");
-        if(await waitForSpeech("chunk",selected.source)){
+        // A verified buffered part already contains its own speech cadence.
+        // Leave a short handoff while the same reply's next part is prepared.
+        const bufferedBoundary = (!selected.streaming || selected.usingBlob)
+          && selected.source.kind !== "integrator_live" && selected.end === selected.next;
+        if(await waitForSpeech("chunk",selected.source,bufferedBoundary?60:speechGaps.chunk)){
           const result=await listenTo(selected.source,selected.next,selected);
           if(result?.failed && result.generation===generation && !active)nextSpokenReply("reply",selected.source);
         }

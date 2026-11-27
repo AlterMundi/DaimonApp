@@ -333,8 +333,9 @@ owners and are not recursively removed by this mechanism.
 
 The existing source/revision-fenced browser player owns one cancelable waiting
 state, including silence when no audio element is active. Initial timing is
-180 ms between chunks, 450 ms between replies and 1200 ms after a live question.
-These are pacing defaults to qualify with actual hearing, not a latency SLO.
+60 ms between verified buffered parts of an ordinary reply, 180 ms at other
+chunk boundaries, 450 ms between replies and 1200 ms after a live question.
+Provider, transfer and source-verification latency can extend these waits.
 Question speech takes FIFO priority over queued ordinary replies without
 interrupting a segment already playing. The question remains available in the
 visible request area; its contextual reply reference is advisory. Ordinary
