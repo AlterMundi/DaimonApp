@@ -277,6 +277,7 @@ def deferred_logical_completion(binary):
 
 def later_helper_completion(binary):
     j = Sessions(binary, control=True)
+    j.allow_native_launch = True
     try:
         j.prepare()
         j.admit('#Alpha Consult Beta and retain its result.', topic=1)
