@@ -115,9 +115,12 @@ history across a gap, the worker attaches the checkpoint as a separate data
 block. Prefer dated status, verifiable revisions and source pointers. The file
 carries no approvals or instructions. Missing or invalid files and checkpoints
 that exceed the total worker frame budget leave ordinary conversation delivery
-available. When Claude reports missing native history before
-submission, Gateway retains that result. This path does not resubmit that
-input. A paired Conversation reply to a canonical result carries the exact
+available. When the SDK confirms a selected native history is missing before Gateway
+commits submission, Gateway may prepare one successor under the same routed
+input and local turn. For paired human input, the successor must carry retained
+history or a project checkpoint. Cancellation, mismatched scope, confirmed
+exposure and uncertain outcomes leave the original retained. A paired
+Conversation reply to a canonical result carries the exact
 selected text to either a resumed or fresh Claude context. Gateway retains
 the selected text digest at capture and verifies the original source and
 destination at preparation. A changed delivery status can preserve the same

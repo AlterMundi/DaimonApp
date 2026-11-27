@@ -175,6 +175,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
                 reason = "end_turn"
+            elif (recovered := getattr(self.server, "expected_recovered_history", None)) is not None:
+                assert submission["native_session_id"] != self.server.previous_session
+                assert any(
+                    "Gateway historical context (JSON):" in block.get("text", "")
+                    and recovered in block.get("text", "")
+                    for message in messages if isinstance(message["content"], list)
+                    for block in message["content"] if block.get("type") == "text"
+                )
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "I recovered the retained design context."}
+                reason = "end_turn"
             elif previous is not None:
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])

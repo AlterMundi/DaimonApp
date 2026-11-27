@@ -810,6 +810,34 @@ timeout_seconds=5
             self.assertTrue(any(item == instruction for item in provider.calls[len(calls):]))
             self.assertEqual(journey.native_turns, native_turns)
 
+            if os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                previous_native = provider.previous_session
+                fixture_home = Path(json.loads(profile.read_text())["configurationDirectory"])
+                native_files = list((fixture_home / "projects").rglob(previous_native + ".jsonl"))
+                self.assertEqual(len(native_files), 1)
+                native_file = native_files[0]
+                native_file.rename(native_file.with_suffix(".unavailable"))
+                before_missing_resume = len(provider.calls)
+                provider.expected_recovered_history = provider.original
+                provider.original = "Resume this design using the last retained context."
+                provider.human_original = str(journey.sequence + 1)
+                recovery_update = journey.admit(provider.original, topic=7)
+                journey.wait(lambda: provider.failure or
+                             journey.has("I recovered the retained design context.", 7), seconds=35)
+                self.assertIsNone(provider.failure)
+                del provider.expected_recovered_history
+                self.assertEqual(provider.calls[before_missing_resume:], [
+                    journey.row("SELECT i.id FROM interaction_instructions i "
+                                "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?",
+                                (str(recovery_update),))[0][0]
+                ])
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,t.native_thread_id<>?,t.status FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (previous_native, str(recovery_update))), [("accepted", 1, "completed")])
+                self.assertEqual(journey.native_turns, native_turns)
+
             after_retry = list(provider.calls)
             forwarded_goal = journey.admit("/goal", topic=7, message_fields={
                 "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"}

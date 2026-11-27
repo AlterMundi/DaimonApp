@@ -19,6 +19,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub workspace: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
+    pub require_recovery_context: bool,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
@@ -146,6 +147,7 @@ pub(in crate::app) async fn execute_worker(
         workspace,
         history_seed,
         project_checkpoint,
+        require_recovery_context,
         text,
         attachments,
         body,
@@ -237,6 +239,12 @@ pub(in crate::app) async fn execute_worker(
             if let Some(checkpoint) = project_checkpoint {
                 attach_project_checkpoint(&mut start, checkpoint)?;
             }
+            anyhow::ensure!(
+                !require_recovery_context
+                    || start.get("historySeed").is_some()
+                    || start.get("projectCheckpoint").is_some(),
+                "Claude recovery requires context that fits the worker input"
+            );
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
@@ -695,6 +703,7 @@ pub(super) async fn run_portable_turn(
                 workspace: None,
                 history_seed: None,
                 project_checkpoint: None,
+                require_recovery_context: false,
                 text: &input.text,
                 attachments: &[],
                 body: body.clone(),
@@ -723,6 +732,42 @@ pub(super) async fn run_portable_turn(
     let deliveries = store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))?;
     super::routing::publish_results(app, input.human, deliveries);
     Ok(())
+}
+
+fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
+    if can_recover
+        && outcome["phase"] == "not_submitted"
+        && outcome["reason"] == "claude_resume_session_missing"
+        // execute_worker adds this only after matching the selected session and
+        // scope, verifying worker exit, and confirming no committed submission.
+        && outcome["resumeUnavailableBody"].is_object()
+    {
+        outcome["resumeUnavailable"]["scope"].as_str()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn claude_recovery_requires_an_attested_unsent_original_and_context() {
+    let missing = json!({
+        "phase": "not_submitted",
+        "reason": "claude_resume_session_missing",
+        "resumeUnavailable": {"sessionId": "selected", "scope": "selected-scope"},
+        "resumeUnavailableBody": {"beingRef": "authenticated"},
+    });
+    assert_eq!(missing_resume_scope(&missing, true), Some("selected-scope"));
+    assert_eq!(missing_resume_scope(&missing, false), None);
+    let mut uncertain = missing.clone();
+    uncertain["phase"] = json!("uncertain");
+    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    uncertain = missing;
+    uncertain
+        .as_object_mut()
+        .unwrap()
+        .remove("resumeUnavailableBody");
+    assert_eq!(missing_resume_scope(&uncertain, true), None);
 }
 
 pub(super) async fn run_routed_portable(
@@ -766,24 +811,20 @@ pub(super) async fn run_routed_portable(
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
-    let human_authored = store
-        .interaction_author(&input.id, input.human_id)?
-        .is_none();
+    let author = store.interaction_author(&input.id, input.human_id)?;
+    let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
     anyhow::ensure!(
         request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
         "Routed worker attachments require a direct Claude turn"
     );
-    let controller = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
-        .then_some(WorkerController {
-            app,
-            key: input.target,
-            human: input.human_id,
-            local_turn: local,
-            routed: true,
-        });
-
+    // Paired local helpers can coordinate with the same controller. The store
+    // checks their attributed lineage and original human scope per operation.
+    let paired_work = human_authored
+        || author
+            .as_ref()
+            .is_some_and(|a| a["kind"] == "session_request");
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -832,43 +873,73 @@ pub(super) async fn run_routed_portable(
         } else {
             (None, None)
         };
-        // CREATE_ONLY adapters require a distinct coordinate for each attempt.
-        let attempt = uuid::Uuid::new_v4().to_string();
-        execute_worker(
-            &config.worker_command,
-            engine,
-            WorkerTurn {
-                id: &input.id,
-                session: &attempt,
-                resume: &resume,
-                human_original: direct_original,
-                native_goal_command,
-                routed_human: !direct_original,
-                routed_host_access: routed_host_access && !direct_original,
-                session_instructions: session.session_prompt.as_deref(),
-                workspace: (engine == ForegroundEngine::Claude && routed_host_access)
-                    .then_some(session.cwd.as_path()),
-                history_seed: history_seed.as_ref(),
-                project_checkpoint: project_checkpoint.as_deref(),
-                text: &request.prompt,
-                attachments: &request.attachments,
-                body: body.clone(),
-                cancel: &cancel,
-                controller,
-                steering: steering.as_mut(),
-            },
-            |prepared| {
-                if cancel.is_cancelled() {
-                    return Ok(false);
-                }
-                if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
-                    .is_some_and(|current| current.id == session.id && current.cwd == session.cwd && current.session_prompt == session.session_prompt)
-                {
-                    return Ok(false);
-                }
-                store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())
-            },
-        ).await
+        let mut missing_resume: Option<(String, Value)> = None;
+        loop {
+            let mut exposed = false;
+            let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
+                .then_some(WorkerController {
+                    app,
+                    key: input.target,
+                    human: input.human_id,
+                    local_turn: local,
+                    routed: true,
+                });
+            // CREATE_ONLY adapters require a distinct coordinate for each attempt.
+            let attempt = uuid::Uuid::new_v4().to_string();
+            let result = execute_worker(
+                &config.worker_command,
+                engine,
+                WorkerTurn {
+                    id: &input.id,
+                    session: &attempt,
+                    resume: if missing_resume.is_some() { &[] } else { &resume },
+                    human_original: direct_original,
+                    native_goal_command,
+                    routed_human: !direct_original,
+                    routed_host_access: routed_host_access && !direct_original,
+                    session_instructions: session.session_prompt.as_deref(),
+                    workspace: (engine == ForegroundEngine::Claude && routed_host_access)
+                        .then_some(session.cwd.as_path()),
+                    history_seed: history_seed.as_ref(),
+                    project_checkpoint: project_checkpoint.as_deref(),
+                    require_recovery_context: missing_resume.is_some(),
+                    text: &request.prompt,
+                    attachments: &request.attachments,
+                    body: body.clone(),
+                    cancel: &cancel,
+                    controller,
+                    steering: steering.as_mut(),
+                },
+                |prepared| {
+                    if cancel.is_cancelled()
+                        || missing_resume.as_ref().is_some_and(|(scope, _)| {
+                            prepared["native_session_scope"].as_str() != Some(scope.as_str())
+                        })
+                    {
+                        return Ok(false);
+                    }
+                    if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
+                        .is_some_and(|current| current.id == session.id && current.cwd == session.cwd && current.session_prompt == session.session_prompt)
+                    {
+                        return Ok(false);
+                    }
+                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())?;
+                    Ok(exposed)
+                },
+            ).await;
+            if let Some((_, missing)) = missing_resume {
+                // Keep the missing-session evidence when the replacement never
+                // reached exposure. Once exposed, only its outcome may settle it.
+                break if exposed { result } else { Ok(missing) };
+            }
+            let Ok(outcome) = result else {
+                break result;
+            };
+            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || project_checkpoint.is_some()) else {
+                break Ok(outcome);
+            };
+            missing_resume = Some((scope.to_owned(), outcome));
+        }
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
     if let Some(steering) = steering {
