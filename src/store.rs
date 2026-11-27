@@ -954,7 +954,7 @@ impl Store {
     }
 
     pub fn apply_session_template(&self, key: SessionKey, template: &SessionRecord) -> Result<()> {
-        self.apply_template(key, template, None)
+        self.apply_template(key, template, None, None, None)
     }
     pub fn apply_empty_session_template(
         &self,
@@ -962,17 +962,89 @@ impl Store {
         template: &SessionRecord,
         human: i64,
     ) -> Result<()> {
-        self.apply_template(key, template, Some(human))
+        self.apply_template(key, template, Some(human), None, None)
     }
+    pub(crate) fn apply_new_topic_folder_template(
+        &self,
+        key: SessionKey,
+        template: &SessionRecord,
+        human: i64,
+        folder: &Path,
+        expected_cwd: &Path,
+        creation: Option<&str>,
+    ) -> Result<()> {
+        self.apply_template(
+            key,
+            template,
+            Some(human),
+            Some((folder, expected_cwd)),
+            creation,
+        )
+    }
+
+    pub(crate) fn topic_folder(&self, key: SessionKey, human: i64) -> Result<Option<PathBuf>> {
+        Ok(self.topic_folder_claim(key, human)?.map(|(path, _)| path))
+    }
+
+    pub(crate) fn topic_folder_claim(
+        &self,
+        key: SessionKey,
+        human: i64,
+    ) -> Result<Option<(PathBuf, String)>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT s.topic_folder, s.topic_folder_claim FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+               AND s.topic_folder_owner=?3 AND u.allowed=1 AND s.topic_folder_claim IS NOT NULL",
+            params![key.chat_id,key.thread_id,human], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?)),
+        ).optional().map_err(Into::into)
+    }
+
+    pub(crate) fn reserve_topic_folder(
+        &self,
+        key: SessionKey,
+        human: i64,
+        folder: &Path,
+    ) -> Result<String> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        anyhow::ensure!(
+            !stopping::fenced_on(&tx, key)? && !maintenance_writer_held_on(&tx, key)?,
+            "Topic is held"
+        );
+        let folder = folder.to_str().context("Topic folder is not UTF-8")?;
+        let claim = uuid::Uuid::now_v7().to_string();
+        let changed = tx.execute(
+            "UPDATE sessions SET topic_folder=?1, topic_folder_owner=?4, topic_folder_claim=?5
+             WHERE chat_id=?2 AND thread_id=?3 AND creator_user_id=?4
+             AND busy=0 AND codex_thread_id IS NULL
+             AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id)
+             AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?4 AND allowed=1)
+             AND topic_folder IS NULL",
+            params![folder, key.chat_id, key.thread_id, human, claim],
+        )?;
+        anyhow::ensure!(changed == 1, "Topic folder owner or selection changed");
+        tx.commit()?;
+        Ok(claim)
+    }
+
     fn apply_template(
         &self,
         key: SessionKey,
         template: &SessionRecord,
         empty_owner: Option<i64>,
+        folder: Option<(&Path, &Path)>,
+        creation: Option<&str>,
     ) -> Result<()> {
         let add_dirs = serde_json::to_string(&path_vec_to_strings(&template.add_dirs))?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        let workspace = folder
+            .map(|(path, _)| path.to_str().context("Topic folder is not UTF-8"))
+            .transpose()?;
+        let expected_cwd = folder
+            .map(|(_, path)| path.to_str().context("Topic directory is not UTF-8"))
+            .transpose()?;
         let changed=tx.execute(
             "UPDATE sessions
              SET session_title = ?3,
@@ -990,6 +1062,7 @@ impl Store {
                  collaboration_mode = ?15,
                  updated_at = ?16
              WHERE chat_id = ?1 AND thread_id = ?2
+               AND (?18 IS NULL OR (topic_folder=?18 AND topic_folder_owner=?17 AND cwd=?19))
                AND (?17 IS NULL OR (creator_user_id=?17 AND EXISTS(SELECT 1 FROM users u WHERE u.tg_user_id=?17 AND u.allowed=1) AND busy=0 AND codex_thread_id IS NULL
                  AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=sessions.id)
                  AND NOT EXISTS(SELECT 1 FROM incoming_updates i WHERE COALESCE(json_extract(i.payload_json,'$.message.chat.id'),json_extract(i.payload_json,'$.callback_query.message.chat.id'))=sessions.chat_id AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),json_extract(i.payload_json,'$.callback_query.message.message_thread_id'),0)=sessions.thread_id AND COALESCE(json_extract(i.payload_json,'$.message.from.id'),json_extract(i.payload_json,'$.callback_query.from.id'))=?17)))",
@@ -1011,6 +1084,8 @@ impl Store {
                 template.collaboration_mode.map(CollaborationMode::as_str),
                 now_string(),
                 empty_owner,
+                workspace,
+                expected_cwd,
             ],
         )?;
         if changed == 0 {
@@ -1029,6 +1104,9 @@ impl Store {
             } else {
                 tx.execute("DELETE FROM bot_state WHERE key=?", [owner_key])?;
             }
+        }
+        if let Some(id) = creation {
+            self.finish_direct_topic_on(&tx, id, key, empty_owner.context("Missing topic owner")?)?;
         }
         tx.commit()?;
         Ok(())
@@ -1605,6 +1683,9 @@ impl Store {
         add_column_if_missing(&conn, "sessions", "service_tier", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "collaboration_mode", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_prompt", "TEXT")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder", "TEXT")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder_owner", "INTEGER")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder_claim", "TEXT")?;
         add_column_if_missing(
             &conn,
             "sessions",

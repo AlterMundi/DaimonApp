@@ -42,6 +42,8 @@ pub struct InteractionConfig {
     pub observer_model: Option<String>,
     /// Owner-selected directory for independent topic creation.
     pub independent_topic_workspace: Option<std::path::PathBuf>,
+    /// Owner-selected parent for individually allocated independent topics.
+    pub topic_workspace_root: Option<std::path::PathBuf>,
     /// Explicit inert per-being vocabulary; omitted keeps the legacy portrait.
     pub expression_pack: Option<crate::ascii::ExpressionPack>,
     pub observer_reasoning_effort: Option<String>,
@@ -398,7 +400,13 @@ impl InteractionConfig {
         {
             bail!("Invalid explicit artifact storage placement or retention limits");
         }
-        if let Some(workspace) = &self.independent_topic_workspace {
+        for workspace in [
+            self.independent_topic_workspace.as_ref(),
+            self.topic_workspace_root.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             anyhow::ensure!(
                 workspace.is_absolute()
                     && workspace.to_str().is_some_and(|path| path.len() <= 4096),
@@ -1052,6 +1060,7 @@ mod tests {
             discover_owned_sessions: false,
             observer_model: None,
             independent_topic_workspace: None,
+            topic_workspace_root: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],
