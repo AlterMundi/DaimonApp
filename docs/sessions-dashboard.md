@@ -261,3 +261,17 @@ pair capability requires its registered receiving route; do not invent one or
 redirect other humans into the author's private bot. An explicitly author-owned
 machine dashboard may use the documented author dependency with that reason
 visible. Shared source publication is not receiving deployment.
+
+## Input visibility in Conversation's selected-session view
+
+The selected session shows a local text preview before the send request returns.
+The preview stays bound to the selected destination and original message ID.
+Its status distinguishes sending, a retained receipt, and an unconfirmed
+submission. An eligible receipt requests the same session's history directly.
+
+Ordinary Codex history reconciles the preview using the owned original ID from
+the attributed input. Portable history can show an accepted original while its
+runner is still working. These outstanding inputs have a separate bounded
+window and do not advance the cursor for completed results. Once that result
+arrives, the canonical history entry replaces its preview by original ID.
+Internal dependencies and stale session bindings remain outside this display.
