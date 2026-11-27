@@ -187,18 +187,19 @@ def direct_topic_request_and_return(binary):
         assert provenance['author']['human_parent']['origin'] == selected['source_message']
         j.answer(8, 'Scoped direct-topic dependency result.')
         j.wait(lambda: j.row('SELECT phase FROM interaction_session_requests') == [('returned',)])
-        # The original direct collector may still be busy. The return goes to
-        # the same logical owner after it settles, without replaying the original.
+        # Keep the original collector alive until the retained return accepts.
+        # Observing the request row alone does not settle a steer in flight.
         thread = 'native-topic-7'
-        if not any('Scoped direct-topic dependency result.' in p['input'][0]['text']
-                   for p in j.packets[thread]):
-            turn = j.runs[thread]
-            j.broadcast(thread, 'turn/completed', {'turn': {'id': turn, 'status': 'completed'}})
+        return_id = j.row(
+            "SELECT json_extract(doc,'$.return_instruction') FROM interaction_session_requests WHERE id=?",
+            (admission['request']['id'],),
+        )[0][0]
+        j.wait(lambda: j.row("SELECT phase FROM interaction_instructions WHERE id=?", (return_id,)) == [('accepted',)])
         j.wait(lambda: any(
             'Scoped direct-topic dependency result.' in packet['input'][0]['text']
             for packet in j.packets[thread]
         ))
-        j.wait(lambda: len(j.instructions(7)) == 3 and j.instructions(7)[-1][1] == 'accepted')
+        assert len(j.instructions(7)) == 3
         ok, selection = j.tool(7, 'session_receive', {'request_id': admission['request']['id']})
         assert ok and selection['new_return_instruction'] is None
         assert [packet['input'][0]['text'] for packet in j.packets[thread]].count(original) == 1
