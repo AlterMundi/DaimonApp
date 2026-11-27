@@ -776,7 +776,7 @@ timeout_seconds=5
             journey.wait(lambda: provider.failure or journey.row(
                 "SELECT count(*) FROM interaction_session_requests") == [(1,)], seconds=25)
             self.assertIsNone(provider.failure)
-            journey.wait(lambda: provider.failure or len(provider.calls) == 5, seconds=25)
+            journey.wait(lambda: provider.failure or len(provider.calls) == 6, seconds=25)
             self.assertIsNone(provider.failure)
             journey.wait(lambda: journey.row(
                 "SELECT i.phase FROM interaction_session_requests r "
