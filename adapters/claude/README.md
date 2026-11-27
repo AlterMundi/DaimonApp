@@ -133,12 +133,23 @@ direct Telegram originals with matching receipts.
 For paired work, optional `matrixMessaging` selects the owner-private
 `connection.json` returned by the existing Matrix chat attachment installer.
 Provision it using the Claude embodiment's own messaging application and
-signed grant. The worker checks that the attachment contains exactly the
-four messaging RPC methods and that the client is bound to the selected
-embodiment and incarnation. It registers the maintained stdio MCP only for
+signed grant. For a standalone Cluster body with the signed Tribe application
+selected, use the attachment with the `daimon_matrix.agent_chat` launcher on
+`tribe.sock` and keep the identity observer on the sibling `matrix.sock` in the
+same runtime directory. Existing shared-socket bindings are also supported.
+The worker checks the runtime, embodiment, incarnation and exact four
+messaging RPC methods. It registers the maintained stdio MCP only for
 paired host-access turns. It checks the precise native catalog before
-exposure and fingerprints the bound application as part of its authority
-scope. Setup and discovery do not read an inbox or send anything.
+exposure and rechecks the exact messaging binding before releasing input or
+accepting steering. Enabling the binding resumes the existing same-scope
+paired history, including sessions already indexed with a messaging
+fingerprint. Setup and discovery do not read an inbox or send anything.
+
+For Claude CLI versions that omit tools with a root union schema, use
+`matrixMessaging: { "connection": "/path/to/connection.json", "objectToolSchemas": true }`
+with a Matrix client that supports `agent_chat mcp --object-tool-schemas`.
+This changes catalog presentation only. Matrix validates ordinary send and
+exact recovery separately before dispatch.
 
 `sharedDmk` selects the existing being-level DMK reader for normal private
 Claude turns. Set `command` to the installed DMK stdio reader invocation

@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -72,8 +72,12 @@ async function ownerProfile(path) {
         || !closed(value.skillContinuity, ['layoutRevision',
           ...(Object.hasOwn(value.skillContinuity ?? {}, 'previousRevision') ? ['previousRevision'] : [])])
         || !Object.values(value.skillContinuity).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
-      || (messaging.length > 0 && (typeof value.matrixMessaging !== 'string'
-        || !isAbsolute(value.matrixMessaging)))
+      || (messaging.length > 0 && !(typeof value.matrixMessaging === 'string'
+        ? isAbsolute(value.matrixMessaging)
+        : closed(value.matrixMessaging, ['connection', 'objectToolSchemas'])
+          && typeof value.matrixMessaging.connection === 'string'
+          && isAbsolute(value.matrixMessaging.connection)
+          && value.matrixMessaging.objectToolSchemas === true))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -176,7 +180,9 @@ async function matrixFoundation(profile) {
 
 async function matrixMessaging(profile, fullAccess) {
   if (!fullAccess || !profile.matrixMessaging) return undefined;
-  const connectionBytes = await privateBytes(profile.matrixMessaging, 128 * 1024);
+  const selection = profile.matrixMessaging;
+  const objectToolSchemas = typeof selection !== 'string';
+  const connectionBytes = await privateBytes(objectToolSchemas ? selection.connection : selection, 128 * 1024);
   const { command } = JSON.parse(connectionBytes);
   const bindingFile = Array.isArray(command) ? command.at(-1) : undefined;
   const moduleArgs = ['-I', '-m', 'daimon_matrix.agent_chat', '--binding'];
@@ -204,10 +210,19 @@ async function matrixMessaging(profile, fullAccess) {
   const observer = JSON.parse(observerBytes);
   const observed = observer.observation;
   if (!observed?.client_config || typeof binding.socket !== 'string' || !isAbsolute(binding.socket)
-      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)
-      || await realpath(binding.socket) !== await realpath(observed.socket)
-      || !(await stat(observed.socket)).isSocket()) {
-    throw new Error('Matrix messaging and identity observation must use the same runtime socket');
+      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)) {
+    throw new Error('Matrix messaging and identity observation socket selections required');
+  }
+  const [messagingSocket, observationSocket] = await Promise.all([
+    realpath(binding.socket), realpath(observed.socket),
+  ]);
+  // Cluster serves the signed Tribe view alongside the base Matrix view under
+  // the same runtime writer. Keep both clients bound to that exact runtime.
+  const standaloneTribe = basename(observationSocket) === 'matrix.sock'
+    && messagingSocket === join(dirname(observationSocket), 'tribe.sock');
+  if ((messagingSocket !== observationSocket && !standaloneTribe)
+      || !(await stat(messagingSocket)).isSocket() || !(await stat(observationSocket)).isSocket()) {
+    throw new Error('Matrix messaging and identity observation must use the same runtime');
   }
   const observedClient = JSON.parse(await privateBytes(observed.client_config, 16 * 1024));
   const methods = ['messaging.delivery', 'messaging.inbox', 'messaging.reply', 'messaging.send'];
@@ -233,7 +248,9 @@ async function matrixMessaging(profile, fullAccess) {
     throw new Error('Matrix messaging grant differs from the selected live body');
   }
   return {
-    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp']),
+    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp',
+      ...(objectToolSchemas ? ['--object-tool-schemas'] : [])]),
+    objectToolSchemas,
     tools: methods.map(method => method.replace('.', '_')),
     revision: createHash('sha256').update(connectionBytes).update(bindingBytes).update(clientBytes)
       .update(observerBytes).digest('hex'),
@@ -567,8 +584,15 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions, messaging);
-    const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
+    const scopeInputs = [profile, binding ?? '', skillScopeRevision(profile, skills), foundation,
+      hostTools, fullAccess, controllerSelected, sessionInstructions];
+    const continuityScope = turnScope(...scopeInputs);
+    const activeScope = messaging ? turnScope(...scopeInputs, messaging) : continuityScope;
+    // Messaging is an owner-selected capability for this turn. Keep the same
+    // paired history when it is added, and retain already indexed chat scopes.
+    const previous = [first.resume, ...alternates].find(prior =>
+      prior?.scope === continuityScope || prior?.scope === activeScope);
+    const scope = previous?.scope ?? continuityScope;
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
@@ -586,7 +610,8 @@ async function main() {
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
         && inventory.revision === skills.revision
-        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === scope
+        && currentMessaging?.objectToolSchemas === messaging?.objectToolSchemas
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === activeScope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
