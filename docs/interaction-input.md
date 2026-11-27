@@ -46,6 +46,12 @@ once to read that binding again. Read recovery leaves the capture and its
 single provider stream in place. A changed binding or revoked access still
 stops the preparation.
 
+If the live connection ends before the browser requests finalization, Send can
+use the configured OpenAI file transcription for the complete local WAV. This
+is the first submission of the same capture ID and source hash. Once live
+finalization may have started, keep the selected live result reader and its
+known or unresolved outcome. A partial WAV still requires explicit review.
+
 `POST /api/interaction/voice` takes bounded raw audio with `X-Input-Id`,
 `X-Input-Binding`, `X-Audio-Sha256` and its supported audio Content-Type, plus the
 existing Origin/authentication/CSRF checks before buffering a large upload.

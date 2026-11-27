@@ -149,7 +149,11 @@ window.StreamingVoice=(()=>{
     function complete(){
       if(done)return;done=true;
       if(!discarded && !canonicalRecorder && !flushed)recorder.captureStop ||= 'audio_flush_unconfirmed';
-      const blob=discarded||canonicalRecorder||!parts.length?undefined:flushedBlob||wav(parts);parts=[];dispose();recorder.state='inactive';
+      const blob=discarded||canonicalRecorder||!parts.length?undefined:flushedBlob||wav(parts);
+      // A complete standalone WAV can go to file ASR on first Send only
+      // if this capture never attempted to finalize the live transcript.
+      recorder.canFinalizeFile=!!blob && !shared && transcriptionProvider==='openai' && flushed && !finishSent;
+      parts=[];dispose();recorder.state='inactive';
       if(blob)event('dataavailable',blob);event('stop');
     }
     if(canonicalRecorder){

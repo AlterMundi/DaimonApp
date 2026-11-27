@@ -146,7 +146,7 @@ window.VoiceInput = (() => {
     };
   }
 
-  function mount({api, headers, getBinding, beforeOriginal, onOriginalAttempt=()=>{}, onOriginalDiscard=()=>{}, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, getLevelSink=()=>undefined, unauthorized, telegram, onLocalDiscard=()=>{}}) {
+  function mount({api, headers, getBinding, beforeOriginal, onOriginalAttempt=()=>{}, onOriginalDiscard=()=>{}, onInput, onTiming=()=>{}, onTranscript=()=>{}, getReply=()=>undefined, getPlayback=()=>undefined, getCaptureQuestions=()=>undefined, canEditDraft=()=>false, getTranscriptionProfile=()=>undefined, canFinalizeOpenAIFile=()=>false, getVisual=()=>undefined, getFiles=()=>undefined, onFilesSent=()=>{}, onVisualSent=()=>{}, pauseAudio, onActivity=()=>{}, onLevel=()=>{}, getLevelSink=()=>undefined, unauthorized, telegram, onLocalDiscard=()=>{}}) {
     const box=document.querySelector('#conversation-voice'), button=document.querySelector('#conversation-talk'),send=document.querySelector('#conversation-send');
     const discard=document.querySelector('#conversation-voice-discard'), check=document.querySelector('#conversation-voice-check');
     const state=document.querySelector('#conversation-voice-state'),save=document.querySelector('#conversation-voice-save'),review=document.querySelector('#conversation-recording-review');
@@ -449,6 +449,8 @@ window.VoiceInput = (() => {
       if(owned!==generation)return;
       if(recorder?.preparationTiming)onTiming(selection?.captureId,'prepared',recorder.preparationTiming);
       if(edited&&recorder?.preparedText){const before=phase;phase='recording';transcript(recorder.preparedText);phase=before;}
+      const transcriptionProfile=selection?.ordinaryCapture && selection.transcriptionProfile==='openai-live' && recorder?.canFinalizeFile
+        && !recorder.preparedText && canFinalizeOpenAIFile() ? 'openai' : selection?.transcriptionProfile;
       stopTracks();const preparedText=recorder?.preparedText||selection?.preparedText,captureStop=recorder?.captureStop||selection?.captureStop;recorder=undefined;
       const blob=new Blob(parts,{type:mime});parts=[];bytes=0;
       if(!blob.size){cancelRecording('No audio samples were captured. Nothing was sent.');return;}
@@ -469,7 +471,7 @@ window.VoiceInput = (() => {
           dictation={text:previewText,automatic,automaticFinal:!!preparedText,audio:reference('Original recording.'+(mime.includes('wav')?'wav':mime.includes('ogg')?'ogg':mime.includes('mp4')?'m4a':'webm'),mime,blob.size),transcript:reference('Automatic transcript.txt','text/plain',automaticBlob.size)};
 
         }
-        pending={dictation,transcriptionProfile:selection?.transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
+        pending={dictation,transcriptionProfile,captureStop,id:selection?.captureId||window.crypto.randomUUID(),binding,audio_sha256,mime,blob,preparedText,reply:selection?.reference,focusVersion:selection?.version,visual:selection?.visual,files:selection?.files,playback:selection?.playback,captureQuestions:selection?.captureQuestions};
         const attachmentsFull=dictation&&((selection?.files?.length||0)+2>8||blob.size+dictation.transcript.size+(selection?.files||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024);
         if(attachmentsFull)pending.retentionBlocked=true;
         if(needsReview||attachmentsFull){
@@ -477,7 +479,7 @@ window.VoiceInput = (() => {
           try{if(recovery){await recovery.put(reviewed);reviewed.localRecovery=true;}}catch{reviewed.localRecovery=false;}
           if(owned!==generation || binding!==getBinding() || pending!==reviewed)return;
           phase='ready';commit=false;parts=[blob];
-          readySelection={binding,selection:{...selection,captureId:pending.id,captureStop:pending.captureStop,preparedText,captureReviewed:true}};
+          readySelection={binding,selection:{...selection,transcriptionProfile,captureId:pending.id,captureStop:pending.captureStop,preparedText,captureReviewed:true}};
           notice((attachmentsFull?'This recording and your edited draft are kept. Save the audio and reduce the original attachments before sending.':captureStop==='audio_flush_unconfirmed'
             ?'The final audio buffer was not confirmed. The ending may be missing. Send this fragment or discard it.'
             :captureStop==='duration_limit'?'Recording stopped at 2:00. The ending may be incomplete. Send this part or discard it.'
@@ -514,7 +516,7 @@ window.VoiceInput = (() => {
           catch{if(owned===generation)cancelRecording('World context was not confirmed. Your draft is kept; nothing was recorded or sent.','preparation-failed');return;}}
         if((selectedFiles?.length||0)>8||(selectedFiles||[]).reduce((n,f)=>n+f.size,0)>40*1024*1024)throw Error('Attachment capacity');
         if(owned!==generation||binding!==getBinding()||document.hidden)return;
-        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:selection.captureId};
+        const frozenSelection={...selection,visual:selectedVisual,files:selectedFiles,captureId:selection.captureId,ordinaryCapture:!conversational};
         onTiming(frozenSelection.captureId,'requested');
         const media=await window.navigator.mediaDevices.getUserMedia({audio:true,video:false});
         if(owned!==generation || binding!==getBinding() || document.hidden){for(const track of media.getTracks())track.stop();return;}
