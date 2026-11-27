@@ -120,6 +120,10 @@ The receiving backend checks `/access/identity` on that exact home, matches its
 verified human to the existing native receiving human, and enforces the same
 interaction-only permissions. Expiry and revocation stay with shared auth.
 
+The adapter reuses a bounded set of idle TLS connections. Every identity lookup
+still sends the current browser session cookie to the selected Home. It retains
+no identity response or cookie at the transport layer and follows no redirects.
+
 Enable the receiving adapter with `[shared_auth]`, `enabled = true`, an exact
 `home_origin`, and `entry_path = "/interaction/"`. Add that exact home to
 `additional_origins`. The selected proxy strips only the entry prefix, preserves
