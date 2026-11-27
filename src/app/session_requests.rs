@@ -19,6 +19,34 @@ struct SendArgs {
     text: String,
 }
 
+pub(super) fn record_direct_parent(
+    shared: &AppShared,
+    caller: SessionKey,
+    human: i64,
+    local: i64,
+    physical: &str,
+    client: &str,
+) {
+    if shared
+        .config
+        .interaction
+        .as_ref()
+        .is_some_and(|profile| profile.human_id == human)
+        && super::routing::enrolled(shared, caller)
+        && let Err(error) = shared.store.interaction_record_direct_parent(
+            caller,
+            human,
+            local,
+            physical,
+            client,
+            shared.bot_id,
+        )
+    {
+        // A missing coordination reference must never fail accepted human input.
+        tracing::warn!(%error, local, "Could not retain direct dependency parent");
+    }
+}
+
 pub(super) fn tool_call(
     app: App,
     key: SessionKey,
@@ -41,13 +69,25 @@ pub(super) fn tool_call(
                 if !owned.execution.matches(request.harness,&request.native_session){bail!("Caller native binding changed");}
                 None
             };
+            let active_inputs=|| -> Result<Vec<crate::interaction::Instruction>> {
+                if portable_local.is_some() {
+                    return Ok(app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect());
+                }
+                Ok(app.shared.store.interaction_dependency_inputs(request.local_turn,human)?
+                    .into_iter().filter(|i| {
+                        i.target == key
+                            && i.phase == crate::interaction::TransportPhase::Accepted
+                            && i.native_thread.as_deref() == Some(&request.native_session)
+                            && i.native_turn.as_deref() == Some(&request.native_turn)
+                    }).collect())
+            };
             let args:Envelope=serde_json::from_value(request.arguments.clone())?;
-            if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "session_requests" | "session_request") {
+            if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "coordination_inputs" | "session_requests" | "session_request") {
                 bail!("Operation is unavailable for this work session");
             }
             if portable_local.is_some() && args.operation=="capabilities" && args.arguments==json!({}) {
                 return Ok(json!({"schema":"telecodex.local-session/v1","operations":{
-                    "capabilities":{}, "inputs":{}, "session_requests":{},
+                    "capabilities":{}, "inputs":{}, "coordination_inputs":{}, "session_requests":{},
                     "session_request":{"arguments":{"parent_instruction":"current retained human instruction from inputs",
                         "request_id":"stable caller-chosen identifier", "selector":"enrolled topic or general",
                         "text":"bounded session-authored request under the current human instruction"}}
@@ -56,17 +96,13 @@ pub(super) fn tool_call(
                    "policy":"One level of dependencies. Use the existing current human instruction. Inspect admission and continue; do not replay uncertain effects."}));
             }
             match args.operation.as_str() {
-                "capabilities" if args.arguments==json!({})=>{let mut capabilities=json!({"schema":"telecodex.local-session/v1","operations":{"capabilities":{},"inputs":{},"companion_hint":super::presentation::companion_capability(&app)?,"session_requests":{},"session_receive":{"arguments":{"request_id":"retained local request id; select existing canonical result without rerunning helper"}},"session_request":{"arguments":{"parent_instruction":"accepted original human instruction in this execution","request_id":"stable caller-chosen alphanumeric/_/- identifier; never change to hide uncertainty","selector":"one unambiguous enrolled name or tID","text":"selected session-authored question/context only, at most16000bytes"}}},"targets":cfg.targets.iter().map(|t|json!({"name":t.name,"stable_selector":format!("t{}",t.topic_id)})).collect::<Vec<_>>(),"policy":"One dependency level, at most four calls per human instruction. An interview cannot send session-authored requests to its pinned source work; select a separate explicit human instruction instead. Acknowledge and continue other work or end this turn with deferred work; do not poll or wait in a tool loop. A current worker-declared completed result returns as context to this logical session. Native transport is not proof of incorporation. No new-session creation, human impersonation or cross-body operation."});super::workflows::capabilities(&mut capabilities,false);super::interactions::task_capabilities(&mut capabilities);if app.shared.store.goal_delegation_allows_actor(human,key,&request.native_session)? {super::goal_controls::delegated_capabilities(&mut capabilities);}Ok(capabilities)},
+                "capabilities" if args.arguments==json!({})=>{let mut capabilities=json!({"schema":"telecodex.local-session/v1","operations":{"capabilities":{},"inputs":{},"coordination_inputs":{},"companion_hint":super::presentation::companion_capability(&app)?,"session_requests":{},"session_receive":{"arguments":{"request_id":"retained local request id; select existing canonical result without rerunning helper"}},"session_request":{"arguments":{"parent_instruction":"accepted original human instruction in this execution","request_id":"stable caller-chosen alphanumeric/_/- identifier; never change to hide uncertainty","selector":"one unambiguous enrolled name or tID","text":"selected session-authored question/context only, at most16000bytes"}}},"targets":cfg.targets.iter().map(|t|json!({"name":t.name,"stable_selector":format!("t{}",t.topic_id)})).collect::<Vec<_>>(),"policy":"One dependency level, at most four calls per human instruction. An interview cannot send session-authored requests to its pinned source work; select a separate explicit human instruction instead. Acknowledge and continue other work or end this turn with deferred work; do not poll or wait in a tool loop. A current worker-declared completed result returns as context to this logical session. Native transport is not proof of incorporation. No new-session creation, human impersonation or cross-body operation."});super::workflows::capabilities(&mut capabilities,false);super::interactions::task_capabilities(&mut capabilities);if app.shared.store.goal_delegation_allows_actor(human,key,&request.native_session)? {super::goal_controls::delegated_capabilities(&mut capabilities);}Ok(capabilities)},
                 "workflow_result"=>super::workflows::tool(&app,key,human,&request,&args.operation,args.arguments,&closed).await,
                 "publish_tasks"|"human_tasks"|"human_task"|"withdraw_task"=>super::interactions::live_task_tool(&app,key,human,&request,&args.operation,args.arguments,&closed).await,
                 "companion_hint"=>super::presentation::companion_hint(&app,key,human,&request,args.arguments,&closed).await,
-                "inputs" if args.arguments==json!({})=>{
-                    let inputs=if portable_local.is_some() {
-                        app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect()
-                    } else {
-                        super::routing::session_inputs(&app.shared,key,human,&request.native_session,&request.native_turn)?
-                    };
-                    Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;Ok(json!({"instruction":i.id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
+                "inputs"|"coordination_inputs" if args.arguments==json!({})=>{
+                    let inputs=active_inputs()?;
+                    Ok(json!({"inputs":inputs.into_iter().map(|i|{let author=app.shared.store.interaction_author(&i.id,human)?;let source=app.shared.store.interaction_source(&i.id,human)?;Ok(json!({"instruction":i.id,"source_channel":source.channel,"original_ingress_update":source.update_id,"source_message":source.origin,"source_event":source.event_id,"requests":i.requests,"author":author,"eligible_human_parent":author.is_none(),"text_excerpt":i.text.chars().take(2000).collect::<String>(),"excerpt_bounded":true}))}).collect::<Result<Vec<_>>>()?}))
                 }
                 "session_requests" if args.arguments==json!({})=>Ok(json!({"requests":match portable_requests {Some(values)=>values,None=>app.shared.store.interaction_session_requests(key,human,&request.native_session)?},"recovery":"Inspect retained input phases. Only explicit known-unsent input recovery can retry; never replay uncertain admission."})),
                 "session_receive"=>{
@@ -79,19 +115,20 @@ pub(super) fn tool_call(
                     Ok(json!({"request":app.shared.store.interaction_session_selected(key,human,&request.native_session,id)?,"new_return_instruction":admitted,"requests":app.shared.store.interaction_session_requests(key,human,&request.native_session)?,"policy":"Only a retained completed canonical result was selected. Existing returns are inspection-only, including uncertain transmission. No helper work was replayed."}))
                 }
                 "session_request"=>{
-                    let args:SendArgs=serde_json::from_value(args.arguments)?;
+                    let Ok(args) = serde_json::from_value::<SendArgs>(args.arguments) else {
+                        return Ok(json!({"kind":"session_request_rejected","admitted":false,
+                            "reason":"Supply parent_instruction from coordination_inputs, a stable request_id, the destination and scoped text."}));
+                    };
                     let selector=args.selector.strip_prefix("/self#").or_else(||args.selector.strip_prefix('#')).unwrap_or(&args.selector);
                     let targets=if selector=="general" {vec![cfg.entry()]} else {cfg.resolve(selector)};
                     if targets.len()!=1{ return Ok(json!({"kind":"clarification_required","selector":args.selector,"candidates":targets,"admitted":false})); }
                     // Validate the actual native execution as well as the durable
                     // parent. Caller-selected text never becomes human authorship.
-                    let current_parent = if portable_local.is_some() {
-                        args.parent_instruction == request.native_turn
-                    } else {
-                        super::routing::session_inputs(&app.shared,key,human,&request.native_session,&request.native_turn)?
-                            .iter().any(|i|i.id==args.parent_instruction)
-                    };
-                    if !current_parent { bail!("Parent is not in this active execution"); }
+                    let current_parent=active_inputs()?.iter().any(|i|i.id==args.parent_instruction);
+                    if !current_parent {
+                        return Ok(json!({"kind":"session_request_rejected","admitted":false,
+                            "reason":"The selected original has no accepted receipt in this native turn. Read coordination_inputs and select the current original."}));
+                    }
                     let (call,i,fresh)=app.shared.store.interaction_session_request_scoped(
                         key,human,&request.native_session,&request.native_turn,&args.parent_instruction,
                         &args.request_id,targets[0],&args.text,&closed,portable_local,Some(&cfg))?;

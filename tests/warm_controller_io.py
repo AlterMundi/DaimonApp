@@ -154,20 +154,28 @@ def qualify(binary,pack=False):
         j.broadcast(thread,'item/completed',{'turnId':turn,'item':{'id':'warm-entry-final','type':'agentMessage','phase':'final_answer','text':'The work returned.'}})
         j.broadcast(thread,'turn/completed',{'turn':{'id':turn,'status':'completed'}})
         j.idle();j.wait(lambda:not entry.exists())
-        # Ordinary direct inputs are not enrolled just because their topic is known.
+        # Direct text stays raw. This existing, explicitly enrolled topic can
+        # use the same worker-only controller even on an older native thread.
         prior_packets=len(j.packets['native-topic-8'])
-        j.admit('Ordinary direct work.',topic=8)
+        direct_update=j.admit('Ordinary direct work.',topic=8)
         j.wait(lambda:len(j.packets['native-topic-8'])>prior_packets)
         j.wait(lambda:j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=8 AND t.status='running'")==[(1,)])
-        # Dormant access may exist locally, but ordinary direct input is unchanged.
         packet=j.packets['native-topic-8'][-1]
-        assert not any('Controller access for this execution' in item.get('text','') for item in packet['input'])
+        assert packet['input'][0]['text']=='Ordinary direct work.'
         runtime=''.join(v['value'] for k,v in sorted(packet.get('additionalContext',{}).items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
-        assert 'controller fallback' not in runtime and 'scoped live controller' not in runtime
+        assert 'Live controller fallback' in runtime
+        direct_access=j.access(8)
+        capabilities=j.cli(direct_access,'capabilities')['operations']
+        assert 'session_request' in capabilities and 'dispatch' not in capabilities
+        def direct_parent():
+            return any(i['eligible_human_parent'] and i['original_ingress_update']==direct_update
+                       for i in j.cli(direct_access,'inputs')['inputs'])
+        j.wait(direct_parent)
         j.broadcast('native-topic-8','turn/completed',{'turn':{'id':j.runs['native-topic-8'],'status':'completed'}})
         j.idle()
-        assert len(j.instructions(8))==1
-        print('PASS older entry+workers, live same-controller route/dependency, idempotent return, role/binding/expiry denial, direct-topic independence')
+        j.wait(lambda:not direct_access.exists())
+        assert j.row('SELECT count(*) FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id)')==[(1,)]
+        print('PASS older entry+workers, live same-controller route/dependency, idempotent return, role/binding/expiry denial, raw direct input and exact authority')
     finally:j.close()
 
 if __name__=='__main__':
