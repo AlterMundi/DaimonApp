@@ -655,8 +655,8 @@ impl Store {
             .context("Local coordination needs a current human original or its first helper")?;
         let onward = root.id != p.id;
         anyhow::ensure!(
-            !onward || target != root.target,
-            "An onward handoff cannot target its origin"
+            !onward || (target != root.target && !report_to_topic),
+            "An onward handoff cannot target its origin or publish to a topic"
         );
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,

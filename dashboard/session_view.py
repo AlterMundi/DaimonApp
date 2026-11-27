@@ -295,8 +295,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     # Local dependencies and their returns have their own frozen audience.
     ownership = """i.session_id=? AND s.human_id=? AND i.phase='accepted'
           AND t.session_id=i.session_id AND t.from_user_id=s.human_id
-          AND t.execution_harness=? AND t.execution_generation=?
-          """
+          AND t.execution_harness=? AND t.execution_generation=?"""
     human_original = "NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)"
     accepted = """FROM interaction_instructions i
         JOIN interaction_sources s ON s.id=i.input_id
