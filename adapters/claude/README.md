@@ -46,15 +46,15 @@ do not change the authorization scope or replace native history. Repository
 guidance remains a separate owner selection. This field grants no resource,
 tool or route and performs no memory or inbox preload.
 
-When preparing a compatible skill update for an existing body, capture
-`--skill-resume-anchor <owner profile>` once from the installed baseline, and
-set its output as `skillResumeAnchor` in that private profile before applying
-the reviewed packages. The anchor preserves the original authorization scope
-across compatible skill prose and release-version changes. Names, resolved
-paths and other frontmatter must still match. The worker rechecks actual
-content digests at submission and continues to verify the body, provider and
-tool grants independently. Leave the existing scope rotation in place for
-changed memberships, execution metadata or a deliberate confidentiality
+For a compatible skill update, `--skill-resume-anchor <owner profile>`
+prints the exact installed inventory revision. The optional private
+`skillResumeAnchor` accepts an ordered list of exact inventory revisions.
+Its first revision names the existing native scope. Include a reviewed
+successor only when all installed package changes preserve the effective
+skill and tool grants. The inventory includes skill names, resolved paths
+and SHA-256 of every SKILL.md. An unlisted revision retains its own separate
+scope. The worker rechecks the actual digest before and after recording
+submission. Use separate scopes for permission changes or a confidentiality
 withdrawal. Verify a real resumed turn and a read of the new installed skill
 before reporting receiving adoption.
 

@@ -61,8 +61,10 @@ async function ownerProfile(path) {
       || (skills.length > 0 && (typeof value.sharedSkillsDirectory !== 'string'
         || !isAbsolute(value.sharedSkillsDirectory)))
       || (skillAnchor.length > 0 && (!skills.length
-        || !closed(value.skillResumeAnchor, ['membership', 'revision'])
-        || !Object.values(value.skillResumeAnchor).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
+        || !Array.isArray(value.skillResumeAnchor)
+        || value.skillResumeAnchor.length < 2 || value.skillResumeAnchor.length > 16
+        || new Set(value.skillResumeAnchor).size !== value.skillResumeAnchor.length
+        || !value.skillResumeAnchor.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -189,39 +191,10 @@ async function probeFoundation(server, body, cwd, signal) {
   }
 }
 
-function skillMetadata(bytes, digest) {
-  let text;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return { opaque: digest };
-  }
-  if (!/^---[ \t]*(?:\r?\n|$)/.test(text)) return null;
-  const header = /^---\r?\n([\s\S]*?)^---[ \t]*\r?$/m.exec(text);
-  if (header?.index !== 0) return { opaque: digest };
-  // Preserve ambiguous YAML literally. Normalize only plain release scalars
-  // at the root or in the direct metadata mapping used by the publisher.
-  if (/:\s+[|>][+\-\d]*[ \t]*(?:#.*)?$/m.test(header[1])) return header[1];
-  const release = '(?:0|[1-9][0-9]*)(?:\\.(?:0|[1-9][0-9]*)){2}';
-  const scalar = new RegExp(`^((?:version|shared_version):[ \\t]+)(${release}|"${release}"|'${release}')([ \\t]*\\r?)$`);
-  let metadata = false;
-  return header[1].split('\n').map(line => {
-    if (/^\S/.test(line)) {
-      metadata = /^metadata:[ \t]*\r?$/.test(line);
-      return line.replace(scalar, '$1<release>$3');
-    }
-    if (metadata && /^ {2}\S/.test(line)) {
-      return '  ' + line.slice(2).replace(scalar, '$1<release>$3');
-    }
-    return line;
-  }).join('\n');
-}
-
 async function sharedSkillInventory(root) {
-  if (!root) return { names: [], revision: null, membership: null };
+  if (!root) return { names: [], revision: null };
   const names = [];
   const revision = createHash('sha256');
-  const membership = createHash('sha256');
   for (const name of (await readdir(root)).sort()) {
     if (name.startsWith('.')) continue;
     const file = join(root, name, 'SKILL.md');
@@ -234,16 +207,15 @@ async function sharedSkillInventory(root) {
     const bytes = await readFile(path);
     const digest = createHash('sha256').update(bytes).digest('hex');
     revision.update(JSON.stringify([name, path, digest]));
-    membership.update(JSON.stringify([name, path, skillMetadata(bytes, digest)]));
     names.push(`${SKILL_NAMESPACE}:${name}`);
   }
   if (!names.length) throw new Error('Selected shared skills directory is empty');
-  return { names, revision: revision.digest('hex'), membership: membership.digest('hex') };
+  return { names, revision: revision.digest('hex') };
 }
 
 function skillScopeRevision(profile, inventory) {
   const anchor = profile.skillResumeAnchor;
-  return anchor?.membership === inventory.membership ? anchor.revision : inventory.revision;
+  return anchor?.includes(inventory.revision) ? anchor[0] : inventory.revision;
 }
 
 async function sharedSkillPlugin(root, names, directory) {
@@ -354,8 +326,8 @@ async function main() {
   if (flag === '--skill-resume-anchor' && extra.length === 0) {
     const profile = await ownerProfile(path);
     if (!profile.sharedSkillsDirectory) throw new Error('Shared skill selection required');
-    const { membership, revision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
-    process.stdout.write(JSON.stringify({ membership, revision }) + '\n');
+    const { revision } = await sharedSkillInventory(profile.sharedSkillsDirectory);
+    process.stdout.write(JSON.stringify({ revision }) + '\n');
     return;
   }
   if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');

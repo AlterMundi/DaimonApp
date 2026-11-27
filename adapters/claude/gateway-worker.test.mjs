@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -41,10 +41,9 @@ test('worker sends one native input only after exact owner persistence decision'
       await mkdir(join(sharedSkillsDirectory, 'sample'), { recursive: true });
       await writeFile(skill, initialSkill);
       const hash = input => createHash('sha256').update(input).digest('hex');
-      const skillResumeAnchor = {
-        membership: hash(JSON.stringify(['sample', skill, null])),
-        revision: hash(JSON.stringify(['sample', skill, hash(initialSkill)])),
-      };
+      const updatedSkill = 'Synthetic skill: updated.';
+      const inventory = text => hash(JSON.stringify(['sample', skill, hash(text)]));
+      const skillResumeAnchor = [inventory(initialSkill), inventory(updatedSkill)];
       await writeFile(apiKeyFile, fixtureKey + '\n', { mode: 0o600 });
       await writeFile(cli, `#!${process.execPath}
 if (process.argv.slice(2).join(' ') !== 'auth status') process.exit(2);
@@ -140,24 +139,6 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       };
       await writeFile(selection, JSON.stringify(profile), { mode: 0o600 });
 
-      const membershipFor = async text => {
-        await writeFile(skill, text);
-        return JSON.parse(execFileSync(process.execPath,
-          [executable, '--skill-resume-anchor', selection])).membership;
-      };
-      const frontmatter = (metadata, body = 'Installed prose.') =>
-        `---\nname: sample\n${metadata}\n---\n${body}`;
-      const firstVersion = await membershipFor(frontmatter('metadata:\n  version: "1.0.0"'));
-      assert.equal(await membershipFor(frontmatter('metadata:\n  version: "1.0.1"', 'New prose.')), firstVersion);
-      assert.notEqual(await membershipFor(frontmatter('version: 1custom')),
-        await membershipFor(frontmatter('version: 2other')));
-      assert.notEqual(await membershipFor(frontmatter('description: |\n  version: 1.0.0')),
-        await membershipFor(frontmatter('description: |\n  version: 2.0.0')));
-      assert.notEqual(await membershipFor('\uFEFF' + frontmatter('allowed-tools: Read')),
-        await membershipFor('\uFEFF' + frontmatter('allowed-tools: Bash')));
-      await writeFile(skill, initialSkill);
-
-
       const {
         apiKeyFile: _keyFile, configurationDirectory: _directory, maxBudgetUsd: _qualificationBudget,
         ...commonProfile
@@ -174,7 +155,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
       for (const decision of decisions) {
         if (decision === 'updated-guidance-resume') {
           await writeFile(bodyGuidanceFile, 'Synthetic body guidance: updated.');
-          await writeFile(skill, 'Synthetic skill: updated.');
+          await writeFile(skill, updatedSkill);
         }
         if (decision === 'changed-skill-metadata') {
           await writeFile(skill, '---\nname: sample\nallowed-tools: Read\n---\nSynthetic skill: updated.');
@@ -224,7 +205,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             await assert.rejects(readFile(exposure), { code: 'ENOENT' });
             continue;
           }
-          assert.match(first.sessionScope, /^[a-f0-9]{64}$/);
+          assert.match(first.sessionScope ?? JSON.stringify(first), /^[a-f0-9]{64}$/, decision);
           if (decision === 'disconnected') restrictedScope = first.sessionScope;
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
@@ -259,7 +240,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           assert.equal((await exited)[0], 0);
           if (decision === 'profile-changed') await writeFile(selection, JSON.stringify(profile));
           if (decision === 'skill-changed-during-submission') await writeFile(skill, initialSkill);
-          if (decision === 'changed-skill-metadata') await writeFile(skill, 'Synthetic skill: updated.');
+          if (decision === 'changed-skill-metadata') await writeFile(skill, updatedSkill);
         } finally {
           worker.kill();
           await exited;
