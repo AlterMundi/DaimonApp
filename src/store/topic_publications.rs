@@ -251,7 +251,13 @@ pub(super) fn native_on(
         return Ok(());
     }
     let legacy:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM native_recovery_baseline WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3)",params![thread,turn,item],|r|r.get(0))?;
-    if legacy {
+    let internal: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_native_messages
+         WHERE native_thread=?1 AND native_turn=?2 AND item_id=?3 AND internal_handoff=1)",
+        params![thread, turn, item],
+        |row| row.get(0),
+    )?;
+    if legacy || internal {
         return Ok(());
     }
     enqueue_on(

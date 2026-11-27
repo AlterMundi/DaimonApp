@@ -185,7 +185,25 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
         let parent = instruction_on(conn, &parent, human)?;
         return Ok(coordination_root_on(conn, human, &parent)?.is_some());
     }
-    Ok(author["kind"] == "session_result" && phase.as_deref() == Some("returned"))
+    if author["kind"] != "session_result" || phase.as_deref() != Some("returned") {
+        return Ok(false);
+    }
+    let raw: String = conn.query_row(
+        "SELECT doc FROM interaction_session_requests WHERE id=?1 AND human_id=?2",
+        params![call, human],
+        |row| row.get(0),
+    )?;
+    let request: SessionRequest = serde_json::from_str(&raw)?;
+    if request.return_instruction.as_deref() != Some(i.id.as_str()) {
+        return Ok(false);
+    }
+    for id in [&request.parent_instruction, &request.target_instruction] {
+        let execution = instruction_on(conn, id, human)?;
+        if execution.target_execution.is_some() && !current_bound_turn_on(conn, &execution)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
@@ -996,6 +1014,9 @@ impl Store {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
+        if helper.target_execution.is_some() && !current_bound_turn_on(&tx, &helper)? {
+            return Ok(None);
+        }
         let route = local_claude_route(config, call.caller)?;
         let result_text = if route.is_some() {
             let end = d

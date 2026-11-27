@@ -333,6 +333,13 @@ pub(super) async fn process_turn(
         })
         .transpose()?
         .flatten();
+    let attributed_entry = match execution_root.as_deref() {
+        Some(id) => shared
+            .store
+            .interaction_author(id, queued.request.from_user_id)?
+            .is_some(),
+        None => false,
+    };
     let turn_id = match retained_execution {
         Some((local, _)) => {
             shared.store.set_session_busy(session.key, true)?;
@@ -680,6 +687,7 @@ pub(super) async fn process_turn(
             && c.human_id == runtime_request.from_user_id
             && (queued.conversation_input.is_some()
                 || queued.workflow_return.is_some()
+                || attributed_entry
                 || c.telegram_ingress)
     }) {
         runner = runner.with_dynamic_tools(super::dialogue::tool_specs());
@@ -839,6 +847,7 @@ pub(super) async fn process_turn(
             && ((c.entry() == session.key
                 && (queued.conversation_input.is_some()
                     || queued.workflow_return.is_some()
+                    || attributed_entry
                     || c.telegram_ingress))
                 || ((local_work_session
                     || queued
@@ -1073,6 +1082,9 @@ pub(super) async fn process_turn(
                                 Ok(CodexEventOutcome::None)
                             }
                             CodexEvent::NativeMessageDraft {started,completed,thread_id,turn_id:native_turn,item_id,text} => {
+                                if started {
+                                    shared.store.freeze_private_handoff(turn_id,&thread_id)?;
+                                }
                                 if shared.config.interaction.as_ref().is_some_and(|c|c.entry()==session_key && c.human_id==requester_user_id) {
                                     // Display failure cannot interrupt native work or authorize replay.
                                     let _=shared.store.interaction_response_draft(requester_user_id,session_key,turn_id,&thread_id,&native_turn,&item_id,&text,started,completed);
