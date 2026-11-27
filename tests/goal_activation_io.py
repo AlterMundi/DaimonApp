@@ -12,6 +12,7 @@ class Activation(Controls):
     deny_alpha_resume=False
     deny_followup=False
     lose_followup=False
+    not_idle_after_edit=False
     def owner(self,*args):
         result=subprocess.run([self.binary,'--control',str(self.config),*args],capture_output=True,text=True,timeout=20)
         assert result.returncode==0,result.stderr
@@ -61,6 +62,11 @@ class Activation(Controls):
             goal.update(status='active')
             if 'objective' in p:goal['objective']=p['objective']
             self.revisions[thread]=int(revision)+1
+            if self.not_idle_after_edit:
+                self.not_idle_after_edit=False
+                send({'id':message['id'],'result':{'goal':copy.deepcopy(goal),'revision':str(int(revision)+1),
+                    'activation':{'kind':'notStarted','reason':'Native activation not submitted: NotIdle'}}})
+                return True
             self.runs[thread]=turn;self.holding[thread]=turn
             self.packets.setdefault(thread,[]).append(p)
             send({'id':message['id'],'result':{'goal':copy.deepcopy(goal),'revision':str(int(revision)+1),'activation':{'kind':'steered' if existing else 'started','turnId':turn}}})
@@ -200,6 +206,26 @@ def qualify(binary):
         assert sum('Busy paused continuation.' in m['text'] and m.get('message_thread_id')==8 for m,_ in j.messages)==1
         visible=j.cli(entry,'conversation')['presentation']['items']
         assert sum(item.get('preview')=='Busy paused continuation.' for item in visible)==1
+        # A later explicit clear can proceed after a positively closed edit.
+        alpha='native-topic-7'
+        j.goals[alpha]={'threadId':alpha,'objective':'Existing active fixture goal.','status':'active',
+            'tokenBudget':100,'tokensUsed':1,'timeUsedSeconds':1,'createdAt':1,'updatedAt':1}
+        j.revisions[alpha]+=1
+        prior=prepare('edit','Alpha','Edit the Alpha goal to use the revised findings.','Use the revised findings.')
+        j.not_idle_after_edit=True
+        j.cli(entry,'goal_execute',{'id':prior})
+        j.wait(lambda:j.row('SELECT phase FROM interaction_goal_controls WHERE id=?',(prior,))==[('partial',)])
+        positive=j.cli(entry,'goal_status',{'id':prior})
+        assert positive['result']['native_receipt']['activation']['kind']=='notStarted'
+        j.revisions[alpha]+=1
+        j.goals[alpha]['status']='blocked'
+        clear=prepare('clear','Alpha','Clear only the current Alpha goal.')
+        activation_count=sum(m.get('method')=='thread/goal/conditionalActivate' for m in j.rpc)
+        j.cli(entry,'goal_execute',{'id':clear})
+        j.wait(lambda:j.row('SELECT phase FROM interaction_goal_controls WHERE id=?',(clear,))==[('acknowledged',)])
+        assert alpha not in j.goals
+        assert j.cli(entry,'goal_status',{'id':prior})['result']==positive['result']
+        assert sum(m.get('method')=='thread/goal/conditionalActivate' for m in j.rpc)==activation_count
         # A rejected follow-up does not undo or replay its acknowledged clear.
         selected=prepare('clear','Beta','Clear Beta, then explain the outcome.',followup='explain the outcome.')
         j.deny_followup=True

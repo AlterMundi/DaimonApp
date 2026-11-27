@@ -18,6 +18,13 @@ the unchanged intent without a second human confirmation, retaining earlier
 outcomes. Attempt fences prevent late retirement/receipts from changing a newer
 attempt. Restart does not replay uncertain or partially applied work.
 
+A later explicit clear on the same bound goal may proceed after a partial edit
+when the exact retained native attempt confirms the metadata revision and
+explicitly reports that the activation was not submitted because the native
+thread was busy. The new clear uses its own current native precondition. Old
+receipts remain immutable and uncertain activation or follow-up outcomes still
+block another mutation.
+
 Source contracts alone do not establish receiving adoption; use the receiving
 release record and case-specific qualification. The native dependency is
 [compaii/codex #5](https://github.com/compaii/codex/pull/5); older receivers must
