@@ -310,7 +310,7 @@ impl Store {
     }
 }
 
-fn input_receipt_on(
+pub(super) fn input_receipt_on(
     conn: &Connection,
     local: i64,
     client: Option<&str>,

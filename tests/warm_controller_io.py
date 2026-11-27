@@ -81,6 +81,14 @@ frame_ms=100
         outer=json.loads(result.stdout);assert outer['ok'] and outer['result']['success'],outer
         return json.loads(outer['result']['contentItems'][0]['text'])
 
+def routed_instructions(j, topic):
+    return j.row("""SELECT i.id,i.phase,i.doc FROM interaction_instructions i
+        JOIN sessions s ON s.id=i.session_id
+        WHERE s.thread_id=? AND NOT EXISTS (
+            SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id
+        ) ORDER BY i.sequence""", (topic,))
+
+
 def qualify(binary,pack=False):
     j=Warm(binary,pack=pack)
     try:
@@ -109,7 +117,7 @@ def qualify(binary,pack=False):
         original=j.cli(entry,'inputs')['inputs'][-1]['input_ref']
         assert sum(m.get('method')=='turn/start' for m in j.rpc)==before+1
         j.cli(entry,'dispatch',{'input_ref':original,'destinations':[{'selector':'Alpha','relation':'new','requests':[]}]})
-        j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
+        j.wait(lambda:[row[1] for row in routed_instructions(j, 7)] == ['accepted'])
         assert 'Controller access for this execution' in j.packets['native-topic-7'][-1]['input'][0]['text']
         worker=j.access(7)
         symlink=j.root/'linked-access.json';symlink.symlink_to(worker)
@@ -120,7 +128,7 @@ def qualify(binary,pack=False):
         assert 'companion_hint' in caps['operations']
         assert j.cli(worker,'companion_hint',worker_pose)['new_registration']
         # An existing busy worker invokes the same nonblocking dependency handler.
-        parent=j.instructions(7)[0][0]
+        parent=routed_instructions(j, 7)[0][0]
         args={'parent_instruction':parent,'request_id':'warm-dependency','selector':'Beta','text':'Provide the selected evidence for this task.'}
         result=j.cli(worker,'session_request',args)
         j.wait(lambda:j.instructions(8) and j.instructions(8)[0][1]=='accepted')
@@ -133,9 +141,11 @@ def qualify(binary,pack=False):
         j.cli(forged,'capabilities',ok=False)
         stale=j.root/'expired-access.json';shutil.copyfile(worker,stale);stale.chmod(0o600)
         j.answer(8,'The selected helper evidence.')
-        j.wait(lambda:len(j.instructions(7))==2 and j.instructions(7)[1][1]=='accepted')
+        j.wait(lambda:[row[1] for row in routed_instructions(j, 7)] == ['accepted', 'accepted'])
         j.answer(7,'Work incorporating the helper evidence.')
-        j.wait(lambda:j.row("SELECT count(*) FROM interaction_public_deliveries WHERE phase!='delivered'")==[(0,)])
+        j.wait(lambda:j.row("""SELECT d.phase FROM interaction_public_deliveries d
+            JOIN interaction_results r ON r.id=d.result_id
+            WHERE r.body='Work incorporating the helper evidence.'""")==[('delivered',)])
         assert j.row("SELECT count(*) FROM interaction_deliveries WHERE json_extract(doc,'$.internal')=1")==[(1,)]
         assert not j.has('The selected helper evidence.',1)
         j.wait(lambda:not worker.exists())
@@ -154,20 +164,28 @@ def qualify(binary,pack=False):
         j.broadcast(thread,'item/completed',{'turnId':turn,'item':{'id':'warm-entry-final','type':'agentMessage','phase':'final_answer','text':'The work returned.'}})
         j.broadcast(thread,'turn/completed',{'turn':{'id':turn,'status':'completed'}})
         j.idle();j.wait(lambda:not entry.exists())
-        # Ordinary direct inputs are not enrolled just because their topic is known.
+        # Direct text stays raw. This existing, explicitly enrolled topic can
+        # use the same worker-only controller even on an older native thread.
         prior_packets=len(j.packets['native-topic-8'])
-        j.admit('Ordinary direct work.',topic=8)
+        direct_update=j.admit('Ordinary direct work.',topic=8)
         j.wait(lambda:len(j.packets['native-topic-8'])>prior_packets)
         j.wait(lambda:j.row("SELECT count(*) FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=8 AND t.status='running'")==[(1,)])
-        # Dormant access may exist locally, but ordinary direct input is unchanged.
         packet=j.packets['native-topic-8'][-1]
-        assert not any('Controller access for this execution' in item.get('text','') for item in packet['input'])
+        assert packet['input'][0]['text']=='Ordinary direct work.'
         runtime=''.join(v['value'] for k,v in sorted(packet.get('additionalContext',{}).items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
-        assert 'controller fallback' not in runtime and 'scoped live controller' not in runtime
+        assert 'Live controller fallback' in runtime
+        direct_access=j.access(8)
+        capabilities=j.cli(direct_access,'capabilities')['operations']
+        assert 'session_request' in capabilities and 'dispatch' not in capabilities
+        def direct_parent():
+            return any(i['eligible_human_parent'] and i['original_ingress_update']==direct_update
+                       for i in j.cli(direct_access,'inputs')['inputs'])
+        j.wait(direct_parent)
         j.broadcast('native-topic-8','turn/completed',{'turn':{'id':j.runs['native-topic-8'],'status':'completed'}})
         j.idle()
-        assert len(j.instructions(8))==1
-        print('PASS older entry+workers, live same-controller route/dependency, idempotent return, role/binding/expiry denial, direct-topic independence')
+        j.wait(lambda:not direct_access.exists())
+        assert j.row('SELECT count(*) FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=8 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id)')==[(1,)]
+        print('PASS older entry+workers, live same-controller route/dependency, idempotent return, role/binding/expiry denial, raw direct input and exact authority')
     finally:j.close()
 
 if __name__=='__main__':

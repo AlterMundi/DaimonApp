@@ -84,7 +84,7 @@ topic_id=8
         return json.loads(result['contentItems'][0]['text']) if ok else result
 
     def instructions(self, topic):
-        return self.row('SELECT i.id,i.phase,i.doc FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=? ORDER BY i.sequence', (topic,))
+        return self.row('SELECT i.id,i.phase,i.doc FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=? AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) ORDER BY i.sequence', (topic,))
 
     def answer_worker(self, topic, text, *, item=None, finish=True, phase="final_answer"):
         native = self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?', (topic,))[0][0]
@@ -172,7 +172,7 @@ def direct_after_canonical_work(binary):
         assert direct_text in packet,'Late routed input lost the newer raw direct correction chronology'
         assert 'Later direct context already in native history' in packet
         assert packet.count(direct_text)==1
-        assert j.row('SELECT count(*) FROM interaction_sources WHERE update_id=?',(direct,))==[(0,)]
+        assert j.row('SELECT count(*) FROM interaction_sources o JOIN interaction_instructions i ON i.input_id=o.id WHERE o.update_id=? AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id)',(direct,))==[(0,)]
         assert j.row('SELECT busy FROM sessions WHERE thread_id=8')==[(1,)]
         j.answer_worker(7,'Late original preserves requirement17.')
         j.wait(lambda:j.has('Late original preserves requirement17.',7))
@@ -189,7 +189,7 @@ def direct_after_canonical_work(binary):
         packet=routed_packet(j.instructions(7)[3][0])
         assert later_text in packet and direct_text not in packet
         assert '"input_ref":'+str(later_direct) in packet
-        assert len(j.direct_packets)==4 and j.row('SELECT count(*) FROM interaction_sources WHERE update_id=?',(later_direct,))==[(0,)]
+        assert len(j.direct_packets)==4 and j.row('SELECT count(*) FROM interaction_sources o JOIN interaction_instructions i ON i.input_id=o.id WHERE o.update_id=? AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id)',(later_direct,))==[(0,)]
         j.answer_worker(7,'Clarified old original preserves requirement23.');j.idle()
         print('PASS web to same-session direct idle and busy steer: raw input, own commentary/final exactly once, no new router admission; zero models')
     finally:j.close()

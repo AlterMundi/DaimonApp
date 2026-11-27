@@ -138,7 +138,7 @@ pub(super) fn result_on(
             // after later instructions arrive. All reservations commit together.
             return Ok(vec![]);
         }
-    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 ORDER BY i.sequence DESC")?;
+    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) ORDER BY i.sequence DESC")?;
     let inputs = query
         .query_map(params![root.target_session, human, local_turn], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
