@@ -803,6 +803,59 @@ class Companion(unittest.TestCase):
             self.assertEqual(previous.status_code,200);self.assertEqual(engines[-1].binding,self.speech.binding)
         self.assertEqual(self.speech.calls,[])
 
+    def test_default_openai_tts_sends_only_source_and_builtin_voice(self):
+        self.provider.source['kind'] = 'integrator_answer'
+        key = self.root/'openai-key'
+        key.write_text('synthetic-tts-key')
+        key.chmod(0o600)
+        binding = self.root/'openai-route.json'
+        self.speech.content_type = 'application/octet-stream'
+        self.speech.data = b'\x01\x00' * 2400
+        binding.write_text(json.dumps({
+            'schema':renderer.SCHEMA, 'provider':'openai-tts',
+            'model':'gpt-4o-mini-tts-2025-12-15', 'voice':'cedar', 'language':'es-AR',
+            'endpoint':f'http://127.0.0.1:{self.speech.server.server_port}/v1/audio/speech',
+            'credential_file':str(key), 'cache_root':str(self.root/'openai-cache'),
+        }))
+        binding.chmod(0o600)
+        self.config.update(voice_services_default='openai', voice_services_only='openai',
+            speech_openai={'binding':str(binding), 'incremental_segments':True})
+        self.client.close()
+        self.client = self.client_for()
+        self.assertFalse(self.client.get('/api/interaction', headers=self.headers).json()['can_stream_speech'])
+        with patch('dashboard.avatar_workshop_voice.WorkshopVoiceRevisions.voice_for_conversation',
+                   side_effect=AssertionError('Dedicated TTS cannot apply a saved delivery profile')):
+            first = self.audio()
+            again = self.audio()
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(again.content, first.content)
+        self.assertEqual(first.headers['x-speech-provider'], 'openai')
+        self.assertEqual(first.headers['x-audio-sha256'], hashlib.sha256(first.content).hexdigest())
+        self.assertEqual(renderer.audio_info(first.content),
+                         {'sample_rate_hz':24000, 'channels':1, 'audio_millis':100})
+        self.assertEqual(len(self.speech.calls), 1)
+        path, auth, body = self.speech.calls[0]
+        self.assertEqual((path,auth), ('/v1/audio/speech','Bearer synthetic-tts-key'))
+        self.assertEqual(json.loads(body), {
+            'model':'gpt-4o-mini-tts-2025-12-15',
+            'input':'Alfa sigue trabajando. Beta ya respondió.',
+            'voice':'cedar', 'response_format':'pcm',
+        })
+        self.speech.status = 403
+        self.provider.source.update(text='Un segundo texto.', revision='b'*64)
+        self.body['revision'] = 'b'*64
+        self.assertEqual(self.audio().status_code, 409)
+        self.assertEqual(self.audio().status_code, 409)
+        self.assertEqual(len(self.speech.calls), 2)
+        receipts = [json.loads(path.read_text()) for path in (self.root/'openai-cache').glob('*/state.json')]
+        self.assertEqual([(r['phase'], r['http_status']) for r in receipts if r['phase']=='rejected'],
+                         [('rejected', 403)])
+        config = json.loads(binding.read_text())
+        with self.assertRaises(renderer.RenderError):
+            renderer.route({**config, 'instruction':'Warm'})
+        with self.assertRaises(renderer.RenderError):
+            renderer.route({**config, 'endpoint':'https://example.test/v1/audio/speech'})
+
     def test_openai_pcm_stream_uses_canonical_source_and_existing_shared_capacity(self):
         from dashboard.speech import Speech
         binding=self.root/'openai-route.json'

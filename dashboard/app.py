@@ -72,10 +72,12 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     if speech:
         speech.media_retention = MediaRetention(config['media_retention']) if config.get('media_retention') else None
     openai_speech = Speech(config['speech_openai']) if config.get('speech_openai') else None
+    openai_reading_provider = None
     if openai_speech:
-        from scripts.speech_render import route
-        if not speech or route(openai_speech.binding)['provider'] != 'openai-realtime' or openai_speech.word_timestamps:
-            raise ValueError('Explicit OpenAI speech requires its own bounded Realtime route')
+        openai_reading_provider = openai_speech.receiving_route()['provider']
+        if (not speech or openai_reading_provider not in ('openai-realtime', 'openai-tts') or openai_speech.word_timestamps
+                or openai_reading_provider == 'openai-tts' and (openai_speech.streaming or openai_speech.live_response)):
+            raise ValueError('Select a supported bounded OpenAI reading route')
         openai_speech.capacity = speech.capacity
         openai_speech.media_retention = speech.media_retention
     services_default = config.get('voice_services_default','current')
@@ -314,7 +316,8 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
     from .avatar_workshop_api import install as install_avatar_workshop
     from .school_mission_host import compose as compose_school_mission
     install_avatar_workshop(app,config,provider,authorize_async,[origin,*additional_origins],
-                            mission_host=compose_school_mission(config,provider))
+                            mission_host=compose_school_mission(config,provider),
+                            dedicated_speech=openai_reading_provider=='openai-tts')
 
     from .conversation_surface import parent_origins as surface_parents, selection as surface_selection
     surface_parents(config)
@@ -1391,7 +1394,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             canonical = await run_in_threadpool(provider.presentation_part, body['source'], body['revision'], body['offset'])
             if canonical.get('kind')=='integrator_live' and not engine.live_response:
                 raise ValueError('Live speech is not selected')
-            if profile=='openai':
+            if profile=='openai' and openai_reading_provider != 'openai-tts':
                 from .voice_studio import configured_profiles
                 revision=await run_in_threadpool(app.state.avatar_workshop.voice_for_conversation,
                     session['human'],configured_profiles(config))
