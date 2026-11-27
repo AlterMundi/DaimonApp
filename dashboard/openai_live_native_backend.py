@@ -277,6 +277,13 @@ class NativeReturnNeedsReview(Exception):
         self.source = (visit, delegation)
 
 
+def observed_return_delegations(value, visit, held_returns):
+    """Current-visit work with a receiving observation and no held return."""
+    return [key for key, work in value['delegations'].items()
+            if work.get('native_work', {}).get('state') == 'observed'
+            and (visit, key) not in held_returns]
+
+
 def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,stopped=None,
                             prior_visit_context=True,held_returns=()):
     """One owned foreground read per cycle, keeping failures local to their source."""
@@ -289,8 +296,7 @@ def return_next_native_part(history,ident,human,owner,cycle,provider,sideband,*,
 
     authorize()
     value=history.read(ident,human,owner)
-    ready=[key for key,work in value['delegations'].items()
-           if work.get('native_work',{}).get('state')=='observed' and (ident,key) not in held_returns]
+    ready=observed_return_delegations(value,ident,held_returns)
     previous=None
     if prior_visit_context and (not ready or cycle%2):
         previous=history.native_return_origin(ident,human,owner)

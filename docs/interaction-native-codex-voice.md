@@ -1556,7 +1556,9 @@ existing native conversation's selection on each turn. GPT-Live still provides
 the audio transport. With `prior_visit_context = false`, startup sends the
 current integrating context, without the previous physical visit's transcript
 or automatic delivery of earlier visits' results into the new voice session.
-Original recordings, transcripts and delivered native work remain readable.
+The current visit starts reading for results once it observes an eligible
+native work receipt. Original recordings, transcripts and delivered native
+work remain readable.
 
 The GPT-Live WebRTC data channel supplies immediate local Avatar captions.
 The authenticated sideband still retains the canonical transcript deltas and

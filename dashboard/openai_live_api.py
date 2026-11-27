@@ -29,7 +29,8 @@ from .openai_live_visits import LiveCreations
 from .openai_live_context import TOOL, NAME, serve_context
 from .openai_live_originals import enroll_original
 from .openai_live_seals import request_seal, accept_seal
-from .openai_live_native_backend import NativeReturnNeedsReview, prepare_native, return_next_native_part
+from .openai_live_native_backend import (NativeReturnNeedsReview, observed_return_delegations,
+    prepare_native, return_next_native_part)
 from .openai_live_native_session import PublicLiveSessionContext
 from .native_context import ResumePending
 from .provider import Provider, ProviderUnavailable, VoiceStorageFull
@@ -564,7 +565,9 @@ def install(app, config, provider, authorize, origins):
                             if (native_context is not None and syncing is None and preparing is None
                                     and native_context.sync_due()):
                                 syncing=asyncio.create_task(synchronize_context())
-                            if native_backend and not returns_unavailable and returning is None and asyncio.get_running_loop().time()>=result_poll:
+                            if (native_backend and not returns_unavailable and returning is None
+                                    and asyncio.get_running_loop().time()>=result_poll
+                                    and (prior_visit_context or observed_return_delegations(value,visit,held_returns))):
                                 result_poll=asyncio.get_running_loop().time()+.5
                                 returning=asyncio.create_task(asyncio.to_thread(return_next_native_part,history,visit,human,owner,
                                     result_index,provider,sideband,stopped=preparation_stopped,
