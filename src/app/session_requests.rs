@@ -58,6 +58,13 @@ pub(super) fn tool_call(
                 bail!("Operation is unavailable for this work session");
             }
             if portable_local.is_some() && args.operation=="capabilities" && args.arguments==json!({}) {
+                if app.shared.store.interaction_author(&request.native_turn,human)?
+                    .is_some_and(|author| author["kind"]=="session_result")
+                {
+                    return Ok(json!({"schema":"telecodex.local-session/v1",
+                        "operations":{"capabilities":{}, "inputs":{}, "session_requests":{}},
+                        "policy":"This returned result is attributed context. Inspect it without starting another request."}));
+                }
                 return Ok(json!({"schema":"telecodex.local-session/v1","operations":{
                     "capabilities":{}, "inputs":{}, "coordination_inputs":{}, "session_requests":{},
                     "session_request":{"arguments":{"parent_instruction":"current retained human instruction or first attributed handoff from inputs",
@@ -113,6 +120,10 @@ pub(super) fn tool_call(
                     if !current_parent {
                         return Ok(json!({"kind":"session_request_rejected","admitted":false,
                             "reason":"The selected original has no accepted receipt in this native turn. Read coordination_inputs and select the current original."}));
+                    }
+                    if !app.shared.store.interaction_session_parent_eligible(&args.parent_instruction,human)? {
+                        return Ok(json!({"kind":"session_request_rejected","admitted":false,
+                            "reason":"An attributed result is context. Starting a new local request requires a current human original or an eligible first handoff."}));
                     }
                     let (call,i,fresh)=app.shared.store.interaction_session_request_scoped(
                         key,human,&request.native_session,&request.native_turn,&args.parent_instruction,

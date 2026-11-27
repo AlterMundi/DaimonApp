@@ -819,12 +819,16 @@ pub(super) async fn run_routed_portable(
         request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
         "Routed worker attachments require a direct Claude turn"
     );
-    // Paired local helpers can coordinate with the same controller. The store
-    // checks their attributed lineage and original human scope per operation.
+    // Retain the controller catalog on a canonical result so its receiving
+    // turn can resume the requesting session. The journal checks each action
+    // against its current input, and a result cannot authorize new work.
     let paired_work = human_authored
-        || author
-            .as_ref()
-            .is_some_and(|a| a["kind"] == "session_request");
+        || author.as_ref().is_some_and(|a| {
+            matches!(
+                a["kind"].as_str(),
+                Some("session_request" | "session_result")
+            )
+        });
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();

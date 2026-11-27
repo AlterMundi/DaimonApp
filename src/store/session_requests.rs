@@ -226,8 +226,11 @@ pub(super) fn controller_parent_eligible_on(
     human: i64,
     parent: &Instruction,
 ) -> Result<bool> {
-    if author_on(conn, &parent.input_id)?.is_none() {
+    let Some(author) = author_on(conn, &parent.input_id)? else {
         return Ok(true);
+    };
+    if author["kind"] == "session_result" {
+        return paired_result_parent_on(conn, parent);
     }
     Ok(coordination_root_on(conn, human, parent)?.is_some()
         && paired_request_parent_on(conn, parent)?)
@@ -284,9 +287,45 @@ pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -
     let Some(parent) = coordination_root_on(conn, human, &immediate)? else {
         return Ok(false);
     };
+    paired_source_on(conn, &parent, child)
+}
+
+pub(super) fn paired_result_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
+    if !session_input_allowed_on(conn, &child.id, child.human_id)? {
+        return Ok(false);
+    }
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+             WHERE human_id=?1 AND phase='returned'
+             AND json_extract(doc,'$.return_instruction')=?2",
+            params![child.human_id, child.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(parent) = parent else {
+        return Ok(false);
+    };
+    let parent = instruction_on(conn, &parent, child.human_id)?;
+    if parent.target != child.target
+        || !parent.target_execution.as_ref().is_some_and(|selection| {
+            selection.harness == crate::execution::Harness::Claude
+                && child.target_execution.as_ref() == Some(selection)
+        })
+    {
+        return Ok(false);
+    }
+    let Some(root) = coordination_root_on(conn, child.human_id, &parent)? else {
+        return Ok(false);
+    };
+    paired_source_on(conn, &root, child)
+}
+
+fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction) -> Result<bool> {
     if parent.admission_epoch != child.admission_epoch {
         return Ok(false);
     }
+    let human = child.human_id;
     let source = super::routing::source_on(conn, &parent.id, human)?;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
@@ -1550,6 +1589,49 @@ mod tests {
             .unwrap();
         assert_eq!(final_return.target, a.key);
         assert_eq!(final_return.requests, p.requests);
+    }
+
+    #[test]
+    fn codex_dependency_return_does_not_inherit_a_paired_claude_controller() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let caller = setup(&store, 7);
+        let helper = setup(&store, 8);
+        let parent = parent(&store, &caller);
+        let (_, child, _) = store
+            .interaction_session_request(
+                caller.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &parent.id,
+                "question",
+                helper.key,
+                "Check this result.",
+                &Default::default(),
+            )
+            .unwrap();
+        let reply = result(&store, &helper, &child);
+        let profile = serde_json::from_value(json!({
+            "human_id":100,"chat_id":100,"topic_id":1,
+            "targets":[{"topic_id":7,"name":"Design","harness":"claude"}],
+            "claude_foreground":{"interaction_direct":true,"worker_command":["/fixture/claude"],
+                "transport":{"command":["/fixture/matrix"],"timeout_seconds":5,
+                    "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
+        }))
+        .unwrap();
+        let returned = store
+            .interaction_session_return_scoped(&reply.id, 100, &profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            returned.target_execution.as_ref().unwrap().harness,
+            crate::execution::Harness::Claude,
+        );
+        let conn = store.conn.lock().unwrap();
+        assert!(session_input_allowed_on(&conn, &returned.id, 100).unwrap());
+        assert!(!paired_result_parent_on(&conn, &returned).unwrap());
+        assert!(!controller_parent_eligible_on(&conn, 100, &returned).unwrap());
     }
 
     #[test]

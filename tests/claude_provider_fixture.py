@@ -122,6 +122,16 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             assert submission["native_session_id"]
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
+            returned_dependency = getattr(self.server, "returned_dependency", None)
+            if returned_dependency:
+                fixture_id = "returned"
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, '"eligible_coordination_parent":false'),
+                    (CONTROLLER, {"operation": "session_request", "arguments": {
+                        "parent_instruction": self.server.current, "request_id": "result-cannot-delegate",
+                        "selector": "general", "text": "This request must never be admitted.",
+                    }}, '"kind":"session_request_rejected"'),
+                ]
             if distinct_request:
                 request = {"parent_instruction": self.server.current, "request_id": "fixture-general",
                            "selector": "general", "text": "Check the design summary for the current request."}
@@ -139,7 +149,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert steer["conversation_text"] in messages
             previous = getattr(self.server, "previous_original", None)
             messages = data["messages"]
-            if distinct_request:
+            if returned_dependency:
+                assert returned_dependency["parent_prompt"] in json.dumps(messages)
+            if distinct_request or returned_dependency:
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
@@ -216,7 +228,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
-                        if distinct_request and isinstance(entry["content"], list):
+                        if (distinct_request or returned_dependency) and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
                         tool = steps[prior - 1][0]
                         if tool == "Skill":

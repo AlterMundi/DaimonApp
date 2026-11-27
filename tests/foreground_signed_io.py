@@ -223,6 +223,22 @@ operator.main()
 
             class DirectProvider(ClaudeProvider):
                 def admitted(self):
+                    if expected := getattr(self.server, "returned_dependency", None):
+                        ident, phase, native, scope, prompt = self.server.journey.row(
+                            "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
+                            "FROM interaction_session_requests r JOIN interaction_instructions i "
+                            "ON i.id=json_extract(r.doc,'$.return_instruction') "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                            "WHERE r.phase='returned' AND t.status='running'"
+                        )[0]
+                        assert phase == "submitting"
+                        assert native == expected["native"], "Returned result started a different native session"
+                        assert scope == expected["scope"], "Returned result used a different tool scope"
+                        assert expected["text"] in prompt
+                        assert '"kind":"session_result"' in prompt
+                        self.server.current = ident
+                        self.server.exposures.append(ident)
+                        return {"native_session_id": native, "native_session_scope": scope}
                     if inverse:
                         ident, phase, session, scope, prompt = self.server.journey.row(
                             "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
@@ -969,6 +985,41 @@ timeout_seconds=5
                 "SELECT i.phase FROM interaction_session_requests r "
                 "JOIN interaction_instructions i ON i.id=r.target_instruction "
                 "JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=1") == [("accepted",)])
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
+            if os.environ.get("FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RETURN") != "1":
+                return
+
+            def source_execution():
+                return journey.row(
+                    "SELECT t.native_thread_id,t.execution_native_scope FROM interaction_sources s "
+                    "JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "WHERE s.event_id=? AND t.status='completed' AND i.phase='accepted'",
+                    (provider.human_original,),
+                )
+
+            journey.wait(source_execution)
+            native, scope = source_execution()[0]
+            result = "The general conversation verified the synthetic design summary."
+            provider.returned_dependency = {
+                "text": result, "native": native, "scope": scope, "parent_prompt": provider.original,
+            }
+            provider.original = result
+            provider.paired_human = False
+            provider.test_session_request = False
+            provider.calls.clear()
+            journey.answer_worker(1, result)
+            journey.wait(lambda: provider.failure or journey.row(
+                "SELECT i.phase,t.status FROM interaction_session_requests r "
+                "JOIN interaction_instructions i ON i.id=json_extract(r.doc,'$.return_instruction') "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                "WHERE r.phase='returned'"
+            ) == [("accepted", "completed")], seconds=30)
+            self.assertIsNone(provider.failure)
+            returned = journey.row(
+                "SELECT json_extract(doc,'$.return_instruction') FROM interaction_session_requests"
+            )[0][0]
+            self.assertEqual(provider.calls, [returned] * 3)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):

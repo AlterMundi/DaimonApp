@@ -137,6 +137,7 @@ fn paired_host_access_on(conn: &Connection, input: &Instruction) -> Result<bool>
             )
         }
         "local-session" => super::session_requests::paired_request_parent_on(conn, input),
+        "local-session-result" => super::session_requests::paired_result_parent_on(conn, input),
         _ => Ok(true),
     }
 }
@@ -703,9 +704,10 @@ impl Store {
             return Ok(false);
         }
         if paired_host_access
-            && super::routing::source_on(&tx, &current.id, current.human_id)?.channel
-                == "local-session"
-            && !super::session_requests::paired_request_parent_on(&tx, &current)?
+            && super::routing::source_on(&tx, &current.id, current.human_id)?
+                .channel
+                .starts_with("local-session")
+            && !paired_host_access_on(&tx, &current)?
         {
             return Ok(false);
         }
