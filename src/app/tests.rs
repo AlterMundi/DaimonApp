@@ -865,6 +865,15 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
     ]);
     let (mut app, _db) = sample_app();
     let shared = Arc::get_mut(&mut app.shared).unwrap();
+    let neutral = tempfile::TempDir::new().unwrap();
+    shared.config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "independent_topic_workspace": neutral.path()
+        }))
+        .unwrap(),
+    );
+    let source_cwd = shared.session_defaults.cwd.clone();
     *shared.bot_metadata.get_mut().unwrap() = Some(crate::telegram::User {
         id: 123,
         is_bot: true,
@@ -893,6 +902,11 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
         .get_session(SessionKey::new(100, Some(13)))
         .unwrap()
         .unwrap();
+    assert_eq!(new_session.cwd, neutral.path().canonicalize().unwrap());
+    assert_eq!(
+        app.shared.store.get_session(key).unwrap().unwrap().cwd,
+        source_cwd
+    );
     assert!(new_session.codex_thread_id.is_none());
     assert!(new_session.force_fresh_thread);
     assert_eq!(

@@ -810,6 +810,12 @@ impl App {
                         self.dispatch_command_text(&user, &message, text).await?;
                         return Ok(());
                     }
+                    if engine == crate::interaction::ForegroundEngine::Claude && command == "/topic"
+                    {
+                        self.handle_new_topic(&user, &message, (!args.is_empty()).then_some(args))
+                            .await?;
+                        return Ok(());
+                    }
                     if engine == crate::interaction::ForegroundEngine::Claude
                         && matches!(command.as_str(), "/cd" | "/pwd")
                     {
@@ -2254,6 +2260,25 @@ impl App {
         Ok(())
     }
 
+    fn validate_independent_topic_workspace(path: &Path) -> Result<PathBuf> {
+        let path = validate_directory(path.to_str().context("Invalid topic workspace")?)?;
+        anyhow::ensure!(
+            path.to_str().is_some_and(|value| value.len() <= 4096),
+            "Invalid canonical topic workspace"
+        );
+        Ok(path)
+    }
+
+    fn apply_independent_topic_workspace(
+        &self,
+        template: &mut crate::models::SessionRecord,
+        cwd: PathBuf,
+    ) {
+        template.cwd = cwd;
+        template.add_dirs = self.shared.session_defaults.add_dirs.clone();
+        template.session_prompt = self.shared.session_defaults.session_prompt.clone();
+    }
+
     fn initialize_topic_session(
         &self,
         key: SessionKey,
@@ -2617,6 +2642,17 @@ impl App {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("Telecodex {}", Utc::now().format("%Y-%m-%d %H:%M:%S")));
+        let workspace = self
+            .shared
+            .config
+            .interaction
+            .as_ref()
+            .filter(|profile| {
+                profile.human_id == user.tg_user_id && profile.chat_id == target_chat_id
+            })
+            .and_then(|profile| profile.independent_topic_workspace.as_deref())
+            .map(Self::validate_independent_topic_workspace)
+            .transpose()?;
         let topic = self
             .create_catalogued_topic(target_chat_id, &topic_name)
             .await
@@ -2626,6 +2662,9 @@ impl App {
         template.session_title = Some(topic.name.clone());
         template.codex_thread_id = None;
         template.force_fresh_thread = true;
+        if let Some(workspace) = workspace {
+            self.apply_independent_topic_workspace(&mut template, workspace);
+        }
         self.initialize_topic_session(session_key, user.tg_user_id, &template)?;
         self.send_status(
             target_chat_id,
