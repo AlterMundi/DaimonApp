@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function boot(){
-  const handlers=new Map(),timers=new Map(),connections=[];let refreshes=0,expired=0;
+  const handlers=new Map(),timers=new Map(),connections=[];let refreshes=0,alertReads=0,expired=0;
   const window={addEventListener(name,fn){handlers.set(name,fn);}};
   const fetch=async(route,options)=>{
     assert.equal(route,'api/interaction/events');let resolveRead,rejectRead;
@@ -11,9 +11,10 @@ function boot(){
   };
   const context={window,AbortController,TextDecoder,fetch,setTimeout:(fn,ms)=>{const id={};timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id)};
   vm.runInNewContext(fs.readFileSync('dashboard/web/live.js','utf8'),context);
-  const live=window.InteractionLive.mount({headers:()=>({Authorization:'Bearer fixture'}),refresh:async()=>{refreshes++;},expired:()=>{expired++;}});
+  const live=window.InteractionLive.mount({headers:()=>({Authorization:'Bearer fixture'}),refresh:async()=>{refreshes++;},
+    alertsChanged:()=>{alertReads++;},expired:()=>{expired++;}});
   const settle=()=>new Promise(resolve=>setImmediate(resolve));
-  return {live,mount:args=>window.InteractionLive.mount(args),connections,timers,settle,event:(name,value={})=>handlers.get(name)?.(value),refreshes:()=>refreshes,expired:()=>expired,
+  return {live,mount:args=>window.InteractionLive.mount(args),connections,timers,settle,event:(name,value={})=>handlers.get(name)?.(value),refreshes:()=>refreshes,alertReads:()=>alertReads,expired:()=>expired,
     async send(text){connections.at(-1).send(text);await settle();},
     async fire(ms){const selected=[...timers].filter(([,t])=>t.ms===ms);for(const [id,t]of selected){timers.delete(id);t.fn();}await settle();}};
 }
@@ -22,6 +23,13 @@ function boot(){
   assert.equal(first.options.credentials,'same-origin');assert.equal(first.options.headers.Authorization,'Bearer fixture');
   await f.send(': keepalive\n\n');assert.equal(f.refreshes(),0);
   await f.send('da');await f.send('ta: {}\n\n');assert.equal(f.refreshes(),1);
+  assert.equal(f.alertReads(),1,'Legacy invalidations still update alerts');
+  await f.send('data: {"changes":["conversation"]}\n\n');
+  assert.equal(f.refreshes(),2);assert.equal(f.alertReads(),1);
+  await f.send('data: {"changes":["alerts"]}\n\n');
+  assert.equal(f.refreshes(),2);assert.equal(f.alertReads(),2);
+  await f.send('data: {"changes":["alerts","conversation"]}\n\n');
+  assert.equal(f.refreshes(),3);assert.equal(f.alertReads(),3);
   await f.send('data: {}\n\ndata: {}\n\n');assert(f.refreshes()>=2);
   await f.send('event: expired\ndata: {}\n\n');assert.equal(f.expired(),1);assert(first.options.signal.aborted);assert.equal(f.timers.size,0);
 

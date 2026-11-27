@@ -1,6 +1,6 @@
 "use strict";
 window.InteractionLive = (() => {
-  function mount({headers, refresh, expired, fetchStream=fetch}) {
+  function mount({headers, refresh, alertsChanged, expired, fetchStream=fetch}) {
     let active=false, suspended=false, controller, retry, heartbeat, generation=0, delay=1000, dirty=false, draining=false;
     async function update(){
       dirty=true;if(draining)return;draining=true;
@@ -35,7 +35,12 @@ window.InteractionLive = (() => {
             while((boundary=pending.indexOf('\n\n'))>=0){
               const event=pending.slice(0,boundary);pending=pending.slice(boundary+2);
               if(event.includes('event: expired')){stop();expired();return;}
-              if(event.startsWith('data:'))void update();
+              if(event.startsWith('data:')){
+                let channels;
+                try{channels=JSON.parse(event.slice(5)).changes;}catch{/* Legacy invalidation. */}
+                if(!Array.isArray(channels) || channels.includes('conversation'))void update();
+                if(!Array.isArray(channels) || channels.includes('alerts'))void alertsChanged?.();
+              }
             }
           }
         }finally{await reader.cancel().catch(()=>{});}

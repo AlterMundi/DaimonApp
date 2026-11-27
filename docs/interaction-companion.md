@@ -164,8 +164,11 @@ actual paired-human sign-in and a real offered approval remain separate evidence
 `alerts_access = true` optionally adds a read-only operational-alert list at
 `GET /api/interaction/alerts`. It defaults to false. The Conversation badge and
 list reuse the same receiving Alerts projection and attention rules as Sessions
-and the Apps menu. Existing SSE invalidations include receiving alert changes;
-subscribing does not initiate observation. Opening the badge is explicit and
+and the Apps menu. The shared SSE carries separate `alerts` and `conversation`
+invalidations. A conversation update skips the Alerts read, and an Alert
+observation skips the conversation refresh. The first authorized event on
+connect or reconnect includes both available channels. Subscribing does not
+initiate observation. Opening the badge is explicit and
 leaves the draft and playback nodes intact. Shared-home access cannot acknowledge
 incidents or invoke Sessions controls, and existing device grants are unchanged.
 This grant does not activate model attention or automatic incident handling.

@@ -5,7 +5,7 @@ import os
 import struct
 
 
-async def changes(paths, heartbeat=15, subscribe=None):
+async def changes(paths, heartbeat=15, subscriptions=None):
     """Watch owned sources, including SQLite WAL and atomic observer replacement.
 
     Notifications only invalidate a view. Canonical cursors remain in the existing
@@ -18,7 +18,17 @@ async def changes(paths, heartbeat=15, subscribe=None):
     loop = asyncio.get_running_loop()
     wake = asyncio.Event()
     selected = {}
-    unsubscribe = None
+    subscriptions = subscriptions or {}
+    closers = []
+    pending = {'conversation', *subscriptions}
+    def invalidate(channel):
+        pending.add(channel)
+        wake.set()
+    def take_changes():
+        changed = set(pending)
+        pending.clear()
+        wake.clear()
+        return changed
     try:
         directories = {}
         for path in paths:
@@ -39,12 +49,12 @@ async def changes(paths, heartbeat=15, subscribe=None):
                 name = os.fsdecode(data[offset+16:offset+16+size].split(b'\0', 1)[0])
                 offset += 16 + size
                 if mask & (0x4000 | 0x400 | 0x800) or name in selected.get(wd, ()):
-                    wake.set()
+                    invalidate('conversation')
         loop.add_reader(fd, readable)
-        if subscribe is not None:
-            unsubscribe = subscribe(lambda: loop.call_soon_threadsafe(wake.set))
+        for channel, subscribe in subscriptions.items():
+            closers.append(subscribe(lambda channel=channel: loop.call_soon_threadsafe(invalidate, channel)))
         # Watches are installed before initial catch-up, closing the startup gap.
-        yield True
+        yield take_changes()
         while True:
             try:
                 # Python3.11 wait_for may return a concurrent wakeup instead of
@@ -54,12 +64,11 @@ async def changes(paths, heartbeat=15, subscribe=None):
                     await wake.wait()
                 # Collapse a transaction/atomic replacement into one invalidation.
                 await asyncio.sleep(.1)
-                wake.clear()
-                yield True
+                yield take_changes()
             except asyncio.TimeoutError:
-                yield False
+                yield set()
     finally:
-        if unsubscribe is not None:
+        for unsubscribe in reversed(closers):
             unsubscribe()
         loop.remove_reader(fd)
         os.close(fd)

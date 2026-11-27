@@ -593,10 +593,13 @@ function traffic(data) {
   $("#traffic-coverage").textContent = `Capture since ${new Date(data.capture_started*1000).toLocaleString()}. Retained endpoint traffic only. Unknown origin: ${data.totals.unknown_source}; no topic: ${data.totals.unknown_topic}; incomplete metadata: ${data.totals.incomplete}. Message content is not recorded.`;
   if (data.alert_history_incomplete) $("#traffic-coverage").textContent += " Alert history exceeded its backlog bound; inspect retained traffic.";
 }
-async function refresh(force = false) {
+async function refresh(force = false, readAlerts = true) {
   if (refreshing || !authenticated) return;
   if(!document.hidden)void heartbeatView?.refresh();
-  if (conversationMode) { void refreshConversationAlerts(); return conversationView?.refresh(force); }
+  if (conversationMode) {
+    if(readAlerts)void refreshConversationAlerts();
+    return conversationView?.refresh(force);
+  }
   if (document.hidden && !force) return;
   refreshing = true;
   $("#refresh").disabled = true;
@@ -631,7 +634,8 @@ let liveConversation;
 function schedule() {
   clearInterval(timer);
   if (standaloneConversation && authenticated && conversationMode) {
-    liveConversation ||= window.InteractionLive.mount({headers:authorizationHeaders, refresh:()=>refresh(true),
+    liveConversation ||= window.InteractionLive.mount({headers:authorizationHeaders, refresh:()=>refresh(true,false),
+      alertsChanged:refreshConversationAlerts,
       expired:()=>conversationView?.unauthenticated()});
     liveConversation.start();return;
   }
