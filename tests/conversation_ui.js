@@ -205,6 +205,7 @@ function boot(readOnly=false,standalone=false,options={}) {
   });
   vm.runInContext(fs.readFileSync("dashboard/web/requests.js", "utf8"), context);
   vm.runInContext(fs.readFileSync("dashboard/web/microphone.js", "utf8"), context);
+  if(options.routingGraph)context.window.RoutingGraph={mount:()=>options.routingGraph};
   if(options.capture)context.window.VoiceInput={mount(value){capture=value;return {configure(...args){microphoneConfigs.push(args);},reset(){},deactivate(){},observe(){},pauseEditing:()=>{continuousCalls.push(['edit-pause']);return true;},editDraft:text=>continuousCalls.push(['edit-draft',text]),ownsSend:()=>!!options.ownsVoice,submit:()=>options.voiceSubmit?.(),canStartContinuous:()=>true,canStartNative:()=>true,continuousOwner:v=>continuousCalls.push(['owner',v]),retainContinuous:v=>{continuousCalls.push(['retain',v]);return v;},commitContinuous:v=>{continuousCalls.push(['commit',v]);return v;},reviewContinuous:v=>continuousCalls.push(['review',v]),hold:()=>continuousCalls.push(['ordinary-hold']),startConversation:()=>continuousCalls.push(['ordinary-start'])};}};
   if(options.continuous){
     context.window.ContinuousConversation={create(hooks){continuousHooks=hooks;return continuousSession={active:false,floor:false,originals:[],canReconnect(){return !this.active;},reconnect(){continuousCalls.push(['reconnect']);this.start();},start(){this.active=true;continuousCalls.push(['start']);hooks.onState({active:true,starting:false,floor:false,pending:false});},hold(){this.active=false;continuousCalls.push(['hold']);return options.continuousHold?.();},release:id=>continuousCalls.push(['release',id])};}};
@@ -2263,6 +2264,24 @@ function boot(readOnly=false,standalone=false,options={}) {
   assert.equal(monitor.requests.filter(r=>r.trace).length,1);
   assert.equal(monitor.requests.find(r=>r.trace).body,undefined,'Trace reads cannot submit or retry an input');
   assert.equal(monitor.originals.size,1);
+  const graphTraces=[];
+  const graphFixture=boot(false,true,{routingGraph:{input(){},result(){},reset(){},flush(){},trace(value){graphTraces.push(value.id);}}});
+  graphFixture.originals.set('graph-original',{id:'graph-original',text:'Saved input',sequence:1,phase:'accepted'});
+  await graphFixture.ui.refresh();
+  assert.equal(graphFixture.requests.filter(r=>r.trace).length,0,'Ordinary refresh skips unseen diagnostic traces');
+  const graphInspector=graphFixture.nodes.get('#conversation-diagnostics'),routingDetails=graphFixture.nodes.get('#conversation-flow');
+  graphInspector.open=true;
+  graphInspector.handlers.toggle();
+  assert.equal(graphFixture.requests.filter(r=>r.trace).length,0,'Opening the inspector alone skips collapsed routing traces');
+  routingDetails.open=true;
+  routingDetails.handlers.toggle();
+  await new Promise(setImmediate);
+  assert.deepEqual(graphTraces,['graph-original'],'Opening the routing monitor reads its exact retained trace');
+  graphInspector.open=false;
+  graphInspector.handlers.toggle();
+  await graphFixture.ui.refresh();
+  assert.equal(graphFixture.requests.filter(r=>r.trace).length,1,'Closing the inspector stops background trace reads');
+  graphFixture.ui.stop();
   const paginated=boot();paginated.originals.set('long-trace',{id:'long-trace',text:'Complete immutable original',longTrace:true,sequence:1,phase:'accepted'});
   await paginated.ui.refresh();const longPath=paginated.nodes.get('#conversation-inputs').children[0].children[6];
   longPath.open=true;await longPath.children[3].handlers.click();
