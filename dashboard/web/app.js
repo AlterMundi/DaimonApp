@@ -100,29 +100,46 @@ async function api(route, body) {
     if(monitorOnly && body)throw new Error('This monitor is read-only');
     if(deviceMode && !route.startsWith('interaction'))throw new Error('This access is limited to your conversation');
     if(route!=="session")Object.assign(headers,authorizationHeaders());
-    // Only immutable source-text reads may repeat after a cut JSON body.
-    // Writes and other endpoints retain their original once-only outcome.
+    // A reply revision and offset identify a read, with no work submission.
     const sourceRead = !body && route.startsWith("interaction/part?");
-    let sharedVerified=false;
-    for (let attempt=0; ; attempt++) {
-      const response = await fetch(`api/${route}`, {
-        signal: controller.signal,
-        method: body ? "POST" : "GET",
-        credentials: "same-origin",
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-      });
+    const sourceDelays=[350,1000,2500];
+    let sharedVerified=false,sourceAttempts=0;
+    async function retrySourceRead() {
+      if(!sourceRead || controller.signal.aborted || sourceAttempts>=sourceDelays.length)return false;
+      await new Promise(resolve=>setTimeout(resolve,sourceDelays[sourceAttempts++]));
+      return !controller.signal.aborted;
+    }
+    for (;;) {
+      let response;
+      try {
+        response = await fetch(`api/${route}`, {
+          signal: controller.signal,
+          method: body ? "POST" : "GET",
+          credentials: "same-origin",
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+      } catch (cause) {
+        if(cause.name==="TypeError" && await retrySourceRead())continue;
+        if(sourceRead && cause.name==="TypeError")throw new Error("Couldn't load this message. Try reading again.");
+        throw cause;
+      }
       // Revalidate only the existing shared session. Never repeat a write or
       // treat a resource failure as proof that the browser cookie has expired.
-      if(response.status===401 && !body && attempt===0 && sharedConversationConnected){
+      if(response.status===401 && !body && !sharedVerified && sharedConversationConnected){
         try{await sharedAccess();sharedVerified=true;continue;}catch(_){/* Retain the original rejection. */}
+      }
+      if(sourceRead && [502,503,504].includes(response.status)){
+        await response.body?.cancel().catch(()=>{});
+        if(await retrySourceRead())continue;
+        throw Object.assign(new Error("Couldn't load this message. Try reading again."),{status:response.status});
       }
       let value;
       try { value = await response.json(); }
       catch (cause) {
-        if (sourceRead && response.ok && cause.name === "SyntaxError" && attempt === 0) continue;
+        if(response.ok && ["SyntaxError","TypeError"].includes(cause.name) && await retrySourceRead())continue;
         const error = new Error(sourceRead
-          ? "Saved text could not be read. Retry reading; nothing was resent."
+          ? "Couldn't load this message. Try reading again."
           : "Server response unavailable. Check current state before retrying.");
         error.status = response.status;
         throw error;

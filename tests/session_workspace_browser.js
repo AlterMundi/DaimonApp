@@ -13,6 +13,8 @@ const imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0
 const imageArtifact={id:'12345678-1234-5678-9876-123456789abc',name:'drawing.png',sha256:require('node:crypto').createHash('sha256').update(imageBytes).digest('hex'),bytes:imageBytes.length,available:true};
 const unifiedAttentionCase=process.env.QUALIFICATION_UNIFIED_ATTENTION==='1';
 const settingsCase=process.env.QUALIFICATION_SETTINGS_AND_DECISIONS==='1';
+const sourceReadCase=process.env.QUALIFICATION_SOURCE_READ==='1';
+let partRecoveryReads=0, staleReads=0, unavailableWrites=0;
 const reconnectCase=process.env.QUALIFICATION_SESSION_RECONNECT==='1';let workspaceOutage=false;
 const hudCase=imageCase||process.env.QUALIFICATION_HUD==='1',authoredCase=headerSignalCase||hudCase||reconnectCase||process.env.QUALIFICATION_AUTHORED==='1';
 const appearanceCase=process.env.QUALIFICATION_APPEARANCE==='1';
@@ -115,6 +117,9 @@ const server=http.createServer(async(req,res)=>{
      ...(technical?[{id:'tool',kind:'tool_call',name:'inspect_result',text:'{"result":"prototype"}',position:150,next_position:200},
       {id:'summary',kind:'reasoning_summary',role:'assistant',text:'Compare the measured result with our original question.',position:200,next_position:250}]:[])]});
   }
+  if(sourceReadCase&&route==='interaction/inputs'&&req.method==='POST'&&url.searchParams.get('qualification')==='unavailable'){
+   unavailableWrites++;res.writeHead(502);res.end('');return;
+  }
   if(route==='interaction/inputs'&&req.method==='POST'){
    let raw='';for await(const block of req)raw+=block;const body=JSON.parse(raw);posts.push(body);
    if(selectedInputCase){
@@ -127,6 +132,17 @@ const server=http.createServer(async(req,res)=>{
   if(route===`interaction/goals/${goalProposal.id}`)return json(goalProposal);
   if(route==='interaction')return json({...base(),items:sources,
    cursor:{delivery:0,native:30,matrix:0},newest:{delivery:0,native:30,matrix:0},can_converse_codex:codexCase,can_converse_public_live:publicCase,can_converse_public_live_native:publicDefaultCase,avatar_voice_default:publicDefaultCase?'gpt-live-native':null,can_reply_updates:true,can_decide_requests:nativeDecisionGranted,can_download_files:appearanceCase||imageCase&&imageAccess,can_listen:listenCase,can_speak:countdownCase||hudCase||publicDefaultCase,activity:{connected:true,sessions:[],observed_at:Date.now()/1000},goal_controls:{binding,items:settingsCase?[goalProposal]:unifiedAttentionCase?[retainedGoal]:[],cursor:1,more:false}});
+  if(sourceReadCase&&route==='interaction/part'){
+   const variant=url.searchParams.get('qualification');
+   if(variant==='temporary'){
+    partRecoveryReads++;
+    if(partRecoveryReads===1){res.writeHead(502);res.end('');return;}
+    if(partRecoveryReads===2)return json({detail:'Temporary fixture outage'},503);
+    if(partRecoveryReads===3){res.writeHead(200,{'content-type':'application/json'});res.end('{"tex');return;}
+    return json({text:'Exact retained message.',next_offset:null});
+   }
+   if(variant==='stale'){staleReads++;return json({detail:'Selected revision changed'},409);}
+  }
   if(route==='interaction/part')return json({text:sources.find(v=>v.id===url.searchParams.get('source'))?.preview||'Synthetic text',next_offset:null});
   if(route==='interaction/audio')return json({detail:'Synthetic read-aloud unavailable; no provider called'},503);
   if(route==='interaction/sonic')return json({configured:false,connected:true,sources:[]});
@@ -318,6 +334,17 @@ server.on('connection',socket=>{sockets.add(socket);socket.on('close',()=>socket
    assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--dm-ui-text').trim()),authoredCase?'':palette.text,'Selected authored policy or inherited roles are respected');
   }
   (report.appearanceTransitions??=[]).push(stage);
+ }
+ if(sourceReadCase){
+  const text=await page.evaluate(()=>api('interaction/part?qualification=temporary'));
+  assert.deepEqual(text,{text:'Exact retained message.',next_offset:null});
+  assert.equal(partRecoveryReads,4,'A short restart and cut response can recover the exact read');
+  const stale=await page.evaluate(()=>api('interaction/part?qualification=stale').catch(error=>error.status));
+  assert.equal(stale,409);assert.equal(staleReads,1,'A changed revision is never retried');
+  const write=await page.evaluate(()=>api('interaction/inputs?qualification=unavailable',{text:'Synthetic never accepted'}).catch(error=>error.status));
+  assert.equal(write,502);assert.equal(unavailableWrites,1,'An ambiguous write is never replayed');
+  assert.equal(posts.length,0);assert.equal(errors.length,0,errors.join('\n'));
+  report.state='qualified-saved-text-recovery';return;
  }
  if(settingsCase){
   assert.equal(await page.locator('#conversation-diagnostics').count(),0);

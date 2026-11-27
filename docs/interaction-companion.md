@@ -178,6 +178,9 @@ endpoint without requiring a Read reply click. Intersection-driven reads use at
 most two automatic readers and do not block the next text/voice input. Completed
 text is kept only in the current page; ordinary metadata refresh does not fetch
 it again. Changed source revisions cannot apply late text to their replacement.
+Part reads retry a short network or gateway interruption within the existing
+request deadline. Every retry keeps the same revision and offset; a changed
+revision or a submission follows its existing recovery path.
 Hidden pages stop starting further parts and resume pending reads in foreground.
 Very long answers retain Continue reading after the bounded automatic expansion;
 manual reading remains available when the browser lacks intersection observation.
