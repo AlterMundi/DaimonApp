@@ -200,12 +200,13 @@ def direct_topics_bypass_router(binary):
         j.allow_native_launch = True
         j.admit('#Alpha Hold the only router slot', topic=1)
         j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
-        before = j.row('SELECT count(*) FROM interaction_sources')
+        before = j.row('SELECT count(*) FROM interaction_instructions WHERE id NOT IN (SELECT instruction FROM interaction_direct_parents)')
         original = 'Direct text already has its selected destination'
         j.admit(original, topic=8)
         j.wait(lambda: 'native-topic-8' in j.runs)
-        assert j.instructions(8) == [], 'Direct input entered the routing journal'
-        assert j.row('SELECT count(*) FROM interaction_sources') == before
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+        assert j.row('SELECT count(*) FROM interaction_instructions WHERE id NOT IN (SELECT instruction FROM interaction_direct_parents)') == before
+        assert all(phase == 'accepted' for _, phase, _ in j.instructions(8))
         packet = j.packets['native-topic-8'][-1]
         assert packet['input'][0]['text'] == original
         runtime = ''.join(v['value'] for k,v in sorted(packet['additionalContext'].items()) if k=='telecodex.runtime' or k.startswith('telecodex.runtime.'))
@@ -227,7 +228,7 @@ def direct_topics_bypass_router(binary):
         j.admit('#Alpha is mentioned in this direct conversation',topic=8)
         j.wait(lambda: len(j.packets[thread]) == 2)
         assert j.packets[thread][-1]['input'][0]['text'] == '#Alpha is mentioned in this direct conversation'
-        assert len(j.instructions(7)) == 1 and not j.instructions(8)
+        assert len(j.instructions(7)) == 1 and all(phase == 'accepted' for _, phase, _ in j.instructions(8))
         j.broadcast(thread,'turn/completed',{'turn':{'id':j.runs[thread],'status':'completed'}})
         j.answer(7,'Routed work completes independently.')
         j.wait(lambda:j.has('Routed work completes independently.',1))

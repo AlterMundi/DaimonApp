@@ -135,7 +135,7 @@ pub(super) fn result_on(
             // after later instructions arrive. All reservations commit together.
             return Ok(vec![]);
         }
-    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 AND (?4 IS NULL OR json_extract(i.doc,'$.native_turn')=?4) ORDER BY i.sequence DESC")?;
+    let mut query=tx.prepare("SELECT i.doc,s.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.session_id=?1 AND s.human_id=?2 AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3 AND (?4 IS NULL OR json_extract(i.doc,'$.native_turn')=?4) AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) ORDER BY i.sequence DESC")?;
     let inputs = query
         .query_map(
             params![
@@ -187,9 +187,22 @@ pub(super) fn result_on(
             }
         }
         candidates.sort_by_key(|(order, sequence, _, _)| (*order, *sequence));
-        let Some((order, sequence, _input, source)) = candidates.pop() else {
-            // Historical unfinished work is not an unanswered current input.
-            // Its declarations remain in the canonical native result.
+        let historical;
+        let (order, sequence, source) = if let Some((order, sequence, _, source)) = candidates.pop()
+        {
+            (order, sequence, source)
+        } else if let Some(claim) = claim.as_ref()
+            && let Some(input) = super::session_requests::later_completion_source_on(
+                tx, human, local_turn, thread, &request, claim,
+            )?
+        {
+            historical = source_on(tx, &input.id, human)?;
+            (
+                super::dialogue::original_order_on(tx, &historical)?,
+                input.sequence,
+                &historical,
+            )
+        } else {
             continue;
         };
         let original:String=tx.query_row("SELECT s.doc FROM interaction_requests r JOIN interaction_sources s ON s.id=r.input_id WHERE r.id=?1 AND r.human_id=?2",params![request,human],|r|r.get(0))?;
@@ -318,7 +331,78 @@ pub(super) fn result_on(
     Ok(deliveries)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn later_completion_result_on(
+    tx: &Connection,
+    instance: &str,
+    human: i64,
+    local: i64,
+    thread: &str,
+    turn: &str,
+    item: &str,
+    text: &str,
+    capture_unlinked: bool,
+) -> Result<Vec<Delivery>> {
+    let mut root = None;
+    if let Some(claim) = worker_result(text).1 {
+        for request in &claim.completed {
+            root = super::session_requests::later_completion_source_on(
+                tx, human, local, thread, request, &claim,
+            )?;
+            if root.is_some() {
+                break;
+            }
+        }
+    }
+    if let Some(root) = root {
+        result_on(
+            tx, instance, &root.id, human, local, thread, turn, item, text, true, false,
+        )
+    } else {
+        if capture_unlinked {
+            super::interaction::record_native_message_on(
+                tx,
+                local,
+                thread,
+                turn,
+                item,
+                Some("final_answer"),
+                text,
+            )?;
+        }
+        Ok(Vec::new())
+    }
+}
+
 impl Store {
+    /// An ordinary final can finish a specifically declared, still-open helper
+    /// dependency without reopening the original native turn.
+    pub(crate) fn interaction_record_later_completion(
+        &self,
+        human: i64,
+        local: i64,
+        thread: &str,
+        turn: &str,
+        item: &str,
+        text: &str,
+    ) -> Result<Vec<Delivery>> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let deliveries = later_completion_result_on(
+            &tx,
+            &self.instance_id,
+            human,
+            local,
+            thread,
+            turn,
+            item,
+            text,
+            true,
+        )?;
+        tx.commit()?;
+        Ok(deliveries)
+    }
+
     pub(super) fn init_routing(&self) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_results(id TEXT PRIMARY KEY,local_turn INTEGER NOT NULL,native_thread TEXT NOT NULL,native_turn TEXT NOT NULL,item_id TEXT NOT NULL,body TEXT NOT NULL,claim TEXT,UNIQUE(native_thread,native_turn,item_id));

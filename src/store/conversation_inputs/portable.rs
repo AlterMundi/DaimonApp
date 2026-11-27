@@ -396,7 +396,7 @@ impl Store {
         input: &ConversationInput,
         local: i64,
         outcome: &Value,
-    ) -> Result<()> {
+    ) -> Result<Vec<crate::interaction::Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = read_on(&tx, &input.id, input.human)?;
@@ -407,6 +407,10 @@ impl Store {
         let reply = outcome["text"]
             .as_str()
             .filter(|_| outcome["phase"] == "completed");
+        let target = current
+            .portable
+            .as_ref()
+            .context("Portable target missing")?;
         let limit = crate::interaction::SubscriptionLimit::from_worker(outcome)
             .filter(|_| current.phase == "sending");
         let refused =
@@ -420,9 +424,10 @@ impl Store {
             ("queued", None) => ("failed", "claude_rejected"),
             _ => bail!("Portable turn is already settled or unexposed"),
         };
+        let visible = reply.map(crate::interaction::visible_answer);
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3
             WHERE id=?4 AND status='running' AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?5)",
-            params![status,reply,now_string(),local,self.instance_id])?==1,"Portable result owner changed");
+            params![status,visible,now_string(),local,self.instance_id])?==1,"Portable result owner changed");
         if resume_unavailable && current.phase == "queued" {
             tx.execute(
                 "UPDATE turns SET execution_native_scope='resume_unavailable' WHERE id=?1",
@@ -438,8 +443,32 @@ impl Store {
                 params![input.id, serde_json::to_string(&limit)?])?;
         }
         tx.execute("UPDATE sessions SET busy=0 WHERE id=?1", [current.session])?;
+        let mut deliveries = Vec::new();
+        if let Some(text) = reply
+            && crate::interaction::worker_result(text).1.is_some()
+            && admitted_on(&tx, &current, &self.instance_id)?
+        {
+            let native: Option<String> = tx.query_row(
+                "SELECT native_thread_id FROM turns WHERE id=?1",
+                [local],
+                |row| row.get(0),
+            )?;
+            if let Some(native) = native {
+                deliveries = crate::store::routing::later_completion_result_on(
+                    &tx,
+                    &self.instance_id,
+                    current.human,
+                    local,
+                    &native,
+                    &format!("gateway:{}:{}", target.harness.name(), current.id),
+                    "final",
+                    text,
+                    false,
+                )?;
+            }
+        }
         tx.commit()?;
-        Ok(())
+        Ok(deliveries)
     }
 
     pub(crate) fn portable_turn_running(&self, key: SessionKey, human: i64) -> Result<bool> {

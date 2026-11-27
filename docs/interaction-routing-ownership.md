@@ -59,6 +59,47 @@ to the caller with its attribution. A worker reporting a scope mismatch should
 return its finding and useful checkpoint to the integrator; it should not start
 an ownership-negotiation chain. No global Stop or session cancellation is needed.
 
+## Work requested from an existing work topic
+
+A human can ask in an enrolled work topic, “Ask #Beta to check the result and
+bring the finding back here.” The caller uses `interaction_controller inputs`
+to identify the exact accepted human message in this physical turn, then calls
+`session_request` with that `parent_instruction`, the existing destination's
+stable selector, a stable request key and attributed text describing the scope
+and checkpoints. The same path accepts a routed human original. Direct Telegram
+input and direct app input keep their existing presentation and submission paths;
+a native receipt makes its direct paired-human original discoverable for this
+bounded operation. Forwarded and bot-authored text stays in ordinary input
+without becoming coordination authority. Direct voice requires its committed
+source-bound transcript. Eligible parent metadata shares the acceptance
+transaction and follows the retained original's lifecycle. It queues no native
+input, uses no polling and does not replay an earlier message.
+
+The destination receives a session-authored instruction and the original's
+channel/message reference. It can return current completed evidence to the
+caller. The caller owns the human reply, including explaining pending work.
+Use the same key to inspect an attempted request and its return. An immutable
+receipt is separate from acceptance, incorporation and completion. Do not retry
+an uncertain dispatch or invent a replacement key. Missing or expired active
+execution evidence cannot be replaced with an earlier message reference.
+
+A partial helper answer leaves its dependency open. If the selected work
+finishes in a later turn of the same receiving conversation and generation,
+declare completion with the original helper instruction in `covered` and its
+original request IDs in `requests` and `completed`. Gateway checks the selected
+owner, binding, open dependency and current coverage before using the existing
+internal return queue. A later answer without that declaration remains ordinary
+conversation. An interrupted, withdrawn or uncertain operation is never
+resubmitted to make a completion claim possible.
+
+An explicit request may assign the selected bounded work to that destination.
+Canonical ownership changes, cross-body routing and workflow progression still
+use their owning surfaces. A request grants no goal operation. Pause, resume,
+replace and other controls require the exact live goal authorization for that
+operation. Return a precise limitation to the integrating conversation when
+its authority is needed. See [#1017](https://github.com/AlterMundi/DaimonApp/issues/1017)
+for the direct-topic refusal and qualification.
+
 ## Remaining controller work
 
 The immediate correction is runtime/maintained guidance. It is not a structural

@@ -660,7 +660,9 @@ pub(super) async fn run_portable_turn(
     }
     .await
     .ok();
-    store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))
+    let deliveries = store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))?;
+    super::routing::publish_results(app, input.human, deliveries);
+    Ok(())
 }
 
 pub(super) async fn run_routed_portable(
