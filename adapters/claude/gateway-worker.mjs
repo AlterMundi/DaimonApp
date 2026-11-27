@@ -456,6 +456,16 @@ async function main() {
     const sessionInstructions = first?.sessionInstructions;
     const workspace = first?.workspace;
     const historySeed = first?.historySeed;
+    const validExchange = exchange => closed(exchange, ['turn', 'human', 'assistant', 'harness', 'nativeThread'])
+      && ['codex', 'claude'].includes(exchange.harness)
+      && typeof exchange.nativeThread === 'string' && exchange.nativeThread.length <= 128
+      && (exchange.harness !== 'claude' || UUID.test(exchange.nativeThread))
+      && Number.isSafeInteger(exchange.turn) && exchange.turn >= 1
+      && [exchange.human, exchange.assistant].every(text => typeof text === 'string' && text.trim());
+    const multipleExchanges = closed(historySeed, ['exchanges']) && Array.isArray(historySeed.exchanges)
+      && historySeed.exchanges.length >= 2 && historySeed.exchanges.length <= 3
+      && historySeed.exchanges.every(validExchange);
+    const singleExchange = validExchange(historySeed);
     const fromCodex = closed(historySeed, ['turn', 'human', 'assistant', 'harness'])
       && historySeed.harness === 'codex';
     const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
@@ -484,7 +494,7 @@ async function main() {
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
       || (historySeed !== undefined && (!fullAccess
-        || (!exactQuote && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
+        || (!exactQuote && !singleExchange && !multipleExchanges && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
           || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
           || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())))
         || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
@@ -686,10 +696,23 @@ async function main() {
         }, { alwaysLoad: true });
       controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
     }
+    // Resume the exact compatible native session, and provide only the owned
+    // historical quotations that are recorded in a different native session.
+    let recoveredHistory;
+    if (!nativeGoalCommand) {
+      if (multipleExchanges) {
+        const missing = historySeed.exchanges.filter(exchange => !resume
+          || exchange.harness !== 'claude' || exchange.nativeThread !== nativeSessionId);
+        if (missing.length) recoveredHistory = { exchanges: missing };
+      } else if (!resume || exactQuote || fromCodex
+        || (singleExchange && historySeed.nativeThread !== nativeSessionId)) {
+        recoveredHistory = historySeed;
+      }
+    }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
-        historySeed: (!resume || exactQuote || fromCodex) && !nativeGoalCommand ? historySeed : undefined },
+        historySeed: recoveredHistory },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
