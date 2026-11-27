@@ -90,7 +90,7 @@ def install(app, config, provider, authorize, origins):
     def conversation_delivery():
         reading=route(Path(config['speech_openai']['binding']))
         output_voice=selected.get('session_options',{}).get('audio',{}).get('output',{}).get('voice')
-        if reading['provider']!='openai-realtime' or reading['voice']!=output_voice:
+        if reading['provider'] not in ('openai-realtime','openai-tts') or reading['voice']!=output_voice:
             raise ValueError('Match Avatar to the selected Conversation default voice')
         return reading.get('instruction','').strip()
 
