@@ -454,6 +454,11 @@ helper result reaches the same Claude native session and cannot delegate anew.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
+  `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` exercise exact replies to an older
+  proposal with a newer proposal already in the same native session. The
+  fixture checks the selected result and revision in the current provider
+  input, native session reuse, and the visible reply on the originating surface.
 - `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
   from the Conversation composer to a selected Claude topic. The provider
   fixture checks the original image bytes and the human's provenance, with

@@ -109,7 +109,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, dispatch, '"new_admission":false'),
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
-            assert self.server.original in json.dumps(data["messages"])
+            assert self.server.original in json.dumps(data["messages"], ensure_ascii=False)
             routed_human = getattr(self.server, "routed_paired_human", None)
             if routed_human is not None:
                 assert "Gateway delivered a routed packet with its author and source recorded." in system
@@ -218,6 +218,18 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert submission["native_session_scope"] != self.server.previous_scope
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
+                reason = "end_turn"
+            elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
+                if expected := getattr(self.server, "expected_quote", None):
+                    # Only the current exchange's context may resolve this
+                    # short approval. Earlier messages include other proposals.
+                    content = next(message["content"] for message in reversed(messages)
+                                   if message["role"] == "user")
+                    quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
+                              if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
+                    assert quoted == [expected], quoted
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": quote_response}
                 reason = "end_turn"
             elif attachment:
                 block = {"type": "text", "text": ""}
