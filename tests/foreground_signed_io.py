@@ -488,6 +488,12 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
+                        self._conversation_attachments(journey, provider)
+                        return
+                    if telegram_topic and os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1":
+                        self._telegram_codex_handoff(journey, provider)
+                        return
                     if telegram_topic:
                         adapter = subprocess.Popen(
                             [gateway, "--tele-daimon-poll", str(adapter_config)],
@@ -496,8 +502,6 @@ timeout_seconds=5
                         try:
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
-                            elif os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
-                                self._conversation_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
