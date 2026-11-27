@@ -253,6 +253,17 @@ its attributed result. The integrating turn reads visible returns through the
 existing `conversation` and `conversation_part` readers. Selection of a different
 original, a rebind or an admission fence cannot extend this turn's authority.
 
+Routed Claude turns keep separate continuation candidates for their effective
+authorization scopes, including their controller grant. Older privileged
+transcripts without that distinction remain retained for explicit recovery. A turn resumes only the candidate that matches its
+current scope and authenticated being, embodiment and incarnation. A change
+to the signed roster alone preserves that incarnation's native history. A
+known quota rejection before work leaves the last completed candidate usable.
+An uncertain turn or a missing resume target protects the affected history
+from implicit replay. Session-authored dependencies use the parent admission
+epoch and remain attributed when routed into a Claude topic. Other portable
+harnesses require a separately qualified dependency return contract.
+
 An owner can set the harness on an explicit target to Claude, Goose or
 Antigravity and enable direct routing on that harness's configured foreground
 worker. Gateway retains the harness and signed body on the target instruction
@@ -1251,6 +1262,13 @@ helper coverage stays internal and cannot reserve a completed return. Internal-o
 executions also do not inherit an older native progress return binding. Legacy
 records use retained session authorship/coverage without erasing any delivery or
 uncertain-send receipt. Later corrections keep their existing freshness semantics.
+
+An attributed local request to Claude can use the destination's paired host
+tools when its exact retained parent came from the authenticated paired human.
+The companion lane and unattested parents keep the scoped tool set. The
+recipient receives the request as session-authored context and cannot use it to
+authorize a second dependency. Gateway checks the retained parent independently
+of the helper's text.
 
 A local dependency is a single level: another session's request or result cannot
 serve as a human parent. An accepted original human instruction can authorize at

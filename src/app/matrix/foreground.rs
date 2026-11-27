@@ -131,7 +131,7 @@ pub(super) async fn run_selected(
         WorkerTurn {
             id: &id,
             session: &attempt.session_id,
-            resume: attempt.resume.as_ref(),
+            resume: attempt.resume.as_slice(),
             human_original: attempt.human_original,
             native_goal_command: false,
             routed_human: false,
