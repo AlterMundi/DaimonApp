@@ -103,11 +103,20 @@ The fixture uses Claude Code 2.1.332 and Agent SDK 0.3.332 with a loopback
 provider and a synthetic Codex peer. Live adoption remains separate.
 
 Add `FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL=1` to that profile to return
-Codex Core's missing-rollout error on the exact saved thread. The original
-stays retained and unsent. The test checks that Gateway preserves the native
-binding and dispatches neither a fresh thread nor a turn. A supported cold
-continuation into Codex still needs to preserve both the logical topic
-generation and old native lineage before sending a turn with the checkpoint.
+Codex Core's missing-rollout error on the exact saved thread. Gateway
+recognizes it only from the metadata resume reply, with the native invalid
+request code and the exact requested thread ID. A later failure or a refusal
+for a different thread cannot qualify the original for cold continuation.
+The original stays retained and unsent. The test checks that Gateway preserves
+the native binding and dispatches neither a fresh thread nor a turn.
+
+The ordinary native replacement changes the conversation generation and
+retires queued inputs tied to the old binding. Cold continuation needs a
+different binding transition in that same writer. Preserve the logical
+generation and record the old native lineage for existing originals, goals
+and receipts. Revalidate the selected checkpoint and current authority before
+exposing the known-unsent original in the successor. A lost metadata or turn
+acknowledgment must be reconciled from its reserved attempt.
 
 
 ## Holodeck topic-room catalogue

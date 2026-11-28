@@ -1552,7 +1552,7 @@ pub(super) async fn process_turn(
                     "failed"
                 };
                 shared.store.set_session_busy(session.key, false)?;
-                let recovery_note = saved_thread_is_unavailable(&error).then(||
+                let recovery_note = error.is::<crate::codex::MissingNativeRollout>().then(||
                     "The saved native thread is unavailable. Its binding and your input are preserved. Recover the native context or explicitly clear this topic to start a new context.".to_string());
                 finish_failed_turn(&shared.store, turn_id, &sink, status, &error, recovery_note, capacity_failure.load(std::sync::atomic::Ordering::Acquire))
                     .await?;
@@ -1909,18 +1909,6 @@ pub(super) fn turn_completion_notification_text(usernames: &[String]) -> Option<
         return None;
     }
     Some(format!("Готово, {} fyi ✅", usernames.join(" ")))
-}
-
-pub(super) fn saved_thread_is_unavailable(error: &anyhow::Error) -> bool {
-    let pretty = format!("{error:#}").to_ascii_lowercase();
-    let display = error.to_string().to_ascii_lowercase();
-    let matches = |text: &str| {
-        text.contains("no rollout found for thread id")
-            || (text.contains("rollout")
-                && text.contains("thread id")
-                && text.contains("code -32600"))
-    };
-    matches(&pretty) || matches(&display)
 }
 
 struct LiveTurnSink {

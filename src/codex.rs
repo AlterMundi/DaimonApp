@@ -51,6 +51,19 @@ impl std::fmt::Display for NativeInputNotSubmitted {
 }
 impl std::error::Error for NativeInputNotSubmitted {}
 
+/// App Server rejected metadata resume for the exact selected thread before
+/// accepting any input. Keep this distinct from later failures mentioning a rollout.
+#[derive(Debug)]
+pub(crate) struct MissingNativeRollout;
+
+impl std::fmt::Display for MissingNativeRollout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the selected Codex native history is unavailable")
+    }
+}
+
+impl std::error::Error for MissingNativeRollout {}
+
 #[derive(Debug)]
 pub struct NativeFreshExecutionRequired;
 impl std::fmt::Display for NativeFreshExecutionRequired {
@@ -613,6 +626,13 @@ fn idle_capacity_rejection(error: &RpcError) -> bool {
                 )
         })
 }
+impl RpcError {
+    fn is_missing_rollout_for(&self, thread: &str) -> bool {
+        self.code == Some(-32600)
+            && self.message.strip_prefix("no rollout found for thread id ") == Some(thread)
+    }
+}
+
 impl std::fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&format_rpc_error(self))
@@ -3869,7 +3889,16 @@ impl AppServerProcess {
             params["config"]["features.multi_agent"] = json!(false);
         }
         let request_id = self.send_request(method, params).await?;
-        let response = self.await_response(request_id).await?;
+        let response = self.await_response(request_id).await.map_err(|error| {
+            if let Some(thread) = &session.codex_thread_id
+                && error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|rpc| rpc.is_missing_rollout_for(thread))
+            {
+                return error.context(MissingNativeRollout);
+            }
+            error
+        })?;
         if let Some(profile) = profile {
             profile.verify(&response)?;
         }
@@ -4478,6 +4507,40 @@ mod tests {
                 false,
             )
             .await;
+        }
+    }
+
+    #[test]
+    fn missing_rollout_requires_the_native_code_and_exact_thread() {
+        for (code, message, missing) in [
+            (
+                Some(-32600),
+                "no rollout found for thread id selected",
+                true,
+            ),
+            (Some(-32600), "no rollout found for thread id other", false),
+            (
+                Some(-32600),
+                "no rollout found for thread id selected-suffix",
+                false,
+            ),
+            (
+                Some(-32603),
+                "no rollout found for thread id selected",
+                false,
+            ),
+            (
+                Some(-32600),
+                "failed to load rollout for thread id selected",
+                false,
+            ),
+        ] {
+            let error = RpcError {
+                code,
+                message: message.into(),
+                data: None,
+            };
+            assert_eq!(error.is_missing_rollout_for("selected"), missing, "{error}");
         }
     }
 

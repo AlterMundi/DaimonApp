@@ -969,6 +969,11 @@ timeout_seconds=5
                 self.assertTrue(verified_roundtrip)
                 fallback = journey.handle_extra_rpc
                 rejected_resumes = []
+                generation_query = (
+                    "SELECT generation FROM conversation_entry_generations WHERE session_id=?"
+                )
+                generation = journey.row(generation_query, (session,))
+                self.assertEqual(len(generation), 1)
 
                 def missing_native_history(message, send):
                     if (message.get("method") == "thread/resume"
@@ -1005,6 +1010,7 @@ timeout_seconds=5
                 self.assertEqual(journey.row(
                     "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
                 ), [(codex,)])
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
                 self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
                 self.assertEqual(provider.calls, calls_before_switch)
                 return
