@@ -7,19 +7,23 @@ import sqlite3
 import sys
 import uuid
 from goal_activation_io import Activation
+from goal_controls_io import relay_direct_goal_command
 
 
-def qualify(binary):
+def qualify(binary, *, relayed=False):
     j = Activation(binary)
     try:
         j.prepare(seed_entry=True)
         j.allow_native_launch = True
-        j.wait_control_socket(j.socket)
-        binding = j.owner('presentation', 'list', '0', '0')['binding']
-        original = str(uuid.uuid4())
-        j.owner('input', 'submit', json.dumps({'id': original, 'binding': binding,
-                                             'text': 'Start Alpha with the complete selected task. Preserve final human reset confirmation.'}))
-        j.wait(lambda: j.row('SELECT phase FROM conversation_inputs WHERE id=?', (original,)) == [('accepted',)])
+        text = 'Start Alpha with the complete selected task. Preserve final human reset confirmation.'
+        if relayed:
+            original, _ = relay_direct_goal_command(j, text)
+        else:
+            j.wait_control_socket(j.socket)
+            binding = j.owner('presentation', 'list', '0', '0')['binding']
+            original = str(uuid.uuid4())
+            j.owner('input', 'submit', json.dumps({'id': original, 'binding': binding, 'text': text}))
+            j.wait(lambda: j.row('SELECT phase FROM conversation_inputs WHERE id=?', (original,)) == [('accepted',)])
         entry = j.access(1)
         observed = j.cli(entry, 'goal_inspect', {'selector': 'Alpha'})
         args = {'selector': 'Alpha', 'input_ref': original, 'target_binding': observed['target_binding'],
@@ -63,6 +67,11 @@ def qualify(binary):
         assert repaired['intent']['expires_at'] > old['expires_at']
         assert j.cli(entry, 'goal_prepare', args)['control'] == repaired
         assert j.row('SELECT count(*) FROM conversation_inputs') == count
+        if relayed:
+            assert repaired['intent']['original']['relay']['request']
+            assert not any('conditional' in m.get('method', '') for m in j.rpc)
+            print('PASS one-time goal objective repair retains exact relayed human authority')
+            return
         j.cli(entry, 'goal_execute', {'id': selected})
         j.wait(lambda: j.row('SELECT phase FROM interaction_goal_controls WHERE id=?', (selected,)) == [('acknowledged',)])
         assert j.goals['native-topic-7']['status'] == 'active'
@@ -76,4 +85,6 @@ def qualify(binary):
 
 
 if __name__ == '__main__':
-    qualify(str(Path(sys.argv[1]).resolve()))
+    binary = str(Path(sys.argv[1]).resolve())
+    qualify(binary)
+    qualify(binary, relayed=True)
