@@ -1334,8 +1334,17 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
     if !dispatch_allowed(&app.shared, &i)? {
         return Ok(());
     }
+    let report_wait = !direct_portable_topic(&i)
+        && !matches!(
+            app.shared
+                .store
+                .interaction_source(&i.id, human)?
+                .channel
+                .as_str(),
+            "local-session" | "local-session-result"
+        );
     let action = reserve_run(&app.shared, &i);
-    if !direct_portable_topic(&i) && !action.as_ref().is_some_and(|active| active.is_some()) {
+    if report_wait && !action.as_ref().is_some_and(|active| active.is_some()) {
         let shared = app.shared.clone();
         let waiting = i.clone();
         tokio::spawn(async move {
