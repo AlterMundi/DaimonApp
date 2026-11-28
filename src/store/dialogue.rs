@@ -443,7 +443,7 @@ impl Store {
                 portable.as_ref(),
                 config
                     .and_then(|cfg| cfg.portable_route(*target))
-                    .map(|(engine, route)| (engine, &route.transport.source)),
+                    .map(|(engine, route)| (engine, &route.transport.source, route.agy_cli)),
             )?);
         }
         if closed.is_cancelled() {
@@ -694,7 +694,7 @@ mod tests {
                 RequestRelation::New,
                 &store.instance_id,
                 None,
-                Some((crate::interaction::ForegroundEngine::Claude, &body)),
+                Some((crate::interaction::ForegroundEngine::Claude, &body, false)),
             )
             .unwrap();
             assert!(fresh);

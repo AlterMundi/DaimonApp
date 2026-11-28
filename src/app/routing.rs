@@ -344,7 +344,7 @@ pub(super) async fn handle_portable_topic(
     let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
         &source,
         key,
-        (engine, &profile.transport.source),
+        (engine, &profile.transport.source, profile.agy_cli),
     )?;
     if fresh {
         dispatch(app, &instruction.id, human).await?;

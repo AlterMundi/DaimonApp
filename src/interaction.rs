@@ -204,6 +204,10 @@ pub(crate) enum ForegroundEngine {
     Antigravity,
 }
 
+/// Receiver selection for a retained original. The boolean enables ACP images
+/// for a topic explicitly using agy.
+pub(crate) type ForegroundAdmission<'a> = (ForegroundEngine, &'a MatrixDestination, bool);
+
 impl ForegroundEngine {
     pub(crate) const fn for_harness(harness: crate::execution::Harness) -> Option<Self> {
         use crate::execution::Harness;

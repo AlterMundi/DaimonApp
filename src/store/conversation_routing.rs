@@ -725,18 +725,19 @@ impl Store {
         };
         let route = profile
             .portable_route(target)
-            .map(|(engine, config)| (engine, &config.transport.source));
-        let has_claude_files = !input.files.is_empty()
-            && route
-                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
-        if body.trim().is_empty() && !has_claude_files {
+            .map(|(engine, config)| (engine, &config.transport.source, config.agy_cli));
+        let permits_file_only = !input.files.is_empty()
+            && route.is_some_and(|(engine, _, agy)| {
+                agy || engine == crate::interaction::ForegroundEngine::Claude
+            });
+        if body.trim().is_empty() && !permits_file_only {
             bail!("Write a message after the selector");
         }
         if body.starts_with('/')
             && body != "/interrupt"
-            && !(route
-                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude)
-                && input.selected_claude_goal())
+            && !(route.is_some_and(|(engine, _, _)| {
+                engine == crate::interaction::ForegroundEngine::Claude
+            }) && input.selected_claude_goal())
         {
             bail!("Only scoped /interrupt or a directly selected Claude /goal is supported");
         }
