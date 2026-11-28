@@ -1748,6 +1748,12 @@ mod tests {
             );
 
             let correction = Uuid::now_v7().to_string();
+            let binding = store
+                .interaction_presentation_list(100, caller.key, 0, 0)
+                .unwrap()["binding"]
+                .as_str()
+                .unwrap()
+                .to_owned();
             store
                 .conversation_input_capture_files(
                     100,
