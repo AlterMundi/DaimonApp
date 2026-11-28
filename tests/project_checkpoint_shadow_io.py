@@ -14,9 +14,36 @@ def git(path, *args):
 
 
 def select_project(journey, *, paginate=False):
+    binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
+
+    def dispatch(number, selector, thread, text, *, relation="new", requests=()):
+        original = {"id": str(uuid.uuid4()), "binding": binding, "text": text}
+        journey.read("input", "submit-human", json.dumps(original))
+        journey.wait(lambda: journey.row(
+            "SELECT phase FROM conversation_inputs WHERE id=?", (original["id"],)
+        ) == [("accepted",)])
+        journey.call(f"route-shadow-dispatch-{number}", "dispatch", {
+            "input_ref": original["id"],
+            "destinations": [{"selector": selector, "relation": relation, "requests": list(requests)}],
+        })
+        journey.wait(lambda: len(journey.instructions(thread)) == number
+                     and journey.instructions(thread)[-1][1] == "accepted")
+
     topic, = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0]
+    if paginate:
+        dispatch(1, "Alpha", 7, "Record the selected revision.")
+        execution = lambda: journey.row(
+            "SELECT t.id,t.native_thread_id,s.cwd,s.busy FROM turns t "
+            "JOIN sessions s ON s.id=t.session_id WHERE t.session_id=? AND t.status='running'", (topic,)
+        )
+        before = execution()
+        assert len(before) == 1 and before[0][1] and before[0][3] == 1
     adopted = journey.read("topics", "workspace", "adopt", "7", str(topic))["result"]
     assert adopted["folder_ready"], adopted
+    if paginate:
+        assert execution() == before
+        assert adopted["working_directory"] == before[0][2]
+        assert len(journey.instructions(7)) == 1
     folder = Path(adopted["conversation_folder"])
     def prepare_checkout(name, project, repository=None):
         checkout = folder / name
@@ -54,21 +81,6 @@ def select_project(journey, *, paginate=False):
         unregistered_commit = commit_draft("Private working draft")
         other_links.extend((f"extra-{n}", prepare_checkout(f"extra-{n}", str(uuid.uuid4())))
                            for n in range(7))
-    binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
-
-    def dispatch(number, selector, thread, text, *, relation="new", requests=()):
-        original = {"id": str(uuid.uuid4()), "binding": binding, "text": text}
-        journey.read("input", "submit-human", json.dumps(original))
-        journey.wait(lambda: journey.row(
-            "SELECT phase FROM conversation_inputs WHERE id=?", (original["id"],)
-        ) == [("accepted",)])
-        journey.call(f"route-shadow-dispatch-{number}", "dispatch", {
-            "input_ref": original["id"],
-            "destinations": [{"selector": selector, "relation": relation, "requests": list(requests)}],
-        })
-        journey.wait(lambda: len(journey.instructions(thread)) == number
-                     and journey.instructions(thread)[-1][1] == "accepted")
-
     def shadow(thread, ident, args, *, ok=True):
         native, = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=?", (thread,))[0]
         journey.wait(lambda: native in journey.workers)
@@ -84,7 +96,8 @@ def select_project(journey, *, paginate=False):
         assert result["success"] is ok, result
         return json.loads(result["contentItems"][0]["text"]) if ok else None
 
-    dispatch(1, "Alpha", 7, "Record the selected revision.")
+    if not paginate:
+        dispatch(1, "Alpha", 7, "Record the selected revision.")
     citations = "\n".join("Project link: " + json.dumps(item) for item in
                           [link, *(other for _, other in other_links)])
     citations += "\nProject checkpoint: " + json.dumps({"link": link, "work": work})
@@ -262,7 +275,7 @@ def run(binary):
         assert room["repositories"] == [], room
         assert journey.row("SELECT count(*) FROM interaction_instructions") == corrected_count
         assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,len(repositories)+1)]
-        print("PASS owned Gateway controller verified canonical conversation evidence and paged repository links; checkout move, historical commit read, exact repeat and source correction caused no duplicate dispatch or extra model call.")
+        print("PASS owner adopted workspace during the same active turn; Gateway verified canonical conversation evidence and paged repository links; checkout move, historical commit read, exact repeat and source correction caused no duplicate dispatch or extra model call.")
     finally:
         journey.close()
 
