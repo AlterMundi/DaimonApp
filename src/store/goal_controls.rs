@@ -362,9 +362,40 @@ fn source_on(
     }
     let order = super::dialogue::original_order_on(conn, &source)?
         .context("Original capture chronology unavailable")?;
-    let routed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources x WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))
-      AND NOT (?5 IS NOT NULL AND EXISTS(SELECT 1 FROM interaction_direct_parents d JOIN interaction_instructions i ON i.id=d.instruction WHERE i.id=?5 AND i.input_id=x.id)
-        AND NOT EXISTS(SELECT 1 FROM interaction_instructions competing WHERE competing.input_id=x.id AND competing.id<>?5))) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4) OR EXISTS(SELECT 1 FROM conversation_decisions WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",params![actor.human,reference.update(),reference.event(),reference,scope.as_ref().and_then(|v|v["parent"].as_str())],|r|r.get(0))?;
+    // Journaling a direct native original also records an instruction. It
+    // does not select an alternate route for the same human's goal control.
+    let routed: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM interaction_sources x
+            WHERE x.human_id=?1 AND ((x.update_id=?2 AND ?2 IS NOT NULL)
+                OR (x.channel='conversation' AND x.event_id=?3 AND ?2 IS NULL))
+              AND (json_array_length(x.doc,'$.target_sessions')>0 OR EXISTS(
+                    SELECT 1 FROM interaction_instructions i WHERE i.input_id=x.id))
+              AND NOT EXISTS(
+                    SELECT 1 FROM interaction_direct_parents d
+                    JOIN interaction_instructions i ON i.id=d.instruction
+                    JOIN sessions owner ON owner.id=i.session_id
+                    WHERE i.input_id=x.id AND (i.id=?5 OR (
+                        ?5 IS NULL AND i.phase='accepted' AND owner.creator_user_id=?1
+                        AND owner.chat_id=?6 AND owner.thread_id=?7
+                        AND json_extract(i.doc,'$.native_thread')=?8))
+                      AND NOT EXISTS(SELECT 1 FROM interaction_instructions competing
+                                     WHERE competing.input_id=x.id AND competing.id<>i.id))
+         ) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)
+           OR EXISTS(SELECT 1 FROM conversation_decisions
+                     WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",
+        params![
+            actor.human,
+            reference.update(),
+            reference.event(),
+            reference,
+            scope.as_ref().and_then(|v| v["parent"].as_str()),
+            actor.key.chat_id,
+            actor.key.thread_id,
+            actor.native
+        ],
+        |r| r.get(0),
+    )?;
     if routed {
         bail!("Original input already has a selected route, creation or answer");
     }
