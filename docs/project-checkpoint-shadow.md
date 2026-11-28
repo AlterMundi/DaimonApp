@@ -78,6 +78,16 @@ cited source, its read and exact repeat fail while the workspace remains
 accessible. The fixture verifies one retained revision and zero duplicate
 dispatches. It uses no model or external network.
 
+For a private SSH project, first restore the exact selected revision through
+the existing authorized SSH route with its pinned host key. Pass that checkout
+with `--ssh-checkout CHECKOUT`. The fixture makes its own local clone and
+preserves the selected SSH locator as evidence. It reads the checkpoint with
+the correct origin, refuses the same commit with a different origin, and
+verifies that the topic-room catalogue exposes only the label and commit with
+the project and repository IDs. The fixture does not contact the SSH origin,
+load a provider, or select a live topic. Keep its detailed logs within the
+project's audience.
+
 ## Selected cold recovery
 
 The shadow read and apply actions leave startup unchanged. After qualifying
