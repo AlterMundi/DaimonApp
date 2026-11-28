@@ -4,6 +4,12 @@ Owner: [Telecodex #297](https://github.com/AlterMundi/telecodex/issues/297).
 The human delegation/proposal in that issue selects a shared backend capability,
 not a Telegram command handler, UI-owned timer or second native goal engine.
 
+Paired Claude topics use Claude Code's native `/goal` commands. An explicit
+status or clear command may resume the last exposed session in the same
+authorized scope after an uncertain turn. The command has its own receipt.
+Reading or clearing the native goal leaves the original input and its outcome
+available for reconciliation. This path uses Claude's own evaluation loop.
+
 ## Implementation checkpoint
 
 The first implementation slice retains native failure evidence in the existing

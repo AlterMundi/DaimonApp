@@ -16,7 +16,10 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
+    pub workspace: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
+    pub project_checkpoint: Option<&'a str>,
+    pub require_recovery_context: bool,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
@@ -28,6 +31,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
 pub(in crate::app) struct WorkerSteering<'a> {
     app: &'a super::App,
     root: &'a crate::interaction::Instruction,
+    workspace: &'a std::path::Path,
     active: super::ActiveTurnSteerHandle,
     receiver: tokio::sync::mpsc::UnboundedReceiver<crate::codex::CodexSteerRequest>,
     sent: Vec<(
@@ -56,6 +60,31 @@ impl Drop for OwnedProcessGroup {
             libc::kill(-(self.0 as i32), libc::SIGKILL);
         }
     }
+}
+
+#[cfg(unix)]
+fn attach_project_checkpoint(start: &mut Value, checkpoint: &str) -> Result<()> {
+    // Match the worker-pipes.mjs frame limit, excluding the line terminator.
+    const MAX_FRAME_BYTES: usize = 128 * 1024;
+    start["projectCheckpoint"] = json!(checkpoint);
+    if serde_json::to_vec(start)?.len() > MAX_FRAME_BYTES {
+        start
+            .as_object_mut()
+            .expect("worker start object")
+            .remove("projectCheckpoint");
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn checkpoint_yields_to_the_original_at_the_worker_frame_bound() {
+    let mut start = json!({"text": "x".repeat(128 * 1024 - 100)});
+    let original = start.clone();
+    attach_project_checkpoint(&mut start, &"\u{0001}".repeat(20)).unwrap();
+    assert_eq!(start, original);
+    attach_project_checkpoint(&mut start, "Verified revision.").unwrap();
+    assert_eq!(start["projectCheckpoint"], "Verified revision.");
 }
 
 #[cfg(unix)]
@@ -115,7 +144,10 @@ pub(in crate::app) async fn execute_worker(
         routed_human,
         routed_host_access,
         session_instructions,
+        workspace,
         history_seed,
+        project_checkpoint,
+        require_recovery_context,
         text,
         attachments,
         body,
@@ -158,8 +190,8 @@ pub(in crate::app) async fn execute_worker(
         if engine == ForegroundEngine::Claude {
             if !attachments.is_empty() {
                 anyhow::ensure!(
-                    human_original && !native_goal_command,
-                    "Attachments require a direct human turn"
+                    (human_original || routed_host_access) && !native_goal_command,
+                    "Attachments require an authenticated human turn"
                 );
                 start["attachments"] = json!(
                     attachments
@@ -172,6 +204,16 @@ pub(in crate::app) async fn execute_worker(
             }
             if let Some(instructions) = session_instructions {
                 start["sessionInstructions"] = json!(instructions);
+            }
+            if let Some(workspace) = workspace {
+                let path = workspace
+                    .to_str()
+                    .context("Selected Claude workspace is not UTF-8")?;
+                anyhow::ensure!(
+                    workspace.is_absolute() && path.len() <= 4096,
+                    "Invalid Claude workspace"
+                );
+                start["workspace"] = json!(path);
             }
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
@@ -194,6 +236,15 @@ pub(in crate::app) async fn execute_worker(
             if controller.is_some() {
                 start["controller"] = json!(true);
             }
+            if let Some(checkpoint) = project_checkpoint {
+                attach_project_checkpoint(&mut start, checkpoint)?;
+            }
+            anyhow::ensure!(
+                !require_recovery_context
+                    || start.get("historySeed").is_some()
+                    || start.get("projectCheckpoint").is_some(),
+                "Claude recovery requires context that fits the worker input"
+            );
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
@@ -234,6 +285,14 @@ pub(in crate::app) async fn execute_worker(
             let mut prepared = json!({"native_session_id":selected});
             if engine == ForegroundEngine::Claude {
                 prepared["native_session_scope"] = frame["sessionScope"].clone();
+                let requested = workspace.and_then(std::path::Path::to_str);
+                anyhow::ensure!(
+                    frame["workspace"].as_str() == requested,
+                    "Claude preparation omitted or changed the selected workspace"
+                );
+                if let Some(path) = requested {
+                    prepared["workspace"] = json!(path);
+                }
             }
             let committed = commit(prepared)?;
             if committed {
@@ -481,7 +540,8 @@ impl WorkerSteering<'_> {
                 self.app.shared.store.routed_claude_steer_allowed(
                     self.root,
                     self.active.turn_id,
-                    id
+                    id,
+                    self.workspace
                 )?,
                 "Claude steering admission changed"
             );
@@ -636,11 +696,14 @@ pub(super) async fn run_portable_turn(
                 resume: resume.as_slice(),
                 human_original: true,
                 native_goal_command: input.paired_actor
-                    && super::routing::native_claude_goal(&input.text),
+                    && crate::interaction::native_claude_goal(&input.text),
                 routed_human: false,
                 routed_host_access: false,
                 session_instructions: None,
+                workspace: None,
                 history_seed: None,
+                project_checkpoint: None,
+                require_recovery_context: false,
                 text: &input.text,
                 attachments: &[],
                 body: body.clone(),
@@ -669,6 +732,42 @@ pub(super) async fn run_portable_turn(
     let deliveries = store.finish_portable_turn(input, local, &outcome.unwrap_or(Value::Null))?;
     super::routing::publish_results(app, input.human, deliveries);
     Ok(())
+}
+
+fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
+    if can_recover
+        && outcome["phase"] == "not_submitted"
+        && outcome["reason"] == "claude_resume_session_missing"
+        // execute_worker adds this only after matching the selected session and
+        // scope, verifying worker exit, and confirming no committed submission.
+        && outcome["resumeUnavailableBody"].is_object()
+    {
+        outcome["resumeUnavailable"]["scope"].as_str()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn claude_recovery_requires_an_attested_unsent_original_and_context() {
+    let missing = json!({
+        "phase": "not_submitted",
+        "reason": "claude_resume_session_missing",
+        "resumeUnavailable": {"sessionId": "selected", "scope": "selected-scope"},
+        "resumeUnavailableBody": {"beingRef": "authenticated"},
+    });
+    assert_eq!(missing_resume_scope(&missing, true), Some("selected-scope"));
+    assert_eq!(missing_resume_scope(&missing, false), None);
+    let mut uncertain = missing.clone();
+    uncertain["phase"] = json!("uncertain");
+    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    uncertain = missing;
+    uncertain
+        .as_object_mut()
+        .unwrap()
+        .remove("resumeUnavailableBody");
+    assert_eq!(missing_resume_scope(&uncertain, true), None);
 }
 
 pub(super) async fn run_routed_portable(
@@ -716,31 +815,23 @@ pub(super) async fn run_routed_portable(
     let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
-    anyhow::ensure!(
-        request.attachments.is_empty() || (engine == ForegroundEngine::Claude && direct_original),
-        "Routed worker attachments require a direct Claude turn"
-    );
-    // Paired local helpers can coordinate with the same controller. The store
-    // checks their attributed lineage and original human scope per operation.
+    // Retain the controller catalog on a canonical result so its receiving
+    // turn can resume the requesting session. The journal checks each action
+    // against its current input, and a result cannot authorize new work.
     let paired_work = human_authored
-        || author
-            .as_ref()
-            .is_some_and(|a| a["kind"] == "session_request");
-    let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
-        .then_some(WorkerController {
-            app,
-            key: input.target,
-            human: input.human_id,
-            local_turn: local,
-            routed: true,
+        || author.as_ref().is_some_and(|a| {
+            matches!(
+                a["kind"].as_str(),
+                Some("session_request" | "session_result")
+            )
         });
-
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             WorkerSteering {
                 app,
                 root: input,
+                workspace: session.cwd.as_path(),
                 active: super::ActiveTurnSteerHandle {
                     harness: Harness::Claude,
                     turn_id: local,
@@ -755,62 +846,128 @@ pub(super) async fn run_routed_portable(
         });
 
     let outcome = async {
+        // The retained Conversation original is paired even when its prompt
+        // needs a routed envelope. Session requests and results cannot attach
+        // files using the paired authority they inherit for host tools.
+        anyhow::ensure!(
+            request.attachments.is_empty()
+                || (engine == ForegroundEngine::Claude && routed_host_access && human_authored),
+            "Routed worker attachments require an authenticated human Claude turn"
+        );
         let (_,body) = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(anyhow::anyhow!("Routed worker cancelled")),
             result = super::matrix::authenticate_foreground_body(&config.transport,&source) => result,
         }?;
-        let resume = if engine==ForegroundEngine::Claude {
-            store.routed_claude_continuations(local,&body)?
-        } else {Vec::new()};
-        let native_goal_command = engine == ForegroundEngine::Claude
-            && direct_original
+        let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
+            && human_authored
             && request.attachments.is_empty()
-            && super::routing::native_claude_goal(&request.prompt);
-        let history_seed = if engine == ForegroundEngine::Claude
+            && crate::interaction::native_claude_goal(&input.text);
+        let conversation_goal = owned_goal
+            && !direct_original
+            && store.routed_conversation_claude_goal(input)?;
+        anyhow::ensure!(
+            !crate::interaction::native_claude_goal(&request.prompt)
+                || direct_original
+                || conversation_goal,
+            "Direct Conversation goal no longer matches its retained selection"
+        );
+        let native_goal_command = owned_goal && (direct_original || conversation_goal);
+        // A new status or clear command can address a goal that is still
+        // active after the preceding invocation ended without a result.
+        let goal_control = native_goal_command && crate::interaction::native_claude_goal_control(&input.text);
+        let resume = if engine == ForegroundEngine::Claude {
+            store.routed_claude_continuations(local, &body, goal_control)?
+        } else {
+            Vec::new()
+        };
+        let human_original = direct_original || conversation_goal;
+        let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
             && !native_goal_command
         {
-            store.routed_claude_history_seed(input, local, &body)?
+            (
+                store.routed_claude_history_seed(input, local, &body)?,
+                store
+                    .topic_folder_claim(input.target, input.human_id)?
+                    .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim)),
+            )
         } else {
-            None
+            (None, None)
         };
-        // CREATE_ONLY adapters require a distinct coordinate for each attempt.
-        let attempt = uuid::Uuid::new_v4().to_string();
-        execute_worker(
-            &config.worker_command,
-            engine,
-            WorkerTurn {
-                id: &input.id,
-                session: &attempt,
-                resume: &resume,
-                human_original: direct_original,
-                native_goal_command,
-                routed_human: !direct_original,
-                routed_host_access: routed_host_access && !direct_original,
-                session_instructions: session.session_prompt.as_deref(),
-                history_seed: history_seed.as_ref(),
-                text: &request.prompt,
-                attachments: &request.attachments,
-                body: body.clone(),
-                cancel: &cancel,
-                controller,
-                steering: steering.as_mut(),
-            },
-            |prepared| {
-                if cancel.is_cancelled() {
-                    return Ok(false);
-                }
-                if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
-                    .is_some_and(|current| current.id == session.id && current.session_prompt == session.session_prompt)
-                {
-                    return Ok(false);
-                }
-                store.expose_routed_portable(input, local, &body, &prepared, routed_host_access)
-            },
-        ).await
+        let mut missing_resume: Option<(String, Value)> = None;
+        loop {
+            let mut exposed = false;
+            let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
+                .then_some(WorkerController {
+                    app,
+                    key: input.target,
+                    human: input.human_id,
+                    local_turn: local,
+                    routed: true,
+                });
+            // CREATE_ONLY adapters require a distinct coordinate for each attempt.
+            let attempt = uuid::Uuid::new_v4().to_string();
+            let result = execute_worker(
+                &config.worker_command,
+                engine,
+                WorkerTurn {
+                    id: &input.id,
+                    session: &attempt,
+                    resume: if missing_resume.is_some() { &[] } else { &resume },
+                    human_original,
+                    native_goal_command,
+                    routed_human: !human_original,
+                    routed_host_access: routed_host_access && !human_original,
+                    session_instructions: session.session_prompt.as_deref(),
+                    workspace: (engine == ForegroundEngine::Claude && routed_host_access)
+                        .then_some(session.cwd.as_path()),
+                    history_seed: history_seed.as_ref(),
+                    project_checkpoint: project_checkpoint.as_deref(),
+                    require_recovery_context: missing_resume.is_some(),
+                    text: &request.prompt,
+                    attachments: &request.attachments,
+                    body: body.clone(),
+                    cancel: &cancel,
+                    controller,
+                    steering: steering.as_mut(),
+                },
+                |prepared| {
+                    if cancel.is_cancelled()
+                        || missing_resume.as_ref().is_some_and(|(scope, _)| {
+                            prepared["native_session_scope"].as_str() != Some(scope.as_str())
+                        })
+                        || (goal_control && !resume.is_empty() && !resume.iter().any(|prior| {
+                            prepared["native_session_id"].as_str() == Some(prior.session_id.as_str())
+                                && prepared["native_session_scope"].as_str() == Some(prior.scope.as_str())
+                        }))
+                    {
+                        return Ok(false);
+                    }
+                    if engine == ForegroundEngine::Claude && !store.get_session(request.session_key)?
+                        .is_some_and(|current| current.id == session.id && current.cwd == session.cwd && current.session_prompt == session.session_prompt)
+                    {
+                        return Ok(false);
+                    }
+                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())?;
+                    Ok(exposed)
+                },
+            ).await;
+            if let Some((_, missing)) = missing_resume {
+                // Keep the missing-session evidence when the replacement never
+                // reached exposure. Once exposed, only its outcome may settle it.
+                break if exposed { result } else { Ok(missing) };
+            }
+            let Ok(outcome) = result else {
+                break result;
+            };
+            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || project_checkpoint.is_some()) else {
+                break Ok(outcome);
+            };
+            missing_resume = Some((scope.to_owned(), outcome));
+        }
     }.await.unwrap_or(Value::Null);
     let deliveries = store.finish_routed_portable(input, local, &outcome)?;
     if let Some(steering) = steering {
@@ -823,6 +980,7 @@ pub(super) async fn run_routed_portable(
     {
         super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
     }
+    super::topic_publications::wake(app.shared.clone(), input.target);
     super::routing::publish_results(app, input.human_id, deliveries);
     Ok(())
 }

@@ -373,7 +373,8 @@ pub(super) async fn process_turn(
         shared.store.merge_link(id, turn_id)?;
     }
     if let Some(id) = queued.stop_resume.as_deref() {
-        shared.store.stop_resume_event(
+        super::stopping::record_resume_event(
+            &shared,
             id,
             session.key,
             "resume_submitting",
@@ -861,6 +862,33 @@ pub(super) async fn process_turn(
             .get_or_insert_with(String::new)
             .push_str(&hint);
     }
+    let historical_context = if !attaching
+        && queued.goal.is_none()
+        && queued.nexus.is_none()
+        && queued.merge.is_none()
+        && queued.stop_resume.is_none()
+        && queued.workflow_return.is_none()
+        && queued.tribu_admission.is_none()
+        && queued.request.review_mode.is_none()
+    {
+        codex_switch_context(
+            &shared,
+            &session,
+            turn_id,
+            queued.request.from_user_id,
+            queued.update_id,
+            queued.conversation_input.as_deref(),
+            queued.interaction.as_deref(),
+        )?
+        .map(Arc::new)
+    } else {
+        None
+    };
+    let runner = if let Some(context) = historical_context.as_ref() {
+        runner.with_historical_context(context.as_ref().clone())
+    } else {
+        runner
+    };
     let run =
         runner
             .run_turn(&session, &runtime_request, cancel.clone(), steer_rx, {
@@ -871,6 +899,7 @@ pub(super) async fn process_turn(
                 let artifact_workspace = turn_workspace.clone();
                 let requester_user_id = queued.request.from_user_id;
                 let session_key = session.key;
+                let history_owner = historical_context.as_ref().map(|_| session.clone());
                 let voice_update = queued.update_id;
                 // A control may retain a Telegram update ID while starting a
                 // native goal/merge/Nexus prompt. That is not raw human input.
@@ -900,6 +929,8 @@ pub(super) async fn process_turn(
                 let routing_app=app.clone();
                 let presentation_tx=presentation_tx.clone();
                 move |event| {
+                    let historical_context=historical_context.clone();
+                    let history_owner=history_owner.clone();
                     let artifact_workspace = artifact_workspace.clone();
                     let initial_binding=initial_binding.clone();
                     let sink = sink.clone();
@@ -1010,7 +1041,7 @@ pub(super) async fn process_turn(
                                 shared.store.native_collection_rejected(turn_id)?;
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Rejected{local_turn:turn_id})?;}
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Rejected,None)?;}
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_rejected",Some(turn_id),None)?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,"resume_rejected",Some(turn_id),None)?;}
 
                                 for id in shared.store.merge_local(turn_id)? {
                                     if shared.store.merge_leg(&id)?["phase"]=="submitting" {shared.store.merge_phase(&id,"rejected","Native explicitly rejected merge turn/start")?;}
@@ -1065,7 +1096,7 @@ pub(super) async fn process_turn(
                                     }
                                 }
                                 if let Some(id)=interaction.as_deref() {shared.store.interaction_transport(id,requester_user_id,turn_id,crate::interaction::TransportPhase::Accepted,Some(&native_id))?;}
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,"resume_accepted",Some(turn_id),Some(&native_id))?;}
 
                                 shared.store.merge_input_accepted(turn_id,&native_id)?;
                                 shared.store.nexus_input_accepted(turn_id,&native_id)?;
@@ -1216,7 +1247,18 @@ pub(super) async fn process_turn(
                             }
                             CodexEvent::NativeTurnReleasing => {
                                 let routed=interaction.as_deref().map(|id|(id,requester_user_id));
-                                let validation=shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed);
+                                let validation=(|| {
+                                    if let Some(expected)=historical_context.as_deref()
+                                        && let Some(owner)=history_owner.as_ref()
+                                    {
+                                        anyhow::ensure!(
+                                            codex_switch_context(&shared,owner,turn_id,requester_user_id,voice_update,
+                                                conversation_input.as_deref(),interaction.as_deref())?.as_ref()==Some(expected),
+                                            "The Claude predecessor changed before Codex submission"
+                                        );
+                                    }
+                                    shared.store.validate_codex_submission(turn_id,preserve_thread_binding,routed)
+                                })();
                                 if validation.is_err() && let Some((id,human))=routed {
                                     // This event runs before the first possible native write.
                                     shared.store.native_collection_rejected(turn_id)?;
@@ -1269,7 +1311,7 @@ pub(super) async fn process_turn(
                                     let _=shared.store.goal_retry_native_terminal(requester_user_id,session_key,&native,&native_id,&status);
                                 }
                                 shared.goal_recovery_wakeup.notify_one();
-                                if let Some(id)=stop_resume.as_deref(){shared.store.stop_resume_event(id,session_key,&format!("resume_turn_{status}"),Some(turn_id),Some(&native_id))?;}
+                                if let Some(id)=stop_resume.as_deref(){super::stopping::record_resume_event(&shared,id,session_key,&format!("resume_turn_{status}"),Some(turn_id),Some(&native_id))?;}
 
                                 shared.store.merge_terminal(turn_id,&native_id,&status)?;
                                 if !shared.store.nexus_local_requests(turn_id)?.is_empty() { shared.store.nexus_terminal(turn_id,&native_id,&status)?; }
@@ -2645,6 +2687,39 @@ async fn context_pressure_note_for_session(
     }
     let note = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if note.is_empty() { None } else { Some(note) }
+}
+
+fn codex_switch_context(
+    shared: &AppShared,
+    session: &crate::models::SessionRecord,
+    local: i64,
+    human: i64,
+    update: Option<i64>,
+    conversation: Option<&str>,
+    routed: Option<&str>,
+) -> Result<Option<String>> {
+    let Some((prior, exchange)) = shared.store.codex_claude_predecessor(
+        local,
+        session,
+        human,
+        update,
+        conversation,
+        routed,
+    )?
+    else {
+        return Ok(None);
+    };
+    let checkpoint = shared
+        .store
+        .topic_folder_claim(session.key, human)?
+        .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim));
+    if exchange.is_none() && checkpoint.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::to_string(&serde_json::json!({
+        "previousHarness": "claude", "previousTurn": prior,
+        "ownedExchanges": exchange, "projectCheckpoint": checkpoint,
+    }))?))
 }
 
 fn enrich_runtime_request_with_codex_history(

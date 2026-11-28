@@ -21,6 +21,7 @@ pub use conversation_routing::{
 mod conversation_requests;
 pub use conversation_requests::ConversationRequest;
 mod creation;
+pub(crate) use creation::TelegramUpdateAdmission;
 mod dialogue;
 pub(crate) use dialogue::EntryExecution;
 mod goal_alerts;
@@ -144,6 +145,29 @@ fn maintenance_writer_held_on(conn: &Connection, key: SessionKey) -> Result<bool
         )],
         |r| r.get(0),
     )?)
+}
+
+fn validate_workspace_adoption_on(
+    conn: &Connection,
+    key: SessionKey,
+    human: i64,
+    id: i64,
+) -> Result<()> {
+    let eligible: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+          WHERE s.id=?1 AND s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4
+            AND u.allowed=1 AND s.busy=0
+            AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=s.id AND status='running')
+            AND NOT EXISTS(SELECT 1 FROM interaction_creations c WHERE c.topic=?3
+              AND COALESCE(json_extract(c.doc,'$.target_chat'),c.entry_chat)=?2
+              AND (c.phase IN ('topic_known','retained_topic') OR (c.phase='ready' AND c.topic_release_ready=0))))",
+        params![id,key.chat_id,key.thread_id,human], |r|r.get(0),
+    )?;
+    anyhow::ensure!(
+        eligible && !stopping::fenced_on(conn, key)? && !maintenance_writer_held_on(conn, key)?,
+        "Topic changed, is active or held, or has an unfinished creation"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -450,7 +474,15 @@ impl Store {
 
     /// Admit input and its Telegram acknowledgement boundary atomically.
     /// A duplicate ID never dispatches the same input a second time.
+    #[cfg(test)]
     pub fn admit_update(&self, update: &crate::telegram::Update) -> Result<bool> {
+        Ok(self.admit_telegram_update(update)? != TelegramUpdateAdmission::Duplicate)
+    }
+
+    pub(crate) fn admit_telegram_update(
+        &self,
+        update: &crate::telegram::Update,
+    ) -> Result<TelegramUpdateAdmission> {
         let payload = serde_json::to_string(update)?;
         if payload.len() > 1_048_576 {
             return Err(anyhow!("telegram update exceeds ingress journal bound"));
@@ -482,12 +514,15 @@ impl Store {
                 }
                 anyhow::ensure!(previous == incoming, "telegram update ID content conflict");
             }
-            return Ok(false);
+            return Ok(TelegramUpdateAdmission::Duplicate);
         }
+        let (creation_id, control) = creation::creation_scope_for_update(&tx, update)?;
+        let retained = creation_id.is_some() && !control;
         tx.execute(
-            "INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at)
-             VALUES(?1,?2,'received',?3,?4)",
-            params![update.update_id, payload, self.instance_id, now_string()],
+            "INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at,topic_creation_id,topic_creation_control)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![update.update_id, payload, if retained {"retained_creation"} else {"received"},
+                self.instance_id, now_string(), creation_id, control],
         )?;
         tx.execute(
             "INSERT INTO original_ingress_order(channel,event_id,captured_at) VALUES('telegram',?1,?2)",
@@ -502,9 +537,14 @@ impl Store {
             params![update.update_id.to_string()],
         )?;
         tx.commit()?;
-        Ok(true)
+        Ok(if retained {
+            TelegramUpdateAdmission::HeldForTopic
+        } else {
+            TelegramUpdateAdmission::Dispatch
+        })
     }
 
+    #[cfg(test)]
     pub fn begin_update(&self, update_id: i64) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let changed = conn.execute(
@@ -954,7 +994,7 @@ impl Store {
     }
 
     pub fn apply_session_template(&self, key: SessionKey, template: &SessionRecord) -> Result<()> {
-        self.apply_template(key, template, None)
+        self.apply_template(key, template, None, None, None)
     }
     pub fn apply_empty_session_template(
         &self,
@@ -962,17 +1002,114 @@ impl Store {
         template: &SessionRecord,
         human: i64,
     ) -> Result<()> {
-        self.apply_template(key, template, Some(human))
+        self.apply_template(key, template, Some(human), None, None)
     }
+    pub(crate) fn apply_new_topic_folder_template(
+        &self,
+        key: SessionKey,
+        template: &SessionRecord,
+        human: i64,
+        folder: &Path,
+        expected_cwd: &Path,
+        creation: Option<&str>,
+    ) -> Result<()> {
+        self.apply_template(
+            key,
+            template,
+            Some(human),
+            Some((folder, expected_cwd)),
+            creation,
+        )
+    }
+
+    pub(crate) fn topic_folder(&self, key: SessionKey, human: i64) -> Result<Option<PathBuf>> {
+        Ok(self.topic_folder_claim(key, human)?.map(|(path, _)| path))
+    }
+
+    pub(crate) fn topic_folder_claim(
+        &self,
+        key: SessionKey,
+        human: i64,
+    ) -> Result<Option<(PathBuf, String)>> {
+        self.topic_folder_claim_for(key, human, None)
+    }
+
+    pub(crate) fn topic_folder_claim_for(
+        &self,
+        key: SessionKey,
+        human: i64,
+        existing_session: Option<i64>,
+    ) -> Result<Option<(PathBuf, String)>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        if let Some(id) = existing_session {
+            validate_workspace_adoption_on(&conn, key, human, id)?;
+        }
+        conn.query_row(
+            "SELECT s.topic_folder, s.topic_folder_claim FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+               AND s.topic_folder_owner=?3 AND u.allowed=1 AND s.topic_folder_claim IS NOT NULL AND (?4 IS NULL OR s.id=?4)",
+            params![key.chat_id,key.thread_id,human,existing_session], |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get(1)?)),
+        ).optional().map_err(Into::into)
+    }
+
+    pub(crate) fn reserve_topic_folder(
+        &self,
+        key: SessionKey,
+        human: i64,
+        folder: &Path,
+        existing_session: Option<i64>,
+    ) -> Result<String> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        anyhow::ensure!(
+            !stopping::fenced_on(&tx, key)? && !maintenance_writer_held_on(&tx, key)?,
+            "Topic is held"
+        );
+        if let Some(id) = existing_session {
+            validate_workspace_adoption_on(&tx, key, human, id)?;
+        }
+        let folder = folder.to_str().context("Topic folder is not UTF-8")?;
+        let claim = uuid::Uuid::now_v7().to_string();
+        let changed = tx.execute(
+            "UPDATE sessions SET topic_folder=?1, topic_folder_owner=?4, topic_folder_claim=?5
+             WHERE chat_id=?2 AND thread_id=?3 AND creator_user_id=?4
+             AND busy=0
+             AND ((?6 IS NULL AND codex_thread_id IS NULL
+                   AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id))
+               OR id=?6)
+             AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?4 AND allowed=1)
+             AND topic_folder IS NULL",
+            params![
+                folder,
+                key.chat_id,
+                key.thread_id,
+                human,
+                claim,
+                existing_session
+            ],
+        )?;
+        anyhow::ensure!(changed == 1, "Topic folder owner or selection changed");
+        tx.commit()?;
+        Ok(claim)
+    }
+
     fn apply_template(
         &self,
         key: SessionKey,
         template: &SessionRecord,
         empty_owner: Option<i64>,
+        folder: Option<(&Path, &Path)>,
+        creation: Option<&str>,
     ) -> Result<()> {
         let add_dirs = serde_json::to_string(&path_vec_to_strings(&template.add_dirs))?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        let workspace = folder
+            .map(|(path, _)| path.to_str().context("Topic folder is not UTF-8"))
+            .transpose()?;
+        let expected_cwd = folder
+            .map(|(_, path)| path.to_str().context("Topic directory is not UTF-8"))
+            .transpose()?;
         let changed=tx.execute(
             "UPDATE sessions
              SET session_title = ?3,
@@ -990,9 +1127,10 @@ impl Store {
                  collaboration_mode = ?15,
                  updated_at = ?16
              WHERE chat_id = ?1 AND thread_id = ?2
+               AND (?18 IS NULL OR (topic_folder=?18 AND topic_folder_owner=?17 AND cwd=?19))
                AND (?17 IS NULL OR (creator_user_id=?17 AND EXISTS(SELECT 1 FROM users u WHERE u.tg_user_id=?17 AND u.allowed=1) AND busy=0 AND codex_thread_id IS NULL
                  AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=sessions.id)
-                 AND NOT EXISTS(SELECT 1 FROM incoming_updates i WHERE COALESCE(json_extract(i.payload_json,'$.message.chat.id'),json_extract(i.payload_json,'$.callback_query.message.chat.id'))=sessions.chat_id AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),json_extract(i.payload_json,'$.callback_query.message.message_thread_id'),0)=sessions.thread_id AND COALESCE(json_extract(i.payload_json,'$.message.from.id'),json_extract(i.payload_json,'$.callback_query.from.id'))=?17)))",
+                 AND NOT EXISTS(SELECT 1 FROM incoming_updates i WHERE COALESCE(json_extract(i.payload_json,'$.message.chat.id'),json_extract(i.payload_json,'$.callback_query.message.chat.id'))=sessions.chat_id AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),json_extract(i.payload_json,'$.callback_query.message.message_thread_id'),0)=sessions.thread_id AND COALESCE(json_extract(i.payload_json,'$.message.from.id'),json_extract(i.payload_json,'$.callback_query.from.id'))=?17 AND (?18 IS NULL OR (i.status NOT IN ('received','retained_creation') AND i.topic_creation_control=0)))))",
             params![
                 key.chat_id,
                 key.thread_id,
@@ -1011,6 +1149,8 @@ impl Store {
                 template.collaboration_mode.map(CollaborationMode::as_str),
                 now_string(),
                 empty_owner,
+                workspace,
+                expected_cwd,
             ],
         )?;
         if changed == 0 {
@@ -1029,6 +1169,9 @@ impl Store {
             } else {
                 tx.execute("DELETE FROM bot_state WHERE key=?", [owner_key])?;
             }
+        }
+        if let Some(id) = creation {
+            self.finish_direct_topic_on(&tx, id, key, empty_owner.context("Missing topic owner")?)?;
         }
         tx.commit()?;
         Ok(())
@@ -1600,11 +1743,21 @@ impl Store {
         add_column_if_missing(&conn, "turns", "execution_body", "TEXT")?;
         add_column_if_missing(&conn, "turns", "execution_generation", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
+        add_column_if_missing(&conn, "incoming_updates", "topic_creation_id", "TEXT")?;
+        add_column_if_missing(
+            &conn,
+            "incoming_updates",
+            "topic_creation_control",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "reasoning_effort", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "service_tier", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "collaboration_mode", "TEXT")?;
         add_column_if_missing(&conn, "sessions", "session_prompt", "TEXT")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder", "TEXT")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder_owner", "INTEGER")?;
+        add_column_if_missing(&conn, "sessions", "topic_folder_claim", "TEXT")?;
         add_column_if_missing(
             &conn,
             "sessions",

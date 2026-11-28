@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -72,8 +72,12 @@ async function ownerProfile(path) {
         || !closed(value.skillContinuity, ['layoutRevision',
           ...(Object.hasOwn(value.skillContinuity ?? {}, 'previousRevision') ? ['previousRevision'] : [])])
         || !Object.values(value.skillContinuity).every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))))
-      || (messaging.length > 0 && (typeof value.matrixMessaging !== 'string'
-        || !isAbsolute(value.matrixMessaging)))
+      || (messaging.length > 0 && !(typeof value.matrixMessaging === 'string'
+        ? isAbsolute(value.matrixMessaging)
+        : closed(value.matrixMessaging, ['connection', 'objectToolSchemas'])
+          && typeof value.matrixMessaging.connection === 'string'
+          && isAbsolute(value.matrixMessaging.connection)
+          && value.matrixMessaging.objectToolSchemas === true))
       || (hostTools.length > 0 && (!Array.isArray(value.hostTools)
         || value.hostTools.length !== new Set(value.hostTools).size
         || !value.hostTools.every(name => HOST_TOOLS.includes(name))))
@@ -176,7 +180,9 @@ async function matrixFoundation(profile) {
 
 async function matrixMessaging(profile, fullAccess) {
   if (!fullAccess || !profile.matrixMessaging) return undefined;
-  const connectionBytes = await privateBytes(profile.matrixMessaging, 128 * 1024);
+  const selection = profile.matrixMessaging;
+  const objectToolSchemas = typeof selection !== 'string';
+  const connectionBytes = await privateBytes(objectToolSchemas ? selection.connection : selection, 128 * 1024);
   const { command } = JSON.parse(connectionBytes);
   const bindingFile = Array.isArray(command) ? command.at(-1) : undefined;
   const moduleArgs = ['-I', '-m', 'daimon_matrix.agent_chat', '--binding'];
@@ -204,10 +210,19 @@ async function matrixMessaging(profile, fullAccess) {
   const observer = JSON.parse(observerBytes);
   const observed = observer.observation;
   if (!observed?.client_config || typeof binding.socket !== 'string' || !isAbsolute(binding.socket)
-      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)
-      || await realpath(binding.socket) !== await realpath(observed.socket)
-      || !(await stat(observed.socket)).isSocket()) {
-    throw new Error('Matrix messaging and identity observation must use the same runtime socket');
+      || typeof observed.socket !== 'string' || !isAbsolute(observed.socket)) {
+    throw new Error('Matrix messaging and identity observation socket selections required');
+  }
+  const [messagingSocket, observationSocket] = await Promise.all([
+    realpath(binding.socket), realpath(observed.socket),
+  ]);
+  // Cluster serves the signed Tribe view alongside the base Matrix view under
+  // the same runtime writer. Keep both clients bound to that exact runtime.
+  const standaloneTribe = basename(observationSocket) === 'matrix.sock'
+    && messagingSocket === join(dirname(observationSocket), 'tribe.sock');
+  if ((messagingSocket !== observationSocket && !standaloneTribe)
+      || !(await stat(messagingSocket)).isSocket() || !(await stat(observationSocket)).isSocket()) {
+    throw new Error('Matrix messaging and identity observation must use the same runtime');
   }
   const observedClient = JSON.parse(await privateBytes(observed.client_config, 16 * 1024));
   const methods = ['messaging.delivery', 'messaging.inbox', 'messaging.reply', 'messaging.send'];
@@ -233,7 +248,9 @@ async function matrixMessaging(profile, fullAccess) {
     throw new Error('Matrix messaging grant differs from the selected live body');
   }
   return {
-    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp']),
+    server: nativeStdio(profile.home, [command[0], ...moduleArgs, bindingFile, 'mcp',
+      ...(objectToolSchemas ? ['--object-tool-schemas'] : [])]),
+    objectToolSchemas,
     tools: methods.map(method => method.replace('.', '_')),
     revision: createHash('sha256').update(connectionBytes).update(bindingBytes).update(clientBytes)
       .update(observerBytes).digest('hex'),
@@ -449,12 +466,32 @@ async function main() {
   const input = frames(process.stdin);
   let scratch;
   try {
-    const profile = await ownerProfile(path);
+    let profile = await ownerProfile(path);
     const first = (await input.next()).value;
     const controllerSelected = first?.controller === true;
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
+    const workspace = first?.workspace;
     const historySeed = first?.historySeed;
+    const projectCheckpoint = first?.projectCheckpoint;
+    const validExchange = exchange => closed(exchange, ['turn', 'human', 'assistant', 'harness', 'nativeThread'])
+      && ['codex', 'claude'].includes(exchange.harness)
+      && typeof exchange.nativeThread === 'string' && exchange.nativeThread.length <= 128
+      && (exchange.harness !== 'claude' || UUID.test(exchange.nativeThread))
+      && Number.isSafeInteger(exchange.turn) && exchange.turn >= 1
+      && [exchange.human, exchange.assistant].every(text => typeof text === 'string' && text.trim());
+    const multipleExchanges = closed(historySeed, ['exchanges']) && Array.isArray(historySeed.exchanges)
+      && historySeed.exchanges.length >= 2 && historySeed.exchanges.length <= 3
+      && historySeed.exchanges.every(validExchange);
+    const singleExchange = validExchange(historySeed);
+    const fromCodex = closed(historySeed, ['turn', 'human', 'assistant', 'harness'])
+      && historySeed.harness === 'codex';
+    const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
+      && typeof historySeed.source === 'string'
+      && ['delivery:', 'telegram-result:'].some(prefix =>
+        historySeed.source.startsWith(prefix) && UUID.test(historySeed.source.slice(prefix.length)))
+      && typeof historySeed.revision === 'string' && /^[a-f0-9]{64}$/.test(historySeed.revision)
+      && typeof historySeed.assistant === 'string' && !!historySeed.assistant.trim();
     const attachments = first?.attachments;
     const routedHuman = first?.routedHuman === true;
     const routedHostAccess = first?.routedHostAccess === true;
@@ -470,12 +507,19 @@ async function main() {
       ...(nativeGoalCommand ? ['nativeGoalCommand'] : []),
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
-      ...(historySeed === undefined ? [] : ['historySeed'])])
+      ...(workspace === undefined ? [] : ['workspace']),
+      ...(historySeed === undefined ? [] : ['historySeed']),
+      ...(projectCheckpoint === undefined ? [] : ['projectCheckpoint'])])
+      || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
+        || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
       || (historySeed !== undefined && (!fullAccess
-        || !closed(historySeed, ['turn', 'human', 'assistant'])
-        || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
-        || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())
+        || (!exactQuote && !singleExchange && !multipleExchanges && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
+          || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
+          || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())))
         || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
+      || (projectCheckpoint !== undefined && (!fullAccess || nativeGoalCommand
+        || typeof projectCheckpoint !== 'string' || !projectCheckpoint.trim()
+        || projectCheckpoint.includes('\0') || Buffer.byteLength(projectCheckpoint) > 8 * 1024))
       || (routedHostAccess && !routedHuman)
       || (routedHuman && first.humanOriginal)
       || (controllerSelected && !fullAccess)
@@ -488,7 +532,7 @@ async function main() {
       || first.freshNativeSessionId === first.sessionId
       || (first.resume !== null && !validResume(first.resume))
       || !Array.isArray(alternates) || alternates.length > 7 || !alternates.every(validResume)
-      || (attachments !== undefined && (first.humanOriginal !== true || nativeGoalCommand
+      || (attachments !== undefined && (!fullAccess || nativeGoalCommand
         || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
         || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
           && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096
@@ -503,6 +547,24 @@ async function main() {
       throw new Error('Invalid foreground start');
     }
     const correlation = { schema: VERSION, inputId: first.inputId, sessionId: first.sessionId };
+    const profileCwd = profile.cwd;
+    async function directoryIdentity(directory) {
+      const info = await stat(directory, { bigint: true });
+      if (!info.isDirectory()) throw new Error('Selected Claude workspace is not a directory');
+      return `${info.dev}:${info.ino}`;
+    }
+    let selectedDirectory;
+    if (workspace !== undefined) {
+      try {
+        selectedDirectory = await directoryIdentity(workspace);
+      } catch {
+        await writeFrame(process.stdout, { ...correlation, type: 'outcome',
+          outcome: { phase: 'not_submitted', reason: 'claude_workspace_unavailable' },
+        }, stop.signal);
+        return;
+      }
+      profile = { ...profile, cwd: workspace };
+    }
     let env;
     try {
       env = await providerEnvironment(profile, stop.signal);
@@ -537,12 +599,24 @@ async function main() {
       const executable = await access(command, constants.X_OK).then(() => true, () => false);
       if (executable) sharedDmkWriter = command;
     }
-    const scope = turnScope(profile, binding ?? '', skillScopeRevision(profile, skills), foundation, hostTools, fullAccess, controllerSelected, sessionInstructions, messaging);
-    const previous = [first.resume, ...alternates].find(prior => prior?.scope === scope);
+    const scopeInputs = [profile, binding ?? '', skillScopeRevision(profile, skills), foundation,
+      hostTools, fullAccess, controllerSelected, sessionInstructions];
+    const continuityScope = turnScope(...scopeInputs);
+    const activeScope = messaging ? turnScope(...scopeInputs, messaging) : continuityScope;
+    // Messaging is an owner-selected capability for this turn. Keep the same
+    // paired history when it is added, and retain already indexed chat scopes.
+    const previous = [first.resume, ...alternates].find(prior =>
+      prior?.scope === continuityScope || prior?.scope === activeScope);
+    const scope = previous?.scope ?? continuityScope;
     const resume = previous !== undefined;
     const nativeSessionId = previous?.sessionId ?? first.freshNativeSessionId;
     async function scopeStillActive() {
-      const current = await ownerProfile(path);
+      let current = await ownerProfile(path);
+      if (workspace !== undefined) {
+        if (current.cwd !== profileCwd
+          || await directoryIdentity(workspace).catch(() => undefined) !== selectedDirectory) return false;
+        current = { ...current, cwd: workspace };
+      }
       if (!Object.keys(expectedBody).every(key => current.body[key] === expectedBody[key])) return false;
       const [bytes, inventory, currentFoundation, currentGuidance, currentMessaging] = await Promise.all([
         sharedDmkBinding(current), sharedSkillInventory(current.sharedSkillsDirectory), matrixFoundation(current),
@@ -551,7 +625,8 @@ async function main() {
       const currentTools = fullAccess ? [...(current.hostTools ?? HOST_TOOLS)].sort() : [];
       return current.bodyGuidanceFile === profile.bodyGuidanceFile && currentGuidance === guidance
         && inventory.revision === skills.revision
-        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === scope
+        && currentMessaging?.objectToolSchemas === messaging?.objectToolSchemas
+        && turnScope(current, bytes ?? '', skillScopeRevision(current, inventory), currentFoundation, currentTools, fullAccess, controllerSelected, sessionInstructions, currentMessaging) === activeScope
         && (!currentFoundation || await probeFoundation(currentFoundation.server, expectedBody, current.cwd, stop.signal));
     }
     const broker = createMatrixStatusBroker({
@@ -651,10 +726,24 @@ async function main() {
         }, { alwaysLoad: true });
       controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
     }
+    // Resume the exact compatible native session, and provide only the owned
+    // historical quotations that are recorded in a different native session.
+    let recoveredHistory;
+    if (!nativeGoalCommand) {
+      if (multipleExchanges) {
+        const missing = historySeed.exchanges.filter(exchange => !resume
+          || exchange.harness !== 'claude' || exchange.nativeThread !== nativeSessionId);
+        if (missing.length) recoveredHistory = { exchanges: missing };
+      } else if (!resume || exactQuote || fromCodex
+        || (singleExchange && historySeed.nativeThread !== nativeSessionId)) {
+        recoveredHistory = historySeed;
+      }
+    }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
-        historySeed: !resume && !nativeGoalCommand ? historySeed : undefined },
+        historySeed: recoveredHistory,
+        projectCheckpoint: !resume || recoveredHistory ? projectCheckpoint : undefined },
       profile: {
         binary: profile.binary, cwd: profile.cwd, cliVersion: profile.cliVersion,
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
@@ -673,6 +762,7 @@ async function main() {
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
           nativeSessionId: sessionId, sessionScope: scope,
+          ...(workspace === undefined ? {} : { workspace }),
           ...(steering ? { steering: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;

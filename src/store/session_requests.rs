@@ -15,6 +15,8 @@ pub struct SessionRequest {
     pub target_instruction: String,
     pub epoch: String,
     pub return_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_to_topic: bool,
     pub phase: String,
 }
 
@@ -226,8 +228,11 @@ pub(super) fn controller_parent_eligible_on(
     human: i64,
     parent: &Instruction,
 ) -> Result<bool> {
-    if author_on(conn, &parent.input_id)?.is_none() {
+    let Some(author) = author_on(conn, &parent.input_id)? else {
         return Ok(true);
+    };
+    if author["kind"] == "session_result" {
+        return paired_result_parent_on(conn, parent);
     }
     Ok(coordination_root_on(conn, human, parent)?.is_some()
         && paired_request_parent_on(conn, parent)?)
@@ -284,9 +289,45 @@ pub(super) fn paired_request_parent_on(conn: &Connection, child: &Instruction) -
     let Some(parent) = coordination_root_on(conn, human, &immediate)? else {
         return Ok(false);
     };
+    paired_source_on(conn, &parent, child)
+}
+
+pub(super) fn paired_result_parent_on(conn: &Connection, child: &Instruction) -> Result<bool> {
+    if !session_input_allowed_on(conn, &child.id, child.human_id)? {
+        return Ok(false);
+    }
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_instruction FROM interaction_session_requests
+             WHERE human_id=?1 AND phase='returned'
+             AND json_extract(doc,'$.return_instruction')=?2",
+            params![child.human_id, child.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(parent) = parent else {
+        return Ok(false);
+    };
+    let parent = instruction_on(conn, &parent, child.human_id)?;
+    if parent.target != child.target
+        || !parent.target_execution.as_ref().is_some_and(|selection| {
+            selection.harness == crate::execution::Harness::Claude
+                && child.target_execution.as_ref() == Some(selection)
+        })
+    {
+        return Ok(false);
+    }
+    let Some(root) = coordination_root_on(conn, child.human_id, &parent)? else {
+        return Ok(false);
+    };
+    paired_source_on(conn, &root, child)
+}
+
+fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction) -> Result<bool> {
     if parent.admission_epoch != child.admission_epoch {
         return Ok(false);
     }
+    let human = child.human_id;
     let source = super::routing::source_on(conn, &parent.id, human)?;
     if source.channel == "conversation" {
         let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
@@ -550,7 +591,7 @@ impl Store {
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<(SessionRequest, Instruction, bool)> {
         self.interaction_session_request_scoped(
-            caller, human, native, turn, parent, client, target, text, closed, None, None,
+            caller, human, native, turn, parent, client, target, text, closed, None, None, false,
         )
     }
 
@@ -568,6 +609,7 @@ impl Store {
         closed: &tokio_util::sync::CancellationToken,
         portable_local: Option<i64>,
         config: Option<&crate::interaction::InteractionConfig>,
+        report_to_topic: bool,
     ) -> Result<(SessionRequest, Instruction, bool)> {
         if caller == target
             || text.trim().is_empty()
@@ -613,8 +655,8 @@ impl Store {
             .context("Local coordination needs a current human original or its first helper")?;
         let onward = root.id != p.id;
         anyhow::ensure!(
-            !onward || target != root.target,
-            "An onward handoff cannot target its origin"
+            !onward || (target != root.target && !report_to_topic),
+            "An onward handoff cannot target its origin or publish to a topic"
         );
         // An interview receives historical evidence, not authority to resume or
         // steer the work it is explaining. Enforce this at durable admission,
@@ -651,6 +693,21 @@ impl Store {
             |r| r.get(0),
         )?;
         let original: SourceInput = serde_json::from_str(&raw)?;
+        if report_to_topic {
+            anyhow::ensure!(
+                route.is_some()
+                    && caller.chat_id == target.chat_id
+                    && original.channel == "conversation"
+                    && original.tribu_source.is_none(),
+                "A selected topic report requires a paired local Claude request"
+            );
+            let original = super::conversation_inputs::read_on(&tx, &original.event_id, human)?;
+            anyhow::ensure!(
+                original.paired_actor
+                    && super::conversation_inputs::eligible_binding_on(&tx, &original).is_ok(),
+                "A selected topic report requires a current paired human original"
+            );
+        }
         let id = Uuid::new_v5(
             &Uuid::NAMESPACE_URL,
             format!(
@@ -704,6 +761,7 @@ impl Store {
             if call.caller_native != native
                 || call.caller_turn != turn
                 || call.target_instruction != i.id
+                || call.report_to_topic != report_to_topic
             {
                 return Err(anyhow!("Local request identity is immutable"));
             }
@@ -726,9 +784,13 @@ impl Store {
             target_instruction: i.id.clone(),
             epoch: epoch.into(),
             return_instruction: None,
+            report_to_topic,
             phase: "requested".into(),
         };
-        let author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
+        let mut author = json!({"kind":"session_request","session":caller,"native_thread":native,"native_turn":turn,"parent_instruction":parent,"local_request":id,"authorized_human":human, "human_parent":{"channel":original.channel,"input_ref":super::dialogue::source_reference(&original),"origin":original.origin}});
+        if report_to_topic {
+            author["report_to_topic"] = json!(true);
+        }
         if route.is_some() {
             crate::interaction::local_claude_packet(&i, &author)?;
         }
@@ -1224,7 +1286,7 @@ mod tests {
                     "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
         }))
         .unwrap();
-        let send = |id, text| {
+        let send = |id, text, report_to_topic| {
             store.interaction_session_request_scoped(
                 caller.key,
                 100,
@@ -1237,11 +1299,15 @@ mod tests {
                 &Default::default(),
                 None,
                 Some(&profile),
+                report_to_topic,
             )
         };
         let oversized = "任".repeat(CLAUDE_LOCAL_TEXT_BYTES / 3 + 1);
-        assert!(send("oversized", &oversized).is_err());
-        let (_, delivered, fresh) = send("context", "A scoped context handoff").unwrap();
+        assert!(send("oversized", &oversized, false).is_err());
+        if !paired {
+            assert!(send("companion", "Must stay private", true).is_err());
+        }
+        let (_, delivered, fresh) = send("context", "A scoped context handoff", paired).unwrap();
         let authorship = store
             .interaction_author(&delivered.id, 100)
             .unwrap()
@@ -1291,21 +1357,41 @@ mod tests {
         };
         let (local, host_access) = begin(&delivered);
         assert_eq!(host_access, paired);
+        let native = Uuid::now_v7().to_string();
+        let prepared = json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
+        let body = json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
+        assert!(
+            store
+                .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .routed_portable_session_requests(target.key, 100, &native, &delivered.id, local)
+                .is_ok(),
+            paired
+        );
+        let onward_owner = setup(&store, 9);
+        let onward = store.interaction_session_request_scoped(
+            target.key,
+            100,
+            &native,
+            &delivered.id,
+            &delivered.id,
+            "onward",
+            onward_owner.key,
+            "A second scoped lookup",
+            &Default::default(),
+            Some(local),
+            Some(&profile),
+            false,
+        );
+        assert_eq!(onward.is_ok(), paired);
+        let text = format!(
+            "Worked on the rig\n<daimon-result>{}</daimon-result>",
+            json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
+        );
         if later {
-            let native = Uuid::now_v7().to_string();
-            let prepared =
-                json!({"native_session_id": native, "native_session_scope": "a".repeat(64)});
-            let body =
-                json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
-            assert!(
-                store
-                    .expose_routed_portable(&delivered, local, &body, &prepared, paired)
-                    .unwrap()
-            );
-            let text = format!(
-                "Worked on the rig\n<daimon-result>{}</daimon-result>",
-                json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})
-            );
             let partial = format!(
                 "Work remains open\n<daimon-result>{}</daimon-result>",
                 json!({"requests":delivered.requests, "covered":[delivered.id], "completed":[]})
@@ -1325,13 +1411,13 @@ mod tests {
                     .is_none()
             );
             for (key, scope, allowed) in [("wrong-scope", "b", false), ("same-scope", "a", true)] {
-                let (_, next, _) = send(key, "Continue existing work").unwrap();
+                let (_, next, _) = send(key, "Continue existing work", false).unwrap();
                 let (next_local, _) = begin(&next);
                 let selected =
                     json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
                 assert!(
                     store
-                        .expose_routed_portable(&next, next_local, &body, &selected, false)
+                        .expose_routed_portable(&next, next_local, &body, &selected, false, None)
                         .unwrap()
                 );
                 let deliveries = store
@@ -1361,7 +1447,86 @@ mod tests {
             }
             return;
         }
+        let deliveries = store
+            .finish_routed_portable(
+                &delivered,
+                local,
+                &json!({"phase":"completed", "sessionId":native, "text":text}),
+            )
+            .unwrap();
+        assert_eq!(deliveries[0].internal, Some(true));
+        let report = store.topic_publication_claim(target.key, 100).unwrap();
+        assert_eq!(report.is_some(), paired);
+        if let Some(report) = report {
+            assert_eq!(report.kind, "portable_report");
+            assert_eq!(report.body, "Worked on the rig");
+            store
+                .topic_publication_parts(report.id, &[report.body, "Second part".into()])
+                .unwrap();
+            assert!(store.topic_publication_reserve(report.id, 0).unwrap());
+            store
+                .topic_publication_receipt(report.id, 0, None, false)
+                .unwrap();
+            let (_, stale, _) = send("superseded", "Report before correction", true).unwrap();
+            let (stale_local, _) = begin(&stale);
+            assert!(
+                store
+                    .expose_routed_portable(&stale, stale_local, &json!({}), &prepared, true, None)
+                    .unwrap()
+            );
+
+            let correction = Uuid::now_v7().to_string();
+            store
+                .conversation_input_capture_files(
+                    100,
+                    caller.key,
+                    &binding,
+                    &correction,
+                    "New human correction",
+                    None,
+                    None,
+                    None,
+                    vec![],
+                    true,
+                )
+                .unwrap();
+            let mut source = store.interaction_source(&instruction.id, 100).unwrap();
+            source.event_id = correction;
+            source.text = "New human correction".into();
+            store
+                .interaction_admit(
+                    &source,
+                    caller.key,
+                    RequestRelation::Amends(instruction.requests.clone()),
+                )
+                .unwrap();
+
+            let stale_text = format!(
+                "Superseded work\n<daimon-result>{}</daimon-result>",
+                json!({
+                    "requests":stale.requests, "covered":[stale.id], "completed":stale.requests,
+                })
+            );
+            let result = store
+                .finish_routed_portable(
+                    &stale,
+                    stale_local,
+                    &json!({"phase":"completed","sessionId":native,"text":stale_text}),
+                )
+                .unwrap();
+            assert_eq!(result[0].internal, Some(true));
+            assert!(!store.topic_publication_reserve(report.id, 1).unwrap());
+            store.topic_publication_finish(report.id).unwrap();
+            assert!(
+                store
+                    .topic_publication_claim(target.key, 100)
+                    .unwrap()
+                    .is_none()
+            );
+        }
         if paired {
+            let (_, delivered, _) = send("revoked", "Retire before exposure", true).unwrap();
+            let (local, _) = begin(&delivered);
             store
                 .conn
                 .lock()
@@ -1377,6 +1542,7 @@ mod tests {
                 &json!({}),
                 &json!({"native_session_id": Uuid::now_v7().to_string(), "native_session_scope": "a".repeat(64)}),
                 true,
+                None,
             ).unwrap());
         }
         assert!(
@@ -1549,6 +1715,49 @@ mod tests {
             .unwrap();
         assert_eq!(final_return.target, a.key);
         assert_eq!(final_return.requests, p.requests);
+    }
+
+    #[test]
+    fn codex_dependency_return_does_not_inherit_a_paired_claude_controller() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let caller = setup(&store, 7);
+        let helper = setup(&store, 8);
+        let parent = parent(&store, &caller);
+        let (_, child, _) = store
+            .interaction_session_request(
+                caller.key,
+                100,
+                "native-7",
+                "parent-turn",
+                &parent.id,
+                "question",
+                helper.key,
+                "Check this result.",
+                &Default::default(),
+            )
+            .unwrap();
+        let reply = result(&store, &helper, &child);
+        let profile = serde_json::from_value(json!({
+            "human_id":100,"chat_id":100,"topic_id":1,
+            "targets":[{"topic_id":7,"name":"Design","harness":"claude"}],
+            "claude_foreground":{"interaction_direct":true,"worker_command":["/fixture/claude"],
+                "transport":{"command":["/fixture/matrix"],"timeout_seconds":5,
+                    "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
+        }))
+        .unwrap();
+        let returned = store
+            .interaction_session_return_scoped(&reply.id, 100, &profile)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            returned.target_execution.as_ref().unwrap().harness,
+            crate::execution::Harness::Claude,
+        );
+        let conn = store.conn.lock().unwrap();
+        assert!(session_input_allowed_on(&conn, &returned.id, 100).unwrap());
+        assert!(!paired_result_parent_on(&conn, &returned).unwrap());
+        assert!(!controller_parent_eligible_on(&conn, 100, &returned).unwrap());
     }
 
     #[test]

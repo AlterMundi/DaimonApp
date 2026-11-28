@@ -1879,6 +1879,220 @@ mod tests {
     }
 
     #[test]
+    fn claude_uses_the_exact_paired_quote_across_delivery_status_changes() {
+        use crate::store::conversation_routing::ConversationReply;
+        use crate::store::routed_portable::claude_quoted_seed_on;
+
+        let (_file, store, entry, _, instruction, body) = setup();
+        let observed = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap();
+        let result = &observed["items"][0];
+        let reply = ConversationReply {
+            source: result["id"].as_str().unwrap().into(),
+            revision: result["revision"].as_str().unwrap().into(),
+            context_only: false,
+        };
+        let binding = {
+            let conn = store.conn.lock().unwrap();
+            entry_binding(&conn, 100, entry, entry_on(&conn, 100, entry).unwrap().0).unwrap()
+        };
+        let (original, _) = store
+            .conversation_input_capture_files(
+                100,
+                entry,
+                &binding,
+                &Uuid::now_v7().to_string(),
+                "Yes, do that.",
+                Some(reply.clone()),
+                None,
+                None,
+                vec![],
+                true,
+            )
+            .unwrap();
+
+        let original = store
+            .conversation_input_read(100, entry, &original.id)
+            .unwrap();
+        let conn = store.conn.lock().unwrap();
+        let selected = source_on(&conn, 100, entry, &reply.source)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            original.reply_text_sha256.as_deref(),
+            selected["text_sha256"].as_str()
+        );
+        let expected =
+            json!({"source":reply.source,"revision":reply.revision,"assistant":body.trim_end()});
+        assert_eq!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target).unwrap(),
+            Some(expected.clone())
+        );
+        conn.execute(
+            "UPDATE interaction_deliveries SET phase='delivered' WHERE id=?1",
+            [reply.source.strip_prefix("delivery:").unwrap()],
+        )
+        .unwrap();
+        let changed = source_on(&conn, 100, entry, &reply.source)
+            .unwrap()
+            .unwrap();
+        assert_ne!(changed["revision"], selected["revision"]);
+        assert_eq!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target).unwrap(),
+            Some(expected)
+        );
+
+        let foreign_topic = SessionKey::new(100, Some(8));
+        assert!(
+            claude_quoted_seed_on(&conn, &original, &reply, foreign_topic)
+                .unwrap()
+                .is_none()
+        );
+        let mut stale = original.clone();
+        stale.reply_text_sha256 = Some("0".repeat(64));
+        assert!(
+            claude_quoted_seed_on(&conn, &stale, &reply, instruction.target)
+                .unwrap()
+                .is_none()
+        );
+        conn.execute(
+            "UPDATE interaction_deliveries SET doc=json_set(doc,'$.body','Different text') WHERE id=?1",
+            [reply.source.strip_prefix("delivery:").unwrap()],
+        ).unwrap();
+        assert!(
+            claude_quoted_seed_on(&conn, &original, &reply, instruction.target)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn claude_telegram_quote_uses_the_receipt_and_canonical_body() {
+        use crate::store::routed_portable::{
+            TelegramQuote, claude_telegram_quote_on, telegram_reply_message_on,
+        };
+        let (_file, store, entry, worker, instruction, body) = setup();
+        let conn = store.conn.lock().unwrap();
+        let (delivery, result): (String, String) = conn
+            .query_row(
+                "SELECT id,result_id FROM interaction_deliveries WHERE human_id=100",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE turns SET status='completed' WHERE session_id=?1",
+            [worker.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_delivery_parts(delivery_id,part,text,message_id)
+          VALUES(?1,0,'Receipt fragment',17)",
+            [&delivery],
+        )
+        .unwrap();
+        let source = SourceInput {
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: None,
+            channel: "telegram:fixture".into(),
+            event_id: "31".into(),
+            update_id: Some(31),
+            human_id: 100,
+            target_sessions: vec![worker.id],
+            origin: ReturnRoute {
+                chat_id: entry.chat_id,
+                thread_id: entry.thread_id,
+                message_id: Some(32),
+            },
+            text: "Yes, do that.".into(),
+        };
+        conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at)
+          VALUES(31,?1,'processing','fixture','2026-11-27')", [json!({"message":{
+              "message_id":32,"message_thread_id":entry.thread_id,"chat":{"id":entry.chat_id},"from":{"id":100},
+              "reply_to_message":{"message_id":17,"text":"Untrusted nested copy"}
+          }}).to_string()]).unwrap();
+        assert_eq!(telegram_reply_message_on(&conn, &source).unwrap(), Some(17));
+        let TelegramQuote::Selected(seed) =
+            claude_telegram_quote_on(&conn, &source, instruction.target, 17).unwrap()
+        else {
+            panic!("An owned result with a confirmed receipt must resolve");
+        };
+        assert_eq!(seed["source"], format!("telegram-result:{result}"));
+        assert_eq!(seed["assistant"], body.trim_end());
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, entry, 17).unwrap(),
+            TelegramQuote::Unrelated
+        );
+        let mut other_topic = source.clone();
+        other_topic.origin.thread_id = 99;
+        assert!(
+            telegram_reply_message_on(&conn, &other_topic)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 17).unwrap(),
+            TelegramQuote::Unrelated
+        );
+
+        conn.execute(
+            "INSERT INTO interaction_delivery_parts(delivery_id,part,text,message_id) VALUES(?1,1,?2,18)",
+            params![delivery, format!("#Worker: {}", crate::interaction::WITHHELD_RESULT_NOTICE)],
+        ).unwrap();
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, instruction.target, 18).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        let local: i64 = conn
+            .query_row(
+                "SELECT local_turn FROM interaction_results WHERE id=?1",
+                [&result],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let publication: i64 = conn.query_row(
+            "INSERT INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+             VALUES(?1,?2,100,'portable_report',?3,?4,'sent','fixture') RETURNING id",
+            params![local,worker.id,&result,body.trim_end()], |row| row.get(0),
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO topic_publication_parts(publication,part,body,phase,message_id)
+                      VALUES(?1,0,'First part','sent',21)",
+            [publication],
+        )
+        .unwrap();
+        other_topic.origin.thread_id = instruction.target.thread_id;
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 21).unwrap(),
+            TelegramQuote::Selected(seed)
+        );
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",
+            [worker.id],
+        )
+        .unwrap();
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &source, instruction.target, 17).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        assert_eq!(
+            claude_telegram_quote_on(&conn, &other_topic, instruction.target, 21).unwrap(),
+            TelegramQuote::Unavailable
+        );
+        drop(conn);
+        // The busy-path classifier must still reserve a separate run for a
+        // known quote even if its content is now unavailable.
+        assert!(
+            store
+                .routed_claude_preserves_quote(&source, instruction.target)
+                .unwrap()
+        );
+        assert!(!store.routed_claude_preserves_quote(&source, entry).unwrap());
+    }
+
+    #[test]
     fn canonical_part_reads_committed_state_while_writer_is_held() {
         let (_file, store, entry, _, _, _) = setup();
         let list = store

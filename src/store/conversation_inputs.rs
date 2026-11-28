@@ -126,6 +126,9 @@ pub struct ConversationInput {
     pub voice_failure: Option<crate::voice::VoiceFailureDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<ConversationReply>,
+    /// Text digest of an exact owned result observed at original capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reply_text_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playback: Option<ConversationPlayback>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -223,6 +226,26 @@ impl ConversationVoice {
     }
 }
 impl ConversationInput {
+    pub(crate) fn selected_claude_goal(&self) -> bool {
+        self.paired_actor
+            && !self.retired
+            && self.voice.is_none()
+            && self.tribu_source.is_none()
+            && self.foreground_dialogue.is_none()
+            && self.foreground_delegation.is_none()
+            && self.visual.is_none()
+            && self.files.is_empty()
+            && self.playback.is_none()
+            && self.reply.as_ref().is_some_and(|reply| {
+                !reply.context_only
+                    && reply
+                        .source
+                        .strip_prefix("session:")
+                        .is_some_and(|id| !id.contains('/'))
+            })
+            && crate::interaction::native_claude_goal(&self.text)
+    }
+
     pub fn foreground_context(&self) -> String {
         self.foreground_delegation.as_ref().map_or_else(String::new, |value| format!(
             "[Voice foreground formulation]\n{}\nThe formulation is an assistant-authored derivative of these exact retained human originals, not a human quotation, extra authority or completed work. Source text and chronology remain authoritative; incorporate later human corrections. This request is delegated to the existing integrator, which owns routing and final return. Ordinary foreground conversation does not start worker tasks.\n\n",
@@ -1533,6 +1556,23 @@ impl Store {
                 .map(|r| super::conversation_routing::reply_on(&tx, human, entry, r))
                 .transpose()?
         };
+        let reply_text_sha256 = if paired_actor {
+            reply
+                .as_ref()
+                .filter(|reply| reply.source.starts_with("delivery:"))
+                .map(|reply| super::presentation::source_on(&tx, human, entry, &reply.source))
+                .transpose()?
+                .flatten()
+                .filter(|source| {
+                    source["kind"] == "worker_result"
+                        && reply
+                            .as_ref()
+                            .is_some_and(|reply| source["revision"] == reply.revision)
+                })
+                .and_then(|source| source["text_sha256"].as_str().map(ToOwned::to_owned))
+        } else {
+            None
+        };
         let mut question_versions =
             super::conversation_requests::capture_questions_on(&tx, human, entry)?;
         if let Some(limit) = &capture_questions {
@@ -1565,6 +1605,7 @@ impl Store {
             voice: voice.clone(),
             voice_failure: None,
             reply,
+            reply_text_sha256,
             playback,
             focus,
             routing: None,

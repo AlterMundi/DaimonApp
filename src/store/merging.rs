@@ -586,7 +586,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .execute(
-                    "INSERT INTO incoming_updates VALUES(?,?,'handled',?,NULL,?)",
+                    "INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,turn_id,updated_at) VALUES(?,?,'handled',?,NULL,?)",
                     params![topic, payload.to_string(), store.instance_id, now_string()],
                 )
                 .unwrap();

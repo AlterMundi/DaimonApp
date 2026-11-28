@@ -719,11 +719,22 @@ impl Store {
                 .name
                 .clone()
         };
-        if body.trim().is_empty() {
+        let route = profile
+            .portable_route(target)
+            .map(|(engine, config)| (engine, &config.transport.source));
+        let has_claude_files = !input.files.is_empty()
+            && route
+                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+        if body.trim().is_empty() && !has_claude_files {
             bail!("Write a message after the selector");
         }
-        if body.starts_with('/') && body != "/interrupt" {
-            bail!("Only scoped /interrupt is supported after a selector");
+        if body.starts_with('/')
+            && body != "/interrupt"
+            && !(route
+                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude)
+                && input.selected_claude_goal())
+        {
+            bail!("Only scoped /interrupt or a directly selected Claude /goal is supported");
         }
         let target_session:i64=tx.query_row("SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1",params![target.chat_id,target.thread_id,human],|r|r.get(0))?;
         let selected_focus = input.focus.as_ref().filter(|f| {
@@ -794,9 +805,6 @@ impl Store {
         let relation = inherited
             .map(|f| RequestRelation::Amends(f.requests.clone()))
             .unwrap_or(RequestRelation::New);
-        let route = profile
-            .portable_route(target)
-            .map(|(engine, config)| (engine, &config.transport.source));
         let (instruction, fresh) = super::interaction::admit_selected_on(
             &tx,
             &source,

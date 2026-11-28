@@ -178,12 +178,18 @@ fn admit_selected_with_origin_on(
         &source.event_id,
         source.update_id,
     )?;
-    if (source.text.trim().is_empty() && source.telegram_files.is_empty())
-        || (!source.telegram_files.is_empty()
-            && (source.update_id.is_none()
-                || !route.is_some_and(|(engine, _)| {
-                    engine == crate::interaction::ForegroundEngine::Claude
-                })))
+    let claude =
+        route.is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+    let conversation_original = (source.channel == "conversation")
+        .then(|| super::conversation_inputs::read_on(tx, &source.event_id, source.human_id))
+        .transpose()?;
+    if (source.text.trim().is_empty()
+        && source.telegram_files.is_empty()
+        && !(claude
+            && conversation_original
+                .as_ref()
+                .is_some_and(|input| !input.files.is_empty())))
+        || (!source.telegram_files.is_empty() && (source.update_id.is_none() || !claude))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -268,9 +274,8 @@ fn admit_selected_with_origin_on(
         }
     }
     let mut source_epoch = parent_epoch.map(str::to_owned);
-    if source.channel == "conversation" {
-        let original = super::conversation_inputs::read_on(tx, &source.event_id, source.human_id)?;
-        if route.is_some() {
+    if let Some(original) = conversation_original {
+        if route.is_some() && !claude {
             anyhow::ensure!(
                 original.files.is_empty() && original.visual.is_none(),
                 "The routed portable worker requires a text original"

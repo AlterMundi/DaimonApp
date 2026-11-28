@@ -53,7 +53,7 @@ if sys.argv[1:]!=['app-server','proxy']: sys.exit(7)"""))
         self.messages.clear();self.telegram_methods.clear()
 
 class Browser:
-    def __init__(self,j,companion=False,speech=None,streaming=None):
+    def __init__(self,j,companion=False,speech=None,streaming=None,*,companion_workspace=False):
         config={'receiver_config':str(j.config),'state_dir':str(j.root/'dashboard'),'origin':'https://example.test','bot_id':123}
         if speech is not None:config['speech']=speech
         if streaming is not None:config['streaming_transcription']=streaming
@@ -63,7 +63,8 @@ class Browser:
         if companion:
             from dashboard.companion import Grants
             destination=j.root/'device.json'
-            Grants(config,self.provider).enroll('Synthetic visual companion',destination,3600)
+            Grants(config,self.provider).enroll('Synthetic visual companion',destination,3600,
+                                               workspace_access=companion_workspace)
             device=json.loads(destination.read_text())
             self.device_headers={'origin':config['origin'],'authorization':device['authorization'],'x-dashboard-csrf':device['csrf']}
         self.headers={'origin':config['origin']}
@@ -71,10 +72,11 @@ class Browser:
         self.headers['authorization']='Bearer '+r.json()['session_token']
         r=self.client.get('/api/interaction/inputs',headers=self.headers);assert r.status_code==200,r.text
         self.binding=r.json()['binding'];self.headers['x-dashboard-csrf']=r.json()['csrf']
-    def text(self,text,reply=None,playback=None):
-        body={'id':str(uuid.uuid4()),'binding':self.binding,'text':text}
+    def text(self,text,reply=None,playback=None,*,original_id=None,files=None):
+        body={'id':original_id or str(uuid.uuid4()),'binding':self.binding,'text':text}
         if reply:body['reply']=reply
         if playback:body['playback']=playback
+        if files:body['files']=files
         r=self.client.post('/api/interaction/inputs',json=body,headers=self.headers);assert r.status_code==200,r.text
         return body['id'],r.json()
     def status(self,ident):

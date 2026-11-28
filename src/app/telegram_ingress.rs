@@ -2,6 +2,7 @@
 use super::*;
 use crate::{
     commands::default_bot_commands,
+    store::TelegramUpdateAdmission,
     tele_daimon::{self, GatewayIngress, IngressReply, IngressRequest, Lifecycle},
     telegram::Update,
 };
@@ -63,6 +64,7 @@ impl App {
 
     pub(super) async fn run_telegram_ingress(&self) -> Result<()> {
         topic_publications::recover(self.shared.clone())?;
+        release_ready_topics(self)?;
         let menu = self.telegram_menu();
         let mut gateway = TelegramGateway::new(self.clone());
         tele_daimon::poll(
@@ -93,11 +95,123 @@ impl App {
 }
 
 type Capture = tokio::task::JoinHandle<Result<()>>;
+
+pub(super) type Dispatchers = StdMutex<HashMap<SessionKey, mpsc::UnboundedSender<Dispatch>>>;
+
+pub(super) enum Dispatch {
+    Live(Box<Update>, Capture),
+    Release,
+}
+
+fn enqueue(app: &App, key: SessionKey, work: Dispatch) -> Result<()> {
+    let mut dispatchers = app
+        .shared
+        .telegram_dispatchers
+        .lock()
+        .expect("Telegram dispatchers poisoned");
+    let sender = dispatchers.entry(key).or_insert_with(|| {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let shared = Arc::downgrade(&app.shared);
+        let workers = Arc::downgrade(&app.workers);
+        let shutdown = app.shared.shutdown.clone();
+        tokio::spawn(async move {
+            while let Some(work) = tokio::select! {
+                _ = shutdown.cancelled() => None,
+                next = receiver.recv() => next,
+            } {
+                let (Some(shared), Some(workers)) = (shared.upgrade(), workers.upgrade()) else {
+                    break;
+                };
+                let app = App { shared, workers };
+                if let Err(error) = dispatch_work(&app, key, work).await {
+                    tracing::error!("Telegram dispatch failed: {error:#}");
+                }
+            }
+        });
+        sender
+    });
+    sender
+        .send(work)
+        .map_err(|_| anyhow!("Topic update dispatcher dropped"))
+}
+
+pub(super) fn release_created_topic(app: &App, key: SessionKey) -> Result<()> {
+    enqueue(app, key, Dispatch::Release)
+}
+
+pub(super) fn wake_released_topics(shared: &AppShared, topics: &[SessionKey]) {
+    if topics.is_empty() {
+        return;
+    }
+    let dispatchers = shared
+        .telegram_dispatchers
+        .lock()
+        .expect("Telegram dispatchers poisoned");
+    for topic in topics {
+        if let Some(sender) = dispatchers.get(topic)
+            && sender.send(Dispatch::Release).is_err()
+        {
+            tracing::warn!("Created topic updates remain retained after Stop resume");
+        }
+    }
+}
+
+fn release_ready_topics(app: &App) -> Result<()> {
+    for key in app.shared.store.ready_creation_update_topics()? {
+        release_created_topic(app, key)?;
+    }
+    Ok(())
+}
+
+async fn dispatch_work(app: &App, key: SessionKey, work: Dispatch) -> Result<()> {
+    let update = match work {
+        Dispatch::Live(update, capture) => {
+            capture
+                .await
+                .context("Nexus ingress capture task interrupted")??;
+            let stop = update
+                .message
+                .as_ref()
+                .and_then(|message| message.text.as_deref())
+                .and_then(|text| normalize_command(text, app.shared.bot_username().as_deref()))
+                .is_some_and(|(command, _)| matches!(command.as_str(), "/stop" | "/interrupt"));
+            if app.shared.store.begin_creation_aware_update(&update)? {
+                return Ok(());
+            }
+            if stop {
+                run_journaled_update(app, *update).await;
+                return Ok(());
+            }
+            Some(update)
+        }
+        Dispatch::Release => None,
+    };
+    while let Some(held) = app.shared.store.claim_creation_update(key)? {
+        run_journaled_update(app, held).await;
+    }
+    if let Some(update) = update {
+        run_journaled_update(app, *update).await;
+    }
+    Ok(())
+}
+
+async fn run_journaled_update(app: &App, update: Update) {
+    let id = update.update_id;
+    let result = HUMAN_UPDATE_ID
+        .scope(id, Box::pin(app.process_update(update)))
+        .await;
+    if let Err(error) = app.shared.store.finish_update_dispatch(id, result.is_ok()) {
+        tracing::error!("Failed to record Telegram dispatch: {error:#}");
+    }
+    if let Err(error) = result {
+        tracing::error!("Telegram update processing failed: {error:#}");
+    }
+}
+
 pub(super) struct TelegramGateway {
     app: App,
     adapter_identified: bool,
     pub(super) credential_fingerprint: Option<String>,
-    dispatchers: HashMap<SessionKey, mpsc::UnboundedSender<(Update, Capture)>>,
 }
 
 impl TelegramGateway {
@@ -106,7 +220,6 @@ impl TelegramGateway {
             app,
             adapter_identified: false,
             credential_fingerprint: None,
-            dispatchers: HashMap::new(),
         }
     }
 
@@ -175,6 +288,10 @@ impl TelegramGateway {
                     "TeleDaimon has not identified the selected bot"
                 );
                 topic_publications::recover(self.app.shared.clone())?;
+                if routing::recover_telegram_deliveries(self.app.shared.clone()).is_err() {
+                    tracing::warn!("Known-unsent Telegram result recovery unconfirmed");
+                }
+                release_ready_topics(&self.app)?;
                 Ok(IngressReply::Accepted {
                     next_offset: self.next_offset().await?,
                 })
@@ -207,9 +324,9 @@ impl GatewayIngress for TelegramGateway {
             (0..i64::MAX).contains(&update.update_id),
             "Invalid Telegram update ID"
         );
-        let admitted = self.app.shared.store.admit_update(&update)?;
+        let admission = self.app.shared.store.admit_telegram_update(&update)?;
         let next_offset = self.next_offset().await?;
-        if !admitted {
+        if admission != TelegramUpdateAdmission::Dispatch {
             return Ok(next_offset);
         }
         // Capture independently of per-topic dispatch and further polling.
@@ -235,39 +352,7 @@ impl GatewayIngress for TelegramGateway {
                 thread_id: message.message_thread_id.unwrap_or(0),
             },
         );
-        let sender = self.dispatchers.entry(key).or_insert_with(|| {
-            let (sender, mut receiver) = mpsc::unbounded_channel::<(Update, Capture)>();
-            let app = self.app.clone();
-            tokio::spawn(async move {
-                while let Some((update, capture)) = receiver.recv().await {
-                    let update_id = update.update_id;
-                    let result = async {
-                        capture
-                            .await
-                            .context("Nexus ingress capture task interrupted")??;
-                        app.shared.store.begin_update(update_id)?;
-                        HUMAN_UPDATE_ID
-                            .scope(update_id, app.process_update(update))
-                            .await
-                    }
-                    .await;
-                    if let Err(error) = app
-                        .shared
-                        .store
-                        .finish_update_dispatch(update_id, result.is_ok())
-                    {
-                        tracing::error!("failed to record update dispatch: {error:#}");
-                    }
-                    if let Err(error) = result {
-                        tracing::error!("update processing failed: {error:#}");
-                    }
-                }
-            });
-            sender
-        });
-        sender
-            .send((update, capture))
-            .map_err(|_| anyhow!("topic update dispatcher dropped"))?;
+        enqueue(&self.app, key, Dispatch::Live(Box::new(update), capture))?;
         Ok(next_offset)
     }
 }

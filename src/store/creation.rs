@@ -7,6 +7,43 @@ use anyhow::bail;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum TelegramUpdateAdmission {
+    Duplicate,
+    Dispatch,
+    HeldForTopic,
+}
+
+pub(super) fn creation_scope_for_update(
+    conn: &Connection,
+    update: &crate::telegram::Update,
+) -> Result<(Option<String>, bool)> {
+    let Some(message) = update
+        .message
+        .as_ref()
+        .filter(|message| message.from.as_ref().is_some_and(|sender| !sender.is_bot))
+    else {
+        return Ok((None, false));
+    };
+    let Some(topic) = message.message_thread_id else {
+        return Ok((None, false));
+    };
+    let id = conn.query_row(
+        "SELECT id FROM interaction_creations
+         WHERE topic=?1 AND COALESCE(json_extract(doc,'$.target_chat'),entry_chat)=?2
+           AND (phase IN ('topic_known','retained_topic') OR (phase='ready' AND topic_release_ready=0))
+           AND json_extract(doc,'$.context.topic_workspace_root') IS NOT NULL",
+        params![topic, message.chat.id], |r| r.get(0),
+    ).optional()?;
+    let control = id.is_some()
+        && message
+            .text
+            .as_deref()
+            .and_then(|text| crate::telegram::normalize_command(text, None))
+            .is_some_and(|(command, _)| matches!(command.as_str(), "/stop" | "/interrupt"));
+    Ok((id, control))
+}
+
 impl Store {
     pub const CREATION_CONTEXT_MAX_BYTES: usize = 48_000;
 
@@ -15,6 +52,31 @@ impl Store {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_creations(id TEXT PRIMARY KEY,human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,input_update INTEGER NOT NULL,phase TEXT NOT NULL,doc TEXT NOT NULL,topic INTEGER,instance_id TEXT NOT NULL,UNIQUE(human_id,entry_chat,entry_topic,input_update));
         CREATE TABLE IF NOT EXISTS interaction_enrollments(human_id INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,target_topic INTEGER NOT NULL,session_id INTEGER NOT NULL,name TEXT NOT NULL,creation_id TEXT NOT NULL UNIQUE REFERENCES interaction_creations(id),PRIMARY KEY(human_id,entry_chat,entry_topic,target_topic));")?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_creation_receipts(creation_id TEXT PRIMARY KEY REFERENCES interaction_creations(id),event_update INTEGER NOT NULL UNIQUE REFERENCES incoming_updates(update_id),chat_id INTEGER NOT NULL,topic_id INTEGER NOT NULL,bot_id INTEGER NOT NULL,payload_sha256 TEXT NOT NULL,UNIQUE(chat_id,topic_id));")?;
+        add_column_if_missing(
+            &conn,
+            "interaction_creations",
+            "topic_release_ready",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            &conn,
+            "interaction_creations",
+            "topic_session_id",
+            "INTEGER",
+        )?;
+        // The general interaction journal has already reconciled the prior
+        // process's queued/submitting originals.
+        conn.execute(
+            "UPDATE interaction_creations SET topic_release_ready=1
+            WHERE phase='ready' AND topic_release_ready=0 AND instance_id!=?1",
+            [&self.instance_id],
+        )?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS incoming_topic_creation_retained ON incoming_updates(
+               json_extract(payload_json,'$.message.chat.id'),
+               json_extract(payload_json,'$.message.message_thread_id'),update_id
+             ) WHERE status='retained_creation';",
+        )?;
         conn.execute("UPDATE interaction_creations SET phase=CASE phase WHEN 'prepared' THEN 'retained_unsent' WHEN 'creating_topic' THEN 'uncertain' ELSE 'retained_topic' END WHERE instance_id!=?1 AND phase IN ('prepared','creating_topic','topic_known')",[&self.instance_id])?;
         Ok(())
     }
@@ -79,9 +141,231 @@ impl Store {
         Ok(cfg)
     }
 
+    pub fn interaction_target_labels(&self, cfg: &InteractionConfig) -> Result<Vec<Value>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut title = conn.prepare_cached(
+            "SELECT COALESCE(json_extract(b.value,'$.name.value'), s.session_title)
+             FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+             LEFT JOIN bot_state b ON b.key='topic_catalog:'||s.chat_id||':'||s.thread_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1",
+        )?;
+        cfg.targets
+            .iter()
+            .map(|target| {
+                let label: Option<String> = title
+                    .query_row(params![cfg.chat_id, target.topic_id, cfg.human_id], |row| {
+                        row.get(0)
+                    })
+                    .optional()?
+                    .flatten();
+                let display_name = label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|label| {
+                        !label.is_empty()
+                            && label.chars().count() <= 128
+                            && !label.chars().any(char::is_control)
+                    })
+                    .unwrap_or(&target.name);
+                Ok(json!({
+                    "name": target.name,
+                    "display_name": display_name,
+                    "stable_selector": format!("t{}", target.topic_id)
+                }))
+            })
+            .collect()
+    }
+
     pub fn interaction_creation(&self, id: &str, human: i64) -> Result<Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         creation_on(&conn, id, human)
+    }
+
+    pub(crate) fn direct_topic_by_update(
+        &self,
+        human: i64,
+        chat: i64,
+        update: i64,
+    ) -> Result<Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let id: String = conn.query_row(
+            "SELECT id FROM interaction_creations WHERE human_id=?1 AND input_update=?2
+               AND json_extract(doc,'$.kind')='telegram_topic' AND json_extract(doc,'$.target_chat')=?3",
+            params![human, update, chat], |r| r.get(0),
+        )?;
+        creation_on(&conn, &id, human)
+    }
+
+    /// Hold a known-unsent update in the existing Telegram journal while its
+    /// confirmed topic is waiting for the workspace/session commit.
+    pub(crate) fn begin_creation_aware_update(
+        &self,
+        update: &crate::telegram::Update,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let (id, control) = creation_scope_for_update(&tx, update)?;
+        let retained = id.is_some() && !control;
+        anyhow::ensure!(
+            tx.execute(
+                "UPDATE incoming_updates SET updated_at=?1,status=?2,
+             topic_creation_id=COALESCE(?3,topic_creation_id),
+             topic_creation_control=MAX(?4,topic_creation_control)
+             WHERE update_id=?5 AND instance_id=?6 AND status='received' AND turn_id IS NULL",
+                params![
+                    now_string(),
+                    if retained {
+                        "retained_creation"
+                    } else {
+                        "processing"
+                    },
+                    id,
+                    control,
+                    update.update_id,
+                    self.instance_id
+                ],
+            )? == 1,
+            "Telegram update is not available for dispatch"
+        );
+        tx.commit()?;
+        Ok(retained)
+    }
+
+    pub(crate) fn ready_creation_update_topics(&self) -> Result<Vec<SessionKey>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut statement = conn.prepare(
+            "SELECT DISTINCT json_extract(i.payload_json,'$.message.chat.id'),
+                             json_extract(i.payload_json,'$.message.message_thread_id')
+             FROM incoming_updates i JOIN interaction_creations c ON c.id=i.topic_creation_id
+             WHERE i.status='retained_creation' AND c.phase='ready' AND c.topic_release_ready=1",
+        )?;
+        let rows = statement.query_map([], |r| Ok(SessionKey::new(r.get(0)?, Some(r.get(1)?))))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Claim one held original in captured order, before native submission.
+    /// Restart never reclaims an update that already crossed this transition.
+    pub(crate) fn claim_creation_update(
+        &self,
+        key: SessionKey,
+    ) -> Result<Option<crate::telegram::Update>> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        loop {
+            let row: Option<(i64, String, bool)> = tx
+                .query_row(
+                    "SELECT i.update_id,i.payload_json,
+                    COALESCE(e.value=COALESCE(current.value,'initial') AND u.allowed=1
+                        AND u.tg_user_id=s.creator_user_id AND c.human_id=s.creator_user_id
+                        AND s.id=c.topic_session_id,0)
+             FROM incoming_updates i
+             JOIN interaction_creations c ON c.id=i.topic_creation_id
+             LEFT JOIN sessions s ON s.chat_id=?1 AND s.thread_id=?2
+             LEFT JOIN users u ON u.tg_user_id=json_extract(i.payload_json,'$.message.from.id')
+             LEFT JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+             LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id
+             WHERE i.status='retained_creation' AND i.turn_id IS NULL
+               AND json_extract(i.payload_json,'$.message.chat.id')=?1
+               AND json_extract(i.payload_json,'$.message.message_thread_id')=?2
+               AND c.phase='ready' AND c.topic_release_ready=1 AND c.topic=?2
+               AND COALESCE(json_extract(c.doc,'$.target_chat'),c.entry_chat)=?1
+             ORDER BY i.update_id LIMIT 1",
+                    params![key.chat_id, key.thread_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((update_id, payload, eligible)) = row else {
+                tx.commit()?;
+                return Ok(None);
+            };
+            if super::stopping::fenced_on(&tx, key)? || super::maintenance_writer_held_on(&tx, key)?
+            {
+                return Ok(None);
+            }
+            tx.execute("UPDATE incoming_updates SET status=?1,updated_at=?2,instance_id=?3 WHERE update_id=?4",
+            params![if eligible {"processing"} else {"retired_creation"}, now_string(), self.instance_id, update_id])?;
+            if eligible {
+                let update = serde_json::from_str(&payload)?;
+                tx.commit()?;
+                return Ok(Some(update));
+            }
+        }
+    }
+
+    pub(crate) fn prepare_direct_topic(
+        &self,
+        entry: SessionKey,
+        human: i64,
+        update: i64,
+        title: (&str, bool),
+        target_chat: i64,
+        root: Option<&Path>,
+    ) -> Result<Option<(Value, bool)>> {
+        let (name, automatic_title) = title;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("telegram-topic:{update}").as_bytes(),
+        )
+        .to_string();
+        if let Some(existing) = tx.query_row(
+            "SELECT id FROM interaction_creations WHERE human_id=?1
+               AND ((entry_chat=?2 AND entry_topic=?3 AND input_update=?4)
+                 OR (phase!='ready' AND COALESCE(json_extract(doc,'$.target_chat'),entry_chat)=?5
+                   AND (lower(json_extract(doc,'$.name'))=lower(?6)
+                     OR (?7 AND entry_chat=?2 AND entry_topic=?3 AND json_extract(doc,'$.automatic_title')=1))))
+             ORDER BY input_update=?4 DESC LIMIT 1",
+            params![human, entry.chat_id, entry.thread_id, update, target_chat, name, automatic_title],
+            |r| r.get::<_, String>(0),
+        ).optional()? {
+            return Ok(Some((creation_on(&tx, &existing, human)?, false)));
+        }
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let intent = json!({"kind":"telegram_topic","id":id,"human":human,"entry":entry,
+            "input_update":update,"name":name,"target_chat":target_chat,"automatic_title":automatic_title,
+            "context":{"topic_workspace_root":root}});
+        eligible_direct_topic(&tx, &intent)?;
+        tx.execute(
+            "INSERT INTO interaction_creations(id,human_id,entry_chat,entry_topic,input_update,phase,doc,instance_id)
+             VALUES(?1,?2,?3,?4,?5,'prepared',?6,?7)",
+            params![id, human, entry.chat_id, entry.thread_id, update, intent.to_string(), self.instance_id],
+        )?;
+        let operation = creation_on(&tx, &id, human)?;
+        tx.commit()?;
+        Ok(Some((operation, true)))
+    }
+
+    pub(super) fn finish_direct_topic_on(
+        &self,
+        conn: &Connection,
+        id: &str,
+        key: SessionKey,
+        human: i64,
+    ) -> Result<()> {
+        let op = creation_on(conn, id, human)?;
+        let intent = &op["intent"];
+        anyhow::ensure!(
+            intent["kind"] == "telegram_topic" && op["phase"] == "topic_known",
+            "Direct topic has no confirmed receipt"
+        );
+        eligible_direct_topic(conn, intent)?;
+        anyhow::ensure!(
+            intent["target_chat"] == key.chat_id
+                && op["topic"] == key.thread_id
+                && !super::stopping::fenced_on(conn, key)?
+                && !super::maintenance_writer_held_on(conn, key)?,
+            "Confirmed topic destination changed"
+        );
+        anyhow::ensure!(conn.execute(
+            "UPDATE interaction_creations SET phase='ready',topic_session_id=(SELECT id FROM sessions
+               WHERE chat_id=?4 AND thread_id=?5 AND creator_user_id=?2)
+             WHERE id=?1 AND human_id=?2 AND instance_id=?3",
+            params![id, human, self.instance_id, key.chat_id, key.thread_id],
+        )? == 1, "Confirmed topic claim changed");
+        Ok(())
     }
 
     #[cfg(test)]
@@ -174,6 +458,14 @@ impl Store {
                         .or_insert_with(|| frozen["context"]["creation_scope"].clone());
                 }
             }
+            if let Some(context) = doc["context"].as_object_mut() {
+                for field in ["independent_workspace", "topic_workspace_root"] {
+                    match frozen["context"].get(field) {
+                        Some(value) => context.insert(field.into(), value.clone()),
+                        None => context.remove(field),
+                    };
+                }
+            }
             if frozen != doc {
                 return Err(anyhow!("Creation intent is immutable"));
             }
@@ -211,15 +503,19 @@ impl Store {
             }
         }
         let duplicate: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND lower(json_extract(doc,'$.name'))=lower(?4))",
-            params![human,key.chat_id,key.thread_id,name], |r|r.get(0),
+            "SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1
+               AND lower(json_extract(doc,'$.name'))=lower(?4)
+               AND ((entry_chat=?2 AND entry_topic=?3) OR
+                    (phase!='ready' AND json_extract(doc,'$.target_chat')=?2)))",
+            params![human, key.chat_id, key.thread_id, name],
+            |r| r.get(0),
         )?;
         if duplicate {
             return Err(anyhow!(
                 "A retained creation already reserves this title; inspect it instead of duplicating it"
             ));
         }
-        let reserved:i64=tx.query_row("SELECT count(*) FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3",params![human,key.chat_id,key.thread_id],|r|r.get(0))?;
+        let reserved:i64=tx.query_row("SELECT count(*) FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND json_extract(doc,'$.kind') IS NOT 'telegram_topic'",params![human,key.chat_id,key.thread_id],|r|r.get(0))?;
         if reserved >= capacity as i64 {
             return Err(anyhow!("Creation capacity is already reserved"));
         }
@@ -241,12 +537,26 @@ impl Store {
         update: impl Into<InputReference>,
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<(Value, bool)> {
-        let update = update.into();
+        self.claim_creation_resume(key, human, update.into(), closed, false)
+    }
+
+    pub(crate) fn claim_creation_resume(
+        &self,
+        key: SessionKey,
+        human: i64,
+        update: InputReference,
+        closed: &tokio_util::sync::CancellationToken,
+        direct_command: bool,
+    ) -> Result<(Value, bool)> {
         update.validate()?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let id:String=tx.query_row("SELECT id FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND input_update=?4",params![human,key.chat_id,key.thread_id,update],|r|r.get(0))?;
         let operation = creation_on(&tx, &id, human)?;
+        anyhow::ensure!(
+            (operation["intent"]["kind"] == "telegram_topic") == direct_command,
+            "Use the creation controls for this original"
+        );
         let phase = match operation["phase"].as_str() {
             Some("retained_unsent") => "prepared",
             Some("retained_topic") => "topic_known",
@@ -296,6 +606,7 @@ impl Store {
             "Creation does not need receipt reconciliation"
         );
         let key: SessionKey = serde_json::from_value(op["intent"]["entry"].clone())?;
+        let chat = op["intent"]["target_chat"].as_i64().unwrap_or(key.chat_id);
         let original: InputReference =
             serde_json::from_value(op["intent"]["input_update"].clone())?;
         let original = original
@@ -319,10 +630,10 @@ impl Store {
         let topic = m.message_thread_id.context("Missing service topic")?;
         anyhow::ensure!(
             update.update_id == event
-                && m.chat.id == key.chat_id
+                && m.chat.id == chat
                 && m.message_id > 0
                 && topic > 0
-                && topic != key.thread_id,
+                && (chat != key.chat_id || topic != key.thread_id),
             "Service event does not match this entry"
         );
         anyhow::ensure!(
@@ -339,22 +650,40 @@ impl Store {
             !reserved.contains(&topic),
             "Topic already belongs to the configured registry"
         );
-        let matching: i64 = tx.query_row("SELECT count(*) FROM incoming_updates WHERE update_id>?1 AND json_extract(payload_json,'$.message.chat.id')=?2 AND json_extract(payload_json,'$.message.from.id')=?3 AND json_extract(payload_json,'$.message.from.is_bot')=1 AND json_extract(payload_json,'$.message.forum_topic_created.name')=?4", params![original,key.chat_id,bot,name], |r| r.get(0))?;
-        let intents: i64 = tx.query_row("SELECT count(*) FROM interaction_creations WHERE entry_chat=?1 AND lower(json_extract(doc,'$.name'))=lower(?2)",params![key.chat_id,name],|r|r.get(0))?;
+        let matching: i64 = tx.query_row(
+            "SELECT count(*) FROM incoming_updates i WHERE i.update_id>?1
+               AND json_extract(i.payload_json,'$.message.chat.id')=?2
+               AND json_extract(i.payload_json,'$.message.from.id')=?3
+               AND json_extract(i.payload_json,'$.message.from.is_bot')=1
+               AND json_extract(i.payload_json,'$.message.forum_topic_created.name')=?4
+               AND NOT EXISTS(SELECT 1 FROM interaction_creations known
+                 WHERE known.topic=json_extract(i.payload_json,'$.message.message_thread_id')
+                   AND known.topic!=?5 AND COALESCE(json_extract(known.doc,'$.target_chat'),known.entry_chat)=?2)",
+            params![original, chat, bot, name, topic],
+            |r| r.get(0),
+        )?;
+        let intents: i64 = tx.query_row(
+            "SELECT count(*) FROM interaction_creations
+               WHERE COALESCE(json_extract(doc,'$.target_chat'),entry_chat)=?1
+                 AND lower(json_extract(doc,'$.name'))=lower(?2)
+                 AND (topic IS NULL OR topic=?3)",
+            params![chat, name, topic],
+            |r| r.get(0),
+        )?;
         anyhow::ensure!(
             matching == 1 && intents == 1,
             "Retained creation correlation is ambiguous"
         );
-        let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE chat_id=?1 AND thread_id=?2) OR EXISTS(SELECT 1 FROM interaction_creations WHERE entry_chat=?1 AND topic=?2) OR EXISTS(SELECT 1 FROM interaction_enrollments WHERE entry_chat=?1 AND target_topic=?2)",params![key.chat_id,topic],|r|r.get(0))?;
+        let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE chat_id=?1 AND thread_id=?2) OR EXISTS(SELECT 1 FROM interaction_creations WHERE COALESCE(json_extract(doc,'$.target_chat'),entry_chat)=?1 AND topic=?2) OR EXISTS(SELECT 1 FROM interaction_enrollments WHERE entry_chat=?1 AND target_topic=?2)",params![chat,topic],|r|r.get(0))?;
         anyhow::ensure!(!used, "Service topic already has an owner or receipt");
-        for target in [key, SessionKey::new(key.chat_id, Some(topic))] {
+        for target in [key, SessionKey::new(chat, Some(topic))] {
             anyhow::ensure!(
                 !super::stopping::fenced_on(&tx, target)?
                     && !super::maintenance_writer_held_on(&tx, target)?,
                 "Selected creation is held"
             );
         }
-        tx.execute("INSERT INTO interaction_creation_receipts(creation_id,event_update,chat_id,topic_id,bot_id,payload_sha256) VALUES(?1,?2,?3,?4,?5,?6)",params![id,event,key.chat_id,topic,bot,format!("{:x}",Sha256::digest(raw.as_bytes()))])?;
+        tx.execute("INSERT INTO interaction_creation_receipts(creation_id,event_update,chat_id,topic_id,bot_id,payload_sha256) VALUES(?1,?2,?3,?4,?5,?6)",params![id,event,chat,topic,bot,format!("{:x}",Sha256::digest(raw.as_bytes()))])?;
         anyhow::ensure!(tx.execute("UPDATE interaction_creations SET phase='retained_topic',topic=?1 WHERE id=?2 AND human_id=?3 AND phase='uncertain' AND topic IS NULL",params![topic,id,human])? == 1, "Creation changed before reconciliation");
         tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(NULL,'creation_receipt_reconciled',?1,?2)",params![json!({"creation":id,"event_update":event,"actor":"authenticated_owner_local_operator","authority":"retained_original","rpc_response_observed":false}).to_string(),now_string()])?;
         let value = creation_on(&tx, id, human)?;
@@ -503,11 +832,27 @@ impl Store {
         )?;
         tx.execute("INSERT INTO interaction_enrollments(human_id,entry_chat,entry_topic,target_topic,session_id,name,creation_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![human,entry.chat_id,entry.thread_id,topic,session,if d["name"].as_str().is_some_and(|name|name.contains(' ')) {format!("t{topic}")} else {d["name"].as_str().context("Missing retained name")?.to_owned()},id])?;
         tx.execute(
-            "UPDATE interaction_creations SET phase='ready' WHERE id=?1",
-            [id],
+            "UPDATE interaction_creations SET phase='ready',topic_session_id=?2,
+               topic_release_ready=CASE WHEN json_extract(doc,'$.context.topic_workspace_root') IS NULL THEN 1 ELSE 0 END
+             WHERE id=?1",
+            params![id,session],
         )?;
         tx.commit()?;
         Ok(instruction)
+    }
+
+    pub(crate) fn release_controller_creation(&self, id: &str, human: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        anyhow::ensure!(
+            conn.execute(
+                "UPDATE interaction_creations SET topic_release_ready=1
+             WHERE id=?1 AND human_id=?2 AND instance_id=?3 AND phase='ready'
+               AND json_extract(doc,'$.kind') IS NOT 'telegram_topic'",
+                params![id, human, self.instance_id],
+            )? == 1,
+            "Controller topic release has no current binding"
+        );
+        Ok(())
     }
 
     pub fn interaction_creation_context(
@@ -517,8 +862,15 @@ impl Store {
     ) -> Result<Option<Value>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let doc:Option<String>=conn.query_row("SELECT c.doc FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id JOIN sessions s ON s.id=e.session_id WHERE e.human_id=?1 AND s.creator_user_id=?1 AND s.chat_id=?2 AND s.thread_id=?3",params![human,key.chat_id,key.thread_id],|r|r.get(0)).optional()?;
-        doc.map(|d| Ok(serde_json::from_str::<Value>(&d)?["context"].clone()))
-            .transpose()
+        doc.map(|d| {
+            let mut context = serde_json::from_str::<Value>(&d)?["context"].clone();
+            if let Some(object) = context.as_object_mut() {
+                object.remove("independent_workspace");
+                object.remove("topic_workspace_root");
+            }
+            Ok(context)
+        })
+        .transpose()
     }
 }
 
@@ -597,6 +949,9 @@ pub(super) fn workflow_continuation_on(
 
 fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
     let d = &operation["intent"];
+    if d["kind"] == "telegram_topic" {
+        return eligible_direct_topic(conn, d);
+    }
     let key: SessionKey = serde_json::from_value(d["entry"].clone())?;
     let reference: InputReference = serde_json::from_value(d["input_update"].clone())?;
     let (original, _) = super::dialogue::original_on(
@@ -609,6 +964,44 @@ fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
         true,
     )?;
     eligible_original(conn, operation, original)
+}
+
+fn eligible_direct_topic(conn: &Connection, intent: &Value) -> Result<()> {
+    let entry: SessionKey = serde_json::from_value(intent["entry"].clone())?;
+    let human = intent["human"].as_i64().context("Missing human")?;
+    let update = intent["input_update"]
+        .as_i64()
+        .context("Missing Telegram update")?;
+    let text: Option<Option<String>> = conn
+        .query_row(
+            "SELECT json_extract(i.payload_json,'$.message.text') FROM incoming_updates i
+           JOIN sessions s ON s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4
+           JOIN users u ON u.tg_user_id=s.creator_user_id AND u.allowed=1
+           JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+           LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||u.tg_user_id
+           WHERE i.update_id=?1 AND e.value=COALESCE(current.value,'initial')
+             AND json_extract(i.payload_json,'$.direct_human_text')=1
+             AND json_extract(i.payload_json,'$.message.from.id')=?4
+             AND json_extract(i.payload_json,'$.message.chat.id')=?2
+             AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)=?3",
+            params![update, entry.chat_id, entry.thread_id, human],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let owned = text
+        .flatten()
+        .and_then(|text| crate::telegram::normalize_command(&text, None))
+        .is_some_and(|(command, args)| {
+            matches!(command.as_str(), "/topic" | "/new-topic" | "/new_topic")
+                && (args.is_empty() || intent["name"] == args)
+        });
+    anyhow::ensure!(
+        owned
+            && !super::stopping::fenced_on(conn, entry)?
+            && !super::maintenance_writer_held_on(conn, entry)?,
+        "Original topic command is unavailable"
+    );
+    Ok(())
 }
 
 fn eligible_original(conn: &Connection, operation: &Value, original: SourceInput) -> Result<()> {
@@ -644,6 +1037,96 @@ fn eligible_original(conn: &Connection, operation: &Value, original: SourceInput
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topic_setup_admission_and_offset_survive_restart_without_replaying_claimed_input() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let entry = SessionKey::new(100, Some(12));
+        let topic = SessionKey::new(100, Some(13));
+        let folder = defaults.cwd.join("Design--100-13");
+        let original = |id, thread, text| -> crate::telegram::Update {
+            serde_json::from_value(
+                json!({"update_id": id, "direct_human_text": true, "message": {
+                    "message_id": id, "message_thread_id": thread,
+                    "from": {"id": 100, "is_bot": false, "first_name": "Human"},
+                    "chat": {"id": 100, "type": "private"}, "text": text,
+                }}),
+            )
+            .unwrap()
+        };
+        let first = original(43, 13, "Keep my exact first input.");
+        {
+            let store = Store::open(file.path(), &[100], &defaults).unwrap();
+            store.ensure_session(entry, 100, &defaults).unwrap();
+            store
+                .admit_update(&original(42, 12, "/topic Design"))
+                .unwrap();
+            let (op, _) = store
+                .prepare_direct_topic(entry, 100, 42, ("Design", false), 100, Some(&defaults.cwd))
+                .unwrap()
+                .unwrap();
+            let id = op["id"].as_str().unwrap();
+            store.interaction_creation_start(id, 100).unwrap();
+            store.interaction_creation_topic(id, 100, 13).unwrap();
+            assert!(
+                store.admit_telegram_update(&first).unwrap()
+                    == TelegramUpdateAdmission::HeldForTopic
+            );
+            assert_eq!(store.last_update_id().unwrap(), Some(43));
+            assert!(store.begin_update(43).is_err());
+        }
+        {
+            let store = Store::open(file.path(), &[100], &defaults).unwrap();
+            assert!(store.claim_creation_update(topic).unwrap().is_none());
+            let stop = original(44, 13, "/stop status");
+            assert!(
+                store.admit_telegram_update(&stop).unwrap() == TelegramUpdateAdmission::Dispatch
+            );
+            assert!(!store.begin_creation_aware_update(&stop).unwrap());
+            store.finish_update_dispatch(44, true).unwrap();
+            let mut template = store.ensure_session(topic, 100, &defaults).unwrap();
+            template.cwd = folder.clone();
+            store
+                .reserve_topic_folder(topic, 100, &folder, None)
+                .unwrap();
+            let (op, claimed) = store
+                .claim_creation_resume(
+                    entry,
+                    100,
+                    42.into(),
+                    &tokio_util::sync::CancellationToken::new(),
+                    true,
+                )
+                .unwrap();
+            assert!(claimed);
+            store
+                .apply_new_topic_folder_template(
+                    topic,
+                    &template,
+                    100,
+                    &folder,
+                    &defaults.cwd,
+                    op["id"].as_str(),
+                )
+                .unwrap();
+        }
+        {
+            let store = Store::open(file.path(), &[100], &defaults).unwrap();
+            assert_eq!(store.ready_creation_update_topics().unwrap(), vec![topic]);
+            let retained = store.claim_creation_update(topic).unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(retained).unwrap(),
+                serde_json::to_value(&first).unwrap()
+            );
+            assert_eq!(store.get_session(topic).unwrap().unwrap().cwd, folder);
+        }
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        assert!(store.ready_creation_update_topics().unwrap().is_empty());
+        assert!(store.claim_creation_update(topic).unwrap().is_none());
+        assert!(store.admit_telegram_update(&first).unwrap() == TelegramUpdateAdmission::Duplicate);
+    }
+
     fn uncertain_receipt_fixture() -> (tempfile::NamedTempFile, Store, SessionKey, String) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let defaults = super::super::tests::defaults();
@@ -694,6 +1177,31 @@ mod tests {
         let event:crate::telegram::Update=serde_json::from_value(json!({"update_id":22,"message":{"message_id":30,"message_thread_id":77,"from":{"id":888,"is_bot":true,"first_name":"Bot"},"chat":{"id":100,"type":"private"},"forum_topic_created":{"name":"Gamma","icon_color":7322096}}})).unwrap();
         store.admit_update(&event).unwrap();
         (file, store, entry, id)
+    }
+
+    #[test]
+    fn creation_retry_keeps_the_original_workspace_selection() {
+        let (_file, store, entry, id) = uncertain_receipt_fixture();
+        let (retained, fresh) = store
+            .interaction_prepare_creation(
+                entry,
+                100,
+                "entry-native",
+                20,
+                "Gamma",
+                "Distinct task",
+                &json!({"sources":[],"independent_workspace":"/alternate/workspace"}),
+                2,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(!fresh);
+        assert_eq!(retained["id"], id);
+        assert!(
+            retained["intent"]["context"]
+                .get("independent_workspace")
+                .is_none()
+        );
     }
 
     #[test]
@@ -880,6 +1388,8 @@ mod tests {
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
+            independent_topic_workspace: None,
+            topic_workspace_root: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],
@@ -914,6 +1424,23 @@ mod tests {
         assert_eq!(discovered.targets[0].name, "Explicit");
         assert_eq!(discovered.targets[3].name, "t7");
         assert_eq!(discovered.targets[4].name, "t8");
+        let labels = store.interaction_target_labels(&discovered).unwrap();
+        assert_eq!(
+            labels[4],
+            json!({"name":"t8","display_name":"Two Words","stable_selector":"t8"})
+        );
+        store
+            .observe_topic(
+                SessionKey::new(100, Some(8)),
+                Some("Actual Topic Name"),
+                None,
+                None,
+                json!({"kind":"telegram_update","update_id":4}),
+            )
+            .unwrap();
+        let labels = store.interaction_target_labels(&discovered).unwrap();
+        assert_eq!(labels[4]["display_name"], "Actual Topic Name");
+        assert_eq!(labels[4]["stable_selector"], "t8");
         assert!(discovered.resolve("t999").is_empty());
         store
             .conn
@@ -1450,6 +1977,8 @@ mod tests {
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
+            independent_topic_workspace: None,
+            topic_workspace_root: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],

@@ -917,7 +917,7 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO incoming_updates SELECT 2,payload_json,'queued',instance_id,NULL,updated_at FROM incoming_updates WHERE update_id=1",[]).unwrap();
+        conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,turn_id,updated_at) SELECT 2,payload_json,'queued',instance_id,NULL,updated_at FROM incoming_updates WHERE update_id=1",[]).unwrap();
         assert!(
             pending_on(&conn, key, session, None).is_err(),
             "A separate pending original must win"

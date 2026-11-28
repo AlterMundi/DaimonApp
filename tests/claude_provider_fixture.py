@@ -25,6 +25,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
         return json.loads(submission)
 
     def do_POST(self):
+        quote_gate = None
         try:
             assert self.path.startswith("/v1/messages")
             length = int(self.headers["Content-Length"])
@@ -44,6 +45,21 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             system = json.dumps(data["system"], ensure_ascii=False)
+            if getattr(self.server, "goal_command", None) and "evaluating a stop-condition hook" in system:
+                messages = json.dumps(data["messages"])
+                assert self.server.original in messages
+                assert self.server.quote_response in messages
+                self.admitted()
+                self.server.goal_evaluations += 1
+                assert self.server.goal_evaluations <= 8
+                self.send_fixture_message(
+                    data, f"goal_{self.server.goal_evaluations}", {"type": "text", "text": ""},
+                    {"type": "text_delta", "text": json.dumps({
+                        "ok": self.server.goal_met, "reason": self.server.quote_response,
+                    })},
+                    "end_turn",
+                )
+                return
             assert self.server.display_name in system
             assert "Claude Code is your harness" in system
             if getattr(self.server, "session_instructions", None):
@@ -88,6 +104,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             steer = getattr(self.server, "steer_fixture", None)
             if steer:
                 steps = [("Bash", {"command": steer["command"]}, "Native steer gate opened.")]
+            elif write_memory := getattr(self.server, "memory_write_command", None):
+                assert "owner-configured DMK wrapper" in system
+                steps.append(("Bash", {"command": write_memory}, "Native DMK write accepted."))
             elif host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
@@ -106,7 +125,20 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, dispatch, '"new_admission":false'),
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
-            assert self.server.original in json.dumps(data["messages"])
+            assert self.server.original in json.dumps(data["messages"], ensure_ascii=False)
+            routed_human = getattr(self.server, "routed_paired_human", None)
+            if routed_human is not None:
+                assert "Gateway delivered a routed packet with its author and source recorded." in system
+                blocks = [block["text"] for message in data["messages"]
+                          if isinstance(message["content"], list)
+                          for block in message["content"] if block.get("type") == "text"]
+                provenance = next(
+                    json.loads(line.removeprefix("Transport provenance: "))
+                    for block in blocks for line in block.splitlines()
+                    if line.startswith("Transport provenance: ")
+                )
+                assert provenance["source_channel"] == "conversation", provenance
+                assert provenance["original_human_author"] == routed_human, provenance
             attachment = getattr(self.server, "attachment", None)
             if attachment:
                 assert any(
@@ -117,14 +149,38 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 )
             submission = self.admitted()
             assert submission["native_session_id"]
+            codex_handoff = getattr(self.server, "expected_codex_handoff", None)
+            if codex_handoff:
+                self.server.codex_handoff_native = submission["native_session_id"]
+                assert self.server.codex_handoff_native != codex_handoff["native"]
+                blocks = [block.get("text", "") for message in data["messages"]
+                          if isinstance(message["content"], list) for block in message["content"]
+                          if block.get("type") == "text"]
+                seed = next((block for block in blocks if block.startswith("Gateway historical context (JSON):")), "")
+                assert codex_handoff["original"] in seed and codex_handoff["reply"] in seed, (
+                    "The new Claude turn lacked the receipt-bound Codex exchange"
+                )
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
+            returned_dependency = getattr(self.server, "returned_dependency", None)
+            if returned_dependency:
+                fixture_id = "returned"
+                steps = [
+                    (CONTROLLER, {"operation": "inputs", "arguments": {}}, '"eligible_coordination_parent":false'),
+                    (CONTROLLER, {"operation": "session_request", "arguments": {
+                        "parent_instruction": self.server.current, "request_id": "result-cannot-delegate",
+                        "selector": "general", "text": "This request must never be admitted.",
+                    }}, '"kind":"session_request_rejected"'),
+                ]
             if distinct_request:
                 request = {"parent_instruction": self.server.current, "request_id": "fixture-general",
                            "selector": "general", "text": "Check the design summary for the current request."}
                 steps = [
                     (CONTROLLER, {"operation": "inputs", "arguments": {}}, self.server.current),
                     (CONTROLLER, {"operation": "capabilities", "arguments": {}}, "telecodex.local-session/v1"),
+                    (CONTROLLER, {"operation": "session_request",
+                                  "arguments": {**request, "report_to_topic": True}},
+                     '"kind":"topic_report_destination_unsupported"'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":true'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":false'),
                 ]
@@ -136,7 +192,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert steer["conversation_text"] in messages
             previous = getattr(self.server, "previous_original", None)
             messages = data["messages"]
-            if distinct_request:
+            if returned_dependency:
+                assert returned_dependency["parent_prompt"] in json.dumps(messages)
+            skill_refresh = getattr(self.server, "refreshed_skill", None)
+            if skill_refresh:
+                fixture_id = "refreshed-skill"
+                assert submission["native_session_id"] == skill_refresh["native"]
+                assert submission["native_session_scope"] == skill_refresh["scope"]
+                assert skill_refresh["previous_prompt"] in json.dumps(messages)
+            if distinct_request or returned_dependency or skill_refresh:
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
@@ -171,9 +235,38 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
+            elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
+                if expected := getattr(self.server, "expected_quote", None):
+                    # Only the current exchange's context may resolve this
+                    # short approval. Earlier messages include other proposals.
+                    content = next(message["content"] for message in reversed(messages)
+                                   if message["role"] == "user")
+                    quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
+                              if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
+                    assert quoted == [expected], quoted
+                    if abandoned := getattr(self.server, "abandoned_quote_original", None):
+                        assert abandoned not in json.dumps(messages, ensure_ascii=False)
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": quote_response}
+                reason = "end_turn"
+                if quote_gate := getattr(self.server, "quote_answer_gate", None):
+                    arrived, release, _ = quote_gate
+                    arrived.set()
+                    assert release.wait(12), "The fixture did not release the active provider turn"
             elif attachment:
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": ANSWER}
+                reason = "end_turn"
+            elif (recovered := getattr(self.server, "expected_recovered_history", None)) is not None:
+                assert submission["native_session_id"] != self.server.previous_session
+                assert any(
+                    "Gateway historical context (JSON):" in block.get("text", "")
+                    and recovered in block.get("text", "")
+                    for message in messages if isinstance(message["content"], list)
+                    for block in message["content"] if block.get("type") == "text"
+                )
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": "I recovered the retained design context."}
                 reason = "end_turn"
             elif previous is not None:
                 assert prior == len(steps) + 1
@@ -202,9 +295,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
-                        if distinct_request and isinstance(entry["content"], list):
+                        if (distinct_request or returned_dependency) and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
-                        assert expected_result in payload
+                        tool = steps[prior - 1][0]
+                        if tool == "Skill":
+                            # Recent Claude releases return the launch acknowledgment in
+                            # tool_result and the instructions in a separate message.
+                            assert f"Launching skill: {skill}" in payload or expected_result in payload
+                            payload = json.dumps(messages, ensure_ascii=False)
+                        assert expected_result in payload, tool
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:
@@ -216,31 +315,40 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     block = {"type": "text", "text": ""}
                     delta = {"type": "text_delta", "text": ANSWER}
                     reason = "end_turn"
-            message = {
-                "id": f"msg_{fixture_id}_{prior}", "type": "message", "role": "assistant", "content": [],
-                "model": data["model"], "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 8, "output_tokens": 1},
-            }
-            frames = [
-                ("message_start", {"message": message}),
-                ("content_block_start", {"index": 0, "content_block": block}),
-                ("content_block_delta", {"index": 0, "delta": delta}),
-                ("content_block_stop", {"index": 0}),
-                ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
-                                   "usage": {"output_tokens": 4}}),
-                ("message_stop", {}),
-            ]
-            response = "".join(
-                f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
-                for event, value in frames
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(response)))
-            self.end_headers()
-            self.wfile.write(response)
+            self.send_fixture_message(data, f"{fixture_id}_{prior}", block, delta, reason)
         except Exception as error:
+            if (isinstance(error, (BrokenPipeError, ConnectionResetError))
+                    and quote_gate and quote_gate[2].is_set()):
+                # The selected CLI already acknowledged cancellation and may
+                # close its HTTP stream before this late answer is written.
+                return
             import traceback
             point = traceback.extract_tb(error.__traceback__)[-1]
-            self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
+            if self.server.failure is None:
+                self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)
+
+    def send_fixture_message(self, data, ident, block, delta, reason):
+        message = {
+            "id": f"msg_{ident}", "type": "message", "role": "assistant", "content": [],
+            "model": data["model"], "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": 8, "output_tokens": 1},
+        }
+        frames = [
+            ("message_start", {"message": message}),
+            ("content_block_start", {"index": 0, "content_block": block}),
+            ("content_block_delta", {"index": 0, "delta": delta}),
+            ("content_block_stop", {"index": 0}),
+            ("message_delta", {"delta": {"stop_reason": reason, "stop_sequence": None},
+                               "usage": {"output_tokens": 4}}),
+            ("message_stop", {}),
+        ]
+        response = "".join(
+            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
+            for event, value in frames
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)

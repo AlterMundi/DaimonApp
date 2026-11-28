@@ -405,6 +405,7 @@ fn sample_app() -> (App, NamedTempFile) {
         heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
         heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
+        telegram_dispatchers: Default::default(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -847,24 +848,54 @@ async fn named_new_reuses_topic_rename_and_preserves_old_native_history() {
 
 #[tokio::test]
 async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
-    let message: Message = serde_json::from_value(serde_json::json!({
+    exercise_private_topic_creation(false).await;
+}
+
+#[tokio::test]
+async fn private_topic_creation_resumes_confirmed_topic_after_workspace_failure() {
+    exercise_private_topic_creation(true).await;
+}
+
+async fn exercise_private_topic_creation(interrupt_after_receipt: bool) {
+    let update: crate::telegram::Update = serde_json::from_value(serde_json::json!({
+        "update_id": 42, "direct_human_text": true, "message": {
         "message_id": 3, "message_thread_id": 12,
-        "chat": {"id": 100, "type": "private"}, "text": "/topic New context"
+        "from": {"id": 100, "is_bot": false, "first_name": "Human"},
+        "chat": {"id": 100, "type": "private"}, "text": "/topic New context"}
     }))
     .unwrap();
     let reply = serde_json::json!({"ok": true, "result": {
         "message_id": 20, "chat": {"id": 100, "type": "private"}
     }});
-    let (api, server) = crate::telegram::tests::serve_api(vec![
-        (
-            200,
-            serde_json::json!({"ok": true, "result": {"message_thread_id": 13, "name": "New context"}}),
-        ),
-        (200, reply.clone()),
-        (200, reply),
-    ]);
+    let mut responses = vec![(
+        200,
+        serde_json::json!({"ok": true, "result": {"message_thread_id": 13, "name": "New context"}}),
+    )];
+    if interrupt_after_receipt {
+        responses.push((200, reply.clone()));
+    }
+    responses.extend([(200, reply.clone()), (200, reply)]);
+    let (api, server) = crate::telegram::tests::serve_api(responses);
     let (mut app, _db) = sample_app();
     let shared = Arc::get_mut(&mut app.shared).unwrap();
+    shared.config.max_text_chunk = 4096;
+    let neutral = tempfile::TempDir::new().unwrap();
+    let folder = neutral
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("New context--100-13");
+    if interrupt_after_receipt {
+        std::fs::create_dir(&folder).unwrap();
+    }
+    shared.config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "topic_workspace_root": neutral.path()
+        }))
+        .unwrap(),
+    );
+    let source_cwd = shared.session_defaults.cwd.clone();
     *shared.bot_metadata.get_mut().unwrap() = Some(crate::telegram::User {
         id: 123,
         is_bot: true,
@@ -883,18 +914,95 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
         .store
         .set_session_codex_thread(key, "existing-context")
         .unwrap();
-    let user = shared.store.get_user(100).unwrap().unwrap();
-    app.handle_new_topic(&user, &message, Some("New context".to_string()))
-        .await
+    let source = shared.store.get_session(key).unwrap().unwrap();
+    shared
+        .store
+        .save_bot_state(
+            &active_session_state_key(100, 100),
+            &active_session_identity(key, &source),
+        )
         .unwrap();
+    shared.store.admit_update(&update).unwrap();
+    shared.store.begin_update(update.update_id).unwrap();
+    Box::pin(app.process_update(update)).await.unwrap();
+    if interrupt_after_receipt {
+        let receipt = app
+            .shared
+            .store
+            .interaction_creation_for_input(key, 100, 42)
+            .unwrap();
+        assert_eq!(receipt["phase"], "retained_topic");
+        assert_eq!(receipt["topic"], 13);
+        let repeat: crate::telegram::Update = serde_json::from_value(serde_json::json!({
+            "update_id": 43, "direct_human_text": true, "message": {
+            "message_id": 4, "message_thread_id": 12,
+            "from": {"id": 100, "is_bot": false, "first_name": "Human"},
+            "chat": {"id": 100, "type": "private"}, "text": "/topic New context"}
+        }))
+        .unwrap();
+        app.shared.store.admit_update(&repeat).unwrap();
+        app.shared.store.begin_update(repeat.update_id).unwrap();
+        let (existing, claimed) = app
+            .shared
+            .store
+            .prepare_direct_topic(
+                key,
+                100,
+                repeat.update_id,
+                ("New context", false),
+                100,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!claimed);
+        assert_eq!(existing["id"], receipt["id"]);
+        assert!(
+            app.shared
+                .store
+                .interaction_find_creation_for_input(key, 100, 43)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::remove_dir(&folder).unwrap();
+        let (operation, claimed) = app
+            .shared
+            .store
+            .claim_creation_resume(
+                key,
+                100,
+                42.into(),
+                &tokio_util::sync::CancellationToken::new(),
+                true,
+            )
+            .unwrap();
+        assert!(claimed);
+        creation::complete_direct_topic(&app, 100, &operation)
+            .await
+            .unwrap();
+    }
     let new_session = app
         .shared
         .store
         .get_session(SessionKey::new(100, Some(13)))
         .unwrap()
         .unwrap();
+    assert_eq!(new_session.cwd, folder);
+    assert!(new_session.cwd.is_dir());
+    assert_eq!(
+        app.shared.store.get_session(key).unwrap().unwrap().cwd,
+        source_cwd
+    );
     assert!(new_session.codex_thread_id.is_none());
     assert!(new_session.force_fresh_thread);
+    let receipt = app
+        .shared
+        .store
+        .interaction_creation_for_input(key, 100, 42)
+        .unwrap();
+    assert_eq!(receipt["phase"], "ready");
+    assert_eq!(receipt["topic"], 13);
+    assert_eq!(receipt["instructions"], serde_json::json!([]));
     assert_eq!(
         app.shared
             .store
@@ -909,8 +1017,287 @@ async fn private_topic_creation_uses_real_api_and_starts_an_isolated_session() {
     assert!(requests[0].0.contains("/createForumTopic"));
     assert_eq!(requests[0].1["chat_id"], 100);
     assert_eq!(requests[0].1["name"], "New context");
-    assert_eq!(requests[1].1["message_thread_id"], 13);
-    assert_eq!(requests[2].1["message_thread_id"], 12);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|(method, _)| method.contains("createForumTopic"))
+            .count(),
+        1
+    );
+    assert_eq!(requests[requests.len() - 2].1["message_thread_id"], 13);
+    assert_eq!(requests[requests.len() - 1].1["message_thread_id"], 12);
+}
+
+#[test]
+fn topic_workspace_allocation_is_idempotent_and_title_safe() {
+    let (app, _db) = sample_app();
+    let root = tempfile::TempDir::new().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let key = SessionKey::new(100, Some(13));
+    let a = app
+        .allocate_topic_workspace(&root, "../Char / Design", key, 100)
+        .unwrap();
+    let retry = app
+        .allocate_topic_workspace(&root, "Renamed", key, 100)
+        .unwrap();
+    let b = app
+        .allocate_topic_workspace(
+            &root,
+            "../Char / Design",
+            SessionKey::new(100, Some(14)),
+            100,
+        )
+        .unwrap();
+    assert_eq!(a, retry);
+    assert_ne!(a, b);
+    assert_eq!(a.parent(), Some(root.as_path()));
+    assert_eq!(
+        app.shared.store.topic_folder(key, 100).unwrap(),
+        Some(a.clone())
+    );
+    let unrelated = root.join("Char Design--100-15");
+    std::fs::create_dir(&unrelated).unwrap();
+    assert!(
+        app.allocate_topic_workspace(&root, "Char Design", SessionKey::new(100, Some(15)), 100)
+            .is_err()
+    );
+    #[cfg(unix)]
+    {
+        let link = root.join("Char Design--100-16");
+        std::os::unix::fs::symlink(&a, link).unwrap();
+        assert!(
+            app.allocate_topic_workspace(&root, "Char Design", SessionKey::new(100, Some(16)), 100)
+                .is_err()
+        );
+    }
+    let project = tempfile::TempDir::new().unwrap();
+    app.shared
+        .store
+        .set_owned_session_cwd(key, 100, project.path())
+        .unwrap();
+    let mut recovered = app.shared.store.get_session(key).unwrap().unwrap();
+    recovered.cwd = a.clone();
+    app.initialize_topic_session_with_folder(key, 100, &recovered, Some(&a), None)
+        .unwrap();
+    assert_eq!(
+        app.shared.store.get_session(key).unwrap().unwrap().cwd,
+        project.path()
+    );
+    assert_eq!(app.shared.store.topic_folder(key, 100).unwrap(), Some(a));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn topic_dispatch_releases_a_retained_original_once_in_the_committed_workspace() {
+    use crate::tele_daimon::GatewayIngress;
+    use crate::telegram::Update;
+    use serde_json::json;
+
+    let (mut app, db) = sample_app();
+    let (api, server) = crate::telegram::tests::serve_api(vec![(
+        200,
+        json!({
+            "ok": true, "result": {"message_id": 20, "chat": {"id": 100, "type": "private"}}
+        }),
+    )]);
+    Arc::get_mut(&mut app.shared).unwrap().telegram = TelegramClient::new("synthetic".into(), api);
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let source = SessionKey::new(100, Some(12));
+    let target = SessionKey::new(100, Some(13));
+    let source_session = app.ensure_session(source, 100).unwrap();
+    let update = |id, thread, text| -> Update {
+        serde_json::from_value(
+            json!({"update_id": id, "direct_human_text": true, "message": {
+                "message_id": id, "message_thread_id": thread,
+                "from": {"id": 100, "is_bot": false, "first_name": "Human"},
+                "chat": {"id": 100, "type": "private"}, "text": text
+            }}),
+        )
+        .unwrap()
+    };
+    let original = update(42, 12, "/topic Design");
+    let store = &app.shared.store;
+    store.admit_update(&original).unwrap();
+    let (op, claimed) = store
+        .prepare_direct_topic(source, 100, 42, ("Design", false), 100, Some(&root))
+        .unwrap()
+        .unwrap();
+    assert!(claimed);
+    let id = op["id"].as_str().unwrap();
+    store.interaction_creation_start(id, 100).unwrap();
+    store.interaction_creation_topic(id, 100, 13).unwrap();
+
+    let first = update(43, 13, "/pwd");
+    let mut gateway = telegram_ingress::TelegramGateway::new(app.clone());
+    gateway.accept(first.clone()).await.unwrap();
+    let db = rusqlite::Connection::open(db.path()).unwrap();
+    let phase = || {
+        db.query_row(
+            "SELECT status FROM incoming_updates WHERE update_id=43",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while phase() != "retained_creation" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(store.get_session(target).unwrap().is_none());
+    assert!(store.claim_creation_update(target).unwrap().is_none());
+
+    let folder = app
+        .allocate_topic_workspace(&root, "Design", target, 100)
+        .unwrap();
+    let mut template = source_session;
+    template.force_fresh_thread = true;
+    app.apply_independent_topic_workspace(&mut template, folder.clone());
+    store
+        .save_bot_state(&active_session_state_key(100, 100), "13:new")
+        .unwrap();
+    app.initialize_topic_session_with_folder(target, 100, &template, Some(&folder), Some(id))
+        .unwrap();
+    telegram_ingress::release_created_topic(&app, target).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while phase() != "handled" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    gateway.accept(first).await.unwrap();
+    assert!(store.claim_creation_update(target).unwrap().is_none());
+    let requests = server.join().unwrap();
+    assert!(requests[0].0.contains("/sendMessage"));
+    assert_eq!(requests[0].1["message_thread_id"], 13);
+    let response = html_escape::decode_html_entities(requests[0].1["text"].as_str().unwrap());
+    assert!(
+        response.contains(&format!("Working directory: {}", folder.display())),
+        "Unexpected Telegram response: {response}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn owned_existing_topic_adopts_one_folder_without_moving_native_work() {
+    let (mut app, _db) = sample_app();
+    let root = tempfile::tempdir().unwrap();
+    let checkout = tempfile::tempdir().unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "topic_workspace_root": root.path()
+        }))
+        .unwrap(),
+    );
+    let key = SessionKey::new(100, Some(13));
+    let stored = app.ensure_session(key, 100).unwrap();
+    let store = &app.shared.store;
+    store.set_session_cwd(key, checkout.path()).unwrap();
+    store
+        .set_session_codex_thread(key, "older-native-thread")
+        .unwrap();
+    store
+        .set_explicit_session_title(key, "Char Design")
+        .unwrap();
+    let before = store.conversation_request_binding(100, key).unwrap();
+    let selected = format!("adopt 13 {}", stored.id);
+    assert!(creation::workspace_owner_command(&app, 101, &selected).is_err());
+    assert!(creation::workspace_owner_command(&app, 100, "adopt 13 1000").is_err());
+    assert!(
+        stopping::telegram_command(&app, 100, &format!("topics workspace {selected}"), None)
+            .await
+            .is_err()
+    );
+    store.set_session_busy(key, true).unwrap();
+    assert!(creation::workspace_owner_command(&app, 100, &selected).is_err());
+    store.set_session_busy(key, false).unwrap();
+    let adopted = creation::workspace_owner_command(&app, 100, &selected).unwrap();
+    assert_eq!(adopted["folder_ready"], true);
+    assert_eq!(
+        adopted["working_directory"],
+        serde_json::json!(checkout.path())
+    );
+    assert_eq!(
+        adopted["conversation_folder"],
+        serde_json::json!(
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join("Char Design--100-13")
+        )
+    );
+    assert_eq!(
+        store.conversation_request_binding(100, key).unwrap(),
+        before
+    );
+    store.set_explicit_session_title(key, "Redesigned").unwrap();
+    assert_eq!(
+        creation::workspace_owner_command(&app, 100, &selected).unwrap(),
+        adopted
+    );
+
+    let interrupted = SessionKey::new(100, Some(14));
+    let session = app.ensure_session(interrupted, 100).unwrap();
+    let reserved = root.path().canonicalize().unwrap().join("Topic--100-14");
+    store
+        .reserve_topic_folder(interrupted, 100, &reserved, Some(session.id))
+        .unwrap();
+    store.set_session_busy(interrupted, true).unwrap();
+    assert!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).is_err()
+    );
+    assert!(!reserved.exists());
+    store.set_session_busy(interrupted, false).unwrap();
+    assert_eq!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).unwrap()
+            ["folder_ready"],
+        true
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn topic_workspace_adoption_defers_to_confirmed_creation() {
+    let (mut app, _db) = sample_app();
+    let root = tempfile::tempdir().unwrap();
+    Arc::get_mut(&mut app.shared).unwrap().config.interaction = Some(
+        serde_json::from_value(serde_json::json!({
+            "human_id": 100, "chat_id": 100, "topic_id": 12,
+            "topic_workspace_root": root.path()
+        }))
+        .unwrap(),
+    );
+    let source = SessionKey::new(100, Some(12));
+    let target = SessionKey::new(100, Some(13));
+    app.ensure_session(source, 100).unwrap();
+    let provisional = app.ensure_session(target, 100).unwrap();
+    let input = serde_json::from_value(serde_json::json!({
+        "update_id": 41, "direct_human_text": true, "message": {
+            "message_id": 41, "message_thread_id": 12,
+            "from": {"id": 100, "first_name": "Human", "is_bot": false},
+            "chat": {"id": 100, "type": "private"}, "text": "/topic Design"}
+    }))
+    .unwrap();
+    let store = &app.shared.store;
+    store.admit_update(&input).unwrap();
+    let (op, _) = store
+        .prepare_direct_topic(source, 100, 41, ("Design", false), 100, Some(root.path()))
+        .unwrap()
+        .unwrap();
+    let id = op["id"].as_str().unwrap();
+    store.interaction_creation_start(id, 100).unwrap();
+    store.interaction_creation_topic(id, 100, 13).unwrap();
+    assert!(
+        creation::workspace_owner_command(&app, 100, &format!("adopt 13 {}", provisional.id))
+            .is_err()
+    );
+    assert!(store.topic_folder(target, 100).unwrap().is_none());
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
 }
 
 #[tokio::test]
@@ -2439,6 +2826,7 @@ fn rebinds_stale_session_to_latest_active_thread_for_same_cwd() {
         heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
         heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
+        telegram_dispatchers: Default::default(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -2573,6 +2961,7 @@ fn keeps_truly_archived_session_unbound_when_no_active_replacement_exists() {
         heartbeat_loop_started_at: std::sync::atomic::AtomicI64::new(0),
         heartbeat_owner_held: std::sync::atomic::AtomicBool::new(false),
         goal_recovery_wakeup: tokio::sync::Notify::new(),
+        telegram_dispatchers: Default::default(),
         config,
         store,
         telegram: TelegramClient::new(
@@ -3277,6 +3666,8 @@ if engine == "claude":
     assert first["humanOriginal"] is False
     native = first["freshNativeSessionId"]
 preparation = dict(ids, type="prepare_submission", nativeSessionId=native)
+if "workspace" in first:
+    preparation["workspace"] = first["workspace"]
 if engine == "claude":
     preparation["sessionScope"] = "a" * 64
 if first["text"] == "wrong-native-id":

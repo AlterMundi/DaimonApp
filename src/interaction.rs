@@ -40,6 +40,10 @@ pub struct InteractionConfig {
     pub discover_owned_sessions: bool,
     /// Independent synthesis settings; omitted values preserve existing behavior.
     pub observer_model: Option<String>,
+    /// Owner-selected directory for independent topic creation.
+    pub independent_topic_workspace: Option<std::path::PathBuf>,
+    /// Owner-selected parent for individually allocated independent topics.
+    pub topic_workspace_root: Option<std::path::PathBuf>,
     /// Explicit inert per-being vocabulary; omitted keeps the legacy portrait.
     pub expression_pack: Option<crate::ascii::ExpressionPack>,
     pub observer_reasoning_effort: Option<String>,
@@ -396,6 +400,19 @@ impl InteractionConfig {
         {
             bail!("Invalid explicit artifact storage placement or retention limits");
         }
+        for workspace in [
+            self.independent_topic_workspace.as_ref(),
+            self.topic_workspace_root.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            anyhow::ensure!(
+                workspace.is_absolute()
+                    && workspace.to_str().is_some_and(|path| path.len() <= 4096),
+                "Independent topic workspace must be an absolute UTF-8 path"
+            );
+        }
         if let Some(pack) = &self.expression_pack {
             pack.validate()?;
         }
@@ -622,6 +639,25 @@ impl InteractionConfig {
             .map(|t| SessionKey::new(self.chat_id, Some(t.topic_id)))
             .collect()
     }
+}
+
+pub(crate) fn native_claude_goal(text: &str) -> bool {
+    let text = text.trim_end();
+    text == "/goal"
+        || text.strip_prefix("/goal ").is_some_and(|condition| {
+            !condition.trim().is_empty() && condition.chars().count() <= 4000
+        })
+}
+
+pub(crate) fn native_claude_goal_control(text: &str) -> bool {
+    let text = text.trim_end();
+    text == "/goal"
+        || text.strip_prefix("/goal ").is_some_and(|argument| {
+            matches!(
+                argument.trim(),
+                "clear" | "stop" | "off" | "reset" | "none" | "cancel"
+            )
+        })
 }
 
 /// A selector is deliberate only at the beginning of the human's message.
@@ -967,6 +1003,8 @@ pub fn visible_answer(text: &str) -> &str {
     }
 }
 
+pub(crate) const WITHHELD_RESULT_NOTICE: &str = "this earlier result does not report incorporating your correction. Its canonical text remains retained for inspection.";
+
 pub fn worker_result(text: &str) -> (&str, Option<Coverage>) {
     const START: &str = "\n<daimon-result>";
     const END: &str = "</daimon-result>";
@@ -1040,6 +1078,8 @@ mod tests {
             max_active_workers: 2,
             discover_owned_sessions: false,
             observer_model: None,
+            independent_topic_workspace: None,
+            topic_workspace_root: None,
             expression_pack: None,
             observer_reasoning_effort: None,
             matrix_targets: vec![],

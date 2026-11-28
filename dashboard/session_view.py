@@ -295,15 +295,18 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     # Local dependencies and their returns have their own frozen audience.
     ownership = """i.session_id=? AND s.human_id=? AND i.phase='accepted'
           AND t.session_id=i.session_id AND t.from_user_id=s.human_id
-          AND t.execution_harness=? AND t.execution_generation=?
-          AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)"""
+          AND t.execution_harness=? AND t.execution_generation=?"""
+    human_original = "NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=s.id)"
     accepted = """FROM interaction_instructions i
         JOIN interaction_sources s ON s.id=i.input_id
         JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')"""
     final = """r.local_turn=t.id AND r.native_thread=t.native_thread_id
           AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
           AND length(trim(r.body))>0 AND t.status='completed'"""
-    source = f"{accepted} JOIN interaction_results r ON {final} WHERE {ownership}"
+    source = f"""{accepted} JOIN interaction_results r ON {final}
+        LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
+          AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
+        WHERE {ownership} AND (p.id IS NOT NULL OR {human_original})"""
     scope = (session, human, harness, generation)
     # Keep outstanding originals separate from the append-only result cursor.
     # A final result can arrive out of order and still has its own position.
@@ -311,7 +314,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     original_id = "CASE WHEN s.channel='conversation' THEN s.event_id END"
     if event is None and before is None:
         pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
-            {accepted} WHERE {ownership} AND t.status='running'
+            {accepted} WHERE {ownership} AND {human_original} AND t.status='running'
             AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final})
             ORDER BY i.sequence DESC LIMIT 8""", scope)
         for instruction, started, text, input_id in reversed(pending.fetchall()):
@@ -329,7 +332,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     else:
         where = 'r.rowid>=?' if ordered else 'r.rowid<=?'
     rows = db.execute(f'''SELECT r.rowid,t.started_at,t.completed_at,
-        json_extract(s.doc,'$.text'),r.body,{original_id} {source} AND {where}
+        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') END,r.body,{original_id} {source} AND {where}
         ORDER BY r.rowid {order} LIMIT {MAX_ITEMS + 1}''', (*scope, bound))
     items = deque()
     total = 0
