@@ -185,8 +185,12 @@ Set `harness = "qwen"` for the selected existing topic and configure
 selected Qwen body's authenticated Matrix transport. Set `worker_command`
 to the absolute Node binary and
 `adapters/acp/qwen-gateway-worker.mjs --profile PROFILE`. The private worker
-profile contains `body`, `binary`, `cwd`, `stateRoot`, `model` and
-`providerKeyFile`. Select the same workspace in the topic and the profile.
+profile contains `body`, `binary`, `cwd`, `stateRoot`, `model`,
+`providerKeyFile`, `matrixStatusCommand` and `bodyGuidanceFile`. The
+status reader must match the signed body, incarnation and manifest before
+the worker opens Qwen or reads its provider key. The owner-private guidance
+file supplies a separate ACP content block before the retained original.
+Select the same workspace in the topic and the profile.
 Use an owner-private persistent state directory and the trusted pilot workspace.
 The worker uses the Singapore Token Plan endpoint and a dedicated Qwen home.
 Keep the key in the existing credential binding. The pilot refuses user or
@@ -202,3 +206,23 @@ the exact fresh UUID and requires Qwen to return it. A failed load leaves the or
 unsubmitted and preserves the selected binding. The worker covers bounded
 text turns. Attachments, steering, native goals and a signed tool catalog
 require their own receiving work before a general migration.
+
+## MiniMax Code
+
+`runMiniMaxTurn` uses the shared ACP transport with the pinned MiniMax Code
+0.8.0 `mcode acp` server. It accepts the owner-selected environment and
+uses the CLI's `--append-system-prompt-file` for receiving guidance. A bound
+native session must load successfully before the adapter calls the journal
+callback. A negative journal decision withholds the original.
+
+Set `MINIMAX_TEST_ACP_BINARY` to the pinned executable then run
+`node --test adapters/acp/minimax-turn.test.mjs` on its compatible Node
+runtime. The test configures a disposable loopback provider and verifies
+both refusal paths and native context after reopening ACP. The provider
+request contains the guidance and both originals after the reopen.
+
+This covers the turn adapter. The Gateway topic route, authenticated
+MiniMax Global provider turn and signed receiving body still need live
+qualification. The CLI advertises steering, queue and goals through
+`minimax-code/extensions`. A method in this inventory does not establish
+insertion, replay or goal lifecycle semantics.
