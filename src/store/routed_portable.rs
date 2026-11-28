@@ -1676,6 +1676,9 @@ impl Store {
             .get("resumeUnavailableBody")
             .map(serde_json::to_string)
             .transpose()?;
+        if current.phase == Phase::Submitting {
+            super::retain_claude_session_usage_on(&tx, local, outcome)?;
+        }
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,
             execution_native_scope=coalesce(?5,execution_native_scope),
             native_thread_id=coalesce(?7,native_thread_id),execution_body=coalesce(?8,execution_body)
