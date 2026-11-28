@@ -157,44 +157,74 @@ fn check_sources(
     entry: SessionKey,
     human: i64,
     sources: &[CheckpointSource],
+    link: &ProjectLink,
 ) -> Result<()> {
+    let mut supported = false;
     for source in sources {
-        let current = match source {
+        let matches_link = match source {
             CheckpointSource::Observer {
                 native,
                 revision,
                 source_revision,
             } => {
                 let session = observer_cards::binding(conn, key, human, native)?;
-                conn.query_row(
-                    "SELECT 1 FROM interaction_observer_cards c
+                let (card, evidence): (String, String) = conn
+                    .query_row(
+                        "SELECT c.doc,a.source_doc FROM interaction_observer_cards c
                      JOIN interaction_observer_attempts a ON a.id=c.attempt_id
+                     JOIN sessions s ON s.id=c.session_id
                      WHERE c.session_id=?1 AND c.native_thread=?2 AND c.revision=?3
-                       AND a.human_id=?4 AND a.source_revision=?5",
-                    params![session, native, revision, human, source_revision],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some()
-            }
-            CheckpointSource::Conversation { source, revision } => {
-                presentation::source_on(conn, human, entry, source)?.is_some_and(|view| {
-                    (key == entry || view["target"] == serde_json::json!(key))
-                        && view["revision"].as_str() == Some(revision)
-                        && view["current"].as_bool() != Some(false)
-                        && view["native_binding_current"].as_bool() != Some(false)
+                       AND a.human_id=?4 AND a.source_revision=?5 AND s.force_fresh_thread=0",
+                        params![session, native, revision, human, source_revision],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?
+                    .context("Observer evidence unavailable at the selected revision")?;
+                let card: observer_cards::ObserverCard = serde_json::from_str(&card)?;
+                let evidence: serde_json::Value = serde_json::from_str(&evidence)?;
+                let entries = ["entries", "in_progress_entries"]
+                    .into_iter()
+                    .flat_map(|field| evidence[field].as_array().into_iter().flatten())
+                    .collect::<Vec<_>>();
+                card.supports.iter().any(|index| {
+                    entries
+                        .get(*index)
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|text| cites_project(text, link))
                 })
             }
+            CheckpointSource::Conversation { source, revision } => {
+                let evidence = presentation::source_on(conn, human, entry, source)?
+                    .filter(|view| {
+                        (key == entry || view["target"] == serde_json::json!(key))
+                            && view["revision"].as_str() == Some(revision)
+                            && view["current"].as_bool() != Some(false)
+                            && view["native_binding_current"].as_bool() != Some(false)
+                    })
+                    .context("Conversation evidence unavailable at the selected revision")?;
+                evidence["text"]
+                    .as_str()
+                    .is_some_and(|text| cites_project(text, link))
+            }
         };
-        anyhow::ensure!(
-            current,
-            "Checkpoint source is unavailable at the selected revision"
-        );
+        supported |= matches_link;
     }
+    anyhow::ensure!(supported, "No retained source cites the exact project link");
     Ok(())
 }
 
-fn verify_checkout(folder: &Path, checkout: &Path, commit: &str) -> Result<()> {
+fn cites_project(text: &str, link: &ProjectLink) -> bool {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("Project link: "))
+        .any(|raw| serde_json::from_str::<ProjectLink>(raw).is_ok_and(|cited| cited == *link))
+}
+
+fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLink) -> Result<()> {
+    anyhow::ensure!(
+        crate::files::workspace_marker_matches(folder, claim)?,
+        "Topic workspace ownership marker unavailable"
+    );
+    let commit = &link.commit;
     anyhow::ensure!(
         checkout.components().all(|part| matches!(
             part,
@@ -243,6 +273,28 @@ fn verify_checkout(folder: &Path, checkout: &Path, commit: &str) -> Result<()> {
                 }
             && inspect(&["cat-file", "-t", commit])? == b"commit\n",
         "Select an exact commit at the checkout root"
+    );
+    let locator = link
+        .locator
+        .strip_prefix("git:")
+        .context("Missing Git locator")?;
+    let (key, expected) = if let Some(local) = locator.strip_prefix("local:") {
+        anyhow::ensure!(
+            Uuid::parse_str(local).ok() == Some(link.project),
+            "Local repository identity differs"
+        );
+        ("daimon.project-id", local)
+    } else {
+        ("remote.origin.url", locator)
+    };
+    let actual = inspect(&["config", "--local", "--get-all", key])?;
+    anyhow::ensure!(
+        actual.strip_suffix(b"\n") == Some(expected.as_bytes()),
+        "Checkout does not match the selected Git locator"
+    );
+    anyhow::ensure!(
+        crate::files::workspace_marker_matches(&folder, claim)?,
+        "Topic workspace changed during Git inspection"
     );
     Ok(())
 }
@@ -333,16 +385,27 @@ impl Store {
                     checkpoint.author == human && checkpoint.delta.workspace == workspace,
                     "Checkpoint belongs to a prior topic binding"
                 );
-                check_sources(&tx, key, entry, human, &checkpoint.delta.sources)?;
+                check_sources(
+                    &tx,
+                    key,
+                    entry,
+                    human,
+                    &checkpoint.delta.sources,
+                    &checkpoint.delta.link,
+                )?;
             }
             tx.commit()?;
             Ok((folder, checkpoint))
         };
         let (folder, selected) = inspect()?;
+        anyhow::ensure!(
+            crate::files::workspace_marker_matches(&folder, workspace)?,
+            "Topic workspace ownership marker unavailable"
+        );
         let Some(selected) = selected else {
             return Ok(None);
         };
-        verify_checkout(&folder, checkout, &selected.delta.link.commit)?;
+        verify_checkout(&folder, workspace, checkout, &selected.delta.link)?;
         let (current_folder, current) = inspect()?;
         anyhow::ensure!(
             current_folder == folder && current.as_ref() == Some(&selected),
@@ -369,7 +432,7 @@ impl Store {
             tx.commit()?;
             folder
         };
-        let verification = verify_checkout(&folder, checkout, &delta.link.commit);
+        let verification = verify_checkout(&folder, &delta.workspace, checkout, &delta.link);
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         scope.authorize(&tx, &self.instance_id)?;
@@ -391,13 +454,20 @@ impl Store {
                 checkpoint.author == human && checkpoint.delta.workspace == delta.workspace,
                 "Operation belongs to a prior topic binding"
             );
-            check_sources(&tx, key, entry, human, &checkpoint.delta.sources)?;
+            check_sources(
+                &tx,
+                key,
+                entry,
+                human,
+                &checkpoint.delta.sources,
+                &checkpoint.delta.link,
+            )?;
             if checkpoint.delta == delta {
                 verification?;
                 return Ok(ProjectDeltaOutcome::Retained { checkpoint });
             }
         } else {
-            check_sources(&tx, key, entry, human, &delta.sources)?;
+            check_sources(&tx, key, entry, human, &delta.sources, &delta.link)?;
         }
         let revision: i64 = tx.query_row(
             "SELECT COALESCE(MAX(revision),0) FROM project_checkpoint_deltas WHERE session_id=?1",
@@ -472,6 +542,15 @@ mod tests {
         store
             .record_turn_native_thread(local, "entry-native")
             .unwrap();
+        let link = ProjectLink {
+            project: Uuid::now_v7(),
+            locator: "git:/fixture/story.git".into(),
+            commit: "1".repeat(40),
+        };
+        let answer = format!(
+            "The selected story.\nProject link: {}",
+            serde_json::to_string(&link).unwrap()
+        );
         store
             .record_native_message(
                 local,
@@ -479,7 +558,7 @@ mod tests {
                 "entry-turn",
                 "answer",
                 Some("final_answer"),
-                "The selected story.",
+                &answer,
             )
             .unwrap();
 
@@ -493,14 +572,14 @@ mod tests {
         }];
         {
             let conn = store.conn.lock().unwrap();
-            assert!(check_sources(&conn, entry, entry, 100, &sources).is_ok());
-            assert!(check_sources(&conn, worker, entry, 100, &sources).is_err());
+            assert!(check_sources(&conn, entry, entry, 100, &sources, &link).is_ok());
+            assert!(check_sources(&conn, worker, entry, 100, &sources, &link).is_err());
         }
         store
             .set_session_codex_thread(entry, "replacement")
             .unwrap();
         let conn = store.conn.lock().unwrap();
-        assert!(check_sources(&conn, entry, entry, 100, &sources).is_err());
+        assert!(check_sources(&conn, entry, entry, 100, &sources, &link).is_err());
     }
 
     #[test]
@@ -522,6 +601,20 @@ mod tests {
         std::fs::write(checkout.join("story.txt"), "An unfinished chapter").unwrap();
         git(&checkout, &["add", "story.txt"]);
         let staged = git(&checkout, &["diff", "--cached"]);
+        let remote = tempfile::tempdir().unwrap();
+        git(
+            remote.path(),
+            &["init", "-q", "--bare", "--object-format=sha1"],
+        );
+        let locator = remote.path().to_str().unwrap();
+        git(&checkout, &["remote", "add", "origin", locator]);
+        git(&checkout, &["push", "origin", "HEAD:refs/heads/main"]);
+        git(remote.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        let link = ProjectLink {
+            project: Uuid::now_v7(),
+            locator: format!("git:{locator}"),
+            commit,
+        };
 
         let defaults = super::super::tests::defaults();
         let store = Store::open(db.path(), &[100, 101], &defaults).unwrap();
@@ -568,9 +661,14 @@ mod tests {
             invocation: &invocation,
             closed: &closed,
         };
+        let marker = workspace.path().join(".daimon-topic");
+        let citation = format!(
+            "A story was committed.\nProject link: {}",
+            serde_json::to_string(&link).unwrap()
+        );
         let snapshot = serde_json::json!({
             "native": "fixture-native", "revision": "retained-source", "boundary": "fixture-turn",
-            "turn_ids": ["fixture-turn"], "entries": ["A story was committed"],
+            "turn_ids": ["fixture-turn"], "entries": [citation],
             "in_progress_entries": [], "bounded": false, "text_truncated": false
         });
         let ObserverPreparation::Ready(attempt) = store
@@ -586,22 +684,48 @@ mod tests {
             operation: Uuid::now_v7(),
             expected_revision: 0,
             workspace: claim.clone(),
-            link: ProjectLink {
-                project: Uuid::now_v7(),
-                locator: "git:story".into(),
-                commit,
-            },
+            link,
             sources: vec![CheckpointSource::Observer {
                 native: "fixture-native".into(),
                 revision: card.revision,
                 source_revision: card.source_revision,
             }],
         };
+        assert!(
+            store
+                .apply_project_delta(&scope, delta.clone(), Path::new("story"))
+                .is_err()
+        );
+        std::fs::write(&marker, "other claim").unwrap();
+        assert!(
+            store
+                .apply_project_delta(&scope, delta.clone(), Path::new("story"))
+                .is_err()
+        );
+        std::fs::write(&marker, &claim).unwrap();
+
         let mut missing = delta.clone();
         missing.link.commit = "0".repeat(40);
         assert!(
+            verify_checkout(workspace.path(), &claim, Path::new("story"), &missing.link).is_err()
+        );
+        let mut unrelated = delta.clone();
+        unrelated.link.project = Uuid::now_v7();
+        assert!(
             store
-                .apply_project_delta(&scope, missing, Path::new("story"))
+                .apply_project_delta(&scope, unrelated, Path::new("story"))
+                .is_err()
+        );
+        let same_commit = workspace.path().join("copy");
+        git(workspace.path(), &["clone", locator, "copy"]);
+        assert_eq!(git(&same_commit, &["rev-parse", "HEAD"]), delta.link.commit);
+        git(
+            &same_commit,
+            &["remote", "set-url", "origin", "/fixture/other.git"],
+        );
+        assert!(
+            store
+                .apply_project_delta(&scope, delta.clone(), Path::new("copy"))
                 .is_err()
         );
         assert!(
@@ -610,22 +734,40 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(matches!(
-            store.apply_project_delta(&scope, delta.clone(), Path::new("story")).unwrap(),
-            ProjectDeltaOutcome::Accepted { checkpoint } if checkpoint.revision == 1
-        ));
         let mut competing = delta.clone();
         competing.operation = Uuid::now_v7();
+        let barrier = std::sync::Barrier::new(2);
+        let results = std::thread::scope(|threads| {
+            let propose = |delta| {
+                barrier.wait();
+                store
+                    .apply_project_delta(&scope, delta, Path::new("story"))
+                    .unwrap()
+            };
+            let first = threads.spawn(move || propose(delta));
+            let second = threads.spawn(move || propose(competing));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        let checkpoint = match results {
+            (
+                ProjectDeltaOutcome::Accepted { checkpoint },
+                ProjectDeltaOutcome::Conflict { revision: 1 },
+            )
+            | (
+                ProjectDeltaOutcome::Conflict { revision: 1 },
+                ProjectDeltaOutcome::Accepted { checkpoint },
+            ) => checkpoint,
+            outcomes => panic!("expected one winner and one conflict: {outcomes:?}"),
+        };
+        let delta = checkpoint.delta;
         let mut different = delta.clone();
         different.link.locator = "git:different".into();
-        for conflict in [competing, different] {
-            assert!(matches!(
-                store
-                    .apply_project_delta(&scope, conflict, Path::new("story"))
-                    .unwrap(),
-                ProjectDeltaOutcome::Conflict { revision: 1 }
-            ));
-        }
+        assert!(matches!(
+            store
+                .apply_project_delta(&scope, different, Path::new("story"))
+                .unwrap(),
+            ProjectDeltaOutcome::Conflict { revision: 1 }
+        ));
         drop(store);
         let store = Store::open(db.path(), &[100, 101], &defaults).unwrap();
         let resumed = store
@@ -669,7 +811,17 @@ mod tests {
                 )
                 .is_err()
         );
-        store.set_session_codex_thread(topic, "new-native").unwrap();
+        // Retire the cited fixture card while leaving the live worker selection valid.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM interaction_observer_cards WHERE attempt_id=?1",
+                [&attempt.id],
+            )
+            .unwrap();
+        assert!(store.controller_execution(resumed, topic, 100).is_ok());
         assert!(
             store
                 .project_checkpoint(&scope, &claim, Path::new("moved"))

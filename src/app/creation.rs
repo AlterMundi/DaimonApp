@@ -1,6 +1,6 @@
 //! Create one justified destination through the existing topic/session adapter.
 use super::*;
-use crate::interaction::InputReference;
+use crate::{files::workspace_marker_matches, interaction::InputReference};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -427,34 +427,6 @@ pub(super) async fn complete_direct_topic(app: &App, human: i64, operation: &Val
         app.shared.store.interaction_creation_suspend(id, human)?;
     }
     result
-}
-
-fn workspace_marker_matches(folder: &Path, claim: &str) -> Result<bool> {
-    anyhow::ensure!(
-        fs::symlink_metadata(folder)?.is_dir(),
-        "Workspace is not a directory"
-    );
-    let marker = folder.join(".daimon-topic");
-    let metadata = match fs::symlink_metadata(&marker) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
-    };
-    let mut contents = String::new();
-    anyhow::ensure!(
-        metadata.is_file() && metadata.len() == claim.len() as u64,
-        "Invalid workspace ownership marker"
-    );
-    let file = fs::File::open(marker)?;
-    std::io::Read::read_to_string(
-        &mut std::io::Read::take(file, claim.len() as u64 + 1),
-        &mut contents,
-    )?;
-    anyhow::ensure!(
-        contents == claim,
-        "Workspace marker belongs to another allocation"
-    );
-    Ok(true)
 }
 
 pub(super) fn topic_project_checkpoint(folder: &Path, claim: &str) -> Option<String> {
