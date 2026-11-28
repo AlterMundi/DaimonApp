@@ -59,14 +59,28 @@ async fn main() -> Result<()> {
         anyhow::ensure!(args.len() == 3, "Usage: daimon-gateway --preflight CONFIG");
         let config = config::Config::load_gateway_preflight(args[2].clone().into())?;
         if let Some(interaction) = &config.interaction {
-            for engine in [
-                interaction::ForegroundEngine::Claude,
-                interaction::ForegroundEngine::Goose,
-                interaction::ForegroundEngine::Antigravity,
-            ] {
-                let Some(command) = interaction
-                    .foreground(engine)
-                    .and_then(|worker| worker.worker_preflight_command.as_deref())
+            use interaction::ForegroundEngine;
+            let workers = [
+                (
+                    ForegroundEngine::Claude,
+                    interaction.claude_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Goose,
+                    interaction.goose_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Antigravity,
+                    interaction.antigravity_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Antigravity,
+                    interaction.antigravity_matrix_foreground.as_ref(),
+                ),
+            ];
+            for (engine, worker) in workers {
+                let Some(command) =
+                    worker.and_then(|worker| worker.worker_preflight_command.as_deref())
                 else {
                     continue;
                 };
