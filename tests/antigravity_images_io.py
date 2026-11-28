@@ -169,18 +169,15 @@ def qualify(binary, source_profile):
         journey.finish(caller, journey.workers[caller])
         latest = str(uuid.uuid4())
         original = (
-            "#Alpha Use interaction_controller coordination_inputs to find this current original. "
-            "Call session_request once with that parent_instruction, request_id agy-outbound, "
-            "selector Beta and text 'Give me the synthetic fixture marker.' "
-            "Finish your turn while waiting for the canonical result. In the next turn "
-            "containing the canonical result, reply with its marker."
+            "#Alpha Pedile a Beta que elija una palabra sin decírtela de antemano. "
+            "Cuando te vuelva su respuesta, decime acá qué palabra eligió."
         )
         assert journey.read("input", "submit-human", json.dumps({
             "id": latest, "binding": binding, "text": original,
         }))["result"]["new_input"]
         beta = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=8")[0][0]
         journey.wait(lambda: beta in journey.workers, seconds=45)
-        assert "Give me the synthetic fixture marker." in str(journey.worker_packets[beta])
+        assert journey.worker_packets[beta], "The ordinary request did not reach the selected topic."
         marker = "RUBY-LANTERN"
         journey.answer_worker(8, marker)
 

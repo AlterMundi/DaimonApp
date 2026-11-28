@@ -44,7 +44,12 @@ route without making the SDK worker a fallback for a topic's agy session.
 
 The pilot approves one ACP permission request at a time for its configured
 Matrix status, skills and DMK read tools. No permanent approval is issued. Shipped
-default customizations are disabled for this pilot. The image route sends
+default customizations are disabled for this pilot. An unselected tool uses
+the native one-time refusal when ACP advertises one, leaving permanent
+permissions untouched. Read installed skill instructions through
+`shared_skill`, including when the body guidance mentions a file path.
+The ordinary coordination test gives the model a natural-language request
+without tool names. The image route sends
 paired PNG and JPEG input as negotiated ACP content,
 with up to eight images and 4 MiB total. The worker checks the retained digest
 before committing exposure. A real PNG fixture exercises the model and the
