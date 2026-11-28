@@ -1704,8 +1704,13 @@ impl App {
                     self.send_plain_status(message.chat.id, message.message_thread_id, &text)
                         .await?;
                 }
-                BridgeCommand::Stop => {
-                    if self.stop_session(session_key).await {
+                command @ (BridgeCommand::Stop | BridgeCommand::Interrupt) => {
+                    let requested = if matches!(command, BridgeCommand::Interrupt) {
+                        self.interrupt_session(session_key).await
+                    } else {
+                        self.stop_session(session_key).await
+                    };
+                    if requested {
                         self.send_status(
                             message.chat.id,
                             message.message_thread_id,
@@ -3446,6 +3451,10 @@ impl App {
             tracing::warn!("Local dependency withdrawal could not be confirmed");
             return false;
         }
+        self.interrupt_session(key).await
+    }
+
+    async fn interrupt_session(&self, key: SessionKey) -> bool {
         let handle = self.workers.lock().await.get(&key).cloned();
         let Some(handle) = handle else {
             return false;
