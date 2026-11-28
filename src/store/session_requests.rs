@@ -1600,7 +1600,7 @@ mod tests {
             )
         };
         let oversized = "任".repeat(
-            ForegroundEngine::Claude
+            crate::interaction::ForegroundEngine::Claude
                 .attributed_handoff_text_limit(false)
                 .unwrap()
                 / 3
