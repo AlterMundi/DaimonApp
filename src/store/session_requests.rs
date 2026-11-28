@@ -349,11 +349,13 @@ fn session_requests_on(
     conn: &Connection,
     caller: SessionKey,
     human: i64,
+    request_id: Option<&str>,
 ) -> Result<Vec<SessionRequest>> {
-    let mut q=conn.prepare("SELECT doc,phase FROM interaction_session_requests WHERE human_id=?1 AND caller_chat=?2 AND caller_topic=?3 ORDER BY rowid DESC LIMIT 16")?;
-    q.query_map(params![human, caller.chat_id, caller.thread_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?
+    let mut q=conn.prepare("SELECT doc,phase FROM interaction_session_requests WHERE human_id=?1 AND caller_chat=?2 AND caller_topic=?3 AND (?4 IS NULL OR id=?4) ORDER BY rowid DESC LIMIT 16")?;
+    q.query_map(
+        params![human, caller.chat_id, caller.thread_id, request_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )?
     .map(|r| {
         let (raw, phase) = r?;
         let mut call: SessionRequest = serde_json::from_str(&raw)?;
@@ -828,7 +830,7 @@ impl Store {
         if !owned {
             return Err(anyhow!("Local caller binding changed"));
         }
-        session_requests_on(&conn, caller, human)
+        session_requests_on(&conn, caller, human, None)
     }
 
     pub(crate) fn routed_portable_session_requests(
@@ -838,6 +840,7 @@ impl Store {
         native: &str,
         parent: &str,
         local: i64,
+        request_id: Option<&str>,
     ) -> Result<Vec<SessionRequest>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let input = instruction_on(&conn, parent, human)?;
@@ -854,7 +857,7 @@ impl Store {
             )?,
             "Portable caller binding changed"
         );
-        session_requests_on(&conn, caller, human)
+        session_requests_on(&conn, caller, human, request_id)
     }
 
     pub(crate) fn interaction_session_parent_eligible(&self, id: &str, human: i64) -> Result<bool> {
@@ -970,18 +973,29 @@ impl Store {
         id: &str,
         closed: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<Instruction>> {
-        self.interaction_session_selected(caller, human, native, id)?;
+        let selected = self.interaction_session_selected(caller, human, native, id)?;
+        self.recover_selected_session_result(&selected, closed, None)
+    }
+
+    pub(crate) fn recover_selected_session_result(
+        &self,
+        selected: &SessionRequest,
+        closed: &tokio_util::sync::CancellationToken,
+        config: Option<&crate::interaction::InteractionConfig>,
+    ) -> Result<Option<Instruction>> {
         if closed.is_cancelled() {
             return Err(anyhow!("Explicit local return request closed"));
         }
         let deliveries = {
             let conn = self.conn.lock().expect("store mutex poisoned");
             let mut q=conn.prepare("SELECT d.id FROM interaction_session_requests c JOIN interaction_deliveries d ON d.request_id=c.target_instruction WHERE c.id=?1 AND c.human_id=?2 AND c.phase='requested' ORDER BY d.rowid DESC LIMIT 16")?;
-            q.query_map(params![id, human], |r| r.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
+            q.query_map(params![selected.id, selected.human], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for delivery in deliveries {
-            if let Some(i) = self.session_return(&delivery, human, Some(closed), None)? {
+            if let Some(i) = self.session_return(&delivery, selected.human, Some(closed), config)? {
                 return Ok(Some(i));
             }
         }
@@ -1211,16 +1225,21 @@ mod tests {
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
         for paired in [false, true] {
-            check_portable_dependency(paired, false);
+            check_portable_dependency(paired, false, false);
         }
     }
 
     #[test]
     fn a_later_claude_turn_must_keep_the_original_native_scope_to_return() {
-        check_portable_dependency(false, true);
+        check_portable_dependency(false, true, false);
     }
 
-    fn check_portable_dependency(paired: bool, later: bool) {
+    #[test]
+    fn paired_claude_recovers_a_completed_canonical_dependency_once() {
+        check_portable_dependency(true, false, true);
+    }
+
+    fn check_portable_dependency(paired: bool, later: bool, recover_onward: bool) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         let caller = setup(&store, 7);
@@ -1367,7 +1386,14 @@ mod tests {
         );
         assert_eq!(
             store
-                .routed_portable_session_requests(target.key, 100, &native, &delivered.id, local)
+                .routed_portable_session_requests(
+                    target.key,
+                    100,
+                    &native,
+                    &delivered.id,
+                    local,
+                    None
+                )
                 .is_ok(),
             paired
         );
@@ -1387,6 +1413,61 @@ mod tests {
             false,
         );
         assert_eq!(onward.is_ok(), paired);
+        if recover_onward {
+            let (call, helper, _) = onward.unwrap();
+            assert!(
+                store
+                    .routed_portable_session_requests(
+                        target.key,
+                        100,
+                        "another-native-session",
+                        &delivered.id,
+                        local,
+                        Some(&call.id),
+                    )
+                    .is_err()
+            );
+            let chosen = store
+                .routed_portable_session_requests(
+                    target.key,
+                    100,
+                    &native,
+                    &delivered.id,
+                    local,
+                    Some(&call.id),
+                )
+                .unwrap()
+                .pop()
+                .unwrap();
+            let closed = tokio_util::sync::CancellationToken::new();
+            assert!(
+                store
+                    .recover_selected_session_result(&chosen, &closed, Some(&profile))
+                    .unwrap()
+                    .is_none()
+            );
+            result(&store, &onward_owner, &helper);
+            let resumed = store
+                .recover_selected_session_result(&chosen, &closed, Some(&profile))
+                .unwrap()
+                .unwrap();
+            assert_eq!(resumed.target, target.key);
+            assert_eq!(
+                resumed.target_execution.as_ref().unwrap().harness,
+                crate::execution::Harness::Claude
+            );
+            assert_eq!(
+                store.interaction_author(&resumed.id, 100).unwrap().unwrap()["kind"],
+                "session_result"
+            );
+            assert!(
+                store
+                    .recover_selected_session_result(&chosen, &closed, Some(&profile))
+                    .unwrap()
+                    .is_none()
+            );
+            return;
+        }
         let text = format!(
             "Worked on the rig\n<daimon-result>{}</daimon-result>",
             json!({"requests":delivered.requests, "covered":[delivered.id], "completed":delivered.requests})

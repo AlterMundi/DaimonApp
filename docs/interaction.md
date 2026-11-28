@@ -1408,7 +1408,9 @@ If a process stops after saving a helper answer but before reserving its return,
 the existing canonical result and reserves the missing context once, without
 running the helper again. Already reserved or uncertain returns are inspected;
 they are not automatically replayed. Other known-unsent input recovery remains
-explicit. This adapter installs no polling or background model attention.
+explicit. A paired Claude caller can use the same operation from its active
+native turn. The return follows the current scoped route into the same logical
+topic. This adapter installs no polling or background model attention.
 
 `/self#Name` is a local conversation selector equivalent to `#Name` at the start
 of a human message; it is not a Matrix scope or an alias for `/we` or `/tribe`.

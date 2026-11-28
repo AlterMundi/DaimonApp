@@ -491,6 +491,10 @@ result projection, native goal commands and a local session request. Add
 history and verify the same original reaches a successor with retained context.
 Add `FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RETURN=1` to verify a canonical Codex
 helper result reaches the same Claude native session and cannot delegate anew.
+Combine it with `FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RECEIVE=1` to withhold the
+initial return commit in the disposable journal. The next paired Claude turn
+uses `session_receive`, observes one reservation on an exact retry, and
+incorporates the original canonical result into the same Claude session.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.

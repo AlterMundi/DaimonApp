@@ -163,6 +163,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
             returned_dependency = getattr(self.server, "returned_dependency", None)
+            recover_dependency = getattr(self.server, "recover_dependency", None)
             if returned_dependency:
                 fixture_id = "returned"
                 steps = [
@@ -184,6 +185,16 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":true'),
                     (CONTROLLER, {"operation": "session_request", "arguments": request}, '"new_admission":false'),
                 ]
+            if recover_dependency:
+                fixture_id = "recovered-dependency"
+                receive = {"operation": "session_receive", "arguments": {
+                    "request_id": recover_dependency["request_id"],
+                }}
+                steps = [
+                    (CONTROLLER, {"operation": "capabilities", "arguments": {}}, '"session_receive"'),
+                    (CONTROLLER, receive, '"new_return_instruction":"'),
+                    (CONTROLLER, receive, '"new_return_instruction":null'),
+                ]
             prior = len(self.server.calls)
             self.server.calls.append(self.server.current)
             if steer and prior:
@@ -200,7 +211,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert submission["native_session_id"] == skill_refresh["native"]
                 assert submission["native_session_scope"] == skill_refresh["scope"]
                 assert skill_refresh["previous_prompt"] in json.dumps(messages)
-            if distinct_request or returned_dependency or skill_refresh:
+            if distinct_request or returned_dependency or recover_dependency or skill_refresh:
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
@@ -295,7 +306,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
-                        if (distinct_request or returned_dependency) and isinstance(entry["content"], list):
+                        if (distinct_request or returned_dependency or recover_dependency) and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
                         tool = steps[prior - 1][0]
                         if tool == "Skill":
@@ -315,6 +326,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     block = {"type": "text", "text": ""}
                     delta = {"type": "text_delta", "text": ANSWER}
                     reason = "end_turn"
+                    if recover_dependency:
+                        self.server.returned_dependency = recover_dependency
+                        self.server.recover_dependency = None
+                        self.server.original = recover_dependency["text"]
+                        self.server.paired_human = False
+                        self.server.calls.clear()
             self.send_fixture_message(data, f"{fixture_id}_{prior}", block, delta, reason)
         except Exception as error:
             if (isinstance(error, (BrokenPipeError, ConnectionResetError))

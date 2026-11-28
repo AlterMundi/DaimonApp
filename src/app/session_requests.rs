@@ -34,10 +34,10 @@ pub(super) fn tool_call(
         let result:Result<Value>=async {
             let cfg=super::routing::profile(&app.shared)?;
             if cfg.human_id!=human || (cfg.target(key.thread_id)!=Some(key) && cfg.entry()!=key) || cfg.chat_id!=key.chat_id || request.namespace.is_some() || request.tool!="interaction_controller" || request.arguments.to_string().len()>20000 || closed.is_cancelled(){bail!("Unsupported local session tool");}
+            let portable_list = |local, request_id| app.shared.store.routed_portable_session_requests(
+                key,human,&request.native_session,&request.native_turn,local,request_id);
             let portable_requests = if let Some(local) = portable_local {
-                let requests = app.shared.store.routed_portable_session_requests(
-                    key,human,&request.native_session,&request.native_turn,local)?;
-                Some(requests)
+                Some(portable_list(local, None)?)
             } else {
                 let owned=app.shared.store.interaction_observation(key,human)?.context("Caller ownership unavailable")?;
                 if !owned.execution.matches(request.harness,&request.native_session){bail!("Caller native binding changed");}
@@ -59,7 +59,7 @@ pub(super) fn tool_call(
             let attributed_return = portable_local.is_some()
                 && app.shared.store.interaction_author(&request.native_turn,human)?
                     .is_some_and(|author| author["kind"]=="session_result");
-            if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "coordination_inputs" | "session_requests" | "session_request") {
+            if portable_local.is_some() && !matches!(args.operation.as_str(), "capabilities" | "inputs" | "coordination_inputs" | "session_requests" | "session_request" | "session_receive") {
                 bail!("Operation is unavailable for this work session");
             }
             if portable_local.is_some() && args.operation=="capabilities" && args.arguments==json!({}) {
@@ -70,6 +70,7 @@ pub(super) fn tool_call(
                 }
                 return Ok(json!({"schema":"telecodex.local-session/v1","operations":{
                     "capabilities":{}, "inputs":{}, "coordination_inputs":{}, "session_requests":{},
+                    "session_receive":{"arguments":{"request_id":"exact retained local request id with a completed canonical result"}},
                     "session_request":{"arguments":{"parent_instruction":"current retained human instruction or first attributed handoff from inputs",
                         "request_id":"stable caller-chosen identifier", "selector":"stable_selector from targets, or general for our general conversation (display_name is a label)",
                         "text":"bounded session-authored request under the current human instruction", "report_to_topic":"omit for ordinary cross-topic coordination. true only for a visible work result requested by the paired human in a Claude destination"}}
@@ -104,10 +105,23 @@ pub(super) fn tool_call(
                     let object=args.arguments.as_object().context("Invalid retained selection")?;
                     if object.len()!=1 {bail!("Invalid retained selection");}
                     let id=object.get("request_id").and_then(Value::as_str).context("Missing retained request id")?;
-                    let selected=app.shared.store.interaction_session_recover(key,human,&request.native_session,id,&closed)?;
+                    let read_selected = || match portable_local {
+                        Some(local) => portable_list(local, Some(id))?.pop().context("Retained local request unavailable"),
+                        None => app.shared.store.interaction_session_selected(key,human,&request.native_session,id),
+                    };
+                    anyhow::ensure!(!attributed_return, "A returned result cannot start another return");
+                    let selected = if portable_local.is_some() {
+                        app.shared.store.recover_selected_session_result(&read_selected()?,&closed,Some(&cfg))?
+                    } else {
+                        app.shared.store.interaction_session_recover(key,human,&request.native_session,id,&closed)?
+                    };
                     let admitted=selected.as_ref().map(|i|i.id.clone());
                     if let Some(i)=selected {let _=super::routing::dispatch(&app,&i.id,human).await;}
-                    Ok(json!({"request":app.shared.store.interaction_session_selected(key,human,&request.native_session,id)?,"new_return_instruction":admitted,"requests":app.shared.store.interaction_session_requests(key,human,&request.native_session)?,"policy":"Only a retained completed canonical result was selected. Existing returns are inspection-only, including uncertain transmission. No helper work was replayed."}))
+                    let requests=match portable_local {
+                        Some(local)=>portable_list(local,None)?,
+                        None=>app.shared.store.interaction_session_requests(key,human,&request.native_session)?,
+                    };
+                    Ok(json!({"request":read_selected()?,"new_return_instruction":admitted,"requests":requests,"policy":"Only a retained completed canonical result was selected. Existing returns are inspection-only, including uncertain transmission. No helper work was replayed."}))
                 }
                 "session_request"=>{
                     let Ok(args) = serde_json::from_value::<SendArgs>(args.arguments) else {
