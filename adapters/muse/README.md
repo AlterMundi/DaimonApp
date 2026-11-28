@@ -44,6 +44,14 @@ a successful read of the public Models API alone cannot qualify the CLI's
 model discovery. Use only synthetic prompts and credentials for loopback
 captures.
 
+In that fixture Canary sent its Muse user-agent and `x-client-id` for
+both requests. Inference also sent `Accept: text/event-stream`,
+`traceparent` and native session and thread headers. Toggling Contributor
+with the dummy key and custom endpoint did not change the header names or
+the model field. The separate real-login trace showed the Contributor
+model ID in the payload. This fixture does not determine which metadata
+the account-bound request needs or why Meta refused it.
+
 Keep authentication and history while testing config isolation. Qualify a
 real MSP turn against the selected subscription before wiring the topic.
 Gateway topic binding, effective tools, steering and interruption remain
