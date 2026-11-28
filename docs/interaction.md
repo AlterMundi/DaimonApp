@@ -1378,7 +1378,12 @@ coverage declarations explicitly include earlier applicable instruction IDs whos
 constraints were actually carried forward, together with new incorporated context.
 A declaration covering only the most recent message does not establish cumulative
 coverage. Missing or unresolved constraints remain visible rather than being
-inferred from a prior answer or native history.
+inferred from a prior answer or native history. For publication, a completed
+correction with an exact earlier delivery receipt for the same request and
+current topic generation no longer counts as pending on a later result. This
+does not add coverage to the later declaration. The sender rechecks the pending
+decision before submitting the part and can prepare the first part again after
+a typed rejection before submission.
 
 Local requests, helper answers and return-only caller wakeups retain their original
 provenance but do not inherit permission to publish into that human conversation.

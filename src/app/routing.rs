@@ -2004,7 +2004,7 @@ pub(super) fn recover_telegram_deliveries(shared: Arc<AppShared>) -> Result<()> 
         .config
         .interaction
         .as_ref()
-        .filter(|_| shared.config.telegram.enabled && shared.config.telegram.external_polling)
+        .filter(|_| shared.config.telegram.enabled)
     else {
         return Ok(());
     };
@@ -2102,13 +2102,17 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
                     Ok(Some((message, fresh.correction_pending)))
                 })
                 .await;
-            match sent {
+            let known_unsent = sent.as_ref().err().is_some_and(|error| {
                 #[cfg(unix)]
-                Err(error)
+                if error.is::<crate::tele_daimon::projection::JsonNotSubmitted>() {
+                    return true;
+                }
+                error.is::<crate::telegram::PublicationRetired>()
+            });
+            match sent {
+                Err(_)
                     if index == 0
-                        && error
-                            .downcast_ref::<crate::tele_daimon::projection::JsonNotSubmitted>()
-                            .is_some()
+                        && known_unsent
                         && shared
                             .store
                             .interaction_first_part_not_submitted(&d.id, human)

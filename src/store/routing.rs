@@ -4,10 +4,25 @@ use crate::interaction::{Delivery, Instruction, ReturnRoute, worker_result};
 use std::collections::HashSet;
 
 pub(super) fn delivery_freshness(conn: &Connection, delivery: &Delivery) -> Result<(bool, bool)> {
+    let local = conn.query_row(
+        "SELECT r.local_turn FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id
+         WHERE d.id=?1",
+        [&delivery.id],
+        |row| row.get(0),
+    ).optional()?;
+    delivery_freshness_at(conn, delivery, local)
+}
+
+fn delivery_freshness_at(
+    conn: &Connection,
+    delivery: &Delivery,
+    local: Option<i64>,
+) -> Result<(bool, bool)> {
     let mut current = delivery.declared;
     let mut correction = false;
     for request in delivery.requests() {
-        let (fresh, pending) = freshness(conn, request, &delivery.covered, delivery.declared)?;
+        let (fresh, pending) =
+            freshness_at(conn, request, &delivery.covered, delivery.declared, local)?;
         current &= fresh;
         correction |= pending;
     }
@@ -19,6 +34,16 @@ pub(super) fn freshness(
     request: &str,
     covered: &[String],
     declared: bool,
+) -> Result<(bool, bool)> {
+    freshness_at(conn, request, covered, declared, None)
+}
+
+fn freshness_at(
+    conn: &Connection,
+    request: &str,
+    covered: &[String],
+    declared: bool,
+    local: Option<i64>,
 ) -> Result<(bool, bool)> {
     let mut stmt=conn.prepare("SELECT i.id,i.phase,i.doc FROM interaction_request_links l JOIN interaction_instructions i ON i.id=l.instruction_id WHERE l.request_id=? AND i.phase NOT IN ('rejected','cancelled') ORDER BY i.sequence")?;
     let rows = stmt
@@ -36,10 +61,61 @@ pub(super) fn freshness(
         let i: Instruction = serde_json::from_str(&doc)?;
         let included = phase == "accepted" && covered.contains(&id);
         current &= included;
-        correction |=
-            matches!(i.relation, crate::interaction::RequestRelation::Amends(_)) && !included;
+        if matches!(i.relation, crate::interaction::RequestRelation::Amends(_)) && !included {
+            // Prior publication can settle this correction for the same request
+            // without changing what the current result actually declared.
+            let settled = if declared && phase == "accepted" {
+                if let Some(local) = local {
+                    confirmed_prior_correction(conn, request, &i, local)?
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            correction |= !settled;
+        }
     }
     Ok((current, correction))
+}
+
+fn confirmed_prior_correction(
+    conn: &Connection,
+    request: &str,
+    instruction: &Instruction,
+    current: i64,
+) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM interaction_delivery_requests member
+             JOIN interaction_public_deliveries d ON d.id=member.delivery_id
+             JOIN interaction_results r ON r.id=d.result_id
+             JOIN turns prior ON prior.id=r.local_turn
+             JOIN turns next ON next.id=?1 AND next.session_id=prior.session_id
+                AND next.from_user_id=prior.from_user_id
+                AND next.execution_generation=prior.execution_generation
+             JOIN conversation_entry_generations g ON g.session_id=next.session_id
+                AND g.generation=next.execution_generation
+             WHERE member.request_id=?2 AND d.human_id=?3 AND d.phase='delivered'
+               AND prior.id=?4 AND prior.id<next.id AND prior.status='completed'
+               AND r.native_thread=?5 AND r.native_turn=?6
+               AND EXISTS(SELECT 1 FROM interaction_delivery_parts p
+                   WHERE p.delivery_id=d.id AND p.message_id=d.message_id)
+               AND EXISTS(SELECT 1 FROM json_each(r.claim,'$.completed') c WHERE c.value=?2)
+               AND EXISTS(SELECT 1 FROM json_each(r.claim,'$.covered') c WHERE c.value=?7)
+         )",
+        params![
+            current,
+            request,
+            instruction.human_id,
+            instruction.local_turn,
+            instruction.native_thread,
+            instruction.native_turn,
+            instruction.id
+        ],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 pub(super) fn bind_message(
@@ -318,7 +394,8 @@ pub(super) fn result_on(
                 .iter()
                 .all(|request| c.completed.contains(request))
         });
-        (delivery.current, delivery.correction_pending) = delivery_freshness(tx, &delivery)?;
+        (delivery.current, delivery.correction_pending) =
+            delivery_freshness_at(tx, &delivery, Some(local_turn))?;
         tx.execute("INSERT INTO interaction_deliveries(id,result_id,request_id,human_id,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'reserved',?5,?6)",params![id,result_id,delivery.request_id,human,serde_json::to_string(&delivery)?,instance])?;
         for request in delivery.requests() {
             tx.execute(
@@ -539,8 +616,8 @@ impl Store {
         docs.map(|doc| Ok(serde_json::from_str(&doc?)?)).collect()
     }
 
-    /// Release the first reservation only when the relay attested that the
-    /// operation never crossed its commit boundary.
+    /// Release the first reservation only with evidence that the sender never
+    /// crossed its submission boundary.
     pub(crate) fn interaction_first_part_not_submitted(
         &self,
         id: &str,
@@ -719,15 +796,22 @@ impl Store {
         part: i64,
     ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        Ok(conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM interaction_public_deliveries d
+        let raw: Option<String> = conn.query_row(
+            "SELECT d.doc FROM interaction_public_deliveries d
               JOIN users u ON u.tg_user_id=d.human_id AND u.allowed=1
               JOIN interaction_delivery_parts p ON p.delivery_id=d.id AND p.part=?3 AND p.message_id IS NULL
               WHERE d.id=?1 AND d.human_id=?2 AND d.phase='sending' AND d.instance_id=?4
-                AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?4))",
+                AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?4)",
             params![id, human, part, self.instance_id],
             |row| row.get(0),
-        )?)
+        ).optional()?;
+        let Some(raw) = raw else {
+            return Ok(false);
+        };
+        let delivery: Delivery = serde_json::from_str(&raw)?;
+        // Preparation and the adapter's submission acknowledgment are separate.
+        // Authorize the frozen text only while its correction decision still holds.
+        Ok(delivery_freshness(&conn, &delivery)?.1 == delivery.correction_pending)
     }
 
     pub fn interaction_part_receipt(
@@ -1756,6 +1840,136 @@ mod tests {
         let unchanged = s.interaction_delivery(&d.id, 100).unwrap().unwrap();
         assert_eq!(unchanged.body, "Answer");
         assert!(unchanged.correction_pending);
+    }
+
+    #[test]
+    fn interaction_later_result_honors_only_confirmed_corrections_on_the_same_generation() {
+        for (acked, changed_generation) in [(true, false), (false, false), (true, true)] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+            let topic = target(&s, 7);
+            let first = admit(&s, &topic, 1, R::New);
+            let prior = admit(&s, &topic, 2, R::Amends(first.requests.clone()));
+            let before = accept(&s, &topic, &prior);
+            let published = reserve(&s, &topic, &prior, before, "prior-amendment");
+            s.interaction_begin_delivery(&published.id, 100).unwrap();
+            s.interaction_reserve_part(&published.id, 100, 0, "Answer", "pending")
+                .unwrap()
+                .unwrap();
+            if acked {
+                s.interaction_part_receipt(&published.id, 100, 0, 501)
+                    .unwrap();
+            }
+            s.interaction_finish_delivery(&published.id, 100, acked.then_some(501))
+                .unwrap();
+            let next = admit(&s, &topic, 3, R::Amends(first.requests.clone()));
+            let after = accept(&s, &topic, &next);
+            {
+                let conn = s.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO conversation_entry_generations(session_id,generation) VALUES(?1,1)
+                     ON CONFLICT(session_id) DO UPDATE SET generation=1",
+                    [topic.id],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE turns SET status='completed',execution_generation=1 WHERE id=?1",
+                    [before],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE turns SET execution_generation=?1 WHERE id=?2",
+                    params![if changed_generation { 2 } else { 1 }, after],
+                )
+                .unwrap();
+            }
+            let later = reserve(&s, &topic, &next, after, "later-amendment");
+            assert_eq!(later.covered, vec![next.id]);
+            assert_eq!(later.correction_pending, !acked || changed_generation);
+            assert_eq!(
+                s.interaction_delivery(&later.id, 100)
+                    .unwrap()
+                    .unwrap()
+                    .correction_pending,
+                !acked || changed_generation
+            );
+
+            s.interaction_begin_delivery(&later.id, 100)
+                .unwrap()
+                .unwrap();
+            let (_, published_text) = s
+                .interaction_reserve_part(&later.id, 100, 0, "body", "pending")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                published_text,
+                if acked && !changed_generation {
+                    "body"
+                } else {
+                    "pending"
+                }
+            );
+            assert!(s.interaction_can_publish_part(&later.id, 100, 0).unwrap());
+            {
+                let conn = s.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE conversation_entry_generations SET generation=3 WHERE session_id=?1",
+                    [topic.id],
+                )
+                .unwrap();
+            }
+            assert!(
+                s.interaction_delivery(&later.id, 100)
+                    .unwrap()
+                    .unwrap()
+                    .correction_pending
+            );
+            assert_eq!(
+                s.interaction_can_publish_part(&later.id, 100, 0).unwrap(),
+                !acked || changed_generation
+            );
+            {
+                let conn = s.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE conversation_entry_generations SET generation=1 WHERE session_id=?1",
+                    [topic.id],
+                )
+                .unwrap();
+            }
+            let _pending = admit(&s, &topic, 4, R::Amends(first.requests.clone()));
+            assert_eq!(
+                s.interaction_can_publish_part(&later.id, 100, 0).unwrap(),
+                !acked || changed_generation
+            );
+            assert!(
+                s.interaction_delivery(&later.id, 100)
+                    .unwrap()
+                    .unwrap()
+                    .correction_pending
+            );
+            if acked && !changed_generation {
+                assert!(
+                    s.interaction_first_part_not_submitted(&later.id, 100)
+                        .unwrap()
+                );
+                let ready = s
+                    .interaction_ready_telegram_deliveries(
+                        100,
+                        SessionKey::new(next.origin.chat_id, Some(next.origin.thread_id)),
+                        false,
+                    )
+                    .unwrap();
+                assert!(ready.iter().any(|delivery| delivery.id == later.id));
+                s.interaction_begin_delivery(&later.id, 100)
+                    .unwrap()
+                    .unwrap();
+                let (_, replacement) = s
+                    .interaction_reserve_part(&later.id, 100, 0, "body", "pending")
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(replacement, "pending");
+            }
+        }
     }
 
     #[test]
