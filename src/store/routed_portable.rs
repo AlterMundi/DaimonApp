@@ -44,7 +44,7 @@ pub(super) fn telegram_original_epoch_for_parent(
     telegram_original_epoch_on(conn, source, parent.target, accepted_parent)
 }
 
-const MAX_TELEGRAM_ALBUM_MEMBERS: usize = 10;
+const MAX_TELEGRAM_ALBUM_MEMBERS: usize = crate::files::MAX_TELEGRAM_ALBUM_FILES;
 
 fn compatible_album_member(
     update: &crate::telegram::Update,
@@ -108,7 +108,7 @@ impl Store {
         }
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut query = conn.prepare(
-            "SELECT i.payload_json, i.status, i.instance_id, e.value
+            "SELECT i.payload_json, i.status, i.instance_id, e.value, i.media_group_id
              FROM incoming_updates i
              LEFT JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
              WHERE i.update_id>?1
@@ -131,7 +131,7 @@ impl Store {
         ])?;
         let mut members = Vec::new();
         while let Some(row) = rows.next()? {
-            let update: crate::telegram::Update = serde_json::from_str(&row.get::<_, String>(0)?)?;
+            let update = crate::telegram::Update::from_journal(&row.get::<_, String>(0)?, row.get(4)?)?;
             if row.get::<_, String>(1)? != "received"
                 || row.get::<_, String>(2)? != self.instance_id
                 || row.get::<_, Option<String>>(3)?.as_deref() != Some(epoch.as_str())
@@ -164,7 +164,7 @@ fn telegram_album_matches_on(
     let mut previous = anchor_id;
     let mut captions = vec![anchor.attachment_caption().to_owned()];
     let mut query = conn.prepare(
-        "SELECT i.payload_json, e.value FROM incoming_updates i
+        "SELECT i.payload_json, e.value, i.media_group_id FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          WHERE i.update_id=?1 AND i.status IN ('received','handled')",
     )?;
@@ -173,13 +173,13 @@ fn telegram_album_matches_on(
             return Ok(false);
         }
         previous = *id;
-        let retained: Option<(String, String)> = query
-            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+        let retained: Option<(String, String, Option<String>)> = query
+            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .optional()?;
-        let Some((raw, member_epoch)) = retained else {
+        let Some((raw, member_epoch, group)) = retained else {
             return Ok(false);
         };
-        let member: crate::telegram::Update = serde_json::from_str(&raw)?;
+        let member = crate::telegram::Update::from_journal(&raw, group)?;
         if member_epoch != epoch || !compatible_album_member(&member, anchor, source.human_id) {
             return Ok(false);
         }
@@ -212,21 +212,21 @@ fn telegram_original_epoch_on(
     {
         return Ok(None);
     }
-    let retained: Option<(String, String, String, Option<i64>)> = conn
+    let retained: Option<(String, String, String, Option<i64>, Option<String>)> = conn
         .query_row(
-            "SELECT i.payload_json, e.value, i.status, i.turn_id FROM incoming_updates i
+            "SELECT i.payload_json, e.value, i.status, i.turn_id, i.media_group_id FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          JOIN bot_state b ON b.key='telegram_identity'
          WHERE i.update_id=?1
            AND ?2='telegram:'||json_extract(b.value,'$.id')",
             params![update, source.channel],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((raw, epoch, status, retained_turn)) = retained else {
+    let Some((raw, epoch, status, retained_turn, group)) = retained else {
         return Ok(None);
     };
-    let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+    let original = crate::telegram::Update::from_journal(&raw, group)?;
     let matching_voice = if let Some(proof) = &source.transcription {
         source.origin.thread_id == target.thread_id
             && source.telegram_files.is_empty()

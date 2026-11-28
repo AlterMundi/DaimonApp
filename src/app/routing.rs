@@ -334,7 +334,7 @@ pub(super) async fn handle_portable_topic(
         let max_files = if profile.agy_cli {
             crate::files::MAX_FILES
         } else {
-            10
+            crate::files::MAX_TELEGRAM_ALBUM_FILES
         };
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
         for member in app
@@ -1613,6 +1613,17 @@ fn queue_root(
         .admission_epoch
         .clone()
         .context("Interaction dispatch generation missing")?;
+    let files = shared.store.interaction_files(&i.id, i.human_id)?;
+    let attachments = if !source.telegram_album_members.is_empty()
+        && direct_portable_topic(i)
+        && i.target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+    {
+        crate::files::telegram_album_attachments(&shared.config.db_path, &files)?
+    } else {
+        crate::files::attachments(&shared.config.db_path, &files)?
+    };
     sender
         .send(QueuedTurn {
             request: TurnRequest {
@@ -1625,10 +1636,7 @@ fn queue_root(
                     shared.store.interaction_visual(&i.id, i.human_id)?.as_ref(),
                 )?
                 .into_iter()
-                .chain(crate::files::attachments(
-                    &shared.config.db_path,
-                    &shared.store.interaction_files(&i.id, i.human_id)?,
-                )?)
+                .chain(attachments)
                 .collect(),
                 review_mode: None,
                 override_search_mode: None,

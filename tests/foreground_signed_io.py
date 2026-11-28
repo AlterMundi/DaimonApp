@@ -612,7 +612,7 @@ timeout_seconds=5
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_ALBUM") == "1":
-                                self._telegram_album(journey, provider)
+                                self._telegram_album(journey, provider, adapter, teledaimon, adapter_config)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
@@ -2142,12 +2142,12 @@ timeout_seconds=5
                 self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), data)
             self.assertEqual(len(set(provider.exposures)), len(cases))
 
-        def _telegram_album(self, journey, provider):
+        def _telegram_album(self, journey, provider, adapter, teledaimon, adapter_config):
             import base64
             import hashlib
 
             image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
-            images = {f"album-{index}.png": image + bytes([index]) for index in range(3)}
+            images = {f"album-{index}.png": image + bytes([index]) for index in range(10)}
             journey.media_files = images
             delivered = {}
 
@@ -2180,9 +2180,11 @@ timeout_seconds=5
                 self.assertIsNone(provider.failure)
                 journey.idle()
 
-            original(files=["album-0.png", "album-1.png"], caption="First caption.\n\nSecond caption.")
-            first = admit("album-0.png", "First caption.")
-            second = admit("album-1.png", "Second caption.")
+            names = list(images)[:-1]
+            captions = [f"Album caption {index}." for index in range(len(names))]
+            original(files=names, caption="\n\n".join(captions))
+            first, *members = [admit(name, caption) for name, caption in zip(names, captions)]
+            second = members[0]
             wait_reply(first)
             [(raw, native)] = journey.row(
                 "SELECT s.doc,t.native_thread_id FROM interaction_sources s "
@@ -2191,21 +2193,21 @@ timeout_seconds=5
                 (str(first),),
             )
             source = json.loads(raw)
-            self.assertEqual(source["telegram_album_members"], [second])
+            self.assertEqual(source["telegram_album_members"], members)
             self.assertEqual([item["sha256"] for item in source["telegram_files"]], [
                 hashlib.sha256(images[name]).hexdigest()
-                for name in ("album-0.png", "album-1.png")
+                for name in names
             ])
             self.assertEqual(journey.row(
-                "SELECT status FROM incoming_updates WHERE update_id IN (?,?) ORDER BY update_id",
-                (first, second)), [("handled",), ("handled",)])
+                "SELECT status FROM incoming_updates WHERE update_id BETWEEN ? AND ? ORDER BY update_id",
+                (first, members[-1])), [("handled",)] * len(names))
             self.assertEqual(len(provider.exposures), 1)
             # The mock Bot API returns one update per poll. An exact old
             # member delivered again is deduplicated before native dispatch.
             with journey.lock:
                 journey.updates.append(delivered[second])
-            original(files=["album-2.png"], caption="Late caption.")
-            late = admit("album-2.png", "Late caption.")
+            original(files=["album-9.png"], caption="Late caption.")
+            late = admit("album-9.png", "Late caption.")
             wait_reply(late)
             self.assertEqual(journey.row(
                 "SELECT t.native_thread_id FROM interaction_sources s "
@@ -2214,6 +2216,43 @@ timeout_seconds=5
                 (str(second), str(late)),
             ), [(native,)])
             self.assertEqual(len(provider.exposures), 2)
+
+            if predecessor := os.environ.get("FOREGROUND_TEST_TELEGRAM_ALBUM_PREDECESSOR"):
+                # Roll back the Gateway on the same journal. Retain the newer
+                # adapter executable to exercise mixed-version redelivery.
+                adapter.send_signal(signal.SIGINT)
+                _, errors = adapter.communicate(timeout=10)
+                self.assertEqual(adapter.returncode, 0, errors)
+                journey.stop()
+                journey.binary = str(Path(predecessor).resolve())
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                successor = subprocess.Popen(
+                    [str(teledaimon), str(adapter_config)], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True,
+                )
+                try:
+                    with journey.lock:
+                        journey.updates.append(delivered[second])
+                    original(files=["album-9.png"], caption="Predecessor readback.")
+                    probe = journey.admit(topic=7, message_fields={
+                        "photo": [{"file_id": "album-9.png", "width": 1, "height": 1}],
+                        "caption": provider.original,
+                    })
+                    wait_reply(probe)
+                    self.assertEqual(len(provider.exposures), 3)
+                    self.assertEqual(journey.row(
+                        "SELECT status,media_group_id FROM incoming_updates WHERE update_id=?",
+                        (second,),
+                    ), [("handled", "shared-fixture-album")])
+                    self.assertEqual(journey.row(
+                        "SELECT count(*) FROM interaction_sources WHERE event_id=?", (str(second),),
+                    ), [(0,)])
+                finally:
+                    if successor.poll() is None:
+                        successor.send_signal(signal.SIGINT)
+                    _, errors = successor.communicate(timeout=10)
+                    self.assertEqual(successor.returncode, 0, errors)
 
         def _telegram_steer(self, journey, provider, profile):
             selected = json.loads(profile.read_text())
