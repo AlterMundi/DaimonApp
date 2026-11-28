@@ -427,6 +427,8 @@ class Provider:
                 selection={**target, **({'cursor':project_cursor} if project_cursor is not None else {})}
                 if project_selection is not None:
                     selection.update(project=project_selection['project'],repository=project_selection['repository'])
+                    if project_selection.get('evidence'):
+                        selection['evidence']=project_selection['evidence']
                 try:
                     projects=self.presentation('input topic-projects '+json.dumps(selection,separators=(',',':')))
                 except ProviderUnavailable:
@@ -445,6 +447,11 @@ class Provider:
                     selected['projects']={'repositories':projects['repositories'],'next':next_page,'restarted':restarted}
                     if project_selection:
                         selected['projects']['project']=projects['project']
+                        if project_selection.get('evidence'):
+                            evidence=projects.get('evidence',[])
+                            if not isinstance(evidence,list) or len(evidence)>8:
+                                raise ProviderUnavailable('Invalid project evidence')
+                            selected['projects']['evidence']=evidence
             rooms.append(selected)
         return {'schema':'daimon.topic-rooms/v1','rooms':rooms}
 

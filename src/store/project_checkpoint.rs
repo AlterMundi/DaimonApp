@@ -18,9 +18,40 @@ pub(crate) struct ProjectLink {
     pub label: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectEvidence {
+    pub repository: Uuid,
+    pub commit: String,
+}
+
 impl ProjectLink {
     fn repository_id(&self) -> Uuid {
         self.repository.unwrap_or(self.project)
+    }
+
+    fn public_revision(&self) -> serde_json::Value {
+        let label = self.label.clone().unwrap_or_else(|| {
+            let locator = self.locator.strip_prefix("git:").unwrap_or_default();
+            if locator.starts_with("local:") {
+                return "Repositorio local".into();
+            }
+            locator
+                .trim_end_matches('/')
+                .rsplit(['/', ':'])
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches(".git")
+                .trim()
+                .chars()
+                .take(80)
+                .collect()
+        });
+        serde_json::json!({
+            "project":self.project,"repository":self.repository_id(),
+            "label":if label.is_empty() {"Repositorio"} else {label.as_str()},
+            "commit":self.commit,
+        })
     }
 }
 
@@ -631,7 +662,18 @@ impl Store {
         key: SessionKey,
         cursor: Option<&str>,
         selected: Option<(Uuid, Uuid)>,
+        evidence: &[ProjectEvidence],
     ) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            evidence.is_empty()
+                || (selected.is_some()
+                    && cursor.is_none()
+                    && evidence.len() <= 8
+                    && evidence
+                        .iter()
+                        .all(|row| !row.repository.is_nil() && exact_git_commit(&row.commit))),
+            "Select bounded exact project evidence"
+        );
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (entry_session, native) = presentation::entry_on(&conn, human, entry)?;
         let (session, folder, claim): (i64, Option<String>, Option<String>) = conn.query_row(
@@ -653,11 +695,11 @@ impl Store {
             .transpose()?;
         let restarted = page.is_some_and(|(previous, _)| previous != revision);
         let before = page.filter(|_| !restarted).map(|(_, before)| before);
-        let (links, next) = match (folder, claim) {
+        let (links, next) = match (folder.as_deref(), claim.as_deref()) {
             (None, None) if selected.is_none() => (Vec::new(), None),
             (Some(folder), Some(claim)) => {
                 anyhow::ensure!(
-                    crate::files::workspace_marker_matches(Path::new(&folder), &claim)?,
+                    crate::files::workspace_marker_matches(Path::new(folder), claim)?,
                     "Topic workspace ownership marker unavailable"
                 );
                 if let Some((project, repository)) = selected {
@@ -668,7 +710,7 @@ impl Store {
                             entry,
                             human,
                             session,
-                            &claim,
+                            claim,
                             LinkSelector {
                                 project: Some(project),
                                 repository: Some(repository),
@@ -685,7 +727,7 @@ impl Store {
                     entry,
                     human,
                     session,
-                    &claim,
+                    claim,
                     (before, selected.map(|pair| pair.0)),
                 )?
             }
@@ -693,37 +735,48 @@ impl Store {
         };
         let next = next.map(|before| format!("{revision}.{before}"));
         let repositories = links
-            .into_iter()
-            .map(|checkpoint| {
-                let link = checkpoint.delta.link;
-                let label = link.label.clone().unwrap_or_else(|| {
-                    let locator = link.locator.strip_prefix("git:").unwrap_or_default();
-                    if locator.starts_with("local:") {
-                        return "Repositorio local".into();
-                    }
-                    locator
-                        .trim_end_matches('/')
-                        .rsplit(['/', ':'])
-                        .next()
-                        .unwrap_or_default()
-                        .trim_end_matches(".git")
-                        .trim()
-                        .chars()
-                        .take(80)
-                        .collect()
-                });
-                serde_json::json!({
-                    "project":link.project,"repository":link.repository_id(),
-                    "label":if label.is_empty() {"Repositorio"} else {label.as_str()},
-                    "commit":link.commit,
-                })
-            })
+            .iter()
+            .map(|checkpoint| checkpoint.delta.link.public_revision())
             .collect::<Vec<_>>();
+        let mut historical = Vec::new();
+        if let (Some((project, _)), Some(claim)) = (selected, claim.as_deref()) {
+            for row in evidence {
+                let selector = LinkSelector {
+                    project: Some(project),
+                    repository: Some(row.repository),
+                    commit: None,
+                };
+                let Ok(Some(tip)) =
+                    checkpoint_on(&conn, key, entry, human, session, claim, selector)
+                else {
+                    continue;
+                };
+                let Ok(Some(old)) = checkpoint_on(
+                    &conn,
+                    key,
+                    entry,
+                    human,
+                    session,
+                    claim,
+                    LinkSelector {
+                        commit: Some(&row.commit),
+                        ..selector
+                    },
+                ) else {
+                    continue;
+                };
+                if old.delta.link.locator == tip.delta.link.locator {
+                    let mut link = tip.delta.link;
+                    link.commit = old.delta.link.commit;
+                    historical.push(link.public_revision());
+                }
+            }
+        }
         Ok(serde_json::json!({
             "schema":"daimon.topic-projects/v1",
             "entry_binding":[human,entry,entry_session,native],
             "target":key,"repositories":repositories,"next":next,"restarted":restarted,
-            "project":selected.map(|pair| pair.0),
+            "project":selected.map(|pair| pair.0),"evidence":historical,
         }))
     }
 
@@ -1243,7 +1296,7 @@ mod tests {
         );
         assert_eq!(git(&moved, &["diff", "--cached"]), staged);
         let projected = store
-            .topic_project_projection(100, entry, topic, None, None)
+            .topic_project_projection(100, entry, topic, None, None, &[])
             .unwrap();
         assert_eq!(
             projected["repositories"][0]["project"],
@@ -1256,18 +1309,25 @@ mod tests {
         let project = delta.link.project;
         assert!(
             store
-                .topic_project_projection(100, entry, topic, None, Some((project, Uuid::now_v7())))
+                .topic_project_projection(
+                    100,
+                    entry,
+                    topic,
+                    None,
+                    Some((project, Uuid::now_v7())),
+                    &[]
+                )
                 .is_err()
         );
         assert_eq!(
             store
-                .topic_project_projection(100, entry, topic, None, Some((project, project)))
+                .topic_project_projection(100, entry, topic, None, Some((project, project)), &[])
                 .unwrap()["repositories"],
             projected["repositories"]
         );
         assert!(
             store
-                .topic_project_projection(101, entry, topic, None, None)
+                .topic_project_projection(101, entry, topic, None, None, &[])
                 .is_err()
         );
         assert!(
@@ -1296,12 +1356,12 @@ mod tests {
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
         assert!(
             store
-                .topic_project_projection(100, entry, topic, None, Some((project, project)))
+                .topic_project_projection(100, entry, topic, None, Some((project, project)), &[])
                 .is_err()
         );
         assert_eq!(
             store
-                .topic_project_projection(100, entry, topic, None, None)
+                .topic_project_projection(100, entry, topic, None, None, &[])
                 .unwrap()["repositories"],
             serde_json::json!([])
         );

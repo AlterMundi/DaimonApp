@@ -196,6 +196,19 @@ topic_id=8
         self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['projects'],
                          {'repositories':repositories,'next':None,'restarted':False})
         self.assertTrue(all('projects' not in room for room in self.provider.topic_rooms(include_projects=True)['rooms']))
+        row=repositories[0]
+        historical={**row,'commit':'b'*40}
+        selection={key:row[key] for key in ('project','repository')}
+        selection['evidence']=[{'repository':row['repository'],'commit':historical['commit']}]
+        def with_evidence(command):
+            if command.startswith('input topic-projects '):
+                self.assertEqual(json.loads(command.removeprefix('input topic-projects ')),{**target,**selection})
+                return {'schema':'daimon.topic-projects/v1','target':target,'project':row['project'],
+                        'repositories':repositories,'evidence':[historical]}
+            return self.presentation(command)
+        self.provider.presentation.side_effect=with_evidence
+        evidence=self.provider.topic_rooms(worker['room'],include_projects=True,project_selection=selection)
+        self.assertEqual(evidence['rooms'][0]['projects']['evidence'],[historical])
         with closing(sqlite3.connect(self.db)) as db:
             db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=2')
             db.commit()

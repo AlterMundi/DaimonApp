@@ -111,7 +111,7 @@ mod nexus;
 mod observer;
 mod observer_cards;
 mod project_checkpoint;
-pub(crate) use project_checkpoint::{ProjectShadowCommand, ProjectStartup};
+pub(crate) use project_checkpoint::{ProjectEvidence, ProjectShadowCommand, ProjectStartup};
 mod observer_freshness;
 mod presentation;
 pub use observer::SessionObservation;

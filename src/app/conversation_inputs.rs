@@ -427,6 +427,8 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             cursor: Option<String>,
             project: Option<Uuid>,
             repository: Option<Uuid>,
+            #[serde(default)]
+            evidence: Vec<crate::store::ProjectEvidence>,
         }
         let page: ProjectPage = serde_json::from_str(target)?;
         let selected = match (page.project, page.repository) {
@@ -440,6 +442,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             page.target,
             page.cursor.as_deref(),
             selected,
+            &page.evidence,
         );
     }
     if let Some(body) = args.strip_prefix("foreground context ") {

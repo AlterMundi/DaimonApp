@@ -206,6 +206,14 @@ def select_project(journey, *, paginate=False):
         assert latest == advanced["checkpoint"], latest
         assert shadow(7, "old-story", {**exact, "commit": link["commit"]}) == accepted["checkpoint"]
         assert shadow(7, "unregistered-object", {**exact, "commit": unregistered_commit}) is None
+        evidence = [{"repository": story, "commit": commit}
+                    for commit in (link["commit"], unregistered_commit)]
+        evidence.append({"repository": other_links[1][1]["project"],
+                         "commit": other_links[1][1]["commit"]})
+        page = room_page(project=story, repository=story, evidence=evidence)
+        assert page["evidence"] == [{"project": story, "repository": story,
+                                    "label": link["label"], "commit": link["commit"]}], page
+        assert page["repositories"][0]["commit"] == next_link["commit"], page
         assert shadow(7, "different-repository", {
             **exact, "repository": other_links[0][1]["repository"], "commit": link["commit"],
         }) is None

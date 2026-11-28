@@ -216,3 +216,13 @@ or custom spatial layout exists. Holodeck may use the room reference to
 present a default space, but reuses canonical Conversation to read and send.
 Authorized project links require their own current reader; an absent project
 projection is not evidence that the topic has no linked projects.
+
+When opening a selected project, the owner-side room reader may submit up
+to eight exact repository and commit pairs already present on a mission.
+The response separates the current repository page from the matching
+retained evidence. Each match still requires a current link within the
+selected project, the same repository locator and current access to the
+checkpoint citation. The response includes the current label and exact hash
+with no checkout path, locator or source text. This is a read of Git
+verification retained at registration. A fresh Git object read uses the
+workspace-scoped native checkpoint operation with its selected checkout.
