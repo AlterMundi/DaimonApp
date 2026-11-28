@@ -1572,10 +1572,10 @@ impl App {
                         )
                         .await?;
                     } else {
-                        let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
                         if let Some(profile) = self.shared.config.interaction.as_ref()
-                            && let Some((engine, _)) = profile.portable_route(session_key)
+                            && let Some((engine, _)) = routing::portable_topic(&self.shared, session_key)
                         {
+                            let session = self.ensure_session(session_key, user.tg_user_id)?;
                             let (started, queued) = self.shared.store.routed_portable_status(
                                 session.id,
                                 user.tg_user_id,
@@ -1632,6 +1632,7 @@ impl App {
                                 .await?;
                             return Ok(());
                         }
+                        let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
                         let uncertain = self
                             .shared
                             .store

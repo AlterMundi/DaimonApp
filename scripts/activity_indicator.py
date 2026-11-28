@@ -447,6 +447,19 @@ def status_report(status, rollout, children, now):
     return '⚠️ Native activity unavailable'
 
 
+def activity_topics(database, portable_supported):
+    portable = """ OR EXISTS (
+        SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.status='running'
+          AND t.execution_harness IN ('claude','antigravity','goose')
+          AND t.from_user_id=s.creator_user_id
+    )""" if portable_supported else ''
+    return database.execute(f"""SELECT s.chat_id,s.thread_id,s.codex_thread_id,s.creator_user_id,
+        (SELECT status FROM turns WHERE session_id=s.id ORDER BY id DESC LIMIT 1) AS turn_status
+        FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+        WHERE u.allowed=1 AND ((s.codex_thread_id IS NOT NULL AND s.force_fresh_thread=0){portable})
+        """).fetchall()
+
+
 def portable_activity(database, chat, topic, human, now):
     """Read active portable work from Gateway's existing ownership journal."""
     row = database.execute('''SELECT t.id,t.execution_harness,t.started_at,t.native_thread_id,
@@ -474,7 +487,7 @@ def portable_activity(database, chat, topic, human, now):
     if row['waiting']:
         text += f" · {row['waiting']} waiting"
     return {'turn': f"portable:{row['id']}", 'started': started, 'text': text,
-            'visible': elapsed >= 30}
+            'native': row['native_thread_id'], 'visible': elapsed >= 30}
 
 
 def goal_line(goal):
@@ -1361,10 +1374,7 @@ def run(args):
                 if native is None:
                     native = Native(str(config['codex'].get('binary', 'codex')))
                 weekly.read(native, time.monotonic())
-                topics = bridge.execute('''SELECT s.chat_id,s.thread_id,s.codex_thread_id,s.creator_user_id,
-                    (SELECT status FROM turns WHERE session_id=s.id ORDER BY id DESC LIMIT 1) AS turn_status
-                    FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
-                    WHERE s.codex_thread_id IS NOT NULL AND s.force_fresh_thread=0 AND u.allowed=1''').fetchall()
+                topics = activity_topics(bridge, portable_supported)
                 known = set()
                 for topic in topics:
                     tid = topic['codex_thread_id']
@@ -1375,6 +1385,7 @@ def run(args):
                                                   topic['creator_user_id'], now)
                                 if portable_supported else None)
                     if portable:
+                        portable_native = portable['native']
                         latest = latest_input(bridge, topic['chat_id'], topic['thread_id'])
                         position = {'exchange': None, 'input_id': latest['message_id'] if latest else None}
                         quiet = latest and latest['at'] is not None and now - latest['at'] < 30
@@ -1386,12 +1397,14 @@ def run(args):
                         # The Gateway answers explicit /status for routed portable topics.
                         observations.append({'status': 'active', 'visible': bool(text), 'working': True, 'command': False})
                         topic_observations[key] = {
-                            'native': tid, 'human': topic['creator_user_id'], 'observed_at': now,
+                            'native': portable_native, 'human': topic['creator_user_id'], 'observed_at': now,
                             'execution': 'working', 'goal_state': 'unavailable', 'work_started_at': portable['started'],
                         }
                         if publisher:
                             publications.append((key, topic['chat_id'], topic['thread_id'], portable['turn'],
-                                                 text, now, None, position, pending_markup(pending), tid))
+                                                 text, now, None, position, pending_markup(pending), portable_native))
+                        continue
+                    if tid is None:
                         continue
                     command = command_activity(bridge, topic['chat_id'], topic['thread_id'], time.time())
                     row = native_db.execute('SELECT rollout_path FROM threads WHERE id=? AND archived=0', (tid,)).fetchone()

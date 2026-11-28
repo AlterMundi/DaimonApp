@@ -435,6 +435,10 @@ timeout_seconds=5
         j.wait(lambda: bool(j.instructions(77)))
         first = json.loads(j.instructions(77)[0][2])
         assert first['target_execution']['harness'] == 'antigravity'
+        j.admit('/status', topic=77)
+        j.wait(lambda: j.has('Antigravity is ', 77))
+        assert j.row('SELECT codex_thread_id FROM sessions WHERE thread_id=77') == [(None,)]
+
         assert sum(m.get('method') in ('thread/start', 'turn/start') for m in j.rpc) == before
         assert j.topic_calls == 1
         print('PASS one profiled empty topic, exact relay and binding readback, no native admission')

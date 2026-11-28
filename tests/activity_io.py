@@ -91,6 +91,10 @@ class ActivityIO(unittest.TestCase):
                     (1,'old','queued','{"target_execution":{"harness":"claude"}}'),
                     (1,'bridge','queued','{"target_execution":{"harness":"goose"}}');
             """)
+            database.execute('ALTER TABLE sessions ADD COLUMN force_fresh_thread INTEGER DEFAULT 0')
+            database.execute("UPDATE sessions SET codex_thread_id=NULL,force_fresh_thread=1 WHERE id=1")
+            self.assertEqual([row['thread_id'] for row in activity.activity_topics(database, False)], [8])
+            self.assertEqual(sorted(row['thread_id'] for row in activity.activity_topics(database, True)), [7, 8])
             started = activity.timestamp('2026-11-26T08:00:00Z')
             early = activity.portable_activity(database, 100, 7, 100, started + 12)
             self.assertFalse(early['visible'])
@@ -100,6 +104,7 @@ class ActivityIO(unittest.TestCase):
             database.execute("UPDATE interaction_instructions SET phase='submitting' WHERE json_extract(doc,'$.local_turn')=10")
             active = activity.portable_activity(database, 100, 7, 100, started + 61)
             self.assertTrue(active['visible'])
+            self.assertEqual(active['native'], 'approved')
             self.assertEqual(active['turn'], early['turn'])
             self.assertIn('Claude Code · working · 1m · 1 waiting', active['text'])
             database.execute("UPDATE app_instance_lock SET instance_id='replacement'")
