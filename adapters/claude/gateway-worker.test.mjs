@@ -373,7 +373,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
             { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession,
-              sessionScope: first.sessionScope, inputAcceptance: true, ...(workspace === undefined ? {} : { workspace }),
+              sessionScope: first.sessionScope, inputAcceptance: true, workAcceptance: true,
+              ...(workspace === undefined ? {} : { workspace }),
               ...(humanOriginal ? { steering: true } : {}) });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'profile-changed') {

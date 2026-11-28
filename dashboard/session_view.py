@@ -330,13 +330,18 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
         dispatch_binding = hashlib.sha256(json.dumps(
             [human, {'chat_id':chat, 'thread_id':topic}, session, generation],
             ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        running_here = """t.status='running' AND t.session_id=i.session_id
+            AND t.from_user_id=s.human_id AND t.execution_harness=?3 AND t.execution_generation=?4"""
+        native_receipt = """i.phase='submitting'
+            AND json_extract(i.doc,'$.native_input_accepted')=1
+            AND json_extract(i.doc,'$.native_thread')=t.native_thread_id"""
         pending = db.execute(f"""SELECT i.id,COALESCE(s.created_at,t.started_at),
-                substr(json_extract(s.doc,'$.text'),1,1001),{original_id},i.phase
+                substr(json_extract(s.doc,'$.text'),1,1001),{original_id},
+                CASE WHEN {native_receipt} AND {running_here} THEN 'accepted' ELSE i.phase END
             FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
             LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
             WHERE i.session_id=?1 AND s.human_id=?2 AND {human_original}
-            AND ((i.phase='accepted' AND t.status='running' AND t.session_id=i.session_id
-                  AND t.from_user_id=s.human_id AND t.execution_harness=?3 AND t.execution_generation=?4
+            AND (((i.phase='accepted' OR ({native_receipt})) AND {running_here}
                   AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final}))
                 OR (i.phase IN ('queued','submitting','steering','retained_unsent','uncertain')
                   AND json_extract(i.doc,'$.target_execution.harness')=?3

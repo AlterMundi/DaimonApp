@@ -157,15 +157,22 @@ test('fresh history quotes preserve the distinct current original at submission'
 test('subscription refusal is retained without mistaking it for an unobserved result', async () => {
   const resetsAt = 1795719000;
   for (const [workObserved, terminalObserved] of [[false, true], [true, true], [false, false]]) {
+    let receipts = 0;
     const outcome = await runClaudeTurn(options({
       beforeSubmit: () => true,
+      onInputAccepted(work) {
+        if (!work) return false;
+        receipts++;
+      },
       query: ({ prompt }) => ({
         async initializationResult() { return { claude_code_version: 'fixture-version' }; },
         async mcpServerStatus() { return connected; },
         async *[Symbol.asyncIterator]() {
           for await (const request of prompt) {
             const session_id = request.session_id;
-            if (workObserved) yield { type: 'assistant', session_id, message: { content: [{ type: 'tool_use' }] } };
+            yield { type: 'system', subtype: 'status', session_id, user_message_uuids: [request.uuid] };
+            if (workObserved) yield { type: 'assistant', session_id, user_message_uuids: [request.uuid],
+              message: { content: [{ type: 'tool_use' }] } };
             yield { type: 'rate_limit_event', session_id,
               rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt } };
             yield { type: 'assistant', session_id, parent_tool_use_id: null, error: 'rate_limit',
@@ -176,6 +183,7 @@ test('subscription refusal is retained without mistaking it for an unobserved re
         close() {},
       }),
     }));
+    assert.equal(receipts, workObserved ? 1 : 0);
     assert.deepEqual(outcome, {
       phase: 'subscription_limited', sessionId: input.sessionId, workObserved, terminalObserved,
       limit: { window: 'five_hour', resets_at: resetsAt },

@@ -364,8 +364,7 @@ export async function runClaudeTurn({
       const rootStatus = !rootOutcome && event.type === 'system' && event.subtype === 'status'
         && event.parent_tool_use_id == null && answered.includes(input.id);
       if (!observedAcceptance && onInputAccepted && (rootReply || rootStatus)) {
-        await onInputAccepted();
-        observedAcceptance = true;
+        observedAcceptance = await onInputAccepted(rootReply) !== false;
       }
       if (steerEnabled() && steeringReady && (rootReply || rootStatus)) {
         const incorporated = [...new Set(answered)].filter(id => submitted.has(id) && !acceptedInRoot.has(id));

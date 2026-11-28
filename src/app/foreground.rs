@@ -35,6 +35,7 @@ pub(in crate::app) struct WorkerAcceptance<'a> {
     shared: &'a Arc<AppShared>,
     input: &'a crate::interaction::Instruction,
     local_turn: i64,
+    require_work: bool,
 }
 
 pub(in crate::app) struct WorkerSteering<'a> {
@@ -312,10 +313,19 @@ pub(in crate::app) async fn execute_worker(
             }
             let mut decision = json!({"schema":schema,"type":"submission_decision",
                 "inputId":id,"sessionId":session,"committed":committed});
-            observe_acceptance =
-                committed && acceptance.is_some() && frame["inputAcceptance"] == true;
+            observe_acceptance = committed
+                && acceptance.as_ref().is_some_and(|receipt| {
+                    frame["inputAcceptance"] == true
+                        && (!receipt.require_work || frame["workAcceptance"] == true)
+                });
             if observe_acceptance {
                 decision["observeAcceptance"] = json!(true);
+                if acceptance
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.require_work)
+                {
+                    decision["requireWork"] = json!(true);
+                }
             }
             if committed
                 && engine == ForegroundEngine::Claude
@@ -1008,8 +1018,11 @@ pub(super) async fn run_routed_portable(
                     cancel: &cancel,
                     controller,
                     steering: steering.as_mut(),
-                    acceptance: author.as_ref().is_some_and(|a| a["report_to_topic"] == true).then_some(WorkerAcceptance {
-                        shared: &app.shared, input, local_turn: local,
+                    acceptance: (engine == ForegroundEngine::Claude
+                        && ((routed_host_access && human_authored)
+                            || author.as_ref().is_some_and(|a| a["report_to_topic"] == true)))
+                    .then_some(WorkerAcceptance {
+                        shared: &app.shared, input, local_turn: local, require_work: human_authored,
                     }),
                 },
                 |prepared| {
