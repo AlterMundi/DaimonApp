@@ -708,7 +708,7 @@ async function main() {
     if (controllerSelected) {
       const { z } = createRequire(profile.sdk)('zod');
       const controllerTool = tool('interaction_controller',
-        'Call the shared Gateway conversation controller. Call capabilities with empty arguments to inspect the available operations.',
+        'Call the shared Gateway conversation controller. Call capabilities with empty arguments to inspect the available operations. If the paired human asks about earlier decisions in this topic and your native context is incomplete, use topic_history when available before saying the history is missing.',
         { operation: z.string().min(1).max(64), arguments: z.record(z.string(), z.unknown()) },
         async ({ operation, arguments: args }) => {
           if (!committed || stop.signal.aborted || Buffer.byteLength(JSON.stringify(args)) > 15600) {
