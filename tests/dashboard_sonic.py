@@ -154,10 +154,39 @@ topic_id=8
                 with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
                     client.cookies.set('__Host-home','h'*43)
                     self.assertEqual(client.get('/api/interaction/sessions').status_code,expected)
+                    self.assertEqual(client.get('/api/interaction/sessions?projection=holodeck').status_code,expected)
             identity['actor']['ref']='human:telegram:101'
             with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
                 client.cookies.set('__Host-home','h'*43)
                 self.assertEqual(client.get('/api/interaction/sessions').status_code,403)
+
+    def test_topic_rooms_resolve_current_owned_topics_without_native_history(self):
+        self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},
+                           {'audio_key':'100:8','destination':{'source':'session:3','revision':'c'*64}}]
+        url='/api/interaction/sessions?projection=holodeck'
+        self.assertEqual(self.client.get(url).status_code,401)
+        response=self.client.get(url,headers=self.owner)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        self.assertEqual(response.json()['schema'],'daimon.topic-rooms/v1')
+        rooms={row['title']:row for row in response.json()['rooms']}
+        self.assertEqual(set(rooms),{'Entry','Worker'})
+        worker=rooms['Worker']
+        self.assertEqual(set(worker),{'title','room','general','direct_available'})
+        self.assertTrue(worker['direct_available'])
+        self.assertTrue(rooms['Entry']['general'])
+        foreign=self.provider.logical_topic_ref(101,3,100,8)
+        self.assertEqual(self.client.get(url+'&room='+foreign,headers=self.owner).status_code,404)
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute("UPDATE sessions SET codex_thread_id='new-harness-thread' WHERE id=2")
+            db.commit()
+        opened=self.client.get(url+'&room='+worker['room'],headers=self.owner)
+        self.assertEqual(opened.json()['rooms'],[worker])
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=2')
+            db.commit()
+        self.assertEqual(self.client.get(url+'&room='+worker['room'],headers=self.owner).status_code,404)
+        self.assertIsNone(self.provider.native)
 
     def test_workspace_joins_only_native_owned_destination_references_and_validates_shape(self):
         self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},

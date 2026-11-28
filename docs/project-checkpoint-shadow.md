@@ -94,3 +94,25 @@ The signed loopback test uses the existing
 revision and both receipt outcomes in actual Claude provider input and
 Codex historical context. Its provider and Codex peer are fixtures. Live
 adoption remains separate.
+
+
+## Holodeck topic-room catalogue
+
+The existing authenticated Session Workspace reader accepts
+`GET /api/interaction/sessions?projection=holodeck`. An optional `room`
+parameter selects one current room by its returned opaque logical topic
+reference. Both reads require the existing workspace grant, recheck it
+after the current owned inventory is read, and return private non-cacheable
+responses. A missing, inaccessible or retired room does not resolve. The
+reference identifies the logical topic across native harness changes; it
+does not designate an admission destination or confer permission.
+
+The projection contains title, general-conversation designation and whether
+a direct Conversation destination is available. Room selection supplies
+situated context to general Conversation by default. The projection makes
+no input selection and does not switch a human into direct mode. It omits private histories,
+routing revisions, native IDs and workspace paths. It works before any house
+or custom spatial layout exists. Holodeck may use the room reference to
+present a default space, but reuses canonical Conversation to read and send.
+Authorized project links require their own current reader; an absent project
+projection is not evidence that the topic has no linked projects.

@@ -393,7 +393,8 @@ class Provider:
                     row={**row,'execution':execution,'observed_at':sampled,'fresh':True,
                          'goal_state':'unknown','waiting_for_human':None,'tools_running':None,
                          'error':None,'marker':'⚙' if execution=='working' else ''}
-                items.append({'id':ident,'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
+                items.append({'id':ident,'topic_ref':self.logical_topic_ref(self.human,row['session'],chat,topic),
+                    'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
@@ -1535,6 +1536,12 @@ class Provider:
         if not valid:
             raise ValueError('Invalid request action')
         return self.presentation(('requests internal decide ' if internal else 'requests decide ') + json.dumps({**body, 'id':ident}, ensure_ascii=False))
+
+    @staticmethod
+    def logical_topic_ref(human, session, chat, topic):
+        """Stable logical topic identity, independent of the native thread and title."""
+        key=json.dumps(['daimon.logical-topic/v1',human,session,chat,topic],separators=(',',':'))
+        return hashlib.sha256(key.encode()).hexdigest()
 
     @staticmethod
     def identity(row):

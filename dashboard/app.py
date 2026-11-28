@@ -1077,7 +1077,7 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
             raise HTTPException(403,'This device has no session destination permission')
 
     @app.get('/api/interaction/sessions')
-    async def conversation_session_workspace(request: Request):
+    async def conversation_session_workspace(request: Request, projection: str|None=None, room: str|None=None):
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'This device has no complete session workspace grant')
@@ -1089,6 +1089,18 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'Session workspace grant changed')
+        if projection=='holodeck':
+            if room is not None and re.fullmatch('[a-f0-9]{64}',room) is None:
+                raise HTTPException(400,'Select a topic room')
+            rooms=[{'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
+                    'direct_available':row['is_entry'] or row['destination'] is not None}
+                   for row in result['sessions'] if room is None or row['topic_ref']==room]
+            if room is not None and len(rooms)!=1:
+                raise HTTPException(404,'Topic room unavailable')
+            value={'schema':'daimon.topic-rooms/v1','rooms':rooms}
+            return JSONResponse(value,headers={'Cache-Control':'private, no-store'})
+        if projection is not None or room is not None:
+            raise HTTPException(400,'Unknown session projection')
         return {**result,'default_filter':'all' if config.get('session_workspace',{}).get('default_filter')=='all' else 'recent'}
 
     @app.get('/api/interaction/sessions/{ident}')
