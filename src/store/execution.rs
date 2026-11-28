@@ -136,48 +136,56 @@ impl Store {
     ) -> Result<ExecutionBinding> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let mut binding = binding_on(&tx, key, human)?
-            .context("Controller conversation is no longer owned")?
-            .execution;
-        let (harness, native): (String, String) = tx
-            .query_row(
-                "SELECT t.execution_harness,t.native_thread_id FROM turns t
+        let binding = controller_execution_on(&tx, local, key, human, &self.instance_id)?;
+        tx.commit()?;
+        Ok(binding)
+    }
+}
+
+pub(super) fn controller_execution_on(
+    conn: &Connection,
+    local: i64,
+    key: SessionKey,
+    human: i64,
+    instance: &str,
+) -> Result<ExecutionBinding> {
+    let mut binding = binding_on(conn, key, human)?
+        .context("Controller conversation is no longer owned")?
+        .execution;
+    let (harness, native): (String, String) = conn
+        .query_row(
+            "SELECT t.execution_harness,t.native_thread_id FROM turns t
                  JOIN conversation_entry_generations g ON g.session_id=t.session_id
                  WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3
                    AND t.status='running' AND t.completed_at IS NULL
                    AND t.native_thread_id IS NOT NULL
                    AND (t.execution_generation=g.generation
                      OR (t.execution_harness='codex' AND t.execution_generation IS NULL))",
-                params![local, binding.conversation_id, human],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?
-            .context("Controller turn is no longer running")?;
-        if harness == Harness::Codex.name() {
-            anyhow::ensure!(
-                binding.matches(Harness::Codex, &native),
-                "Controller execution or native binding changed"
-            );
-        } else {
-            binding.harness = super::conversation_inputs::portable_controller_input_on(
-                &tx,
-                local,
-                key,
-                human,
-                &self.instance_id,
-            )?
-            .portable
-            .context("Portable selection unavailable")?
-            .harness;
-            anyhow::ensure!(
-                binding.harness.name() == harness,
-                "Controller harness changed"
-            );
-            binding.native_session = Some(native);
-        }
-        tx.commit()?;
-        Ok(binding)
+            params![local, binding.conversation_id, human],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .context("Controller turn is no longer running")?;
+    if harness == Harness::Codex.name() {
+        anyhow::ensure!(
+            binding.matches(Harness::Codex, &native),
+            "Controller execution or native binding changed"
+        );
+    } else {
+        binding.harness = super::conversation_inputs::portable_controller_input_on(
+            conn, local, key, human, instance,
+        )?
+        .portable
+        .context("Portable selection unavailable")?
+        .harness;
+        anyhow::ensure!(
+            binding.harness.name() == harness,
+            "Controller harness changed"
+        );
+        binding.native_session = Some(native);
     }
+
+    Ok(binding)
 }
 
 #[cfg(test)]

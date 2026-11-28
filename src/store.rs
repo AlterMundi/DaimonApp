@@ -109,6 +109,8 @@ mod native_recovery;
 mod nexus;
 mod observer;
 mod observer_cards;
+mod project_checkpoint;
+pub(crate) use project_checkpoint::ProjectShadowCommand;
 mod observer_freshness;
 mod presentation;
 pub use observer::SessionObservation;
@@ -292,6 +294,7 @@ impl Store {
         store.init_goal_recovery()?;
         store.init_goal_alerts()?;
         store.init_observer_cards()?;
+        store.init_project_checkpoints()?;
         store.init_observer_freshness()?;
         // A restarted process cannot continue a previous command's activity lease.
         store.conn.lock().expect("store mutex poisoned").execute(
