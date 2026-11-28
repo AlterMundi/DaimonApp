@@ -220,6 +220,13 @@ impl ForegroundEngine {
     pub(crate) const fn name(self) -> &'static str {
         self.harness().name()
     }
+
+    pub(crate) const fn attributed_handoff_text_limit(self) -> Option<usize> {
+        match self {
+            Self::Claude => Some(8192),
+            Self::Goose | Self::Antigravity => None,
+        }
+    }
 }
 
 fn valid_owner_command(command: &[String]) -> bool {
@@ -880,7 +887,7 @@ impl SubscriptionLimit {
 
 /// Render the selected session-authored payload without importing unrelated
 /// creation context. Admission and dispatch use these same immutable fields.
-pub(crate) fn local_claude_packet(
+pub(crate) fn portable_handoff_packet(
     instruction: &Instruction,
     author: &serde_json::Value,
 ) -> Result<String> {
@@ -898,7 +905,7 @@ pub(crate) fn local_claude_packet(
     );
     anyhow::ensure!(
         packet.len() <= 16 * 1024,
-        "The complete Claude handoff exceeds the native byte limit"
+        "The complete handoff exceeds the portable packet byte limit"
     );
     Ok(packet)
 }

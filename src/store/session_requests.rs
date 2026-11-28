@@ -20,15 +20,13 @@ pub struct SessionRequest {
     pub phase: String,
 }
 
-const CLAUDE_LOCAL_TEXT_BYTES: usize = 8192;
-
-fn local_claude_route(
+fn local_portable_route(
     config: Option<&crate::interaction::InteractionConfig>,
     target: SessionKey,
 ) -> Result<Option<(ForegroundEngine, &crate::interaction::MatrixDestination)>> {
     let route = config.and_then(|cfg| cfg.portable_route(target));
     anyhow::ensure!(
-        route.is_none_or(|(engine, _)| engine == ForegroundEngine::Claude),
+        route.is_none_or(|(engine, _)| engine.attributed_handoff_text_limit().is_some()),
         "This portable harness does not support attributed session dependencies"
     );
     Ok(route.map(|(engine, worker)| (engine, &worker.transport.source)))
@@ -686,10 +684,12 @@ impl Store {
         if current_epoch(&tx, human)? != epoch || closed.is_cancelled() {
             return Err(anyhow!("Parent admission retired or closed"));
         }
-        let route = local_claude_route(config, target)?;
+        let route = local_portable_route(config, target)?;
         anyhow::ensure!(
-            route.is_none() || text.len() <= CLAUDE_LOCAL_TEXT_BYTES,
-            "The selected Claude handoff is too large"
+            route
+                .and_then(|(engine, _)| engine.attributed_handoff_text_limit())
+                .is_none_or(|limit| text.len() <= limit),
+            "The selected handoff is too large for its receiving adapter"
         );
         let target_id: i64 = tx.query_row(
             "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
@@ -709,7 +709,7 @@ impl Store {
                 route.is_some()
                     && caller.chat_id == target.chat_id
                     && paired_original_on(&tx, &p, &original)?,
-                "A selected topic report requires a paired local Claude request"
+                "A selected topic report requires a paired local request and a supported receiving adapter"
             );
         }
         let id = Uuid::new_v5(
@@ -796,7 +796,7 @@ impl Store {
             author["report_to_topic"] = json!(true);
         }
         if route.is_some() {
-            crate::interaction::local_claude_packet(&i, &author)?;
+            crate::interaction::portable_handoff_packet(&i, &author)?;
         }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
@@ -1072,12 +1072,14 @@ impl Store {
         if helper.target_execution.is_some() && !current_bound_turn_on(&tx, &helper)? {
             return Ok(None);
         }
-        let route = local_claude_route(config, call.caller)?;
-        let result_text = if route.is_some() {
+        let route = local_portable_route(config, call.caller)?;
+        let result_text = if let Some(limit) =
+            route.and_then(|(engine, _)| engine.attributed_handoff_text_limit())
+        {
             let end = d
                 .body
                 .char_indices()
-                .find(|(index, ch)| index + ch.len_utf8() > CLAUDE_LOCAL_TEXT_BYTES)
+                .find(|(index, ch)| index + ch.len_utf8() > limit)
                 .map_or(d.body.len(), |(index, _)| index);
             d.body[..end].to_owned()
         } else {
@@ -1119,7 +1121,7 @@ impl Store {
         )?;
         let author = json!({"kind":"session_result","session":helper.target,"native_thread":result_native,"native_turn":result_turn,"parent_instruction":call.parent_instruction,"local_request":call.id,"canonical_result":result_id,"authorized_human":human});
         if route.is_some() {
-            crate::interaction::local_claude_packet(&i, &author)?;
+            crate::interaction::portable_handoff_packet(&i, &author)?;
         }
         tx.execute(
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
@@ -1357,7 +1359,13 @@ mod tests {
                 report_to_topic,
             )
         };
-        let oversized = "任".repeat(CLAUDE_LOCAL_TEXT_BYTES / 3 + 1);
+        let oversized = "任".repeat(
+            ForegroundEngine::Claude
+                .attributed_handoff_text_limit()
+                .unwrap()
+                / 3
+                + 1,
+        );
         assert!(send("oversized", &oversized, false).is_err());
         if !paired {
             assert!(send("companion", "Must stay private", true).is_err());
@@ -1379,7 +1387,7 @@ mod tests {
             .interaction_author(&delivered.id, 100)
             .unwrap()
             .unwrap();
-        let packet = crate::interaction::local_claude_packet(&delivered, &authorship).unwrap();
+        let packet = crate::interaction::portable_handoff_packet(&delivered, &authorship).unwrap();
         assert!(packet.contains("A scoped context handoff"));
         assert!(packet.contains("session_request"));
         let conn = store.conn.lock().unwrap();
@@ -1604,6 +1612,57 @@ mod tests {
             };
             assert_eq!(handoff.kind, "portable_report_request");
             assert_eq!(visible_handoffs(), 1);
+            if let Some(update) = update {
+                let generation: String = store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT generation FROM conversation_entry_generations WHERE session_id=?",
+                        [caller.id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                for (current, visible) in [("later-generation", 0), (generation.as_str(), 1)] {
+                    store.conn.lock().unwrap().execute(
+                        "UPDATE conversation_entry_generations SET generation=?1 WHERE session_id=?2",
+                        params![current, caller.id],
+                    ).unwrap();
+                    assert_eq!(visible_handoffs(), visible);
+                }
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE interaction_instructions SET phase='submitting' WHERE id=?",
+                    [&instruction.id],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE interaction_session_requests SET doc=json_set(doc,'$.caller_turn',?1)
+                              WHERE target_instruction=?2",
+                    params![instruction.id, delivered.id],
+                )
+                .unwrap();
+                conn.execute(
+                    "UPDATE incoming_updates SET status='handled' WHERE update_id=?",
+                    [update],
+                )
+                .unwrap();
+                drop(conn);
+                assert_eq!(visible_handoffs(), 1);
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE interaction_instructions SET phase='accepted' WHERE id=?",
+                    [&instruction.id],
+                )
+                .unwrap();
+                conn.execute("UPDATE interaction_session_requests SET doc=json_set(doc,'$.caller_turn','parent-turn')
+                              WHERE target_instruction=?", [&delivered.id]).unwrap();
+                conn.execute(
+                    "UPDATE incoming_updates SET status='settled' WHERE update_id=?",
+                    [update],
+                )
+                .unwrap();
+            }
             for (retired, expected) in [(1, 0), (0, 1)] {
                 if update.is_some() {
                     store

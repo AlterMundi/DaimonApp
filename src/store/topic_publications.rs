@@ -42,7 +42,7 @@ const ENTRY_PROGRESS_SCOPE: &str = r#"(p.kind='entry_progress' AND s.force_fresh
 
 // Selected portable reports belong to the exact completed topic turn and result.
 const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind IN ('portable_report','portable_report_request') AND t.status='completed'
-    AND t.execution_harness='claude' AND t.session_id=s.id
+    AND t.session_id=s.id
     AND EXISTS(SELECT 1 FROM conversation_entry_generations g
       WHERE g.session_id=s.id AND g.generation=t.execution_generation)
     AND EXISTS(SELECT 1 FROM interaction_results r JOIN interaction_instructions i
@@ -51,21 +51,32 @@ const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind IN ('portable_report','portable_r
       JOIN interaction_instructions parent ON parent.id=call.parent_instruction
       JOIN interaction_sources src ON src.id=parent.input_id AND src.human_id=call.human_id
       WHERE r.id=p.source AND r.local_turn=p.local_turn AND r.native_thread=t.native_thread_id
-        AND r.item_id='final' AND i.session_id=s.id AND i.phase='accepted'
+        AND i.session_id=s.id AND i.phase='accepted'
         AND call.human_id=p.human_id AND json_extract(call.doc,'$.report_to_topic')=1
         AND call.phase IN ('requested','returned')
         AND ((src.channel='conversation' AND EXISTS(SELECT 1 FROM conversation_inputs original
             WHERE original.id=src.event_id AND original.human_id=call.human_id
               AND original.retired=0 AND json_extract(original.doc,'$.paired_actor')=1))
-          OR (src.channel LIKE 'telegram:%' AND parent.phase='accepted' AND EXISTS(
+          OR (src.channel LIKE 'telegram:%' AND EXISTS(
             SELECT 1 FROM incoming_updates original
             JOIN bot_state captured ON captured.key='stop_input_epoch:'||original.update_id
             JOIN bot_state bot ON bot.key='telegram_identity'
             LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||call.human_id
+            JOIN turns caller_turn ON caller_turn.id=json_extract(parent.doc,'$.local_turn')
+              AND caller_turn.session_id=parent.session_id AND caller_turn.from_user_id=call.human_id
+            JOIN sessions caller ON caller.id=caller_turn.session_id AND caller.creator_user_id=call.human_id
+              AND caller.chat_id=call.caller_chat AND caller.thread_id=call.caller_topic
+            JOIN conversation_entry_generations caller_generation ON caller_generation.session_id=caller.id
             WHERE original.update_id=src.update_id AND src.event_id=cast(original.update_id AS TEXT)
               AND src.channel='telegram:'||json_extract(bot.value,'$.id')
               AND captured.value=json_extract(call.doc,'$.epoch')
               AND captured.value=coalesce(current.value,'initial')
+              AND caller.force_fresh_thread=0 AND caller_turn.execution_generation=caller_generation.generation
+              AND caller_turn.native_thread_id=json_extract(call.doc,'$.caller_native')
+              AND caller_turn.native_thread_id=json_extract(parent.doc,'$.native_thread')
+              AND ((parent.phase='accepted' AND caller_turn.status IN ('running','completed'))
+                OR (parent.phase='submitting' AND caller_turn.status='running' AND original.status='handled'
+                  AND parent.id=json_extract(call.doc,'$.caller_turn')))
           )))))"#;
 
 // Web reads are independent of Telegram delivery, but must apply the same
@@ -195,7 +206,7 @@ fn portable_report_delivery_current(
     ).map_err(Into::into)
 }
 
-pub(super) fn portable_report_on(
+pub(super) fn completed_handoff_projection_on(
     conn: &Connection,
     input: &crate::interaction::Instruction,
     local: i64,
@@ -233,12 +244,14 @@ pub(super) fn portable_report_on(
            AND caller.creator_user_id=call.human_id
          JOIN interaction_instructions i ON i.id=call.target_instruction
          JOIN interaction_sources source ON source.id=i.input_id AND source.channel='local-session'
-         JOIN interaction_results r ON r.local_turn=?1 AND r.native_turn=json_extract(i.doc,'$.native_turn')
+         JOIN interaction_deliveries d ON d.id=?4 AND d.request_id=i.id AND d.human_id=call.human_id
+         JOIN interaction_results r ON r.id=d.result_id AND r.local_turn=?1
+           AND r.native_turn=json_extract(i.doc,'$.native_turn')
          WHERE i.id=?2 AND call.human_id=?3 AND call.phase='requested'
            AND json_extract(call.doc,'$.report_to_topic')=1
-           AND r.item_id='final' AND length(trim(r.body))>0
+           AND length(trim(r.body))>0
          ORDER BY projection.position",
-        params![local,input.id,input.human_id],
+        params![local,input.id,input.human_id,delivery.id],
     )?;
     Ok(())
 }

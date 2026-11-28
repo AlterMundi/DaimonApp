@@ -1410,7 +1410,7 @@ impl Store {
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
             [input.target_session],
         )?;
-        super::topic_publications::portable_report_on(&tx, input, local, &deliveries)?;
+        super::topic_publications::completed_handoff_projection_on(&tx, input, local, &deliveries)?;
         if let Some(entry) = projection_entry {
             for original in exchange_inputs {
                 super::topic_publications::portable_exchange_on(&tx, &original, local, entry)?;
