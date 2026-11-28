@@ -8,11 +8,15 @@ import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mj
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 import { runAntigravityTurn } from './antigravity-turn.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
+import { sharedSkill } from './shared-skills.mjs';
+import { recallProperties, sharedMemory, validSharedMemory } from './shared-memory.mjs';
 
 const GOOSE_SCHEMA = 'daimon-gateway.goose-turn/v1';
 const AGY_SCHEMA = 'daimon-gateway.antigravity-turn/v2';
 const STATUS = 'daimon_status';
 const MEMORY = 'dmk_read_selected';
+const SKILL = 'shared_skill';
+const RECALL = 'dmk_recall';
 const BINDING = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
 
 function validCommand(command) {
@@ -36,7 +40,10 @@ function validBinding(profile) {
     && BINDING.every(key => typeof profile.body[key] === 'string'
       && profile.body[key].length > 0 && profile.body[key].length <= 240)
     && validCommand(profile.matrixStatusCommand)
-    && (profile.selectedMemory === undefined || validMemory(profile.selectedMemory));
+    && (profile.sharedSkillsDirectory === undefined || (typeof profile.sharedSkillsDirectory === 'string'
+      && isAbsolute(profile.sharedSkillsDirectory)))
+    && (profile.selectedMemory === undefined || validMemory(profile.selectedMemory))
+    && (profile.sharedMemory === undefined || validSharedMemory(profile.sharedMemory));
 }
 
 async function observe(profile, signal) {
@@ -75,9 +82,9 @@ async function readSelectedMemory(binding, signal) {
   };
 }
 
-function toolDefinition(name, description) {
+function toolDefinition(name, description, properties = {}) {
   return { name, description, annotations: { readOnlyHint: true },
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: { type: 'object', properties, additionalProperties: false },
   };
 }
 
@@ -98,9 +105,44 @@ async function serveMcp(binding) {
         response.result = { tools: [
           toolDefinition(STATUS, 'Read authenticated metadata for this Matrix body.'),
           ...(binding.selectedMemory ? [toolDefinition(MEMORY, 'Read the one memory selected by the owner.')] : []),
+          ...(binding.sharedMemory ? [toolDefinition(RECALL,
+            'Search or read the receiving being’s DMK. After search, pass the selected record_uid and pool to this same tool with action read.',
+            recallProperties)] : []),
+          ...(binding.sharedSkillsDirectory ? [toolDefinition(SKILL,
+            'List installed shared skills or read the current instructions for one installed skill.',
+            { name: { type: 'string', maxLength: 80 } })] : []),
         ] };
         break;
       case 'tools/call':
+        if (params?.name === RECALL && binding.sharedMemory) {
+          try {
+            const signal = AbortSignal.timeout(8000);
+            await observe(binding, signal);
+            // agy may attach an explanation for its permission prompt.
+            const args = { ...params.arguments };
+            delete args.toolSummary;
+            const value = await sharedMemory(binding, args, signal);
+            response.result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
+          } catch {
+            response.result = { isError: true, content: [{ type: 'text', text: 'Shared memory unavailable for this request.' }] };
+          }
+          break;
+        }
+        if (params?.name === SKILL && binding.sharedSkillsDirectory) {
+          try {
+            const args = params.arguments ?? {};
+            const name = args.name;
+            if (!(closed(args, []) || (closed(args, ['name']) && typeof name === 'string'))) {
+              throw new Error('Invalid skill selector');
+            }
+            await observe(binding, AbortSignal.timeout(8000));
+            const value = await sharedSkill(binding.sharedSkillsDirectory, name);
+            response.result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
+          } catch {
+            response.result = { isError: true, content: [{ type: 'text', text: 'Selected skill unavailable.' }] };
+          }
+          break;
+        }
         if ((params?.name === STATUS || (params?.name === MEMORY && binding.selectedMemory))
             && (params.arguments === undefined || closed(params.arguments, []))) {
           try {
@@ -157,6 +199,8 @@ async function main(path) {
       fields.push('bodyGuidanceFile');
       if (!absolute(profile.bodyGuidanceFile)) throw new Error('Invalid Antigravity guidance path');
     }
+    if (agy && Object.hasOwn(profile, 'sharedSkillsDirectory')) fields.push('sharedSkillsDirectory');
+    if (agy && Object.hasOwn(profile, 'sharedMemory')) fields.push('sharedMemory');
     if (profile && Object.hasOwn(profile, 'selectedMemory')) fields.push('selectedMemory');
     if (profile && Object.hasOwn(profile, 'providerPort')) fields.push('providerPort');
     if (!closed(profile, fields) || !validBinding(profile)
@@ -186,13 +230,17 @@ async function main(path) {
     const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
     const env = agy ? { HOME: profile.home, PATH: '/usr/bin:/bin' } : await gooseEnvironment(profile);
     const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
-    const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand, selectedMemory };
+    const { sharedSkillsDirectory } = profile;
+    const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand,
+      selectedMemory, sharedSkillsDirectory, sharedMemory: profile.sharedMemory };
     let instructions;
     if (agy && profile.bodyGuidanceFile) {
       const document = new TextDecoder('utf-8', { fatal: true })
         .decode(await privateBytes(profile.bodyGuidanceFile, 6 * 1024)).trim();
       if (!document || document.includes('\0')) throw new Error('Invalid Antigravity receiving guidance');
       instructions = '[Receiving body instructions from your signed Gateway profile]\n' + document
+        + (profile.sharedMemory ? '\nUse dmk_recall when past experience or decisions matter.' : '')
+        + (sharedSkillsDirectory ? '\nUse shared_skill to discover and load current installed skills for a task.' : '')
         + '\nThe following content block is the current original.';
     }
     let providerUnavailable = false;
@@ -201,7 +249,9 @@ async function main(path) {
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
         nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions,
-        allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : [])],
+        allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : []),
+          ...(sharedSkillsDirectory ? ['mcp_matrix_' + SKILL] : []),
+          ...(profile.sharedMemory ? ['mcp_matrix_' + RECALL] : [])],
       } : {}),
       mcpServers: [{ name: 'matrix', command: process.execPath,
         args: [fileURLToPath(import.meta.url), '--matrix-mcp'],
