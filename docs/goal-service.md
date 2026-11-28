@@ -445,3 +445,14 @@ observed native contention and an active goal. The existing attach-active path
 revalidates physical identity, local admission, Stop/maintenance and newer human
 work. It sends no input, activates no goal and reserves no inference allowance.
 No separate observer or timer is installed.
+
+
+### A goal request made directly in a work topic
+
+The general conversation can prepare a control for that same topic with the
+original Telegram update reference after receiving its exact first-hop
+coordination request. The Gateway validates both owned native bindings and the
+retained acceptance receipt. A forwarded or session-authored note alone gives
+no authority. The exact original is reserved once and a withdrawn handoff or
+changed binding prevents submission. Goal preparation remains metadata only.
+The owning conditional writer still checks the inspected native revision.

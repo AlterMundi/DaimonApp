@@ -297,8 +297,65 @@ def own_and_dormant_controls(binary):
     finally:j.close()
 
 
+def relay_direct_goal_command(j, text):
+    original = j.admit(text, topic=7)
+    j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+    alpha = j.access(7)
+    retained = j.cli(alpha, 'coordination_inputs')['inputs'][0]
+    assert retained['original_ingress_update'] == original
+    admission = j.cli(alpha, 'session_request', {
+        'parent_instruction': retained['instruction'],
+        'request_id': 'selected-goal-original',
+        'selector': 'general',
+        'text': 'Interpret the exact retained original. Only prepare this control.'})
+    assert admission['new_admission'], admission
+    j.wait(lambda: j.instructions(1) and j.instructions(1)[0][1] == 'accepted')
+    return original, retained
+
+
+def exact_relay_preparation(binary):
+    import sqlite3
+    j = Controls(binary)
+    try:
+        j.prepare(seed_entry=True)
+        j.allow_native_launch = True
+        original, retained = relay_direct_goal_command(
+            j, "Replace Alpha's blocked goal with the selected roadmap.")
+        entry = j.access(1)
+        for topic in (7, 8):
+            native = f'native-topic-{topic}'
+            j.goals[native] = {'threadId': native, 'objective': 'Previously blocked',
+                               'status': 'blocked', 'tokenBudget': 100, 'tokensUsed': 80,
+                               'timeUsedSeconds': 5, 'createdAt': 1, 'updatedAt': 2}
+        def arguments(selector, reference):
+            observed = j.cli(entry, 'goal_inspect', {'selector': selector})
+            return {'selector': selector, 'target_binding': observed['target_binding'],
+                    'input_ref': reference, 'reason': 'Explicit retained original',
+                    'plan': {'action': 'replace', 'expected': observed['snapshot'],
+                             'objective': 'Selected roadmap', 'token_budget': None, 'followup': None}}
+        j.cli(entry, 'goal_prepare', arguments('Beta', original), ok=False)
+        j.cli(entry, 'goal_prepare', arguments('Alpha', original + 1000), ok=False)
+        args = arguments('Alpha', original)
+        selected = j.cli(entry, 'goal_prepare', args)
+        control = selected['control']
+        assert selected['new_intent'] and selected['native_mutation'] is False
+        assert control['phase'] == 'prepared'
+        assert control['intent']['original']['relay']['parent'] == retained['instruction']
+        assert control['intent']['original']['source']['origin']['thread_id'] == 7
+        assert j.cli(entry, 'goal_prepare', args)['control']['id'] == control['id']
+        with sqlite3.connect(j.root/'state.sqlite') as conn:
+            conn.execute("UPDATE interaction_session_requests SET phase='withdrawn'")
+        j.cli(entry, 'goal_execute', {'id': control['id']}, ok=False)
+        assert j.goals['native-topic-7']['objective'] == 'Previously blocked'
+        assert not any(m.get('method', '').startswith('thread/goal/conditional') for m in j.rpc)
+        print('PASS exact first-hop goal source, wrong target/reference refusal, frozen plan and withdrawal fence')
+    finally:
+        j.close()
+
+
 if __name__ == '__main__':
     binary = str(Path(sys.argv[1]).resolve())
     qualify(binary)
     staged_pause(binary)
     own_and_dormant_controls(binary)
+    exact_relay_preparation(binary)
