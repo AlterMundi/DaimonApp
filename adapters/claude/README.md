@@ -184,7 +184,9 @@ the cancelled IDs. A confirmed interruption retains the cancelled originals
 and selects the same session for the next eligible turn. The native terminal
 result can still contain the answer to the original, for example when its
 first goal iteration finished before the interruption. Gateway preserves
-that answer and settles the separately cancelled corrections. Gateway retains
+any qualified answer and settles the separately cancelled corrections.
+With an exact cancellation receipt and an empty native success, Gateway
+records the interruption without publishing an answer. Gateway retains
 uncertain effects if the native capabilities, complete receipt or terminal
 result are unavailable. A successful root answer remains visible when a
 submitted correction is unaccounted for, but normal resume on that thread

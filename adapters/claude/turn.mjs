@@ -392,10 +392,12 @@ export async function runClaudeTurn({
       const successful = event.subtype === 'success' && event.is_error === false
         && typeof event.result === 'string' && event.result.trim()
         && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
+      const emptySuccess = event.subtype === 'success' && event.is_error === false
+        && typeof event.result === 'string' && !event.result.trim();
       if (!rootOutcome && interruptPending && answered.length === 1 && answered[0] === input.id) {
         let receipt = interruptReceipt;
         const receiptWaitMs = Math.min(750, 2750 - (performance.now() - interruptStartedAt));
-        if (successful && !receipt && receiptWaitMs > 0) {
+        if ((successful || emptySuccess) && !receipt && receiptWaitMs > 0) {
           // A verified root answer survives a delayed or missing interrupt ACK.
           // Leave time to send it before Gateway's four-second shutdown grace.
           let waitForReceipt;
@@ -415,7 +417,7 @@ export async function runClaudeTurn({
             return withSteering({ phase: 'completed', sessionId: input.sessionId,
               text: event.result, cancelled: receipt.cancelled });
           }
-          if (event.is_error === true && event.subtype === 'error_during_execution') {
+          if (emptySuccess || (event.is_error === true && event.subtype === 'error_during_execution')) {
             return withSteering({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
           }
         }

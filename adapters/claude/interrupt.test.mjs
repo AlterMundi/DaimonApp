@@ -116,10 +116,7 @@ for (const earlierEvaluation of [null, false, true]) {
           assert.equal(value.is_error, !earlierEvaluation);
           assert.equal(value.subtype, earlierEvaluation ? 'success' : 'error_during_execution');
           assert.deepEqual(value.user_message_uuids, [original]);
-          if (earlierEvaluation) {
-            assert.equal(typeof value.result, 'string');
-            assert.ok(value.result.trim() && Buffer.byteLength(value.result) <= 64 * 1024);
-          }
+          if (earlierEvaluation) assert.equal(value.result, '');
           break;
         }
       }
