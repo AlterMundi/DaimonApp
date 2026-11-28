@@ -14,10 +14,14 @@ export function validateSessionId(value) {
 
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
-  unavailable, openFailure, allowLargeCommandList = false, selectPermission,
+  unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions,
 }) {
   if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_TEXT) {
     throw new TypeError('Invalid ACP foreground input');
+  }
+  if (instructions !== undefined && (typeof instructions !== 'string'
+      || !instructions.trim() || Buffer.byteLength(instructions) > 8 * 1024)) {
+    throw new TypeError('Invalid ACP receiving guidance');
   }
   const deadline = AbortSignal.timeout(DEADLINE_MS);
   const stop = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -111,7 +115,11 @@ export async function runAcpTurn({
     let answer = '';
     let answerBytes = 0;
     const terminal = await request('session/prompt', {
-      sessionId: nativeSessionId, prompt: [{ type: 'text', text }],
+      sessionId: nativeSessionId,
+      prompt: [
+        ...(instructions ? [{ type: 'text', text: instructions }] : []),
+        { type: 'text', text },
+      ],
     }, ({ sessionId, update } = {}) => {
       if (sessionId !== nativeSessionId) throw new Error('ACP update came from another session');
       if (update?.sessionUpdate !== 'agent_message_chunk' || update.content?.type !== 'text') return;
