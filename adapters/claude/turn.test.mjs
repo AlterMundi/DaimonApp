@@ -380,6 +380,57 @@ test('Claude sends steer on the existing input stream and correlates the native 
   }
 });
 
+test('a completed root keeps the exact native cancellation of its queued steer', async () => {
+  const steer = { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Queued correction.' };
+  const accepted = { still_queued: [], cancelled: [steer.id] };
+  for (const [receipt, delay] of [
+    [accepted, 0],
+    [accepted, 25],
+    [{ still_queued: [], cancelled: [input.id] }, 0],
+    [{ still_queued: [steer.id], cancelled: [] }, 0],
+    [undefined, Infinity],
+  ]) {
+    const interrupt = new AbortController();
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      interruptSignal: interrupt.signal,
+      steering: {
+        messages: (async function* () { yield steer; })(),
+        admit: async () => true,
+        ready: async () => {},
+        close() {},
+        result: () => assert.fail('The steer has no result'),
+      },
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async interrupt(options) {
+          assert.deepEqual(options, { cancelQueued: true });
+          if (delay === Infinity) return new Promise(() => {});
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+          return receipt;
+        },
+        async *[Symbol.asyncIterator]() {
+          assert.equal((await prompt.next()).value.uuid, input.id);
+          yield { type: 'system', subtype: 'init', session_id: input.sessionId,
+            capabilities: ['interrupt_receipt_v1', 'interrupt_cancel_queued_v1'] };
+          yield { type: 'assistant', session_id: input.sessionId, user_message_uuids: [input.id] };
+          assert.equal((await prompt.next()).value.uuid, steer.id);
+          interrupt.abort();
+          await Promise.resolve();
+          yield { type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId,
+            user_message_uuids: [input.id], result: 'Root completed.' };
+        },
+        close() {},
+      }),
+    }));
+    assert.equal(outcome.phase, 'completed');
+    assert.equal(outcome.text, 'Root completed.');
+    assert.deepEqual(outcome.steerSubmitted, [steer.id]);
+    assert.deepEqual(outcome.cancelled, receipt?.cancelled.includes(steer.id) ? [steer.id] : undefined);
+  }
+});
+
 test('a steer refused before being yielded is never claimed as submitted', async () => {
   const outcome = await runClaudeTurn(options({
     beforeSubmit: () => true,

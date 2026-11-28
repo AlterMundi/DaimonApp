@@ -159,15 +159,17 @@ export async function runClaudeTurn({
   let steeringReady = false;
   let steerDeadline;
   let interruptSupported = false;
-  let interruptReceipt;
+  let interruptReceipt, interruptPending, interruptStartedAt;
   function requestInterrupt() {
     if (!dispatched || !interruptSupported || rootOutcome || typeof native?.interrupt !== 'function') {
       abortController.abort();
       return;
     }
-    void native.interrupt({ cancelQueued: true }).then(receipt => {
+    interruptStartedAt = performance.now();
+    interruptPending = native.interrupt({ cancelQueued: true }).then(receipt => {
       interruptReceipt = receipt;
-    }).catch(() => {});
+      return receipt;
+    }).catch(() => undefined);
   }
   interruptSignal?.addEventListener('abort', requestInterrupt, { once: true });
   const submitted = new Set();
@@ -397,19 +399,37 @@ export async function runClaudeTurn({
         }
       }
       if (event.type !== 'result') continue;
-      if (interruptReceipt && event.is_error === true && event.subtype === 'error_during_execution'
-          && answered.length === 1 && answered[0] === input.id) {
-        const receipt = interruptReceipt;
+      const successful = event.subtype === 'success' && event.is_error === false
+        && typeof event.result === 'string' && event.result.trim()
+        && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
+      if (!rootOutcome && interruptPending && answered.length === 1 && answered[0] === input.id) {
+        let receipt = interruptReceipt;
+        const receiptWaitMs = Math.min(750, 2750 - (performance.now() - interruptStartedAt));
+        if (successful && !receipt && receiptWaitMs > 0) {
+          // A verified root answer survives a delayed or missing interrupt ACK.
+          // Leave time to send it before Gateway's four-second shutdown grace.
+          let waitForReceipt;
+          try {
+            receipt = await Promise.race([interruptPending, new Promise(resolve => {
+              waitForReceipt = setTimeout(resolve, receiptWaitMs);
+            })]);
+          } finally {
+            clearTimeout(waitForReceipt);
+          }
+        }
         if (Array.isArray(receipt?.still_queued) && receipt.still_queued.length === 0
             && Array.isArray(receipt.cancelled) && receipt.cancelled.length === submitted.size
             && new Set(receipt.cancelled).size === submitted.size
             && receipt.cancelled.every(id => submitted.has(id))) {
-          return withSteering({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
+          if (successful) {
+            return withSteering({ phase: 'completed', sessionId: input.sessionId,
+              text: event.result, cancelled: receipt.cancelled });
+          }
+          if (event.is_error === true && event.subtype === 'error_during_execution') {
+            return withSteering({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
+          }
         }
       }
-      const successful = event.subtype === 'success' && event.is_error === false
-        && typeof event.result === 'string' && event.result.trim()
-        && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
       const consumed = [...new Set(answered)].filter(id => outstanding.has(id));
       if (!rootOutcome) {
         if (steerEnabled() && answered.length && !answered.includes(input.id)) continue;
@@ -426,6 +446,7 @@ export async function runClaudeTurn({
         rootOutcome = { phase: 'completed', sessionId: input.sessionId, text: event.result };
         steering?.close();
         if (consumed.length) await steering.result(consumed, null);
+        if (interruptSignal?.aborted) return withSteering(rootOutcome);
         if (outstanding.size > consumed.length) {
           // An input not folded into the first result can become the next turn
           // on this same stream. Keep its receipt separate from the first.

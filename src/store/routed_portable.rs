@@ -1485,6 +1485,37 @@ impl Store {
         .flatten();
         let mut deliveries = Vec::new();
         let mut exchange_inputs = Vec::new();
+        let mut cancelled_steers = 0;
+        if current.phase == Phase::Submitting
+            && matches!(outcome["phase"].as_str(), Some("completed" | "interrupted"))
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == Harness::Claude)
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+            && let Some(cancelled) = outcome["cancelled"].as_array()
+        {
+            cancelled_steers = cancelled.len();
+            for id in cancelled {
+                let id = id.as_str().context("Invalid cancelled correction")?;
+                let steer = super::interaction::instruction_on(&tx, id, input.human_id)?
+                    .context("Cancelled correction missing")?;
+                anyhow::ensure!(
+                    steer.phase == Phase::Steering
+                        && steer.local_turn == Some(local)
+                        && steer.native_thread == current.native_thread,
+                    "Claude cancelled correction does not match the retained native turn"
+                );
+                super::interaction::transport_on(
+                    &tx,
+                    id,
+                    input.human_id,
+                    local,
+                    Phase::Cancelled,
+                    None,
+                )?;
+            }
+        }
         if let Some(text) = reply {
             let native = current
                 .native_thread
@@ -1587,7 +1618,7 @@ impl Store {
             }
             if outcome["steerSubmitted"]
                 .as_array()
-                .is_some_and(|submitted| submitted.len() > covered_steers)
+                .is_some_and(|submitted| submitted.len() > covered_steers + cancelled_steers)
             {
                 tx.execute(
                     "UPDATE interaction_instructions
@@ -1603,28 +1634,6 @@ impl Store {
                 .is_some_and(|binding| binding.harness == Harness::Claude)
             && current.native_thread.as_deref() == outcome["sessionId"].as_str()
         {
-            let cancelled = outcome["cancelled"]
-                .as_array()
-                .context("Claude interrupt receipt missing")?;
-            for id in cancelled {
-                let id = id.as_str().context("Invalid cancelled correction")?;
-                let steer = super::interaction::instruction_on(&tx, id, input.human_id)?
-                    .context("Cancelled correction missing")?;
-                anyhow::ensure!(
-                    steer.phase == Phase::Steering
-                        && steer.local_turn == Some(local)
-                        && steer.native_thread == current.native_thread,
-                    "Claude cancelled correction does not match the retained native turn"
-                );
-                super::interaction::transport_on(
-                    &tx,
-                    id,
-                    input.human_id,
-                    local,
-                    Phase::Cancelled,
-                    None,
-                )?;
-            }
             super::interaction::transport_on(
                 &tx,
                 &input.id,

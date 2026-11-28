@@ -10,6 +10,18 @@ authorized scope after an uncertain turn. The command has its own receipt.
 Reading or clearing the native goal leaves the original input and its outcome
 available for reconciliation. This path uses Claude's own evaluation loop.
 
+The pinned native interrupt fixture runs one actual Claude evaluation against a
+disposable loopback provider, interrupts the next iteration and reopens the
+same native session. A standalone `/goal` returns the same active condition
+without any provider request, with status `not yet evaluated`. The next real
+input continues the work and invokes the evaluator again. This confirms
+condition persistence and a reset of the native evaluation baseline. An
+interrupt followed by a status query is therefore insufficient evidence for
+durable pause, cumulative accounting or a native resume operation. Keep the
+native objective intact and attach any portable accounting to the existing
+goal service and its exact execution receipts.
+[Claude goal restoration contract](https://code.claude.com/docs/en/goal#resume-with-an-active-goal)
+
 ## Implementation checkpoint
 
 The first implementation slice retains native failure evidence in the existing
