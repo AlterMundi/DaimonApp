@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Exercise the real owner controller and canonical source reader with a fake Codex."""
+import argparse
 import json
 from pathlib import Path
 import subprocess
-import sys
 import uuid
+from urllib.parse import urlsplit
 
 from conversation_routing_io import CanonicalRouting
 
@@ -13,7 +14,30 @@ def git(path, *args):
     return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
 
-def select_project(journey, *, paginate=False):
+def stage_ssh_checkout(folder, selected, project):
+    """Bring the already authenticated checkout into the isolated Gateway workspace."""
+    if Path(git(selected, "rev-parse", "--show-toplevel")).resolve() != selected:
+        raise ValueError("Select the exact checkout root.")
+    origin = git(selected, "config", "--local", "--get-all", "remote.origin.url")
+    uri = urlsplit(origin)
+    if (
+        uri.scheme != "ssh" or not uri.hostname or uri.password is not None
+        or uri.query or uri.fragment or not uri.path.startswith("/")
+        or any(char.isspace() for char in origin)
+    ):
+        raise ValueError("Select one stable SSH origin without credentials.")
+    commit = git(selected, "rev-parse", "HEAD^{commit}")
+    # Clone locally from the pinned checkout. The only network Git read is the
+    # operator's prior authorized restore; the Gateway fixture stays offline.
+    git(folder, "clone", "--no-local", "--no-checkout", "--template=", "--", str(selected), "notes")
+    checkout = folder / "notes"
+    git(checkout, "config", "--local", "remote.origin.url", origin)
+    git(checkout, "checkout", "--detach", commit)
+    return {"project": project, "locator": "git:" + origin,
+            "commit": commit, "label": "Shared notes"}
+
+
+def select_project(journey, *, paginate=False, ssh_checkout=None):
     binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
 
     def dispatch(number, selector, thread, text, *, relation="new", requests=()):
@@ -67,8 +91,11 @@ def select_project(journey, *, paginate=False):
         {"kind": "dependency", "text": "Wait for the illustrator's draft."},
         {"kind": "next_action", "text": "Review the second scene in the shared draft."},
     ]
+    notes_project = str(uuid.uuid4())
+    notes = (stage_ssh_checkout(folder, ssh_checkout, notes_project) if ssh_checkout
+             else prepare_checkout("notes", notes_project))
     other_links = [("illustrations", prepare_checkout("illustrations", story, str(uuid.uuid4()))),
-                   ("notes", prepare_checkout("notes", str(uuid.uuid4())))]
+                   ("notes", notes)]
 
     if paginate:
         checkout = folder / "story"
@@ -190,6 +217,23 @@ def select_project(journey, *, paginate=False):
         assert result_row["delta"]["link"] == expected["link"], result_row
         assert result_row["delta"].get("work") == expected.get("work"), result_row
     assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,count+1)]
+    if ssh_checkout:
+        exact_ssh = {"action": "read", "workspace": workspace, "checkout": "notes",
+                     "project": notes_project, "repository": notes_project, "commit": notes["commit"]}
+        origin = notes["locator"].removeprefix("git:")
+        checkout = folder / "notes"
+        git(checkout, "config", "--local", "remote.origin.url", "ssh://fixture.invalid/wrong.git")
+        try:
+            shadow(7, "wrong-ssh-origin", exact_ssh, ok=False)
+        finally:
+            git(checkout, "config", "--local", "remote.origin.url", origin)
+        assert shadow(7, "restored-ssh-origin", exact_ssh)["delta"]["link"] == notes
+        projection = room_page(project=notes_project, repository=notes_project)
+        assert projection["repositories"] == [{
+            "project": notes_project, "repository": notes_project,
+            "label": notes["label"], "commit": notes["commit"],
+        }]
+        assert origin not in json.dumps(projection)
 
     finished, unfinished = [row[0] for row in journey.instructions(7)]
     selected = shadow(7, "select", {
@@ -237,7 +281,7 @@ def select_project(journey, *, paginate=False):
     return repositories, selected["effects"], workspace, apply, result, dispatch, shadow
 
 
-def run(binary):
+def run(binary, *, ssh_checkout=None):
     journey = CanonicalRouting(binary)
     try:
         journey.start()
@@ -257,7 +301,8 @@ def run(binary):
         journey.start()
         journey.wait_control_socket(journey.socket)
         journey.routing = True
-        repositories, _, workspace, apply, result, dispatch, shadow = select_project(journey, paginate=True)
+        repositories, _, workspace, apply, result, dispatch, shadow = select_project(
+            journey, paginate=True, ssh_checkout=ssh_checkout)
         dispatch(3, "Alpha", 7, "Correct the first iteration: withdraw the old revision citation.",
                  relation="amends", requests=result["request_ids"])
         corrected = journey.read("presentation", "list", "0", "0")["result"]["items"]
@@ -281,4 +326,12 @@ def run(binary):
 
 
 if __name__ == "__main__":
-    run(str(Path(sys.argv[1]).resolve()))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("gateway_binary", type=Path)
+    parser.add_argument("--ssh-checkout", type=Path,
+                        help="Use a pinned SSH checkout already restored by the operator.")
+    args = parser.parse_args()
+    run(str(args.gateway_binary.resolve(strict=True)),
+        ssh_checkout=args.ssh_checkout.resolve(strict=True) if args.ssh_checkout else None)
+    if args.ssh_checkout:
+        print("PASS pinned SSH checkout resolved with the exact origin; the same commit under a different origin was refused and the room did not disclose the locator.")
