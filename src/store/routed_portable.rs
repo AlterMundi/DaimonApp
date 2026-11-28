@@ -338,7 +338,7 @@ pub(super) fn claude_telegram_quote_on(
 }
 
 fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result<Option<Value>> {
-    owned_history_seed_on(conn, local, body, false)
+    owned_history_seed_on(conn, local, body, false, None)
 }
 
 fn owned_history_seed_on(
@@ -346,9 +346,16 @@ fn owned_history_seed_on(
     local: i64,
     body: &Value,
     include_only_claude: bool,
+    search: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut query = conn.prepare(
-        "WITH owned AS (
+        "WITH search_window AS (
+            SELECT p.id FROM turns current
+            JOIN turns p ON p.session_id=current.session_id AND p.from_user_id=current.from_user_id
+            WHERE ?4 IS NOT NULL AND current.id=?1 AND p.id<current.id AND p.status='completed'
+              AND p.execution_generation=current.execution_generation
+            ORDER BY p.id DESC LIMIT 192
+         ), owned AS (
             SELECT p.id,p.session_id,p.from_user_id,p.native_thread_id,p.execution_harness,
                    owner.chat_id,owner.thread_id,p.prompt
             FROM turns current
@@ -358,6 +365,7 @@ fn owned_history_seed_on(
             JOIN turns p ON p.session_id=current.session_id AND p.from_user_id=current.from_user_id
             WHERE current.id=?1 AND current.status='running' AND current.execution_generation=g.generation
               AND p.id<current.id AND p.status='completed' AND p.execution_generation=g.generation
+              AND (?4 IS NULL OR p.id IN (SELECT id FROM search_window))
               AND ((p.execution_harness='claude'
                     AND json_extract(p.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
                     AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId'))
@@ -373,7 +381,7 @@ fn owned_history_seed_on(
             JOIN interaction_results result ON result.local_turn=prior.id AND result.native_thread=prior.native_thread_id
             WHERE ((prior.execution_harness='claude'
                     AND result.native_turn='gateway:claude:'||instruction.id AND result.item_id='final'
-                    AND (NOT ?3 OR NOT EXISTS (SELECT 1 FROM interaction_instructions sibling
+                    AND ((NOT ?3 AND ?4 IS NULL) OR NOT EXISTS (SELECT 1 FROM interaction_instructions sibling
                       WHERE sibling.session_id=prior.session_id AND sibling.id<>instruction.id
                         AND sibling.phase='accepted' AND json_extract(sibling.doc,'$.local_turn')=prior.id
                         AND json_extract(sibling.doc,'$.native_turn')=result.native_turn)))
@@ -430,11 +438,20 @@ fn owned_history_seed_on(
             SELECT *,row_number() OVER (PARTITION BY harness,native_thread ORDER BY id DESC) AS position
             FROM (SELECT * FROM routed UNION ALL SELECT * FROM direct)
             WHERE human IS NOT NULL AND native_thread IS NOT NULL
+              AND (?4 IS NULL OR (length(CAST(human AS BLOB))+length(CAST(assistant AS BLOB))<12288
+                AND (instr(lower(human),lower(?4))>0 OR instr(lower(assistant),lower(?4))>0)))
          )
          SELECT id,human,assistant,harness,native_thread FROM ranked
-         WHERE position=1 ORDER BY id DESC LIMIT 3",
+         WHERE position=1 OR ?4 IS NOT NULL
+         ORDER BY (instr(lower(human),lower(?4))>0) DESC,id DESC
+         LIMIT (CASE WHEN ?4 IS NULL THEN 3 ELSE 192 END)",
     )?;
-    let mut rows = query.query(params![local, body.to_string(), include_only_claude])?;
+    let mut rows = query.query(params![
+        local,
+        body.to_string(),
+        include_only_claude,
+        search
+    ])?;
     let mut exchanges = Vec::new();
     while let Some(row) = rows.next()? {
         let turn: i64 = row.get(0)?;
@@ -452,6 +469,12 @@ fn owned_history_seed_on(
             // Never clip a quotation that could change the meaning of an approval.
             exchanges.pop();
         }
+        if exchanges.len() == 3 {
+            break;
+        }
+    }
+    if search.is_some() {
+        return Ok(Some(json!({"exchanges":exchanges})));
     }
     if exchanges.len() > 1 {
         // Present oldest first while keeping the newest owned exchange in each lineage.
@@ -755,8 +778,54 @@ impl Store {
         let body: Value = serde_json::from_str(&body)?;
         Ok(Some((
             id,
-            owned_history_seed_on(&conn, local, &body, true)?,
+            owned_history_seed_on(&conn, local, &body, true, None)?,
         )))
+    }
+
+    pub(crate) fn routed_topic_history(
+        &self,
+        caller: SessionKey,
+        human: i64,
+        request: &crate::execution::ToolInvocation,
+        search: &str,
+    ) -> Result<Value> {
+        let search = search.trim();
+        anyhow::ensure!(
+            (3..=160).contains(&search.len()) && !search.chars().any(char::is_control),
+            "Supply one short phrase from the earlier conversation"
+        );
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let parent = super::interaction::instruction_on(&conn, &request.native_turn, human)?
+            .context("Active original is unavailable")?;
+        anyhow::ensure!(
+            request.harness == Harness::Claude
+                && controller_parent_on(
+                    &conn,
+                    &parent,
+                    caller,
+                    human,
+                    &request.native_session,
+                    &request.native_turn,
+                    request.local_turn,
+                    &self.instance_id,
+                )?
+                && super::session_requests::author_on(&conn, &parent.input_id)?.is_none()
+                && paired_host_access_on(&conn, &parent)?,
+            "History lookup requires the current paired-human topic turn"
+        );
+        let body: String = conn.query_row(
+            "SELECT execution_body FROM turns WHERE id=?1",
+            [request.local_turn],
+            |r| r.get(0),
+        )?;
+        owned_history_seed_on(
+            &conn,
+            request.local_turn,
+            &serde_json::from_str(&body)?,
+            false,
+            Some(search),
+        )?
+        .context("Owned history unavailable")
     }
 
     /// Recover an exact quoted result, or the last completed paired exchange
@@ -1283,7 +1352,58 @@ mod tests {
                 (id,local_turn,native_thread,native_turn,item_id,body)
                 VALUES('result',?1,'native-thread','gateway:claude:instruction','final','I can update the layout next.')",
                 [prior]).unwrap();
-            (prior, record("running"))
+            let latest = record("completed");
+            conn.execute(
+                "INSERT INTO bot_state(key,value) VALUES(?1,?2)",
+                params![
+                    format!("execution_root:{latest}"),
+                    json!("later-instruction").to_string()
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO interaction_sources(id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+                 VALUES('later-original',100,'telegram:100','later-original',100,7,?1,'2026-11-27')",
+                [json!({"text":"Check the unrelated lighting."}).to_string()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id)
+                 VALUES('later-instruction','later-original',?1,2,'accepted','{}','test')",
+                [session.id],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO interaction_results(id,local_turn,native_thread,native_turn,item_id,body)
+                 VALUES('later-result',?1,'native-thread','gateway:claude:later-instruction','final','The room is bright.')",
+                [latest],
+            ).unwrap();
+            let researching = record("running");
+            let found = owned_history_seed_on(&conn, researching, &body, false, Some("LAYOUT"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(found["exchanges"].as_array().unwrap().len(), 1);
+            assert_eq!(found["exchanges"][0]["turn"], prior);
+            assert_eq!(found["exchanges"][0]["human"], "Review the layout.");
+            conn.execute(
+                "INSERT INTO interaction_sources(id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+                 VALUES('steered-original',100,'telegram:100','steered-original',100,7,?1,'2026-11-27')",
+                [json!({"text":"Wait for review."}).to_string()],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id)
+                 VALUES('steer','steered-original',?1,3,'accepted',?2,'test')",
+                params![session.id,json!({"local_turn":prior,"native_turn":"gateway:claude:instruction"}).to_string()],
+            ).unwrap();
+            let ambiguous =
+                owned_history_seed_on(&conn, researching, &body, false, Some("LAYOUT")).unwrap();
+            assert_eq!(ambiguous, Some(json!({"exchanges":[]})));
+            conn.execute("DELETE FROM interaction_instructions WHERE id='steer'", [])
+                .unwrap();
+            conn.execute(
+                "DELETE FROM interaction_results WHERE id='later-result'",
+                [],
+            )
+            .unwrap();
+            (prior, researching)
         };
         assert_eq!(
             claude_history_seed_on(&store.conn.lock().unwrap(), current, &body).unwrap(),
