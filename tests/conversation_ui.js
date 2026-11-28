@@ -1634,6 +1634,12 @@ function boot(readOnly=false,standalone=false,options={}) {
   await telegramChat.ui.refresh();
   assert.equal(telegramLane.children.length,telegramCount);
   assert.match(telegramBubble.children[2].textContent,/session ended without a reply/);
+  Object.assign(telegramChat.telegramOriginals.get('telegram:42'),{
+    portable_phase:'rejected',native_tool_declined:false,subscription_limit:{window:null,resets_at:null},
+  });
+  await telegramChat.ui.refresh();
+  assert.equal(telegramLane.children.length,telegramCount);
+  assert.equal(telegramBubble.children[2].textContent,'Claude Code reached its usage limit. Your message is saved.');
   assert(telegramChat.requests.filter(r=>r.telegram).every(r=>r.body===undefined),'Cross-surface observation never resubmits an original');telegramChat.ui.stop();
   const telegramDenied=boot(false,true,{telegramDenied:true});
   await telegramDenied.ui.refresh();

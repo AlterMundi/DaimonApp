@@ -484,7 +484,8 @@ fn projected_phase_on<'a>(
 // their integrating conversation. The admitted route fixes the actual source
 // and target. Raw Telegram traffic from unrelated topics stays scoped locally.
 const DIRECT_PORTABLE_TELEGRAM_OUTCOME: &str = "(
-    SELECT json_array(r.phase,coalesce(json_extract(r.doc,'$.native_tool_declined'),0)=1) FROM interaction_sources x
+    SELECT json_array(r.phase,coalesce(json_extract(r.doc,'$.native_tool_declined'),0)=1,
+        json_extract(r.doc,'$.subscription_limit')) FROM interaction_sources x
     JOIN interaction_instructions r ON r.input_id=x.id
     JOIN sessions w ON w.id=r.session_id
     WHERE x.update_id=i.update_id AND x.human_id=?1 AND w.creator_user_id=?1
@@ -519,12 +520,14 @@ fn trace_original_on(
             params![human, entry.chat_id, update_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        let (portable_phase, native_tool_declined) = portable_outcome
+        let (portable_phase, native_tool_declined, subscription_limit) = portable_outcome
             .as_deref()
-            .map(serde_json::from_str::<(String, u8)>)
+            .map(
+                serde_json::from_str::<(String, u8, Option<crate::interaction::SubscriptionLimit>)>,
+            )
             .transpose()?
-            .map(|(phase, declined)| (Some(phase), declined == 1))
-            .unwrap_or((None, false));
+            .map(|(phase, declined, limit)| (Some(phase), declined == 1, limit))
+            .unwrap_or((None, false, None));
         let update: crate::telegram::Update = serde_json::from_str(&raw)?;
         let message = update.message.context("No original message")?;
         let origin_thread = message.message_thread_id.unwrap_or(0);
@@ -559,7 +562,7 @@ fn trace_original_on(
             )
         };
         return Ok(
-            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread,"portable_phase":portable_phase,"native_tool_declined":native_tool_declined}),
+            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread,"portable_phase":portable_phase,"native_tool_declined":native_tool_declined,"subscription_limit":subscription_limit}),
         );
     }
     let input = read_on(conn, id, human)?;
@@ -2219,7 +2222,7 @@ impl Store {
         for (update, capture, received_at) in rows.iter().take(8) {
             let id = format!("telegram:{update}");
             let original = trace_original_on(&conn, human, entry, &id)?;
-            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"portable_phase":original["portable_phase"],"native_tool_declined":original["native_tool_declined"],"retired":original["retired"]}));
+            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"portable_phase":original["portable_phase"],"native_tool_declined":original["native_tool_declined"],"subscription_limit":original["subscription_limit"],"retired":original["retired"]}));
         }
         Ok(
             json!({"schema":"telecodex.telegram-input-list/v1","entry_binding":[human,entry,session,native],"binding":super::presentation::entry_binding(&conn,human,entry,session)?,"items":items,"cursor":rows.iter().take(8).next_back().map(|r|r.0),"newest":rows.iter().take(8).map(|r|r.0).max().unwrap_or(0),"more":rows.len()>8,"read_only":true}),

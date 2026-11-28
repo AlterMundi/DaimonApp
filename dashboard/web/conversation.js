@@ -920,7 +920,7 @@ window.Conversation = (() => {
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramNewest=0,telegramLoaded=false,telegramReading=false;
-    const portableDeliveryText = (phase,toolDeclined) => toolDeclined ? nativeToolDeclinedText : ({
+    const portableDeliveryText = (phase,toolDeclined,limit) => limit ? subscriptionLimitText(limit) : toolDeclined ? nativeToolDeclinedText : ({
       queued:"Saved · waiting for the session",
       submitting:"Sending to the session…",
       steering:"Waiting for the session to pick up this message",
@@ -930,7 +930,7 @@ window.Conversation = (() => {
       rejected:"Saved · the session did not receive this message",
       cancelled:"Saved · sending cancelled",
     })[phase];
-    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? portableDeliveryText(value.portable_phase,value.native_tool_declined) ?? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
+    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? portableDeliveryText(value.portable_phase,value.native_tool_declined,value.subscription_limit) ?? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
       : value.subscription_limit ? subscriptionLimitText(value.subscription_limit)
       : (value.routing?.subscription_limit || contextUnavailable(value.routing) || goalControlUnavailable(value.routing) || value.routing?.native_tool_declined) ? routeText(value.routing)
       : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."

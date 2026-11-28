@@ -262,6 +262,16 @@ class PortableHistory(unittest.TestCase):
             self.assertEqual(saved['portable_phase'],'uncertain')
             db.execute("UPDATE turns SET execution_generation='old' WHERE id=25")
             self.assertNotIn('input25',[row['input_id'] for row in read_portable(db,20,10,'claude')['pending_items']])
+            limit = {'window':'five_hour','resets_at':1795874400}
+            doc = {'target_execution':{'harness':'claude','revision':binding},
+                   'subscription_limit':limit}
+            db.execute("UPDATE interaction_instructions SET phase='rejected',doc=? WHERE sequence=21",
+                       (json.dumps(doc),))
+            limited = read_portable(db,20,10,'claude')
+            self.assertEqual(limited['items'],page['items'])
+            saved = next(row for row in limited['pending_items'] if row['input_id']=='telegram:21')
+            self.assertEqual(saved['subscription_limit'],limit)
+            self.assertEqual(saved['portable_phase'],'rejected')
             db.execute('DELETE FROM interaction_instructions WHERE sequence>=20')
             db.execute("INSERT INTO topic_publications VALUES(4,'portable_handoff_input','instruction8',20,10,8,'Handoff from #Design')")
             db.execute("INSERT INTO topic_publications VALUES(5,'portable_handoff_input','foreign',20,11,8,'Foreign handoff')")

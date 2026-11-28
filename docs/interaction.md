@@ -298,6 +298,9 @@ transcripts without that distinction remain retained for explicit recovery. A tu
 current scope and authenticated being, embodiment and incarnation. A change
 to the signed roster alone preserves that incarnation's native history. A
 known quota rejection before work leaves the last completed candidate usable.
+Conversation shows the retained usage limit beside the original even when the
+message was sent through Telegram. The reset is shown only when available
+from the provider.
 An uncertain turn or a missing resume target protects the affected history
 from implicit replay. If Gateway cannot recover a required quoted answer or
 cannot replace a missing session with its bounded context, it retains the

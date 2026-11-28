@@ -1227,6 +1227,11 @@ timeout_seconds=5
             notices = [payload for message,payload in journey.messages
                        if "Claude Code reached its usage limit." in message["text"]]
             self.assertEqual([payload["reply_parameters"]["message_id"] for payload in notices], [update])
+            page = journey.read("input", "telegram-list", "0", "before")["result"]
+            original = next(row for row in page["items"] if row["id"] == f"telegram:{update}")
+            self.assertEqual(original["portable_phase"], "rejected")
+            self.assertEqual(original["subscription_limit"], {"window": None, "resets_at": None})
+
 
         def _claude_adapter_recovery(self, journey, provider, adapter_config):
             from conversation_cold_entry_http_io import Browser
