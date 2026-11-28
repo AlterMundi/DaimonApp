@@ -1203,6 +1203,9 @@ async fn submit(app: App, input: ConversationInput) -> Result<()> {
     let Some(active) = slot.as_ref() else {
         return defer_and_enqueue(&app, &input, &worker, None, "steer_unavailable");
     };
+    if active.requires_human_turn(&app.shared.store)? {
+        return defer_and_enqueue(&app, &input, &worker, None, "private_turn");
+    }
     if offer_older_inputs(&app, &worker, active, input.entry, input.human)? {
         return defer_and_enqueue(&app, &input, &worker, None, "older_inputs_waiting");
     }
@@ -1242,6 +1245,9 @@ fn offer_older_inputs(
     entry: SessionKey,
     human: i64,
 ) -> Result<bool> {
+    if active.requires_human_turn(&app.shared.store)? {
+        return Ok(false);
+    }
     let ready = active
         .physical_turn
         .lock()
@@ -1300,6 +1306,7 @@ fn steer(
     let id = input.id.clone();
     let human = input.human;
     let entry = input.entry;
+    let local = active.turn_id;
     let retained_text = format!(
         "{}{}",
         input.rendered(),
@@ -1318,6 +1325,10 @@ fn steer(
                 let id = id.clone();
                 Box::pin(async move {
                     super::tribu::validate_conversation(&shared, human, entry, &id).await?;
+                    anyhow::ensure!(
+                        !shared.store.native_turn_private(local)?,
+                        "The human input requires its own turn"
+                    );
                     shared.store.conversation_input_validate(human, &id)
                 })
             },

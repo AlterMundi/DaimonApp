@@ -322,17 +322,20 @@ pub(super) async fn process_turn(
         .or_else(|| queued.interaction.clone());
     // Older listeners wrapped direct-topic input. Preserve its journal/history,
     // but restore ordinary presentation when collecting that existing turn.
-    let execution_root = execution_root
-        .map(|id| -> Result<Option<String>> {
+    let (execution_root, attributed_root) = execution_root
+        .map(|id| -> Result<(Option<String>, bool)> {
             let human = queued.request.from_user_id;
             let selected = shared.store.interaction_instruction(&id, human)?;
             let attributed = shared.store.interaction_author(&id, human)?.is_some();
-            Ok(selected
-                .filter(|input| attributed || super::routing::relayed(input))
-                .map(|_| id))
+            Ok((
+                selected
+                    .filter(|input| attributed || super::routing::relayed(input))
+                    .map(|_| id),
+                attributed,
+            ))
         })
         .transpose()?
-        .flatten();
+        .unwrap_or_default();
     let turn_id = match retained_execution {
         Some((local, _)) => {
             shared.store.set_session_busy(session.key, true)?;
@@ -457,6 +460,7 @@ pub(super) async fn process_turn(
         let active = ActiveTurnSteerHandle {
             harness: crate::execution::Harness::Codex,
             turn_id,
+            attributed_root,
             physical_turn: physical_turn.clone(),
             sender: steer_tx,
             attachments: steered_files.clone(),

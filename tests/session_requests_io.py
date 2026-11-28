@@ -220,10 +220,27 @@ def private_draft_does_not_become_public(binary):
         # journal and must not enter the actual completion's coverage.
         with sqlite3.connect(j.root / 'state.sqlite') as conn:
             conn.execute("DELETE FROM interaction_instructions WHERE id='fixture-later-human'")
+        j.allow_native_launch = True
+        human_text = 'Please answer directly in this topic.'
+        update = j.admit(human_text, topic=8)
+        j.wait(lambda: j.row("SELECT status FROM incoming_updates WHERE update_id=?", (update,))
+               == [('queued',)])
+        assert j.runs[thread] == turn
         j.answer(8, 'The authorized dependency result.')
         j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
         j.internal_delivery('The authorized dependency result.')
-        print('PASS in-progress private draft stays private after later human admission')
+        j.wait(lambda: j.runs[thread] != turn)
+        human_packets = [packet for packet in j.rpc if packet.get('method') in ('turn/start', 'turn/steer')
+                         and packet['params'].get('clientUserMessageId') == f'telegram:100:100:{update}']
+        assert [packet['method'] for packet in human_packets] == ['turn/start']
+        reply = 'A visible answer for the independent human original.'
+        j.broadcast(thread, 'item/completed', {'turnId': j.runs[thread], 'item': {
+            'id': 'direct-after-private', 'type': 'agentMessage', 'phase': 'final_answer', 'text': reply}})
+        j.broadcast(thread, 'turn/completed', {'turn': {'id': j.runs[thread], 'status': 'completed'}})
+        j.wait(lambda: j.has(reply, 8))
+        assert not j.has('Private prefix.', 8)
+        assert sum(reply in message['text'] for message, _ in j.messages) == 1
+        print('PASS private draft stays private and a later human original gets a visible turn in the same topic')
     finally:
         j.close()
 
