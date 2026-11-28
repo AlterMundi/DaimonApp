@@ -170,12 +170,13 @@ async fn create_selected(
         return Err(PreflightRejection("destination_unavailable", "The title already selects a destination or destination capacity is full. Inspect candidates; do not create a duplicate.").into());
     }
     args.input_ref.validate()?;
-    let (original, message) = shared.store.interaction_entry_original(
+    let (original, message) = shared.store.interaction_creation_original(
         key,
         human,
         native,
         &args.input_ref,
         &format!("telegram:{}", shared.bot_id),
+        !interview,
     )?;
     if original.text.trim_start().starts_with('/')
         || message.as_ref().is_some_and(|message| {
