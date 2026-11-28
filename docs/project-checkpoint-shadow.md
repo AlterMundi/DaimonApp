@@ -121,7 +121,30 @@ revisions and effect receipts, one loopback provider call, and no duplicate
 dispatch of the original effects. The run then verifies that the existing
 Codex session can read both retained Claude exchanges and the same checkpoint.
 The fixture uses Claude Code 2.1.332 and Agent SDK 0.3.332 with a loopback
-provider and a synthetic Codex peer. Live adoption remains separate.
+provider and a synthetic Codex peer. The cold leg prints a JSON report with
+wall time from paired input through the visible answer, loopback call count,
+and token usage from the exact native successor transcript. It checks that
+the earlier instructions retain the same state and emits no transcript
+text, account details or native IDs. These counts describe the deterministic
+fixture model response. Live provider usage and receiving adoption remain
+separate. The reference run reached the visible answer in 2,901 ms with one
+loopback request, eight input tokens and four output tokens reported in
+Claude's transcript, and zero earlier instructions redispatched.
+
+Use the existing Python fixture environment with Matrix and the dashboard's
+FastAPI test client available. Set `CLAUDE_TEST_SDK_PATH` to the qualified SDK
+entrypoint:
+
+```sh
+CLAUDE_TEST_CLI_VERSION=2.1.332 \
+FOREGROUND_TEST_TELEGRAM_TOPIC=1 \
+FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF=1 \
+FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP=1 \
+FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP=1 \
+FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP=1 \
+FOREGROUND_TEST_CLAUDE_COLD_PROJECT=1 \
+python3 -B tests/foreground_signed_io.py claude GATEWAY_BINARY CLAUDE_BINARY
+```
 
 Add `FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL=1` to that profile to return
 Codex Core's missing-rollout error on the exact saved thread. Gateway

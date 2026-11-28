@@ -926,12 +926,40 @@ timeout_seconds=5
                 provider.human_original = str(uuid.uuid4())
                 claude_answer = "I recovered the retained design context."
                 before_calls = len(provider.calls)
+                started = time.monotonic()
                 _, recovered_native = submit(claude_answer)
+                elapsed_ms = round((time.monotonic() - started) * 1000)
                 self.assertNotEqual(recovered_native, provider.previous_session)
                 self.assertFalse(transcript.exists())
                 self.assertEqual(retained.read_bytes(), original_bytes)
                 self.assertEqual(provider.calls[before_calls:], [provider.current])
                 self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+
+                # Read only the result from this run's private, disposable
+                # native transcript. Export counts without IDs or content.
+                recovered = list((fixture_home / "projects").rglob(recovered_native + ".jsonl"))
+                self.assertEqual(len(recovered), 1)
+                messages = {}
+                for line in recovered[0].read_text().splitlines():
+                    entry = json.loads(line)
+                    if entry.get("type") != "assistant":
+                        continue
+                    message = entry["message"]
+                    if message.get("id", "").startswith("msg_fixture_"):
+                        messages[message["id"]] = message["usage"]
+                self.assertEqual(len(messages), 1)
+                usage = next(iter(messages.values()))
+                self.assertEqual(usage["input_tokens"], 8)
+                self.assertEqual(usage["output_tokens"], 4)
+                print(json.dumps({
+                    "fixture": "native_claude_project_cold_recovery",
+                    "recovery_to_visible_answer_ms": elapsed_ms,
+                    "loopback_calls": len(provider.calls) - before_calls,
+                    "reported_fixture_input_tokens": usage["input_tokens"],
+                    "reported_fixture_output_tokens": usage["output_tokens"],
+                    "prior_instructions_redispatched": 0,
+                    "real_provider_calls": 0,
+                }, sort_keys=True), flush=True)
                 provider.codex_handoff_native = recovered_native
                 del provider.expected_recovered_history
             if os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP") != "1":
