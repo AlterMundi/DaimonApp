@@ -936,12 +936,12 @@ impl CodexRunner {
                             boundary_seen = true;
                         }
                         if physical == anchor {
-                            turns.push((physical.to_owned(),status.to_owned()));
+                            turns.push((physical.to_owned(),status.to_owned(),turn.get("error").cloned()));
                             anchor_seen = true;
                             break;
                         }
                         if boundary_seen {
-                            turns.push((physical.to_owned(),status.to_owned()));
+                            turns.push((physical.to_owned(),status.to_owned(),turn.get("error").cloned()));
                         }
                     }
                     if anchor_seen {
@@ -958,7 +958,7 @@ impl CodexRunner {
                 let mut output = Vec::new();
                 let mut pages = 0;
                 let mut bytes = 0;
-                for (physical, status) in turns {
+                for (physical, status, error) in turns {
                     let mut items = Vec::new();
                     if stop_before != Some(physical.as_str()) && !(stop_before.is_none() && status == "inProgress") {
                         let mut cursor = None::<String>;
@@ -990,7 +990,7 @@ impl CodexRunner {
                             anyhow::ensure!(seen.insert(cursor.clone()),"Native recovery item cursor repeated");
                         }
                     }
-                    output.push(json!({"id":physical,"status":status,"items":items}));
+                    output.push(json!({"id":physical,"status":status,"items":items,"error":error}));
                 }
                 let goal_active = if stop_before.is_some() {
                     let id = process.send_request("thread/goal/get",json!({"threadId":native})).await?;
