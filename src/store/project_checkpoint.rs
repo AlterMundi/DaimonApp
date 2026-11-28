@@ -100,6 +100,25 @@ struct CheckpointScope<'a> {
 impl CheckpointScope<'_> {
     fn authorize(&self, conn: &Connection, instance: &str) -> Result<()> {
         anyhow::ensure!(!self.closed.is_cancelled(), "Checkpoint invocation closed");
+        if self.invocation.harness.is_portable() {
+            let parent =
+                interaction::instruction_on(conn, &self.invocation.native_turn, self.human)?
+                    .context("Routed checkpoint original unavailable")?;
+            anyhow::ensure!(
+                routed_portable::controller_parent_on(
+                    conn,
+                    &parent,
+                    self.key,
+                    self.human,
+                    &self.invocation.native_session,
+                    &self.invocation.native_turn,
+                    self.invocation.local_turn,
+                    instance,
+                )?,
+                "Routed checkpoint execution changed"
+            );
+            return Ok(());
+        }
         let binding = execution::controller_execution_on(
             conn,
             self.invocation.local_turn,
@@ -422,6 +441,66 @@ mod tests {
             .unwrap();
         assert!(result.status.success(), "{:?}", result);
         String::from_utf8(result.stdout).unwrap().trim().into()
+    }
+
+    #[test]
+    fn canonical_conversation_source_requires_current_audience_and_exact_revision() {
+        let db = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(db.path(), &[100], &defaults).unwrap();
+        let entry = SessionKey::new(100, Some(8));
+        let worker = SessionKey::new(100, Some(9));
+        let session = store.ensure_session(entry, 100, &defaults).unwrap();
+        store.ensure_session(worker, 100, &defaults).unwrap();
+        store
+            .set_session_codex_thread(entry, "entry-native")
+            .unwrap();
+        let local = store
+            .record_turn_started(
+                session.id,
+                &TurnRequest {
+                    session_key: entry,
+                    from_user_id: 100,
+                    prompt: "Pick a project".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "entry-native")
+            .unwrap();
+        store
+            .record_native_message(
+                local,
+                "entry-native",
+                "entry-turn",
+                "answer",
+                Some("final_answer"),
+                "The selected story.",
+            )
+            .unwrap();
+
+        let page = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap();
+        let item = &page["items"][0];
+        let sources = [CheckpointSource::Conversation {
+            source: item["id"].as_str().unwrap().into(),
+            revision: item["revision"].as_str().unwrap().into(),
+        }];
+        {
+            let conn = store.conn.lock().unwrap();
+            assert!(check_sources(&conn, entry, entry, 100, &sources).is_ok());
+            assert!(check_sources(&conn, worker, entry, 100, &sources).is_err());
+        }
+        store
+            .set_session_codex_thread(entry, "replacement")
+            .unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(check_sources(&conn, entry, entry, 100, &sources).is_err());
     }
 
     #[test]
