@@ -1413,8 +1413,12 @@ with its sending conversation, and its canonical result. Both are projected
 when the report completes. Private sibling handoffs remain internal. The report
 freezes its destination and keeps its separate internal return.
 Gateway projects the canonical delivery identity and verifies both conversation
-generations. Connectors supply the native receipt and enforce their own packet
-limits. The current connector qualification for selected reports is Claude.
+generations. The projection uses negotiated adapter capabilities and retained
+evidence, independent of the harness name. Each adapter translates its native
+signals into the same receipts and enforces its own packet limits. An adapter
+without early incorporation evidence can publish after a canonical result
+settles if it supports selected reports. The current portable adapter
+qualification for selected reports is Claude.
 Connectors that can prove early native incorporation may negotiate an
 `input_accepted` receipt. Gateway retains the exact evidence on the admitted
 instruction and keeps completion and publication separate. An incorporated
