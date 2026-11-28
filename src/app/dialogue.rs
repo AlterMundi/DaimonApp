@@ -414,8 +414,8 @@ pub(super) fn tool_call(
                         .retain(|name,_| portable_operation(name));
                     capabilities["operations"]["candidates"]["arguments"]["mode"]=json!("inventory, inspect or support");
                 }
-                capabilities["operations"]["coordination_inputs"]=json!({"arguments":{},"description":"Active attributed handoffs this execution can coordinate. Separate from human originals used by dispatch."});
-                capabilities["operations"]["session_request"]=json!({"arguments":{"parent_instruction":"active coordination_inputs instruction","request_id":"stable caller-chosen identifier","selector":"exact enrolled topic label or stable tID","text":"bounded coordination request with session authorship"},"description":"Coordinate onward from an attributed handoff within the original human instruction's shared budget. Do not use dispatch to copy human messages from other conversations."});
+                capabilities["operations"]["coordination_inputs"]=json!({"arguments":{},"description":"Accepted direct originals and eligible attributed handoffs available to this execution. Use inputs for the original references accepted by dispatch."});
+                capabilities["operations"]["session_request"]=json!({"arguments":{"parent_instruction":"eligible instruction from coordination_inputs","request_id":"stable caller-chosen identifier","selector":"exact enrolled topic label or stable tID","text":"bounded coordination request with session authorship","report_to_topic":"true only for a visible handoff requested by the paired human, with a direct accepted original and a destination that supports it"},"description":"Coordinate within the current original human instruction's shared budget. An attributed handoff permits bounded onward consultation."});
                 capabilities["operations"]["session_requests"]=json!({"arguments":{},"description":"Read local coordination receipts, including actual transport and turn status."});
                 return Ok(capabilities);
             }
