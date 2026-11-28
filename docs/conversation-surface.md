@@ -51,7 +51,7 @@ Parent must compare actor with its own server-verified paired human, not a label
    this UI notice alone proves neither completion nor native execution.
 
 Bindings/authentication changes invalidate in-flight preparation. Parent cannot
-set draft, start microphone, auto-submit, select a session, replay or resume work.
+set draft, start microphone, auto-submit, replay or resume work.
 No background recorder, provider call or new login is created. Iframe reload is
 not safe while capture/upload/unknown submission is unresolved; normal existing
 recovery rules remain authoritative. Real device/hearing acceptance is separate.
@@ -148,3 +148,19 @@ origin, actor, visit, binding and channel checks. Neither message contains
 native references or conversation text. No input, draft or routing change is
 made by the projection. Older compatible Conversation hosts may ignore the
 optional feature.
+
+### Explicit topic audience
+
+A compatible frame and host opt in to `topicDirect` on the bound channel.
+A visitor can select the current room with `topic-direct-select` and a request
+UUID. The child reads and resolves the unique current owned Session Workspace
+destination before exposing its history and composer. Its readback echoes
+only the UUID and room, or reports unavailable. A null room restores general
+Conversation. A fresh document starts in general mode.
+
+Selection itself issues no original and carries no draft, destination
+revision, or conversation text across frames. The canonical composer freezes
+the selected destination when the visitor sends or records. Direct text
+drafts and unconfirmed original references are kept separately in the same
+tab, for up to 16 recent scopes under the existing seven-day retention.
+General Conversation continues to use its independent server draft.

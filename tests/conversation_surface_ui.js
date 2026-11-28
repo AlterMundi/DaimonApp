@@ -4,13 +4,14 @@ const id=()=>crypto.randomUUID(),binding='b'.repeat(64),actor='human:fixture:one
 function boot(options){
  let now=500;
  const sent=[],events={},timers=[],domEvents={},parent={postMessage:(message,origin)=>sent.push({message,origin})};
- const window={parent,addEventListener:(name,fn)=>events[name]=fn,removeEventListener:()=>{}};
+ const storage=new Map();
+ const window={parent,sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},addEventListener:(name,fn)=>events[name]=fn,removeEventListener:()=>{}};
  const document={hidden:false,addEventListener:(name,fn)=>domEvents[name]=fn,documentElement:{dataset:{surfaceParent:'https://world.test',surfaceVisit:id()}}};
- const context={window,crypto,document,performance:{now:()=>now},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
+ const context={window,crypto,document,TextEncoder,performance:{now:()=>now},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{if(t)t.closed=true;}};
  vm.runInNewContext(fs.readFileSync('dashboard/web/conversation-surface.js','utf8'),context);
  const ui=window.ConversationSurface.create(options);ui.identity(actor);ui.bind(binding);const envelope=sent.at(-1).message;
  const receive=(value,source=parent,origin='https://world.test')=>events.message({source,origin,data:{...envelope,...value}});
- return{ui,sent,timers,receive,parent,events,envelope,document,domEvents,advance:ms=>now+=ms};
+ return{window,ui,sent,timers,receive,parent,events,envelope,document,domEvents,advance:ms=>now+=ms};
 }
 (async()=>{
  const topic='1'.repeat(64),reads=[];
@@ -31,6 +32,31 @@ function boot(options){
  assert.equal(catalogue.rooms[0].room,topic);
  assert.equal('private_text' in catalogue.rooms[0],false);
  assert.deepEqual(reads,[topic]);
+ const direct=boot({selectTopic:async(room,current)=>current()?{room}:null});
+ direct.receive({type:'connect',features:{topicDirect:true}});
+ const selected={type:'topic-direct-select',request:id(),room:topic};
+ direct.receive(selected);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(direct.sent.at(-1).message.type,'topic-direct-readback');
+ assert.equal(direct.sent.at(-1).message.room,topic);
+ direct.receive({...selected,request:id(),room:null});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(direct.sent.at(-1).message.room,null);
+
+ const field={value:''};
+ const draft=direct.window.ConversationSurface.mountDraft({field,api:async()=>{},busy:()=>false,show:()=>{}});
+ draft.bind('a'.repeat(64),binding);
+ draft.observe({text:'Our conversation draft',revision:1});
+ draft.setTopic(topic);
+ assert.equal(field.value,'');
+ draft.observe({text:'General server draft',revision:2});
+ assert.equal(field.value,'');
+ draft.change('Draft for the topic');
+ draft.setTopic(undefined);
+ assert.equal(field.value,'Our conversation draft');
+ draft.setTopic(topic);
+ assert.equal(field.value,'Draft for the topic');
+
  const b=boot();assert.equal(b.sent.length,1);assert.equal(b.sent[0].message.type,'ready');
  assert.equal(b.sent[0].origin,'https://world.test');
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text'}));
