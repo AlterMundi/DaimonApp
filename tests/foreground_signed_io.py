@@ -2437,6 +2437,15 @@ timeout_seconds=5
             provider.current = request["id"]
             submit(request, fresh=True)
             self.assertIn(ANSWER, readback(request))
+            usage, = journey.row(
+                "SELECT turns.native_session_usage FROM turns "
+                "JOIN conversation_inputs ON local_turn=turns.id WHERE conversation_inputs.id=?",
+                (request["id"],),
+            )[0]
+            observed = json.loads(usage)
+            self.assertEqual(str(uuid.UUID(observed["resultId"])), observed["resultId"])
+            self.assertGreater(observed["inputTokens"], 0)
+            self.assertGreater(observed["outputTokens"], 0)
             if mixed:
                 self.assertEqual(provider.calls, [request["id"]] * 5)
                 self.assertEqual(len(journey.worker_packets["native-topic-7"]), 1)
