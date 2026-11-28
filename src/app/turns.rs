@@ -3252,6 +3252,9 @@ mod foreground_failure_copy_tests {
                 .unwrap()
                 .contains("send it again")
         );
-        assert_eq!(foreground_failure_message("failed", true, false, true), None);
+        assert_eq!(
+            foreground_failure_message("failed", true, false, true),
+            None
+        );
     }
 }

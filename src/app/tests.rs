@@ -2777,11 +2777,9 @@ async fn upload_failure_marks_turn_failed_and_retains_output_for_explicit_recove
         "recover this output"
     );
     assert!(
-        failure_messages
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|message| message == "I finished the work, but couldn't deliver the full response.")
+        failure_messages.lock().unwrap().iter().any(
+            |message| message == "I finished the work, but couldn't deliver the full response."
+        )
     );
 }
 
