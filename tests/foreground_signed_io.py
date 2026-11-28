@@ -1382,7 +1382,7 @@ timeout_seconds=5
                 provider.original = condition
                 provider.quote_response = "The synthetic goal fixture is ready."
 
-                def command_result(command):
+                def command_result(command, *, submitted=True):
                     provider.goal_command = command
                     ident = str(uuid.uuid4())
                     provider.human_original = ident
@@ -1402,7 +1402,7 @@ timeout_seconds=5
                     self.assertIsNone(provider.failure)
                     journey.idle()
                     phase, harness, status, session_id, answer = terminal()[0]
-                    self.assertEqual((harness, session_id), ("claude", native))
+                    self.assertEqual((harness, session_id), ("claude", native if submitted else None))
                     return ident, phase, status, answer
 
                 set_command = f"/goal {condition}"
@@ -1418,6 +1418,10 @@ timeout_seconds=5
                 else:
                     self.assertEqual((phase, status), ("uncertain", "failed"))
                     self.assertGreater(evaluations, 1)
+                    for control in ("/goal pause", "/goal resume"):
+                        _, phase, status, _ = command_result(control, submitted=False)
+                        self.assertIn(phase, ("rejected", "retained_unsent"))
+                        self.assertEqual(status, "failed")
                     _, phase, status, answer = command_result("/goal")
                     self.assertEqual((phase, status), ("accepted", "completed"))
                     self.assertIn(condition, answer)

@@ -124,6 +124,17 @@ test('only an explicitly selected human goal uses the native command mode', asyn
   }
 });
 
+test('portable pause and resume cannot replace a Claude goal condition', async () => {
+  for (const text of ['/goal pause', '/goal resume', '/goal  resume ']) {
+    const outcome = await runClaudeTurn(options({
+      input: { ...input, text, nativeGoalCommand: true },
+      beforeSubmit: () => assert.fail('A goal control must not commit native input'),
+      query: () => assert.fail('A goal control must not start the native writer'),
+    }));
+    assert.deepEqual(outcome, { phase: 'not_submitted', reason: 'claude_goal_control_unavailable' });
+  }
+});
+
 test('fresh history quotes preserve the distinct current original at submission', async () => {
   const historySeed = { turn: 7, human: 'Review the layout.', assistant: 'I can update the layout next.' };
   const text = 'Yes, do that.';
