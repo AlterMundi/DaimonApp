@@ -122,6 +122,24 @@ Owning work and qualification procedures are in
 The minimum Rust candidate recorded in Matrix #497 is Goose. The historical
 DaimonCraft design has separate evidence requirements.
 
+### Next receiving pilots
+
+Antigravity CLI goes first, then Muse Code. The ITACA `agy` 1.5.18 probe
+negotiated ACP v1, opened a sandboxed session, selected Neon with medium
+reasoning and received the expected synthetic reply from the selected
+account. The probe also advertised exact session load and image input.
+The production Antigravity Gateway worker still uses the SDK/local-provider
+route. A real CLI reply does not yet qualify its topic binding.
+
+Muse Code 1.4.25 answered the `muse serve` MSP handshake with its echo
+provider. The exported stable schema includes native start, resume, steer
+and interrupt. Test MSP with durable sessions and the selected subscription
+before adopting it. Its exact-turn steering and stable command IDs are
+useful candidates for the existing Gateway acceptance contract. ACP v1
+for Muse is a separate experimental route.
+[MSP wire guide](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) ·
+[Muse ACP](https://meta-models.github.io/muse-code-sdk/1.4/guides/editors-acp/)
+
 Use the selected release binary with the signed Claude qualification in
 `tests/foreground_signed_io.py`. With `FOREGROUND_TEST_TELEGRAM_TOPIC=1`,
 run the visible handoff, same-turn steering, adapter recovery and harness
