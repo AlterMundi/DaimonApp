@@ -210,11 +210,13 @@ impl Store {
         {
             bail!("This selected Matrix adapter does not carry a visual attachment");
         }
-        let local: bool = if let Some(update) = reference.update() {
-            tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND update_id=?2)",params![human,update],|r|r.get(0))?
-        } else {
-            tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3)",params![human,source_channel,event],|r|r.get(0))?
-        };
+        let local = super::interaction::selected_local_dispatch_on(
+            &tx,
+            human,
+            &source_channel,
+            &event,
+            reference.update(),
+        )?;
         let creating:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?2)",params![human,reference],|r|r.get(0))?;
         if local
             || creating
@@ -1256,6 +1258,42 @@ mod tests {
             .unwrap();
         assert_eq!(late["phase"], "reply_received");
         assert_eq!(late["results"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn direct_receipt_leaves_the_first_matrix_selection_available() {
+        let (_file, store, entry) = setup();
+        let reference = original(&store, entry, 27);
+        let (mut source, _) = store
+            .interaction_entry_original(entry, 100, "entry-native", &reference, "telegram:fixture")
+            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            super::super::interaction::retain_direct_parent_on(
+                &conn,
+                &source,
+                entry,
+                &store.instance_id,
+            )
+            .unwrap();
+        }
+        let target = store
+            .ensure_session(
+                SessionKey::new(100, Some(7)),
+                100,
+                &super::super::tests::defaults(),
+            )
+            .unwrap();
+        store
+            .set_session_codex_thread(target.key, "local-target")
+            .unwrap();
+        source.target_sessions = vec![target.id];
+        assert_eq!(prepare(&store, entry, &reference)["new_request"], true);
+        assert!(
+            store
+                .interaction_admit(&source, target.key, RequestRelation::New)
+                .is_err()
+        );
     }
 
     #[test]

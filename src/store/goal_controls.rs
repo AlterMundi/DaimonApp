@@ -238,7 +238,7 @@ fn source_on(
     }
     let order = super::dialogue::original_order_on(conn, &source)?
         .context("Original capture chronology unavailable")?;
-    let routed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4) OR EXISTS(SELECT 1 FROM conversation_decisions WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",params![actor.human,reference.update(),reference.event(),reference],|r|r.get(0))?;
+    let routed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND json_array_length(doc,'$.target_sessions')>0 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4) OR EXISTS(SELECT 1 FROM conversation_decisions WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",params![actor.human,reference.update(),reference.event(),reference],|r|r.get(0))?;
     if routed {
         bail!("Original input already has a selected route, creation or answer");
     }

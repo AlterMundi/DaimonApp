@@ -177,8 +177,9 @@ operator.main()
                 initial_database = database.read_bytes()
             journey = CanonicalRouting(gateway) if mixed or inverse else Inputs(gateway)
             self.addCleanup(journey.close)
-            visible_handoff = telegram_topic and os.environ.get(
-                "FOREGROUND_TEST_VISIBLE_HANDOFF") == "1"
+            visible_handoff = os.environ.get("FOREGROUND_TEST_VISIBLE_HANDOFF") if telegram_topic else None
+            if visible_handoff not in {"1", "entry"}:
+                visible_handoff = None
             if mixed or inverse:
                 journey.start()
                 for topic in (1, 7, 8) if visible_handoff else (1, 7) if inverse else (7,):
@@ -559,7 +560,7 @@ timeout_seconds=5
                         )
                         try:
                             if visible_handoff:
-                                self._visible_handoff(journey, provider)
+                                self._visible_handoff(journey, provider, entry=visible_handoff == "entry")
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
@@ -842,7 +843,7 @@ timeout_seconds=5
             self.assertEqual(journey.telegram_methods, [])
             self.assertEqual(journey.rpc, [])
 
-        def _visible_handoff(self, journey, provider):
+        def _visible_handoff(self, journey, provider, *, entry=False):
             from conversation_cold_entry_http_io import Browser
 
             journey.allow_local_dependencies = True
@@ -868,8 +869,11 @@ timeout_seconds=5
             })["results"][0]
             self.assertTrue(route["new_admission"], route)
             journey.wait(lambda: journey.instructions(8) and journey.instructions(8)[0][1] == "accepted")
-            caller_native = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=8")[0][0]
-            caller_turn = journey.workers[caller_native]
+            beta = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=8")[0][0]
+            caller_native = journey.web_thread if entry else beta
+            caller_turn = journey.web_turn if entry else journey.workers[caller_native]
+            if entry:
+                journey.workers[caller_native] = caller_turn
             caller_send = next(send for native, send in journey.clients.values()
                                if native == caller_native)
 
@@ -886,6 +890,9 @@ timeout_seconds=5
 
             parents = caller_call("route-visible-inputs", "coordination_inputs", {})["inputs"]
             parent, = [item for item in parents if item["eligible_coordination_parent"]]
+            self.assertEqual(parent["source_event"], original)
+            capabilities = caller_call("route-visible-capabilities", "capabilities", {})
+            self.assertIn("report_to_topic", capabilities["operations"]["session_request"]["arguments"])
             request = {"parent_instruction": parent["instruction"], "request_id": "visible-fixture",
                        "selector": "Alpha", "text": provider.handoff_text, "report_to_topic": True}
             try:
@@ -928,7 +935,7 @@ timeout_seconds=5
             """) == [("returned", "accepted", caller_native)])
             self.assertEqual(sum(ANSWER in json.dumps(packet["input"])
                                  for packet in journey.worker_packets[caller_native]), 1)
-            journey.finish(caller_native, caller_turn)
+            journey.finish(beta, journey.workers[beta])
             journey.finish(journey.web_thread, journey.web_turn)
 
         def _telegram_codex_handoff(self, journey, provider):

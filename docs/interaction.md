@@ -1435,6 +1435,11 @@ incorporation. With `FOREGROUND_TEST_TELEGRAM_TOPIC=1`, the case uses the
 selected SDK and CLI with a loopback provider and checks the attributed request
 in Telegram and the authenticated Conversation workspace before releasing the
 final response. It also checks the return to the caller and stable request reuse.
+Use `FOREGROUND_TEST_VISIBLE_HANDOFF=entry` to exercise a directly accepted
+paired input in the general conversation. The direct receipt retains the
+original before any destination plan is chosen. The first explicit dispatch
+freezes its own destinations, and an attributed request can still use the
+active direct receipt.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 
