@@ -192,7 +192,7 @@ pub(super) fn result_on(
         {
             (order, sequence, source)
         } else if let Some(claim) = claim.as_ref()
-            && let Some(input) = super::session_requests::later_completion_source_on(
+            && let Some(input) = super::session_requests::later_result_source_on(
                 tx, human, local_turn, thread, &request, claim,
             )?
         {
@@ -332,7 +332,7 @@ pub(super) fn result_on(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn later_completion_result_on(
+pub(super) fn later_dependency_result_on(
     tx: &Connection,
     instance: &str,
     human: i64,
@@ -345,8 +345,8 @@ pub(super) fn later_completion_result_on(
 ) -> Result<Vec<Delivery>> {
     let mut root = None;
     if let Some(claim) = worker_result(text).1 {
-        for request in &claim.completed {
-            root = super::session_requests::later_completion_source_on(
+        for request in &claim.requests {
+            root = super::session_requests::later_result_source_on(
                 tx, human, local, thread, request, &claim,
             )?;
             if root.is_some() {
@@ -375,9 +375,9 @@ pub(super) fn later_completion_result_on(
 }
 
 impl Store {
-    /// An ordinary final can finish a specifically declared, still-open helper
+    /// An ordinary final can report progress or complete an explicitly covered
     /// dependency without reopening the original native turn.
-    pub(crate) fn interaction_record_later_completion(
+    pub(crate) fn interaction_record_later_dependency_result(
         &self,
         human: i64,
         local: i64,
@@ -388,7 +388,7 @@ impl Store {
     ) -> Result<Vec<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let deliveries = later_completion_result_on(
+        let deliveries = later_dependency_result_on(
             &tx,
             &self.instance_id,
             human,

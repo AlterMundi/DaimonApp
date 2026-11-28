@@ -22,6 +22,14 @@ pub struct SessionRequest {
 
 const CLAUDE_LOCAL_TEXT_BYTES: usize = 8192;
 
+fn progress_event(request: &str, result: &str) -> String {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_URL,
+        format!("local-progress:{request}:{result}").as_bytes(),
+    )
+    .to_string()
+}
+
 fn local_claude_route(
     config: Option<&crate::interaction::InteractionConfig>,
     target: SessionKey,
@@ -78,7 +86,7 @@ fn current_epoch(conn: &Connection, human: i64) -> Result<String> {
         .unwrap_or_else(|| "initial".into()))
 }
 
-pub(super) fn later_completion_source_on(
+pub(super) fn later_result_source_on(
     conn: &Connection,
     human: i64,
     local: i64,
@@ -119,13 +127,11 @@ pub(super) fn later_completion_source_on(
         )
         .optional()?;
     let Some(id) = original else { return Ok(None) };
-    if !coverage
+    let completed = coverage
         .completed
         .iter()
-        .any(|completed| completed == request)
-        || !coverage.covered.contains(&id)
-        || coverage.deferred.contains(&id)
-    {
+        .any(|completed| completed == request);
+    if !coverage.covered.contains(&id) || completed == coverage.deferred.contains(&id) {
         return Ok(None);
     }
     let input = instruction_on(conn, &id, human)?;
@@ -185,7 +191,10 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
         let parent = instruction_on(conn, &parent, human)?;
         return Ok(coordination_root_on(conn, human, &parent)?.is_some());
     }
-    if author["kind"] != "session_result" || phase.as_deref() != Some("returned") {
+    let progress = author["dependency_status"] == "progress";
+    if author["kind"] != "session_result"
+        || phase.as_deref() != Some(if progress { "requested" } else { "returned" })
+    {
         return Ok(false);
     }
     let raw: String = conn.query_row(
@@ -194,7 +203,22 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
         |row| row.get(0),
     )?;
     let request: SessionRequest = serde_json::from_str(&raw)?;
-    if request.return_instruction.as_deref() != Some(i.id.as_str()) {
+    if progress {
+        let result = author["canonical_result"]
+            .as_str()
+            .context("Missing progress result")?;
+        let event = progress_event(&request.id, result);
+        let selected: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM interaction_sources x JOIN interaction_deliveries d
+              ON d.human_id=x.human_id WHERE x.id=?1 AND x.event_id=?2
+              AND x.channel='local-session-result' AND d.request_id=?3 AND d.result_id=?4)",
+            params![i.input_id, event, request.target_instruction, result],
+            |row| row.get(0),
+        )?;
+        if !selected {
+            return Ok(false);
+        }
+    } else if request.return_instruction.as_deref() != Some(i.id.as_str()) {
         return Ok(false);
     }
     for id in [&request.parent_instruction, &request.target_instruction] {
@@ -296,12 +320,11 @@ pub(super) fn paired_result_parent_on(conn: &Connection, child: &Instruction) ->
     if !session_input_allowed_on(conn, &child.id, child.human_id)? {
         return Ok(false);
     }
+    let author = author_on(conn, &child.input_id)?.context("Missing result provenance")?;
     let parent: Option<String> = conn
         .query_row(
-            "SELECT parent_instruction FROM interaction_session_requests
-             WHERE human_id=?1 AND phase='returned'
-             AND json_extract(doc,'$.return_instruction')=?2",
-            params![child.human_id, child.id],
+            "SELECT parent_instruction FROM interaction_session_requests WHERE human_id=?1 AND id=?2",
+            params![child.human_id, author["local_request"].as_str()],
             |row| row.get(0),
         )
         .optional()?;
@@ -1044,9 +1067,28 @@ impl Store {
         let mut call: SessionRequest = serde_json::from_str(&raw)?;
         let d: crate::interaction::Delivery = serde_json::from_str(&raw_delivery)?;
         let (current, correction) = super::routing::delivery_freshness(&tx, &d)?;
-        if !d.completed || !current || correction || current_epoch(&tx, human)? != call.epoch {
+        if !current || correction || current_epoch(&tx, human)? != call.epoch {
             return Ok(None);
         }
+        let progress = !d.completed;
+        let event = if progress {
+            let deferred: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM interaction_results r
+                  JOIN json_each(r.claim,'$.deferred') f ON f.value=?2
+                  WHERE r.id=?1)",
+                params![result_id, call.target_instruction],
+                |row| row.get(0),
+            )?;
+            if !deferred || !d.covered.contains(&call.target_instruction) {
+                return Ok(None);
+            }
+            let event = progress_event(&call.id, &result_id);
+            if tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE channel='local-session-result' AND event_id=?1)",
+                [&event], |row| row.get::<_,bool>(0))? { return Ok(None); }
+            event
+        } else {
+            call.id.clone()
+        };
         let parent = instruction_on(&tx, &call.parent_instruction, human)?;
         let viable: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM turns WHERE id=?1 AND status IN ('running','completed'))",
@@ -1081,8 +1123,13 @@ impl Store {
         } else {
             d.body.chars().take(16000).collect()
         };
+        let status = if progress {
+            "Worker reported progress and left this dependency open."
+        } else {
+            "Worker-declared current completed coverage."
+        };
         let text = format!(
-            "Selected local session dependency returned. This is session-authored evidence, not a new human instruction or independent proof of completion. Local request: {}. Helper instruction: {}. Canonical result: {}. Worker-declared current completed coverage.\n\n{}",
+            "Selected local session dependency returned. This is session-authored evidence, not a new human instruction or independent proof of completion. Local request: {}. Helper instruction: {}. Canonical result: {}. {status}\n\n{}",
             call.id, helper.id, result_id, result_text
         );
         let source = SourceInput {
@@ -1090,7 +1137,7 @@ impl Store {
             tribu_source: None,
             transcription: None,
             channel: "local-session-result".into(),
-            event_id: call.id.clone(),
+            event_id: event,
             update_id: None,
             human_id: human,
             target_sessions: vec![parent.target_session],
@@ -1115,7 +1162,10 @@ impl Store {
             [&result_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let author = json!({"kind":"session_result","session":helper.target,"native_thread":result_native,"native_turn":result_turn,"parent_instruction":call.parent_instruction,"local_request":call.id,"canonical_result":result_id,"authorized_human":human});
+        let mut author = json!({"kind":"session_result","session":helper.target,"native_thread":result_native,"native_turn":result_turn,"parent_instruction":call.parent_instruction,"local_request":call.id,"canonical_result":result_id,"authorized_human":human});
+        if progress {
+            author["dependency_status"] = json!("progress");
+        }
         if route.is_some() {
             crate::interaction::local_claude_packet(&i, &author)?;
         }
@@ -1123,12 +1173,14 @@ impl Store {
             "INSERT INTO interaction_session_authors VALUES(?1,?2)",
             params![i.input_id, author.to_string()],
         )?;
-        call.return_instruction = Some(i.id.clone());
-        call.phase = "returned".into();
-        tx.execute(
-            "UPDATE interaction_session_requests SET phase='returned',doc=?2 WHERE id=?1",
-            params![call.id, serde_json::to_string(&call)?],
-        )?;
+        if !progress {
+            call.return_instruction = Some(i.id.clone());
+            call.phase = "returned".into();
+            tx.execute(
+                "UPDATE interaction_session_requests SET phase='returned',doc=?2 WHERE id=?1",
+                params![call.id, serde_json::to_string(&call)?],
+            )?;
+        }
         if closed.is_some_and(|c| c.is_cancelled()) {
             return Err(anyhow!(
                 "Explicit local return request closed before commit"
