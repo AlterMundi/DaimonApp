@@ -246,7 +246,12 @@ def uncertain_topic(binary):
         j.wait(lambda:len(j.creation_outputs)==4)
         j.idle()
         assert j.topic_calls==1 and j.row('SELECT count(*) FROM interaction_enrollments')==[(0,)]
-        assert j.row('SELECT count(*) FROM interaction_sources WHERE update_id=?',(original,))==[(0,)]
+        assert j.row("""SELECT count(*) FROM interaction_instructions i
+                        JOIN interaction_sources x ON x.id=i.input_id
+                        JOIN sessions destination ON destination.id=i.session_id
+                       WHERE x.update_id=? AND destination.thread_id!=1""", (original,)) == [(0,)]
+        assert j.row("""SELECT count(*) FROM interaction_sources
+                       WHERE update_id=? AND json_array_length(doc,'$.target_sessions')>0""", (original,)) == [(0,)]
         assert j.row("SELECT phase FROM interaction_creations")==[('uncertain',)]
         j.stop();j.start()
         j.command('/interaction status','Interaction status',topic=1)
