@@ -1,12 +1,64 @@
-# ACP coverage for Gateway
+# Gateway harness capability inventory
 
-ACP is the preferred connector where the selected adapter passes the same
-Gateway contract as the native connector. This inventory scores operation
-families used by the native routes at `3b2405a5`. It is a source comparison,
-with one equally weighted row per family and per harness. Request volume and
-receiving acceptance require separate measurement. The count excludes Gateway
-and TeleDaimon work that has no harness RPC, such as topic selection, retained
-originals, signed Matrix routes, dependency returns and Telegram receipts.
+This is the maintained inventory for harness compatibility in Daimon. Its scope
+is the union of capabilities across the supported and candidate harnesses.
+The original Telecodex integration provides the Codex baseline. Other harnesses
+add features to the inventory when those features appear in upstream releases
+or in observed native behavior.
+
+Use ACP when the exact adapter preserves the native operation and its
+semantics. Otherwise retain a supported native protocol, CLI operation or
+explicit entry point into the native session. A connector can expose different
+operations over different transports. Gateway still owns one logical topic,
+one dispatch decision for an original and one journal of receipts. A native
+entry point is only available when it can use the correct account and session
+without creating a competing writer. If a provider exposes a feature only in
+its own app, record the limitation and the useful native access separately
+from Daimon surface support.
+
+Treat a missing feature as a gap in the selected Gateway route, the adapter or
+the harness protocol only after checking where it diverges. Keep advertised,
+fixture-qualified and live evidence distinct. Record the harness and adapter
+versions, operation, receiving surface and evidence when updating a row.
+Keep the already working path until its replacement demonstrates the same
+behavior, including recovery after lost acknowledgements.
+
+## Harness-specific capabilities and native routes
+
+These additions complement the workflow coverage below. A documented native
+operation is a candidate to support, even when the current Gateway pilot is
+limited to ordinary text. Features that only appear in a vendor interface
+remain part of the inventory.
+
+| Harness | Connector used or being qualified | Capabilities to preserve and next comparison |
+| --- | --- | --- |
+| Codex | Native App Server in use. Codex ACP is a candidate for equivalent operations. | Keep exact-turn steering, native goals and accounting, quota windows, questions and approvals, side chats, review, thread fork, worktrees and native MCP/tool inventory. Compare ACP against the existing authenticated App Server route by operation. [App Server](https://developers.openai.com/blog/codex-as-a-platform) · [Native remote work](https://developers.openai.com/blog/mastering-codex-remote-for-engineering) · [Codex ACP](https://github.com/agentclientprotocol/codex-acp) |
+| Claude Code | Native Agent SDK and OAuth in use. Claude ACP is a candidate for equivalent operations. | Preserve the interactive terminal entry point for experimental Code Mode. Verify whether any selected ACP version can enable it and keep its permission, tool and output semantics. Keep native goal and quota operations, tool/skill discovery, plugins, hooks and subagent controls in the inventory. Agent SDK availability, terminal availability and Daimon projection require separate checks. [Code Mode](https://code.claude.com/docs/en/code-mode) · [Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp) |
+| Antigravity | The installed CLI serves topic sessions through `agy acp`. | Verified text, model/effort and exact session load. The installed handshake advertises images, embedded context and session resume. Google also documents in-turn prompting over ACP. Qualify these on Gateway before reaching for another connector. Inventory native workspace edits, shell, plans, plugins, side questions, projects, remote-agent and structured headless output. Compare the terminal and headless interfaces where ACP lacks a faithful operation. [ACP](https://antigravity.google/docs/cli/acp) · [Release history](https://antigravity.google/docs/changelog) · [Headless](https://antigravity.google/docs/cli/headless/) |
+| Goose | Native `goose acp` in the Rust pilot. | Preserve recipes, extension management, session inspection, configured models and the native scheduler controls. Goose also offers a scheduler-enabled ACP mode. Check the existing contract before introducing a native connector. Native schedule execution belongs to Goose when explicitly selected. [Goose ACP](https://github.com/aaif-goose/goose/blob/main/documentation/docs/gdk/acp/index.md) · [Goose CLI](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/goose-cli-commands.md) |
+| Qwen Code | Native `qwen --acp` tested in isolation. | Compare the direct CLI/SDK for structured output, tool discovery and plan controls. Evaluate `qwen serve` where HTTP event and workspace lifecycles help. Its agent execution itself goes through Qwen's ACP bridge, so the daemon alone does not close an ACP adapter gap. Preserve the selected Singapore Token Plan route. [Qwen architecture](https://qwenlm.github.io/qwen-code-docs/en/developers/architecture/) · [TypeScript SDK](https://qwenlm.github.io/qwen-code-docs/en/developers/sdk-typescript/) |
+| MiniMax Code | ACP fixture and exact native resume are recorded. Subscription-backed pilot remains open. | The CLI and SDK offer `mcode exec` for direct stream and resume comparison. Inventory terminal tools and skills separately from desktop-only features. Verify the selected payer and explain extra observed provider calls before adoption. [MiniMax Code source and connectors](https://github.com/MiniMax-AI/minimax-code) |
+| Muse Code | Native MSP is the first candidate; Muse ACP remains experimental. | Preserve stable command IDs, resume/replay, steering and interruption, approvals, model selection, native goals and lifecycle events. The local echo test proves a prompt round trip. The selected Meta login remains unverified on ITACA. [MSP](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) · [Muse ACP](https://meta-models.github.io/muse-code-sdk/1.4/guides/editors-acp/) |
+
+## Selecting a harness for a new topic
+
+A topic record retains the selected harness, account, workspace and native
+session. An explicitly chosen harness takes precedence. As a future owner
+workflow, the integrating conversation can recommend or select an eligible
+harness at topic creation using this inventory and the receiving body's actual
+configuration. Base the recommendation on the work's required capabilities and
+known availability. Ask the human when two reasonable choices involve a material
+tradeoff, or when choosing would change the account, billing or privacy terms.
+Retain the reason so the choice can be revised. Rebinding a live topic uses its
+continuity contract and keeps the old native history available. This selection
+workflow is a roadmap item.
+
+## ACP fit for the incumbent native operations
+
+The following comparison scores the operation families used by Codex and
+Claude native routes at `3b2405a5`, one equally weighted row per family and
+per harness. Request volume and receiving acceptance require separate
+measurement. Gateway work without a harness RPC is outside this count.
 
 | Operation family | Codex | Claude Code | ACP path or native requirement |
 | --- | --- | --- | --- |

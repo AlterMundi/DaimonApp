@@ -15,6 +15,15 @@ The [product roadmap](docs/interaction-roadmap.md) retains the pending separatio
 of the app/backend from Telegram-specific support. Renaming does not imply that
 this refactor or a store publication has happened.
 
+### Harness compatibility
+
+Daimon preserves the capabilities of the harness you choose for a topic. We use
+ACP for operations it can carry faithfully and keep a supported native
+connector or native entry point for the rest. The
+[harness capability inventory](adapters/acp/gateway-coverage.md) records
+what each harness adds, which surfaces expose it, and what we have verified.
+A topic can use the harness whose strengths suit its work.
+
 <br />
 
 <div align="center">
