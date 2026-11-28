@@ -68,7 +68,7 @@ pub(super) fn interview_target_allowed_on(
     Ok(!protected)
 }
 
-fn instruction_on(conn: &Connection, id: &str, human: i64) -> Result<Instruction> {
+pub(super) fn instruction_on(conn: &Connection, id: &str, human: i64) -> Result<Instruction> {
     let (raw,phase):(String,String)=conn.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE i.id=?1 AND s.human_id=?2",params![id,human],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let mut i: Instruction = serde_json::from_str(&raw)?;
     i.phase = phase.as_str().try_into()?;
@@ -230,7 +230,7 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
     Ok(true)
 }
 
-fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
+pub(super) fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM turns t
             JOIN sessions s ON s.id=t.session_id

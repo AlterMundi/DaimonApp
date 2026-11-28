@@ -211,22 +211,146 @@ fn eligible_on(conn: &Connection, human: i64, entry: SessionKey, value: &Value) 
     {
         bail!("Goal-control binding, permission, deadline or writer availability changed");
     }
+    let original = &d["original"];
+    if original["relay"].is_object() {
+        let reference = serde_json::from_value(original["input_ref"].clone())?;
+        let (source, relay) = relayed_source_on(conn, human, entry, target, &reference)?
+            .context("Exact goal relay authority changed")?;
+        if relay != original["relay"]
+            || serde_json::to_value(&source)? != original["source"]
+            || serde_json::to_value(super::dialogue::original_order_on(conn, &source)?)?
+                != original["capture_order"]
+        {
+            bail!("Exact goal relay authority changed");
+        }
+    }
     Ok(())
 }
+/// An integrator may interpret the original accepted in this selected work
+/// topic only through its exact, still-pending first-hop dependency receipt.
+fn relayed_source_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    target: SessionKey,
+    reference: &InputReference,
+) -> Result<Option<(crate::interaction::SourceInput, Value)>> {
+    let Some(update) = reference.update().filter(|_| entry != target) else {
+        return Ok(None);
+    };
+    let mut stmt = conn.prepare(
+        "SELECT r.id,p.id,i.id,x.channel
+         FROM interaction_direct_parents direct
+         JOIN interaction_instructions p ON p.id=direct.instruction
+         JOIN interaction_sources x ON x.id=p.input_id
+         JOIN interaction_session_requests r ON r.parent_instruction=p.id AND r.human_id=x.human_id
+         JOIN interaction_instructions i ON i.id=r.target_instruction
+         JOIN interaction_session_authors a ON a.input_id=i.input_id
+         JOIN sessions e ON e.id=i.session_id
+         JOIN native_input_receipts n ON n.update_id=x.update_id
+           AND n.native_thread=json_extract(p.doc,'$.native_thread')
+           AND n.native_turn=json_extract(p.doc,'$.native_turn')
+         WHERE x.update_id=?1 AND x.human_id=?2 AND x.channel LIKE 'telegram:%'
+           AND x.origin_chat=?3 AND x.origin_thread=?4
+           AND r.caller_chat=?3 AND r.caller_topic=?4
+           AND e.chat_id=?5 AND e.thread_id=?6 AND e.creator_user_id=?2
+           AND p.phase='accepted' AND i.phase='accepted' AND r.phase='requested'
+           AND json_extract(a.doc,'$.kind')='session_request'
+           AND json_extract(a.doc,'$.local_request')=r.id
+           AND json_extract(a.doc,'$.parent_instruction')=p.id
+           AND json_extract(a.doc,'$.authorized_human')=?2
+           AND json_extract(a.doc,'$.human_parent.input_ref')=?1
+           AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals w WHERE w.parent_instruction=p.id)
+         ORDER BY r.id LIMIT 2",
+    )?;
+    let candidates = stmt
+        .query_map(
+            params![
+                update,
+                human,
+                target.chat_id,
+                target.thread_id,
+                entry.chat_id,
+                entry.thread_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let [(request, parent, received, channel)] = candidates.as_slice() else {
+        return Ok(None);
+    };
+    let original = super::session_requests::instruction_on(conn, parent, human)?;
+    let relay = super::session_requests::instruction_on(conn, received, human)?;
+    if original.target != target
+        || relay.target != entry
+        || !super::session_requests::current_bound_turn_on(conn, &original)?
+        || !super::session_requests::current_bound_turn_on(conn, &relay)?
+    {
+        return Ok(None);
+    }
+    let (source, message) = super::dialogue::original_owned_on(
+        conn,
+        target,
+        human,
+        original
+            .native_thread
+            .as_deref()
+            .context("Relay original native binding missing")?,
+        reference,
+        channel,
+        false,
+    )?;
+    if message
+        .as_ref()
+        .and_then(|m| m.from.as_ref())
+        .is_none_or(|u| u.is_bot)
+    {
+        bail!("Actual human input required");
+    }
+    Ok(Some((
+        source,
+        json!({"request":request,"parent":parent,"received":received}),
+    )))
+}
+
 fn source_on(
     conn: &Connection,
     actor: &LiveTaskActor<'_>,
     reference: &InputReference,
+    target: Option<SessionKey>,
 ) -> Result<Value> {
-    let (source, message) = super::dialogue::original_on(
-        conn,
-        actor.key,
-        actor.human,
-        actor.native,
-        reference,
-        "",
-        false,
-    )?;
+    let relay = match target.filter(|_| actor.integrator) {
+        Some(target) => relayed_source_on(conn, actor.human, actor.key, target, reference)?,
+        None => None,
+    };
+    let (source, message, scope) = if let Some((source, scope)) = relay {
+        super::matrix::unclaimed_on(
+            conn,
+            actor.human,
+            &source.channel,
+            &source.event_id,
+            source.update_id,
+        )?;
+        (source, None, Some(scope))
+    } else {
+        let (source, message) = super::dialogue::original_on(
+            conn,
+            actor.key,
+            actor.human,
+            actor.native,
+            reference,
+            "",
+            false,
+        )?;
+        (source, message, None)
+    };
     if message
         .as_ref()
         .is_some_and(|m| m.from.as_ref().is_none_or(|u| u.is_bot))
@@ -238,11 +362,17 @@ fn source_on(
     }
     let order = super::dialogue::original_order_on(conn, &source)?
         .context("Original capture chronology unavailable")?;
-    let routed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4) OR EXISTS(SELECT 1 FROM conversation_decisions WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",params![actor.human,reference.update(),reference.event(),reference],|r|r.get(0))?;
+    let routed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources x WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))
+      AND NOT (?5 IS NOT NULL AND EXISTS(SELECT 1 FROM interaction_direct_parents d JOIN interaction_instructions i ON i.id=d.instruction WHERE i.id=?5 AND i.input_id=x.id)
+        AND NOT EXISTS(SELECT 1 FROM interaction_instructions competing WHERE competing.input_id=x.id AND competing.id<>?5))) OR EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4) OR EXISTS(SELECT 1 FROM conversation_decisions WHERE human_id=?1 AND json_extract(doc,'$.source_input')=?3)",params![actor.human,reference.update(),reference.event(),reference,scope.as_ref().and_then(|v|v["parent"].as_str())],|r|r.get(0))?;
     if routed {
         bail!("Original input already has a selected route, creation or answer");
     }
-    Ok(json!({"input_ref":reference,"capture_order":order,"source":source}))
+    let mut value = json!({"input_ref":reference,"capture_order":order,"source":source});
+    if let Some(scope) = scope {
+        value["relay"] = scope;
+    }
+    Ok(value)
 }
 fn claim_source_on(conn: &Connection, human: i64, source: &Value, id: &str) -> Result<()> {
     let reference: InputReference = serde_json::from_value(source["input_ref"].clone())?;
@@ -535,21 +665,25 @@ impl Store {
                     params![actor.human, if reference.update().is_some() { "telegram" } else { "conversation" }, reference.event()],
                     |r| r.get(0),
                 )?;
-                let (source, _) = super::dialogue::original_owned_on(
-                    &tx,
-                    actor.key,
-                    actor.human,
-                    actor.native,
-                    reference,
-                    "",
-                    false,
-                )?;
-                let order = super::dialogue::original_order_on(&tx, &source)?;
-                if held != id
-                    || d["original"]["source"] != serde_json::to_value(source)?
-                    || d["original"]["capture_order"] != serde_json::to_value(order)?
-                {
+                if held != id || d["original"]["input_ref"] != serde_json::to_value(reference)? {
                     bail!("Original goal authority changed");
+                }
+                if !d["original"]["relay"].is_object() {
+                    let (source, _) = super::dialogue::original_owned_on(
+                        &tx,
+                        actor.key,
+                        actor.human,
+                        actor.native,
+                        reference,
+                        "",
+                        false,
+                    )?;
+                    let order = super::dialogue::original_order_on(&tx, &source)?;
+                    if d["original"]["source"] != serde_json::to_value(source)?
+                        || d["original"]["capture_order"] != serde_json::to_value(order)?
+                    {
+                        bail!("Original goal authority changed");
+                    }
                 }
                 let mut revised = d.clone();
                 revised["objective_validation_repair"] = json!({
@@ -579,7 +713,9 @@ impl Store {
             }
             return Ok((value, false));
         }
-        let source = reference.map(|r| source_on(&tx, actor, r)).transpose()?;
+        let source = reference
+            .map(|r| source_on(&tx, actor, r, Some(target)))
+            .transpose()?;
         if let (Some(followup), Some(source)) = (&plan.followup, &source) {
             if !source["source"]["text"]
                 .as_str()
@@ -639,7 +775,7 @@ impl Store {
             bail!("Proposal is no longer awaiting a decision");
         }
         eligible_on(&tx, actor.human, actor.key, &value)?;
-        let source = source_on(&tx, actor, reference)?;
+        let source = source_on(&tx, actor, reference, None)?;
         if source["capture_order"].as_i64() <= d["proposal_capture_barrier"].as_i64() {
             bail!("Confirmation was captured before this proposal existed");
         }
