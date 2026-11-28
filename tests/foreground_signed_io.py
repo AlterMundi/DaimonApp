@@ -514,7 +514,7 @@ timeout_seconds=5
                         self._conversation_attachments(journey, provider)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1":
-                        self._telegram_codex_handoff(journey, provider)
+                        self._telegram_codex_handoff(journey, provider, profile)
                         return
                     if telegram_topic:
                         adapter = subprocess.Popen(
@@ -537,7 +537,7 @@ timeout_seconds=5
                             elif skill_refresh:
                                 self._telegram_skill_refresh(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF") == "1":
-                                self._telegram_codex_handoff(journey, provider)
+                                self._telegram_codex_handoff(journey, provider, profile)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -804,7 +804,7 @@ timeout_seconds=5
             self.assertEqual(journey.telegram_methods, [])
             self.assertEqual(journey.rpc, [])
 
-        def _telegram_codex_handoff(self, journey, provider):
+        def _telegram_codex_handoff(self, journey, provider, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
             provider.expected_codex_handoff = {
                 "native": codex,
@@ -869,24 +869,30 @@ timeout_seconds=5
                 provider.paired_human = False
                 provider.routed_paired_human = 100
                 provider.human_original = str(uuid.uuid4())
-                update, _ = browser.text(provider.original, reply=destination,
-                                         original_id=provider.human_original)
-                def attempt():
-                    return journey.row(
-                        "SELECT i.phase,t.status,t.native_thread_id FROM interaction_instructions i "
-                        "JOIN interaction_sources s ON s.id=i.input_id "
-                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
-                        (update,),
+                def submit(answer):
+                    update, _ = browser.text(provider.original, reply=destination,
+                                             original_id=provider.human_original)
+
+                    def attempt():
+                        return journey.row(
+                            "SELECT i.phase,t.status,t.native_thread_id FROM interaction_instructions i "
+                            "JOIN interaction_sources s ON s.id=i.input_id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                            (update,),
+                        )
+                    journey.wait(
+                        lambda: provider.failure or (attempt() and attempt()[0][1] != "running"),
+                        seconds=35,
                     )
-                journey.wait(lambda: provider.failure or (attempt() and attempt()[0][1] != "running"),
-                             seconds=30)
-                if not provider.failure:
+                    self.assertIsNone(provider.failure)
                     self.assertEqual(attempt()[0][:2], ("accepted", "completed"), browser.status(update))
-                self.assertIsNone(provider.failure)
-                journey.wait(lambda: any(
-                    ANSWER in item.get("preview", "")
-                    for item in browser.get("/api/interaction")["items"]
-                ), seconds=20)
+                    journey.wait(lambda: any(
+                        answer in item.get("preview", "")
+                        for item in browser.get("/api/interaction")["items"]
+                    ), seconds=20)
+                    return update, attempt()[0][2]
+
+                update, _ = submit(ANSWER)
             else:
                 provider.human_original = str(journey.sequence + 1)
                 update = journey.admit(provider.original, topic=7)
@@ -901,6 +907,33 @@ timeout_seconds=5
             self.assertNotEqual(provider.codex_handoff_native, codex)
             self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
                              [(codex,)])
+            claude_answer = ANSWER
+            if os.environ.get("FOREGROUND_TEST_CLAUDE_COLD_PROJECT") == "1":
+                self.assertTrue(verified_roundtrip)
+                journey.idle()
+                provider.previous_session = provider.codex_handoff_native
+                fixture_home = Path(json.loads(profile.read_text())["configurationDirectory"])
+                transcripts = list((fixture_home / "projects").rglob(provider.previous_session + ".jsonl"))
+                self.assertEqual(len(transcripts), 1)
+                transcript = transcripts[0]
+                original_bytes = transcript.read_bytes()
+                retained = transcript.with_suffix(".unavailable")
+                transcript.rename(retained)
+
+                del provider.expected_codex_handoff
+                provider.expected_recovered_history = provider.original
+                provider.original = "Continue the selected project after losing local history."
+                provider.human_original = str(uuid.uuid4())
+                claude_answer = "I recovered the retained design context."
+                before_calls = len(provider.calls)
+                _, recovered_native = submit(claude_answer)
+                self.assertNotEqual(recovered_native, provider.previous_session)
+                self.assertFalse(transcript.exists())
+                self.assertEqual(retained.read_bytes(), original_bytes)
+                self.assertEqual(provider.calls[before_calls:], [provider.current])
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                provider.codex_handoff_native = recovered_native
+                del provider.expected_recovered_history
             if os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP") != "1":
                 return
 
@@ -932,6 +965,50 @@ timeout_seconds=5
                 journey.routing = True
                 browser, destination = selected_browser()
 
+            if os.environ.get("FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL") == "1":
+                self.assertTrue(verified_roundtrip)
+                fallback = journey.handle_extra_rpc
+                rejected_resumes = []
+
+                def missing_native_history(message, send):
+                    if (message.get("method") == "thread/resume"
+                            and message["params"]["threadId"] == codex):
+                        rejected_resumes.append(codex)
+                        send({"id": message["id"], "error": {
+                            "code": -32600, "message": f"no rollout found for thread id {codex}",
+                        }})
+                        return True
+                    return fallback(message, send)
+
+                journey.handle_extra_rpc = missing_native_history
+                offset = len(journey.rpc)
+                prompt = "Continue the selected project in Codex."
+                original, _ = browser.text(prompt, reply=destination)
+
+                def retained_unsent():
+                    return journey.row(
+                        "SELECT i.phase FROM interaction_sources s "
+                        "JOIN interaction_instructions i ON i.input_id=s.id WHERE s.event_id=?",
+                        (original,),
+                    ) == [("retained_unsent",)]
+
+                journey.wait(retained_unsent, seconds=25)
+                receipt = browser.status(original)
+                self.assertEqual(receipt["text"], prompt)
+                self.assertFalse(receipt["retired"])
+                self.assertEqual(receipt["routing"]["phase"], "retained_unsent")
+                self.assertEqual(rejected_resumes, [codex])
+                self.assertFalse([
+                    rpc["method"] for rpc in journey.rpc[offset:]
+                    if rpc.get("method") in ("thread/start", "turn/start", "turn/steer")
+                ])
+                self.assertEqual(journey.row(
+                    "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
+                ), [(codex,)])
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(provider.calls, calls_before_switch)
+                return
+
             def native_start(original):
                 offset = len(journey.rpc)
                 if browser:
@@ -949,7 +1026,7 @@ timeout_seconds=5
                 self.assertEqual(len(request["input"]), 1)
                 if browser:
                     self.assertNotIn(claude_prompt, request["input"][0]["text"])
-                    self.assertNotIn(ANSWER, request["input"][0]["text"])
+                    self.assertNotIn(claude_answer, request["input"][0]["text"])
                     item = "codex-return-" + original_id
                     answer = "Owned Codex answer for " + original
                     journey.answer_worker(7, answer, item=item)
@@ -973,9 +1050,15 @@ timeout_seconds=5
             self.assertTrue(fragments, "The resumed Codex turn received no Claude context")
             self.assertTrue(all(f["kind"] == "untrusted" and f["name"] == "gateway_history" for f in fragments))
             seed = json.loads("".join(f["value"] for f in fragments))
-            self.assertEqual(seed["ownedExchanges"]["human"], claude_prompt)
-            self.assertIn(ANSWER, seed["ownedExchanges"]["assistant"])
-            self.assertEqual(seed["ownedExchanges"]["nativeThread"], provider.codex_handoff_native)
+            exchange = seed["ownedExchanges"]
+            if claude_answer != ANSWER:
+                first, exchange = exchange["exchanges"]
+                self.assertEqual(first["nativeThread"], provider.previous_session)
+                self.assertEqual(first["human"], "Continue our existing design from the Codex exchange.")
+                self.assertIn(ANSWER, first["assistant"])
+            self.assertEqual(exchange["human"], claude_prompt)
+            self.assertIn(claude_answer, exchange["assistant"])
+            self.assertEqual(exchange["nativeThread"], provider.codex_handoff_native)
             if verified_roundtrip:
                 recovered = json.loads(seed["projectCheckpoint"])
                 for key, expected in provider.expected_verified_checkpoint.items():

@@ -90,10 +90,24 @@ receipt.
 The signed loopback test uses the existing
 `FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP` and
 `FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP` profile with
-`FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP=1`. It checks the selected
-revision and both receipt outcomes in actual Claude provider input and
-Codex historical context. Its provider and Codex peer are fixtures. Live
-adoption remains separate.
+`FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP=1`. It checks three selected
+repositories from two projects and both receipt outcomes in actual Claude
+provider input and Codex historical context. Add
+`FOREGROUND_TEST_CLAUDE_COLD_PROJECT=1` to move the exact preceding Claude
+transcript out of the fixture's native history directory. A new paired-human
+input must recover in a distinct native session, with the same selected
+revisions and effect receipts, one loopback provider call, and no duplicate
+dispatch of the original effects. The run then verifies that the existing
+Codex session can read both retained Claude exchanges and the same checkpoint.
+The fixture uses Claude Code 2.1.332 and Agent SDK 0.3.332 with a loopback
+provider and a synthetic Codex peer. Live adoption remains separate.
+
+Add `FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL=1` to that profile to return
+Codex Core's missing-rollout error on the exact saved thread. The original
+stays retained and unsent. The test checks that Gateway preserves the native
+binding and dispatches neither a fresh thread nor a turn. A supported cold
+continuation into Codex still needs to preserve both the logical topic
+generation and old native lineage before sending a turn with the checkpoint.
 
 
 ## Holodeck topic-room catalogue
