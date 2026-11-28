@@ -714,13 +714,16 @@ pub(crate) fn native_claude_goal(text: &str) -> bool {
 }
 
 pub(crate) fn native_claude_goal_control(text: &str) -> bool {
-    let text = text.trim_end();
+    // Match String.trim() in Claude's command parser. A mismatch here could
+    // authorize a new goal condition as a clear on an uncertain writer.
+    let native_space = |c: char| c == '\u{feff}' || (c.is_whitespace() && c != '\u{0085}');
+    let text = text.trim_end_matches(native_space);
     text == "/goal"
         || text.strip_prefix("/goal ").is_some_and(|argument| {
-            matches!(
-                argument.trim(),
-                "clear" | "stop" | "off" | "reset" | "none" | "cancel"
-            )
+            let command = argument.trim_matches(native_space);
+            ["clear", "stop", "off", "reset", "none", "cancel"]
+                .iter()
+                .any(|alias| command.eq_ignore_ascii_case(alias))
         })
 }
 
@@ -1101,6 +1104,29 @@ pub fn worker_result(text: &str) -> (&str, Option<Coverage>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_claude_goal_inspection_and_clear_use_the_selected_session() {
+        for text in [
+            "/goal",
+            "/goal clear",
+            "/goal  Clear ",
+            "/goal CANCEL",
+            "/goal \u{feff}Clear",
+        ] {
+            assert!(native_claude_goal_control(text), "{text}");
+        }
+        for text in [
+            "/goal pause",
+            "/goal RESUME",
+            "/goal \u{0085}Clear",
+            "/goal Clear\u{0085}",
+            "/goal clear once the last test passes",
+            "Show me /goal clear",
+        ] {
+            assert!(!native_claude_goal_control(text), "{text}");
+        }
+    }
 
     #[test]
     fn only_deliberate_top_level_selectors_route() {
