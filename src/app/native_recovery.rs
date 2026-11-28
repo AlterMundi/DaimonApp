@@ -79,17 +79,25 @@ pub(super) async fn tick(app: &App) -> Result<()> {
                     }
                 }
             }
+            if exact.is_none() && !selected.anchor.is_empty() && selected.stop_before.as_deref()==Some(selected.anchor.as_str()) {
+                app.shared.store.native_collection_observed(&selected,&[],false)?;
+                return Ok(());
+            }
             let history=if let Some(exact)=&exact {
                 if app.shared.config.telegram.enabled && app.shared.config.interaction.as_ref().is_some_and(|c|c.human_id==selected.human && c.entry()==selected.key && c.telegram_projection) {
                     app.shared.store.topic_projection_register(selected.local,selected.human,selected.key)?;
                 }
                 app.shared.codex.workflow_return_history(&selected.native,&exact.physical).await.map(|turn|(vec![turn],false))
-            } else {app.shared.codex.recovery_history(
-                    &selected.native,
-                    &selected.anchor,
-                    selected.client_id.as_deref(),
-                )
-                .await};
+            } else {
+                let scoped = if let Some(stop)=selected.stop_before.as_deref().filter(|_| !selected.anchor.is_empty()) {
+                    app.shared.codex.scoped_recovery_history(&selected.native,&selected.anchor,Some(stop)).await
+                } else {Ok(None)};
+                match scoped {
+                    Ok(Some(history)) => Ok(history),
+                    Ok(None) => app.shared.codex.recovery_history(&selected.native,&selected.anchor,selected.client_id.as_deref()).await,
+                    Err(error) => Err(error),
+                }
+            };
             match history {
                 Ok((turns, goal_active)) => {
                     let observed = app.shared.store.native_collection_observed(

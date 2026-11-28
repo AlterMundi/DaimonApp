@@ -14,6 +14,7 @@ from goals_io import Goals
 class Recovery(Goals):
     def __init__(self, binary):
         self.history = {}
+        self.recovery_item_reads = []
         self.sockets = {}
         self.lose_initial = False
         self.freeze_live = False
@@ -62,7 +63,26 @@ class Recovery(Goals):
             self.disconnect_writer()
             return True
         if method == 'thread/turns/list':
-            send({'id': message['id'], 'result': {'data': copy.deepcopy(self.history.get(p['threadId'], []))[::-1]}})
+            turns = self.history.get(p['threadId'], [])[::-1]
+            if p.get('itemsView') == 'notLoaded':
+                turns = [{**turn, 'items': []} for turn in turns]
+            limit = p.get('limit', 20)
+            start = int(p.get('cursor') or 0)
+            end = start + limit
+            send({'id': message['id'], 'result': {
+                'data': turns[start:end],
+                'nextCursor': str(end) if end < len(turns) else None}})
+            return True
+        if method == 'thread/items/list':
+            physical = p['turnId']
+            self.recovery_item_reads.append(physical)
+            turns = self.history.get(p['threadId'], [])
+            items = next(turn['items'] for turn in turns if turn['id'] == physical)
+            start = int(p.get('cursor') or 0)
+            end = start + 1
+            send({'id': message['id'], 'result': {
+                'data': [{'turnId': physical, 'item': item} for item in items[start:end]],
+                'nextCursor': str(end) if end < len(items) else None}})
             return True
         if method == 'turn/steer':
             turn = self.holding[p['threadId']]
@@ -244,21 +264,31 @@ def successor_control_boundary(binary):
             db.execute("UPDATE native_collections SET phase='boundary' WHERE local_turn=?", (new,))
         j.freeze_live = True
         j.complete('Successor canonical answer.')
+        history = j.history['native-topic-7']
+        anchor = history[0]
+        successor = history[1]
+        anchor['items'].append({'type': 'agentMessage', 'id': 'old-missed-answer',
+                                'phase': 'final_answer', 'text': 'Recovered older canonical answer.'})
+        history.extend({'id': f'unrelated-{n}', 'status': 'completed', 'items': []}
+                       for n in range(130))
+        history[-1]['items'] = [{'type': 'commandExecution', 'id': 'large-unrelated-command',
+                                 'aggregatedOutput': 'x' * (9 * 1024 * 1024)}]
         with sqlite3.connect(j.root/'state.sqlite') as db:
             db.execute("UPDATE native_collections SET phase='open',checked_at='' WHERE local_turn=?", (old,))
         j.wait(lambda: j.row('SELECT phase FROM native_collections WHERE local_turn=?', (old,)) == [('complete',)], seconds=30)
-        time.sleep(.5)
+        j.wait(lambda: j.exact('Recovered older canonical answer.') == 1)
+        assert j.recovery_item_reads == [anchor['id'], anchor['id']]
         assert j.row('SELECT status FROM turns WHERE id=?', (new,)) == [('running',)]
         assert j.exact('Successor canonical answer.') == 0
         # Its own real item event remains authoritative and must still deliver.
         j.freeze_live = False
-        turn = j.history['native-topic-7'][-1]
+        turn = successor
         j.broadcast('native-topic-7', 'item/completed', {'turnId': turn['id'], 'item': turn['items'][-1]})
         j.broadcast('native-topic-7', 'turn/completed', {'turn': {'id': turn['id'], 'status': 'completed'}})
         j.wait(lambda: j.exact('Successor canonical answer.') == 1)
         j.idle()
         assert j.native_turns == 2
-        print('PASS old direct observer cannot finalize a successor outside its accepted range; successor canonical event delivers once')
+        print('PASS large unrelated output and 130 later turns do not block exact recovery; successor output stays outside the old scope')
     finally:
         j.close()
 
