@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sqlite3
 import sys
+import threading
 from routing_io import Routing
 
 
@@ -315,6 +316,10 @@ def one_slot_deferred_return(binary):
         j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
         _,admitted=j.request()
         assert j.instructions(8)[0][1]=='queued' and 'native-topic-8' not in j.runs
+        # Keep the internal handoff queued beyond the human preparation notice.
+        threading.Event().wait(10.5)
+        assert j.instructions(8)[0][1]=='queued'
+        assert not j.has('native submission has not started', 1)
         j.defer(7)
         j.wait(lambda:j.instructions(8)[0][1]=='accepted')
         j.wait(lambda:j.row("SELECT t.status FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 ORDER BY t.id DESC LIMIT 1")==[('completed',)])
