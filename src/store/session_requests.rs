@@ -360,10 +360,10 @@ fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction
             && super::conversation_inputs::eligible_binding_on(conn, &original).is_ok());
     }
     if source.channel.starts_with("telegram:") {
-        return Ok(
-            super::routed_portable::telegram_original_epoch(conn, &source, parent.target)?
-                .is_some_and(|epoch| Some(epoch) == child.admission_epoch),
-        );
+        return Ok(super::routed_portable::telegram_original_epoch_for_parent(
+            conn, &source, parent,
+        )?
+        .is_some_and(|epoch| Some(epoch) == child.admission_epoch));
     }
     Ok(false)
 }

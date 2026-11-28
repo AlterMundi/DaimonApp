@@ -13,6 +13,26 @@ pub(super) fn telegram_original_epoch(
     source: &SourceInput,
     target: SessionKey,
 ) -> Result<Option<String>> {
+    telegram_original_epoch_on(conn, source, target, None)
+}
+
+pub(super) fn telegram_original_epoch_for_parent(
+    conn: &Connection,
+    source: &SourceInput,
+    parent: &Instruction,
+) -> Result<Option<String>> {
+    let accepted_turn = (parent.phase == Phase::Accepted && parent.native_turn.is_some())
+        .then_some(parent.local_turn)
+        .flatten();
+    telegram_original_epoch_on(conn, source, parent.target, accepted_turn)
+}
+
+fn telegram_original_epoch_on(
+    conn: &Connection,
+    source: &SourceInput,
+    target: SessionKey,
+    accepted_turn: Option<i64>,
+) -> Result<Option<String>> {
     let Some(update) = source.update_id else {
         return Ok(None);
     };
@@ -26,18 +46,18 @@ pub(super) fn telegram_original_epoch(
     {
         return Ok(None);
     }
-    let retained: Option<(String, String, String)> = conn
+    let retained: Option<(String, String, String, Option<i64>)> = conn
         .query_row(
-            "SELECT i.payload_json, e.value, i.status FROM incoming_updates i
+            "SELECT i.payload_json, e.value, i.status, i.turn_id FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          JOIN bot_state b ON b.key='telegram_identity'
          WHERE i.update_id=?1
            AND ?2='telegram:'||json_extract(b.value,'$.id')",
             params![update, source.channel],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((raw, epoch, status)) = retained else {
+    let Some((raw, epoch, status, retained_turn)) = retained else {
         return Ok(None);
     };
     let original: crate::telegram::Update = serde_json::from_str(&raw)?;
@@ -65,7 +85,13 @@ pub(super) fn telegram_original_epoch(
         return Ok(None);
     }
     if source.origin.thread_id == target.thread_id {
-        return Ok(matches!(status.as_str(), "processing" | "handled").then_some(epoch));
+        let accepted_parent = matches!(status.as_str(), "started" | "settled")
+            && accepted_turn.is_some()
+            && accepted_turn == retained_turn;
+        return Ok(
+            (matches!(status.as_str(), "processing" | "handled") || accepted_parent)
+                .then_some(epoch),
+        );
     }
     let origin = SessionKey::new(source.origin.chat_id, Some(source.origin.thread_id));
     let native: Option<String> = conn
@@ -1440,6 +1466,62 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_telegram_input_is_valid_only_for_its_exact_native_parent() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let source = SourceInput {
+            channel: "telegram:123".into(),
+            event_id: "41".into(),
+            update_id: Some(41),
+            human_id: 100,
+            target_sessions: vec![],
+            origin: crate::interaction::ReturnRoute {
+                chat_id: 100,
+                thread_id: 7,
+                message_id: Some(42),
+            },
+            text: "Coordinate the design.".into(),
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: None,
+        };
+        let conn = store.conn.lock().unwrap();
+        let raw = json!({"update_id":41,"direct_human_text":true,"message":{
+            "date":0,"message_id":42,"message_thread_id":7,
+            "from":{"id":100,"is_bot":false,"first_name":"Human"},
+            "chat":{"id":100,"type":"supergroup"},"text":source.text}});
+        conn.execute(
+            "INSERT INTO bot_state(key,value) VALUES('telegram_identity',?1),
+            ('stop_input_epoch:41','initial')",
+            [json!({"id":123}).to_string()],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,turn_id,updated_at)
+            VALUES(41,?1,'settled','fixture',46,'2026-11-28')", [raw.to_string()]).unwrap();
+        assert_eq!(telegram_original_epoch(&conn, &source, key).unwrap(), None);
+        assert_eq!(
+            telegram_original_epoch_on(&conn, &source, key, Some(45)).unwrap(),
+            None
+        );
+        assert_eq!(
+            telegram_original_epoch_on(&conn, &source, key, Some(46))
+                .unwrap()
+                .as_deref(),
+            Some("initial")
+        );
+        conn.execute(
+            "UPDATE incoming_updates SET status='undetermined' WHERE update_id=41",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            telegram_original_epoch_on(&conn, &source, key, Some(46)).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn claude_checkpoint_reads_a_direct_codex_exchange_from_the_same_owned_topic() {
