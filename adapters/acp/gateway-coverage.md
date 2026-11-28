@@ -207,9 +207,12 @@ identifies the receiving being in a fresh process and on resume.
 A real agy probe sent a second prompt while its first text turn was active.
 Both prompts completed in the same session, but the correction marker appeared
 only after the first prompt's terminal acknowledgement. This shows live
-same-session queueing for that action. Exact in-turn incorporation at a tool
-boundary, with receipts and reconnect behavior, still needs a direct
-comparison before Gateway advertises steer on this route.
+same-session queueing for that action. A separate probe sent the correction
+while a selected MCP tool was pending. The second request received JSON-RPC
+`-32603`, and the original turn completed with its original marker.
+The tested path therefore has no qualified in-turn receipt. Compare the
+specific provider and adapter versions at a tool boundary and after reconnect
+before advertising steer on this route.
 
 The real agy test reads an installed fixture skill, searches DMK and reads
 the selected original. The staged ITACA binding separately verifies the
