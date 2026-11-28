@@ -689,6 +689,10 @@ fn owned_history_seed_on(
     Ok(Some(seed))
 }
 
+fn agy_scope(workspace: &str) -> String {
+    format!("agy-cli/{:x}", Sha256::digest(workspace.as_bytes()))
+}
+
 impl Store {
     pub(crate) fn routed_portable_status(
         &self,
@@ -753,6 +757,28 @@ impl Store {
         )?;
         tx.commit()?;
         Ok((local, paired))
+    }
+
+    pub(crate) fn routed_agy_session(
+        &self,
+        local: i64,
+        body: &Value,
+        workspace: &str,
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT p.native_thread_id FROM turns p
+             JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
+             WHERE p.id<t.id AND p.execution_harness='antigravity'
+               AND p.execution_generation=t.execution_generation
+               AND p.execution_native_scope=?2 AND p.native_thread_id IS NOT NULL
+               AND json_extract(p.execution_body,'$.beingRef')=json_extract(?3,'$.beingRef')
+               AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?3,'$.embodimentId')
+               AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?3,'$.incarnationId')
+             ORDER BY p.id DESC LIMIT 1",
+            params![local, agy_scope(workspace), body.to_string()],
+            |row| row.get(0),
+        ).optional().context("Could not read the selected agy session")
     }
 
     pub(crate) fn routed_claude_continuations(
@@ -1113,8 +1139,15 @@ impl Store {
                 prepared["native_session_scope"]
                     .as_str()
                     .filter(|v| valid_claude_scope(v))
-                    .context("Routed native session scope missing")?,
+                    .context("Routed native session scope missing")?
+                    .to_owned(),
             )
+        } else if harness == Harness::Antigravity && prepared["adapter"] == "agy" {
+            Some(agy_scope(
+                prepared["workspace"]
+                    .as_str()
+                    .context("agy preparation omitted its workspace")?,
+            ))
         } else {
             None
         };
@@ -1918,6 +1951,51 @@ mod tests {
             claude_history_seed_on(&store.conn.lock().unwrap(), current, &body)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn agy_continuation_stays_in_its_topic_workspace_generation_and_incarnation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let topic = store
+            .ensure_session(SessionKey::new(100, Some(7)), 100, &defaults)
+            .unwrap();
+        let other = store
+            .ensure_session(SessionKey::new(100, Some(8)), 100, &defaults)
+            .unwrap();
+        let body = json!({"beingRef":"being","embodimentId":"body","incarnationId":"current"});
+        let retired = json!({"beingRef":"being","embodimentId":"body","incarnationId":"retired"});
+        let scope = agy_scope("/workspace/topic");
+        let record = |session: i64, generation: &str, scope: Option<&str>, identity: &Value| {
+            let native = Uuid::new_v4().to_string();
+            let conn = store.conn.lock().unwrap();
+            let local = conn.query_row(
+                "INSERT INTO turns (session_id,from_user_id,prompt,status,started_at,native_thread_id,
+                     execution_harness,execution_generation,execution_native_scope,execution_body)
+                 VALUES (?1,100,'fixture','completed','2026-11-28',?2,'antigravity',?3,?4,?5) RETURNING id",
+                params![session,&native,generation,scope,identity.to_string()], |r| r.get::<_, i64>(0),
+            ).unwrap();
+            (local, native)
+        };
+        let (_, expected) = record(topic.id, "current", Some(&scope), &body);
+        record(other.id, "current", Some(&scope), &body);
+        record(topic.id, "previous", Some(&scope), &body);
+        record(topic.id, "current", None, &body);
+        record(topic.id, "current", Some(&scope), &retired);
+        let (local, _) = record(topic.id, "current", None, &body);
+        assert_eq!(
+            store
+                .routed_agy_session(local, &body, "/workspace/topic")
+                .unwrap(),
+            Some(expected)
+        );
+        assert_eq!(
+            store
+                .routed_agy_session(local, &body, "/workspace/moved")
+                .unwrap(),
+            None
         );
     }
 

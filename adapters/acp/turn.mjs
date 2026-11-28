@@ -14,7 +14,7 @@ export function validateSessionId(value) {
 
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
-  unavailable, openFailure, allowLargeCommandList = false,
+  unavailable, openFailure, allowLargeCommandList = false, selectPermission,
 }) {
   if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_TEXT) {
     throw new TypeError('Invalid ACP foreground input');
@@ -65,9 +65,16 @@ export async function runAcpTurn({
         if (done) throw new Error('ACP closed before its response');
         if (typeof value.method === 'string') {
           if ('id' in value) {
-            await send({
-              id: value.id, error: { code: -32601, message: 'Client operation unavailable' },
-            });
+            if (value.method === 'session/request_permission' && selectPermission) {
+              const optionId = exposed && value.params?.sessionId === nativeSessionId
+                ? selectPermission(value.params) : undefined;
+              await send({ id: value.id, result: { outcome: optionId
+                ? { outcome: 'selected', optionId } : { outcome: 'cancelled' } } });
+            } else {
+              await send({
+                id: value.id, error: { code: -32601, message: 'Client operation unavailable' },
+              });
+            }
           } else if (value.method === 'session/update') {
             onUpdate?.(value.params);
           }

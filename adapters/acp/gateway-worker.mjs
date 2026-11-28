@@ -1,14 +1,16 @@
 import { once } from 'node:events';
-import { lstat } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mjs';
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
+import { runAntigravityTurn } from './antigravity-turn.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
 
-const SCHEMA = 'daimon-gateway.goose-turn/v1';
+const GOOSE_SCHEMA = 'daimon-gateway.goose-turn/v1';
+const AGY_SCHEMA = 'daimon-gateway.antigravity-turn/v2';
 const STATUS = 'daimon_status';
 const MEMORY = 'dmk_read_selected';
 const BINDING = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
@@ -119,6 +121,23 @@ async function serveMcp(binding) {
   }
 }
 
+async function gooseEnvironment(profile) {
+  const state = await lstat(profile.stateRoot);
+  if (!state.isDirectory() || state.uid !== process.getuid() || (state.mode & 0o077)) {
+    throw new Error('Private Goose state directory required');
+  }
+  const key = (await privateBytes(profile.providerKeyFile, 4096)).toString('utf8').trim();
+  if (!/^[!-~]+$/.test(key)) throw new Error('Invalid provider credential');
+  return {
+    HOME: profile.stateRoot, PATH: '/usr/bin:/bin',
+    XDG_CONFIG_HOME: join(profile.stateRoot, 'config'), XDG_DATA_HOME: join(profile.stateRoot, 'data'),
+    XDG_STATE_HOME: join(profile.stateRoot, 'state'), XDG_CACHE_HOME: join(profile.stateRoot, 'cache'),
+    GOOSE_PROVIDER: profile.provider, GOOSE_MODEL: profile.model, GOOSE_MAX_TURNS: '2',
+    [profile.provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY']: key,
+    ...(profile.providerPort ? { OPENAI_HOST: `http://127.0.0.1:${profile.providerPort}` } : {}),
+  };
+}
+
 async function main(path) {
   const stop = new AbortController();
   const deadline = setTimeout(() => stop.abort(), 125_000);
@@ -126,54 +145,60 @@ async function main(path) {
   const pipe = frames(process.stdin);
   try {
     const profile = JSON.parse(await privateBytes(path, 16 * 1024));
-    const fields = [
-      'binary', 'cwd', 'stateRoot', 'provider', 'model', 'providerKeyFile', 'matrixStatusCommand', 'body',
-    ];
+    const agy = profile?.adapter === 'agy';
+    const schema = agy ? AGY_SCHEMA : GOOSE_SCHEMA;
+    const fields = ['binary', 'cwd', 'model', 'matrixStatusCommand', 'body',
+      ...(agy ? ['adapter', 'home', 'effort'] : ['stateRoot', 'provider', 'providerKeyFile'])];
+    const absolute = value => typeof value === 'string' && isAbsolute(value);
+    if (agy && (!absolute(profile.home) || typeof profile.effort !== 'string' || !profile.effort)) {
+      throw new Error('Invalid Antigravity owner profile');
+    }
     if (profile && Object.hasOwn(profile, 'selectedMemory')) fields.push('selectedMemory');
     if (profile && Object.hasOwn(profile, 'providerPort')) fields.push('providerPort');
     if (!closed(profile, fields) || !validBinding(profile)
-        || ![profile.binary, profile.cwd, profile.stateRoot, profile.providerKeyFile]
-          .every(item => typeof item === 'string' && isAbsolute(item))
-        || !['openai', 'anthropic'].includes(profile.provider)
+        || ![profile.binary, profile.cwd].every(absolute)
+        || (!agy && (![profile.stateRoot, profile.providerKeyFile].every(absolute)
+          || !['openai', 'anthropic'].includes(profile.provider)))
         || (fields.includes('providerPort') && (profile.provider !== 'openai'
           || !Number.isInteger(profile.providerPort) || profile.providerPort < 1 || profile.providerPort > 65535))
         || typeof profile.model !== 'string' || !profile.model || profile.model.length > 128) {
-      throw new Error('Invalid Goose owner profile');
-    }
-    const state = await lstat(profile.stateRoot);
-    if (!state.isDirectory() || state.uid !== process.getuid() || (state.mode & 0o077)) {
-      throw new Error('Private Goose state directory required');
+      throw new Error('Invalid ACP owner profile');
     }
     const first = (await pipe.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body'])
-        || first.schema !== SCHEMA || first.type !== 'start'
+    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body',
+      ...(agy ? ['workspace', 'resumeNativeSessionId'] : [])])
+        || first.schema !== schema || first.type !== 'start'
         || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
         || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
         || !closed(first.body, BINDING) || !BINDING.every(key => first.body[key] === profile.body[key])) {
-      throw new Error('Invalid Goose foreground start');
+      throw new Error('Invalid ACP foreground start');
     }
-    const correlation = { schema: SCHEMA, inputId: first.inputId, sessionId: first.sessionId };
-    const key = (await privateBytes(profile.providerKeyFile, 4096)).toString('utf8').trim();
-    if (!/^[!-~]+$/.test(key)) throw new Error('Invalid provider credential');
-    const env = {
-      HOME: profile.stateRoot, PATH: '/usr/bin:/bin',
-      XDG_CONFIG_HOME: join(profile.stateRoot, 'config'), XDG_DATA_HOME: join(profile.stateRoot, 'data'),
-      XDG_STATE_HOME: join(profile.stateRoot, 'state'), XDG_CACHE_HOME: join(profile.stateRoot, 'cache'),
-      GOOSE_PROVIDER: profile.provider, GOOSE_MODEL: profile.model, GOOSE_MAX_TURNS: '2',
-      [profile.provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY']: key,
-    };
-    if (profile.providerPort) env.OPENAI_HOST = `http://127.0.0.1:${profile.providerPort}`;
+    if (agy && (first.workspace !== profile.cwd
+        || await realpath(profile.cwd) !== profile.cwd
+        || (first.resumeNativeSessionId !== null
+          && (typeof first.resumeNativeSessionId !== 'string' || !UUID.test(first.resumeNativeSessionId))))) {
+      throw new Error('Antigravity workspace or native session differs from the owner selection');
+    }
+    const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
+    const env = agy ? { HOME: profile.home, PATH: '/usr/bin:/bin' } : await gooseEnvironment(profile);
     const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
     const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand, selectedMemory };
     let providerUnavailable = false;
-    const outcome = await runGooseTurn({
+    const run = agy ? runAntigravityTurn : runGooseTurn;
+    const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
+      ...(agy ? { model: profile.model, effort: profile.effort,
+        nativeSessionId: first.resumeNativeSessionId ?? undefined,
+        allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : [])],
+      } : {}),
       mcpServers: [{ name: 'matrix', command: process.execPath,
         args: [fileURLToPath(import.meta.url), '--matrix-mcp'],
         env: [{ name: 'DAIMON_OBSERVATION', value: JSON.stringify(binding) }],
       }],
       toolNames: ['matrix__' + STATUS, ...(selectedMemory ? ['matrix__' + MEMORY] : [])], text: first.text,
       async beforeSubmit(nativeSessionId) {
+        if (agy && (!UUID.test(nativeSessionId)
+            || (first.resumeNativeSessionId && first.resumeNativeSessionId !== nativeSessionId))) return false;
         await observe(binding, stop.signal);
         if (profile.providerPort) {
           const socket = createConnection({ host: '127.0.0.1', port: profile.providerPort });
@@ -189,10 +214,11 @@ async function main(path) {
             socket.destroy();
           }
         }
-        await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId }, stop.signal);
+        await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId,
+          ...(agy ? { workspace: profile.cwd } : {}) }, stop.signal);
         const decision = (await pipe.next()).value;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
-            || decision.schema !== SCHEMA || decision.type !== 'submission_decision'
+            || decision.schema !== schema || decision.type !== 'submission_decision'
             || decision.inputId !== first.inputId || decision.sessionId !== first.sessionId
             || decision.committed !== true) return false;
         void pipe.next().then(() => stop.abort(), () => stop.abort());

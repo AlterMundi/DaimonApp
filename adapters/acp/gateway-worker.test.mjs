@@ -44,16 +44,16 @@ async function isolatedGooseProfile(root) {
   return key;
 }
 
-async function runWorker(t, profile, text, beforeDecision) {
+async function runWorker(t, profile, text, beforeDecision, agy) {
   const child = spawn(process.execPath, [worker, '--profile', profile], {
     env: {}, stdio: ['pipe', 'pipe', 'ignore'],
   });
   const finished = once(child, 'close');
   t.after(() => { child.kill('SIGKILL'); });
   const messages = frames(child.stdout);
-  const same = { schema: 'daimon-gateway.goose-turn/v1',
+  const same = { schema: agy ? 'daimon-gateway.antigravity-turn/v2' : 'daimon-gateway.goose-turn/v1',
     inputId, sessionId: '00000000-0000-4000-8000-000000000002' };
-  await writeFrame(child.stdin, { ...same, type: 'start', text, body });
+  await writeFrame(child.stdin, { ...same, type: 'start', text, body, ...agy });
   const first = (await messages.next()).value;
   if (beforeDecision === null) {
     assert.deepEqual(first, { ...same, type: 'outcome', outcome: first.outcome });
@@ -65,7 +65,8 @@ async function runWorker(t, profile, text, beforeDecision) {
   assert.notEqual(first.nativeSessionId, same.sessionId);
   const { nativeSessionId, ...correlation } = first;
   assert.ok(nativeSessionId);
-  assert.deepEqual(correlation, { ...same, type: 'prepare_submission' });
+  assert.deepEqual(correlation, { ...same, type: 'prepare_submission',
+    ...(agy ? { workspace: agy.workspace } : {}) });
   await writeFrame(child.stdin, {
     ...same, type: 'submission_decision', committed: beforeDecision(nativeSessionId),
   });
@@ -75,6 +76,32 @@ async function runWorker(t, profile, text, beforeDecision) {
   assert.deepEqual(await finished, [0, null]);
   return { nativeSessionId, outcome: settled.outcome };
 }
+
+test('agy foreground worker journals, uses its selected tool and resumes the same native session', {
+  skip: !process.env.AGY_TEST_AUTHENTICATED_BINARY, timeout: 90_000,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agy-gateway-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile.json');
+  await writeFile(profile, JSON.stringify({
+    adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
+    home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
+    matrixStatusCommand: await fixtureObservation(root), body,
+  }), { mode: 0o600 });
+  const start = { workspace: root, resumeNativeSessionId: null };
+  const withheld = await runWorker(t, profile, 'Keep this fixture unsent.', () => false, start);
+  assert.deepEqual(withheld.outcome, { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' });
+  const first = await runWorker(t, profile,
+    'Call the MCP tool daimon_status and reply with just its being_ref. Remember the marker jade-pocket.',
+    () => true, start);
+  assert.equal(first.outcome.phase, 'completed', first.outcome.reason);
+  assert.equal(first.outcome.text.trim(), 'fixture-being');
+  const resumed = await runWorker(t, profile, 'Reply with just the marker from the preceding message.',
+    id => { assert.equal(id, first.nativeSessionId); return true; },
+    { ...start, resumeNativeSessionId: first.nativeSessionId });
+  assert.equal(resumed.outcome.phase, 'completed', resumed.outcome.reason);
+  assert.equal(resumed.outcome.text.trim(), 'jade-pocket');
+});
 
 test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {
   skip: !binary,
