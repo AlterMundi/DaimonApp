@@ -177,12 +177,15 @@ CLAUDE_TEST_SDK_PATH=/absolute/sdk.mjs CLAUDE_TEST_NATIVE_BINARY=/absolute/claud
   node --test adapters/claude/interrupt.test.mjs
 ```
 
-The Gateway interruption path still terminates its managed worker and retains
-exposed work as uncertain. Using the native receipt to continue the same
-session requires a bounded worker cancellation exchange, validation of the
-original and queued IDs, and a matched terminal result. Queued messages with
-ambiguous receipts cannot be resubmitted automatically. An interrupt receipt
-does not pause a native goal or preserve provider-side goal accounting.
+For a paired topic turn that negotiates targeted interruption, Gateway gives
+the Claude worker four seconds to return an exact native receipt and the
+terminal result for the original. It checks every submitted steer against
+the cancelled IDs. A confirmed interruption retains the cancelled originals
+and selects the same session for the next eligible turn. Gateway retains
+uncertain effects if the native capabilities, complete receipt or terminal
+result are unavailable. A successful root answer remains visible when a
+submitted correction is unaccounted for, but normal resume on that thread
+stays fenced. Goal pause and provider-side goal accounting are separate.
 
 ### Topic continuity across harnesses
 

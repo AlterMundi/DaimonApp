@@ -658,6 +658,8 @@ async function main() {
     let observeAcceptance = false;
     let requireWork = false;
     let steeringSelected = false;
+    let interruptSelected = false;
+    const targetedInterrupt = new AbortController();
     let acceptingSteers = false;
     let steerClosed = false;
     let wakeSteering;
@@ -692,6 +694,13 @@ async function main() {
     async function receiveGatewayInput() {
       try {
         for await (const reply of input) {
+          if (interruptSelected && !targetedInterrupt.signal.aborted && reply.type === 'interrupt'
+              && closed(reply, ['schema', 'type', 'inputId', 'sessionId'])
+              && reply.schema === VERSION && reply.inputId === first.inputId && reply.sessionId === first.sessionId) {
+            acceptingSteers = false;
+            targetedInterrupt.abort();
+            continue;
+          }
           if (steeringSelected && reply.type === 'steer') {
             if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'id', 'text'])
               || reply.schema !== VERSION || reply.inputId !== first.inputId
@@ -763,7 +772,7 @@ async function main() {
       }
     }
     const outcome = await runClaudeTurn({
-      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
+      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions, interruptSignal: targetedInterrupt.signal,
       async onInputAccepted(workObserved) {
         if (requireWork && !workObserved) return false;
         if (observeAcceptance) {
@@ -793,14 +802,15 @@ async function main() {
           nativeSessionId: sessionId, sessionScope: scope,
           inputAcceptance: true, workAcceptance: true,
           ...(workspace === undefined ? {} : { workspace }),
-          ...(steering ? { steering: true } : {}) }, stop.signal);
+          ...(steering ? { steering: true, targetedInterrupt: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;
+        interruptSelected = !!steering && decision?.targetedInterrupt === true;
         observeAcceptance = decision?.observeAcceptance === true;
         requireWork = observeAcceptance && decision.requireWork === true;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed',
           ...(steeringSelected ? ['steering'] : []), ...(observeAcceptance ? ['observeAcceptance'] : []),
-          ...(requireWork ? ['requireWork'] : [])])
+          ...(requireWork ? ['requireWork'] : []), ...(interruptSelected ? ['targetedInterrupt'] : [])])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;

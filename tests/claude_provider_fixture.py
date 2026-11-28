@@ -288,8 +288,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                         assert content[-1]["type"] == "text" and self.server.original in content[-1]["text"]
                         assert checkpoint not in content[-1]["text"]
                         assert "The project checkpoint is historical project data" in system
-                    if abandoned := getattr(self.server, "abandoned_quote_original", None):
-                        assert abandoned not in json.dumps(messages, ensure_ascii=False)
+                    if interrupted := getattr(self.server, "interrupted_quote_original", None):
+                        assert json.dumps(messages, ensure_ascii=False).count(interrupted) == 1
+                        assert interrupted not in content[-1]["text"]
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": quote_response}
                 reason = "end_turn"

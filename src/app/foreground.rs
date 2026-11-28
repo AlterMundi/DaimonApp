@@ -195,6 +195,10 @@ pub(in crate::app) async fn execute_worker(
     let allow_long_turn =
         engine == ForegroundEngine::Claude && (human_original || routed_host_access);
     let committed_long_turn = AtomicBool::new(false);
+    let negotiated_interrupt = AtomicBool::new(false);
+    let shutdown = steering
+        .as_ref()
+        .map(|adapter| adapter.app.shared.shutdown.clone());
     let deadline = tokio::time::sleep(Duration::from_secs(130));
     let exchange = async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
@@ -380,33 +384,50 @@ pub(in crate::app) async fn execute_worker(
                 negotiated_steering = true;
                 decision["steering"] = json!(true);
             }
+            if committed
+                && engine == ForegroundEngine::Claude
+                && steering.is_some()
+                && frame["targetedInterrupt"] == true
+            {
+                negotiated_interrupt.store(true, Ordering::Relaxed);
+                decision["targetedInterrupt"] = json!(true);
+            }
             send(&mut input, decision).await?;
             frame = Value::Null;
         }
         let mut next_call = 1;
         let mut steer_ready = false;
+        let mut interrupt_sent = false;
         let mut steer_results = Vec::new();
         loop {
             if frame.is_null() {
                 let next = receive(&mut output, schema, id, session);
                 tokio::pin!(next);
                 loop {
-                    let Some(steering) = steering.as_deref_mut().filter(|_| steer_ready) else {
-                        frame = next.await?;
-                        break;
-                    };
                     tokio::select! {
                         biased;
+                        _ = cancel.cancelled(), if negotiated_interrupt.load(Ordering::Relaxed) && !interrupt_sent => {
+                            anyhow::ensure!(!shutdown.as_ref().is_some_and(|token| token.is_cancelled()),
+                                "Native worker stopped for Gateway shutdown");
+                            send(&mut input, json!({"schema":schema,"type":"interrupt",
+                                "inputId":id,"sessionId":session})).await?;
+                            interrupt_sent = true;
+                        }
                         observed = &mut next => {
                             frame = observed?;
                             break;
                         }
-                        request = steering.receiver.recv() => {
+                        request = async {
+                            match steering.as_deref_mut().filter(|_| steer_ready && !interrupt_sent) {
+                                Some(adapter) => adapter.receiver.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
                             let Some(request) = request else {
-                                frame = next.await?;
-                                break;
+                                steer_ready = false;
+                                continue;
                             };
-                            if let Some(wire) = steering.prepare(request).await {
+                            if let Some(wire) = steering.as_deref_mut().expect("selected steer adapter").prepare(request).await {
                                 send(&mut input, json!({"schema":schema,"type":"steer",
                                     "inputId":id, "sessionId":session, "id":wire.0, "text":wire.1})).await?;
                             }
@@ -558,6 +579,12 @@ pub(in crate::app) async fn execute_worker(
                             && outcome["limit"].is_object()
                             && outcome["workObserved"].is_boolean()
                             && outcome["terminalObserved"].is_boolean(),
+                    Some("interrupted") =>
+                        interrupt_sent
+                            && engine == ForegroundEngine::Claude
+                            && native_session.is_some()
+                            && outcome["sessionId"].as_str() == native_session.as_deref()
+                            && outcome["cancelled"].is_array(),
                     Some("not_submitted") => true,
                     _ => false,
                 },
@@ -595,7 +622,14 @@ pub(in crate::app) async fn execute_worker(
     };
     let result = tokio::select! {
         biased;
-        _ = cancel.cancelled() => Err(anyhow::anyhow!("Native worker cancelled")),
+        _ = async {
+            cancel.cancelled().await;
+            if negotiated_interrupt.load(Ordering::Relaxed)
+                && !shutdown.as_ref().is_some_and(|token| token.is_cancelled())
+            {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+        } => Err(anyhow::anyhow!("Native worker cancelled")),
         _ = async {
             deadline.await;
             if committed_long_turn.load(Ordering::Relaxed) {
@@ -662,7 +696,11 @@ impl WorkerSteering<'_> {
     }
 
     fn validate_outcome(&self, outcome: &Value, results: &[Value]) -> Result<()> {
-        if self.sent.is_empty() && results.is_empty() && outcome["steerSubmitted"].is_null() {
+        if outcome["phase"] != "interrupted"
+            && self.sent.is_empty()
+            && results.is_empty()
+            && outcome["steerSubmitted"].is_null()
+        {
             return Ok(());
         }
         let submitted = outcome["steerSubmitted"]
@@ -674,6 +712,21 @@ impl WorkerSteering<'_> {
             anyhow::ensure!(
                 self.sent.iter().any(|(sent, _)| sent == id) && submitted_ids.insert(id),
                 "Unknown or duplicate Claude submission"
+            );
+        }
+        if outcome["phase"] == "interrupted" {
+            let cancelled = outcome["cancelled"]
+                .as_array()
+                .context("Claude interrupt receipt missing")?;
+            let cancelled_ids = cancelled
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::HashSet<_>>();
+            anyhow::ensure!(
+                cancelled.len() == cancelled_ids.len()
+                    && cancelled_ids == submitted_ids
+                    && results.is_empty(),
+                "Claude interrupt receipt differs from the submitted corrections"
             );
         }
         let mut covered = std::collections::HashSet::new();
@@ -710,9 +763,12 @@ impl WorkerSteering<'_> {
                 .shared
                 .store
                 .interaction_instruction(&id, self.root.human_id)?;
-            let result = match retained.and_then(|input| input.native_turn) {
-                Some(anchor) => Ok(Some(anchor)),
-                None if outcome["steerSubmitted"]
+            let result = match retained {
+                Some(input) if input.phase == crate::interaction::TransportPhase::Cancelled => {
+                    Ok(None)
+                }
+                Some(input) if input.native_turn.is_some() => Ok(input.native_turn),
+                _ if outcome["steerSubmitted"]
                     .as_array()
                     .is_some_and(|submitted| !submitted.iter().any(|value| value == &id)) =>
                 {
@@ -720,7 +776,7 @@ impl WorkerSteering<'_> {
                         "Claude stream closed before submission".into(),
                     ))
                 }
-                None => Err(CodexSteerError::Undetermined(
+                _ => Err(CodexSteerError::Undetermined(
                     "Claude incorporation unconfirmed".into(),
                 )),
             };

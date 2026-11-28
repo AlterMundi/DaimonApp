@@ -100,6 +100,8 @@ test('installed Claude SDK cancels a queued correction and resumes the same nati
       if (value.type === 'result') {
         assert.equal(value.session_id, session);
         assert.equal(value.is_error, true);
+        assert.equal(value.subtype, 'error_during_execution');
+        assert.deepEqual(value.user_message_uuids, [original]);
         break;
       }
     }

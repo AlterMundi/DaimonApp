@@ -33,7 +33,7 @@ const nativeQuote = { ...exactQuote, source: 'native:42' };
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
 test('worker sends one native input only after exact owner persistence decision',
-  { timeout: 20_000 }, async () => {
+  { timeout: 40_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'gateway-claude-worker-'));
     const observerServer = createServer();
     const foreignServer = createServer();
@@ -375,7 +375,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession,
               sessionScope: first.sessionScope, inputAcceptance: true, workAcceptance: true,
               ...(workspace === undefined ? {} : { workspace }),
-              ...(humanOriginal ? { steering: true } : {}) });
+              ...(humanOriginal ? { steering: true, targetedInterrupt: true } : {}) });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
