@@ -40,22 +40,81 @@ const ENTRY_PROGRESS_SCOPE: &str = r#"(p.kind='entry_progress' AND s.force_fresh
         AND c.session_id=p.session_id AND c.native_thread=s.codex_thread_id
         AND w.codex_thread_id=m.native_thread AND w.force_fresh_thread=0))"#;
 
+const REPORT_PARENT_SCOPE: &str = r#"((src.channel='conversation' AND EXISTS(SELECT 1 FROM conversation_inputs original
+            WHERE original.id=src.event_id AND original.human_id=call.human_id
+              AND original.retired=0 AND json_extract(original.doc,'$.paired_actor')=1))
+          OR (src.channel LIKE 'telegram:%' AND EXISTS(
+            SELECT 1 FROM incoming_updates original
+            JOIN bot_state captured ON captured.key='stop_input_epoch:'||original.update_id
+            JOIN bot_state bot ON bot.key='telegram_identity'
+            LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||call.human_id
+            JOIN turns caller_turn ON caller_turn.id=json_extract(parent.doc,'$.local_turn')
+              AND caller_turn.session_id=parent.session_id AND caller_turn.from_user_id=call.human_id
+            JOIN sessions caller ON caller.id=caller_turn.session_id AND caller.creator_user_id=call.human_id
+              AND caller.chat_id=call.caller_chat AND caller.thread_id=call.caller_topic
+            JOIN conversation_entry_generations caller_generation ON caller_generation.session_id=caller.id
+            WHERE original.update_id=src.update_id AND src.event_id=cast(original.update_id AS TEXT)
+              AND src.channel='telegram:'||json_extract(bot.value,'$.id')
+              AND captured.value=json_extract(call.doc,'$.epoch')
+              AND captured.value=coalesce(current.value,'initial')
+              AND caller_turn.execution_generation=caller_generation.generation
+              AND caller_turn.native_thread_id=json_extract(call.doc,'$.caller_native')
+              AND caller_turn.native_thread_id=json_extract(parent.doc,'$.native_thread')
+              AND ((parent.phase='accepted' AND caller_turn.status IN ('running','completed'))
+                OR (parent.phase='submitting' AND caller_turn.status='running' AND original.status='handled'
+                  AND parent.id=json_extract(call.doc,'$.caller_turn')))
+          )))"#;
+
 // Selected portable reports belong to the exact completed topic turn and result.
-const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind='portable_report' AND t.status='completed'
-    AND t.execution_harness='claude' AND t.session_id=s.id
+const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind IN ('portable_report','portable_report_request') AND t.status='completed'
+    AND t.session_id=s.id
     AND EXISTS(SELECT 1 FROM conversation_entry_generations g
       WHERE g.session_id=s.id AND g.generation=t.execution_generation)
     AND EXISTS(SELECT 1 FROM interaction_results r JOIN interaction_instructions i
       ON r.local_turn=json_extract(i.doc,'$.local_turn') AND r.native_turn=json_extract(i.doc,'$.native_turn')
       JOIN interaction_session_requests call ON call.target_instruction=i.id
       JOIN interaction_instructions parent ON parent.id=call.parent_instruction
-      JOIN interaction_sources src ON src.id=parent.input_id AND src.channel='conversation'
-      JOIN conversation_inputs original ON original.id=src.event_id AND original.human_id=call.human_id
+      JOIN interaction_sources src ON src.id=parent.input_id AND src.human_id=call.human_id
       WHERE r.id=p.source AND r.local_turn=p.local_turn AND r.native_thread=t.native_thread_id
-        AND r.item_id='final' AND i.session_id=s.id AND i.phase='accepted'
+        AND i.session_id=s.id AND i.phase='accepted'
         AND call.human_id=p.human_id AND json_extract(call.doc,'$.report_to_topic')=1
-        AND call.phase IN ('requested','returned') AND original.retired=0
-        AND json_extract(original.doc,'$.paired_actor')=1))"#;
+        AND call.phase IN ('requested','returned')
+        AND {REPORT_PARENT_SCOPE}))"#;
+
+const REPORT_PARENT_CURRENT: &str = r#"NOT EXISTS (SELECT 1 FROM interaction_request_links old
+        JOIN interaction_request_links newer ON newer.request_id=old.request_id
+        JOIN interaction_instructions i ON i.id=newer.instruction_id
+        JOIN interaction_sources x ON x.id=i.input_id
+        JOIN original_ingress_order ingress ON ingress.event_id=x.event_id
+          AND ingress.channel=CASE WHEN x.update_id IS NOT NULL THEN 'telegram' ELSE 'conversation' END
+        WHERE old.instruction_id=parent.id AND ingress.id>original.id AND x.human_id=p.human_id
+          AND i.phase NOT IN ('cancelled','rejected') AND json_extract(i.doc,'$.relation.kind')='amends'
+          AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id))"#;
+
+// Web reads are independent of Telegram delivery, but must apply the same
+// retained permission and correction fences before disclosing a request.
+const REPORT_REQUEST_CURRENT: &str = r#"EXISTS (
+    SELECT 1 FROM interaction_deliveries d
+    JOIN interaction_session_requests call ON call.target_instruction=d.request_id
+    JOIN interaction_instructions parent ON parent.id=call.parent_instruction
+    JOIN interaction_sources root ON root.id=parent.input_id
+    JOIN original_ingress_order original ON original.event_id=root.event_id
+      AND original.channel=CASE WHEN root.update_id IS NOT NULL THEN 'telegram' ELSE 'conversation' END
+    WHERE d.result_id=p.source AND d.human_id=p.human_id AND call.human_id=p.human_id
+      AND json_extract(call.doc,'$.report_to_topic')=1 AND call.phase IN ('requested','returned')
+      AND json_extract(d.doc,'$.declared')=1 AND json_extract(d.doc,'$.completed')=1
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(coalesce(json_extract(d.doc,'$.request_ids'),json_array(d.request_id))) needed
+        WHERE NOT EXISTS (SELECT 1 FROM interaction_request_links l
+          JOIN interaction_instructions i ON i.id=l.instruction_id
+          WHERE l.request_id=needed.value AND i.phase NOT IN ('cancelled','rejected'))
+        OR EXISTS (SELECT 1 FROM interaction_request_links l
+          JOIN interaction_instructions i ON i.id=l.instruction_id
+          WHERE l.request_id=needed.value AND i.phase NOT IN ('cancelled','rejected')
+          AND (i.phase<>'accepted' OR NOT EXISTS (SELECT 1 FROM json_each(d.doc,'$.covered') c WHERE c.value=i.id)))
+      )
+      AND {REPORT_PARENT_CURRENT}
+  )"#;
 
 // The transport receives one derived view of an ordinary completed exchange.
 const PORTABLE_EXCHANGE_SCOPE: &str = r#"(p.kind IN ('portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original')
@@ -151,7 +210,30 @@ fn portable_report_delivery_current(
     ).map_err(Into::into)
 }
 
-pub(super) fn portable_report_on(
+pub(super) fn accepted_handoff_projection_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+    local: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+         SELECT ?1,i.session_id,call.human_id,'portable_handoff_input',i.id,'Handoff from #'||
+           coalesce(nullif(trim(caller.session_title),''),'t'||caller.thread_id)||char(10)||char(10)||
+           json_extract(source.doc,'$.text'),'ready',''
+         FROM interaction_session_requests call
+         JOIN sessions caller ON caller.chat_id=call.caller_chat AND caller.thread_id=call.caller_topic
+           AND caller.creator_user_id=call.human_id
+         JOIN interaction_instructions i ON i.id=call.target_instruction
+         JOIN interaction_sources source ON source.id=i.input_id AND source.channel='local-session'
+         WHERE i.id=?2 AND call.human_id=?3 AND call.phase='requested'
+           AND json_extract(call.doc,'$.report_to_topic')=1
+           AND length(trim(json_extract(source.doc,'$.text')))>0",
+        params![local, input.id, input.human_id],
+    )?;
+    Ok(())
+}
+
+pub(super) fn completed_handoff_projection_on(
     conn: &Connection,
     input: &crate::interaction::Instruction,
     local: i64,
@@ -177,15 +259,39 @@ pub(super) fn portable_report_on(
     {
         return Ok(());
     }
+    // Fence the early lease if no part reached Telegram. The completion
+    // format can then drain it, including after a rollback.
     conn.execute(
-        "INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
-         SELECT ?1,i.session_id,call.human_id,'portable_report',r.id,r.body,'ready',''
-         FROM interaction_session_requests call JOIN interaction_instructions i ON i.id=call.target_instruction
-         JOIN interaction_results r ON r.local_turn=?1 AND r.native_turn=json_extract(i.doc,'$.native_turn')
+        "UPDATE topic_publications SET phase='retired'
+         WHERE kind='portable_handoff_input' AND source=?2 AND local_turn=?1 AND human_id=?3
+           AND NOT EXISTS (SELECT 1 FROM topic_publication_parts part
+             WHERE part.publication=topic_publications.id AND part.phase<>'ready')",
+        params![local, input.id, input.human_id],
+    )?;
+    conn.execute(
+        "WITH projection(position,kind) AS (VALUES (0,'portable_report_request'),(1,'portable_report'))
+         INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+         SELECT ?1,i.session_id,call.human_id,projection.kind,r.id,
+           CASE WHEN projection.position=0 THEN 'Handoff from #'||
+             coalesce(nullif(trim(caller.session_title),''),'t'||caller.thread_id)||char(10)||char(10)||
+             json_extract(source.doc,'$.text') ELSE r.body END,
+           CASE WHEN projection.position=0 AND EXISTS(SELECT 1 FROM topic_publications early
+             JOIN topic_publication_parts part ON part.publication=early.id AND part.phase<>'ready'
+             WHERE early.kind='portable_handoff_input' AND early.source=i.id AND early.local_turn=?1)
+             THEN 'not_selected' ELSE 'ready' END,''
+         FROM projection CROSS JOIN interaction_session_requests call
+         JOIN sessions caller ON caller.chat_id=call.caller_chat AND caller.thread_id=call.caller_topic
+           AND caller.creator_user_id=call.human_id
+         JOIN interaction_instructions i ON i.id=call.target_instruction
+         JOIN interaction_sources source ON source.id=i.input_id AND source.channel='local-session'
+         JOIN interaction_deliveries d ON d.id=?4 AND d.request_id=i.id AND d.human_id=call.human_id
+         JOIN interaction_results r ON r.id=d.result_id AND r.local_turn=?1
+           AND r.native_turn=json_extract(i.doc,'$.native_turn')
          WHERE i.id=?2 AND call.human_id=?3 AND call.phase='requested'
            AND json_extract(call.doc,'$.report_to_topic')=1
-           AND r.item_id='final' AND length(trim(r.body))>0",
-        params![local,input.id,input.human_id],
+           AND length(trim(r.body))>0
+         ORDER BY projection.position",
+        params![local,input.id,input.human_id,delivery.id],
     )?;
     Ok(())
 }
@@ -508,6 +614,68 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn init_report_request_view(&self) -> Result<()> {
+        let report_scope =
+            PORTABLE_REPORT_SCOPE.replace("{REPORT_PARENT_SCOPE}", REPORT_PARENT_SCOPE);
+        let request_current =
+            REPORT_REQUEST_CURRENT.replace("{REPORT_PARENT_CURRENT}", REPORT_PARENT_CURRENT);
+        let definition = format!(
+            "CREATE VIEW visible_portable_report_requests AS
+             SELECT p.id,p.source,p.session_id,p.local_turn,p.human_id,p.body
+             FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id
+             JOIN users u ON u.tg_user_id=p.human_id
+             WHERE p.kind='portable_report_request'
+               AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id
+               AND {report_scope} AND {request_current}"
+        );
+        let early = format!(
+            "CREATE VIEW visible_portable_handoff_inputs AS
+             SELECT p.id,p.source,p.session_id,p.local_turn,p.human_id,p.body
+             FROM topic_publications p JOIN turns t ON t.id=p.local_turn
+             JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id
+             JOIN conversation_entry_generations g ON g.session_id=s.id AND g.generation=t.execution_generation
+             JOIN interaction_instructions i ON i.id=p.source AND i.session_id=s.id
+               AND json_extract(i.doc,'$.local_turn')=t.id
+               AND json_extract(i.doc,'$.native_thread')=t.native_thread_id
+             JOIN interaction_session_requests call ON call.target_instruction=i.id AND call.human_id=p.human_id
+             LEFT JOIN bot_state epoch ON epoch.key='stop_admission_epoch:'||p.human_id
+             JOIN interaction_instructions parent ON parent.id=call.parent_instruction
+             JOIN interaction_sources src ON src.id=parent.input_id AND src.human_id=call.human_id
+             JOIN original_ingress_order original ON original.event_id=src.event_id
+               AND original.channel=CASE WHEN src.update_id IS NOT NULL THEN 'telegram' ELSE 'conversation' END
+             WHERE p.kind='portable_handoff_input' AND t.session_id=s.id
+               AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id
+               AND i.phase IN ('submitting','accepted','uncertain')
+               AND t.status IN ('running','completed','failed')
+               AND NOT EXISTS(SELECT 1 FROM bot_state stop WHERE stop.key='stopped_turn:'||t.id)
+               AND json_extract(i.doc,'$.native_input_accepted')=1
+               AND json_extract(call.doc,'$.epoch')=coalesce(epoch.value,'initial')
+               AND json_extract(call.doc,'$.report_to_topic')=1 AND call.phase IN ('requested','returned')
+               AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals w WHERE w.parent_instruction=parent.id)
+               AND {REPORT_PARENT_SCOPE} AND {REPORT_PARENT_CURRENT}",
+        );
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        for (name, definition) in [
+            ("visible_portable_report_requests", definition),
+            ("visible_portable_handoff_inputs", early),
+        ] {
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE type='view' AND name=?1",
+                    [name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing.as_deref() != Some(definition.as_str()) {
+                tx.execute_batch(&format!("DROP VIEW IF EXISTS {name}"))?;
+                tx.execute_batch(&definition)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn topic_projection_register(&self, local: i64, human: i64, key: SessionKey) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE t.id=?1 AND t.from_user_id=?2 AND s.creator_user_id=?2 AND u.allowed=1 AND s.chat_id=?3 AND s.thread_id=?4)",params![local,human,key.chat_id,key.thread_id],|r|r.get(0))?;
@@ -580,12 +748,14 @@ impl Store {
     ) -> Result<Option<TopicPublication>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let report_scope =
+            PORTABLE_REPORT_SCOPE.replace("{REPORT_PARENT_SCOPE}", REPORT_PARENT_SCOPE);
         let busy: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM topic_publications p JOIN sessions s ON s.id=p.session_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.phase='publishing' AND (p.kind='artifact')=?3)",params![key.chat_id,key.thread_id,files],|r|r.get(0))?;
         if busy {
             return Ok(None);
         }
         loop {
-            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_handoff_input','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR (p.kind='portable_handoff_input' AND EXISTS(SELECT 1 FROM visible_portable_handoff_inputs h WHERE h.id=p.id)) OR ({report_scope} AND (p.kind='portable_report' OR EXISTS(SELECT 1 FROM visible_portable_report_requests h WHERE h.id=p.id))) OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
             let Some((id, body, valid, kind, source, local_turn, direct)) = row else {
                 tx.commit()?;
                 return Ok(None);
@@ -728,7 +898,9 @@ impl Store {
                 return Ok(false);
             }
         }
-        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
+        let report_scope =
+            PORTABLE_REPORT_SCOPE.replace("{REPORT_PARENT_SCOPE}", REPORT_PARENT_SCOPE);
+        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_handoff_input','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR (p.kind='portable_handoff_input' AND EXISTS(SELECT 1 FROM visible_portable_handoff_inputs h WHERE h.id=p.id)) OR ({report_scope} AND (p.kind='portable_report' OR EXISTS(SELECT 1 FROM visible_portable_report_requests h WHERE h.id=p.id))) OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
         tx.commit()?;
         Ok(changed)
     }
@@ -807,9 +979,29 @@ impl Store {
         if changed != 1 {
             return Err(anyhow!("Topic retry lease changed"));
         }
+        // A cooldown proves this attempt was not sent. If the answer settled
+        // during the attempt, switch back to its compatible request row only
+        // when there is no acknowledged or uncertain prefix.
+        let fallback = tx.execute(
+            "UPDATE topic_publications AS final SET phase='ready'
+             WHERE final.kind='portable_report_request' AND final.phase='not_selected'
+               AND EXISTS (SELECT 1 FROM topic_publications early
+                 JOIN interaction_deliveries d ON d.request_id=early.source
+                   AND d.result_id=final.source AND d.human_id=final.human_id
+                 WHERE early.id=?1 AND early.kind='portable_handoff_input'
+                   AND early.local_turn=final.local_turn AND early.session_id=final.session_id
+                   AND early.human_id=final.human_id)
+               AND NOT EXISTS(SELECT 1 FROM topic_publication_parts part
+                 WHERE part.publication=?1 AND part.phase<>'ready')",
+            [id],
+        )?;
         tx.execute(
-            "UPDATE topic_publications SET phase='ready' WHERE id=?1 AND instance_id=?2",
-            params![id, &self.instance_id],
+            "UPDATE topic_publications SET phase=?3 WHERE id=?1 AND instance_id=?2",
+            params![
+                id,
+                &self.instance_id,
+                if fallback == 1 { "retired" } else { "ready" }
+            ],
         )?;
         tx.commit()?;
         Ok(())

@@ -220,6 +220,13 @@ impl ForegroundEngine {
     pub(crate) const fn name(self) -> &'static str {
         self.harness().name()
     }
+
+    pub(crate) const fn attributed_handoff_text_limit(self) -> Option<usize> {
+        match self {
+            Self::Claude => Some(8192),
+            Self::Goose | Self::Antigravity => None,
+        }
+    }
 }
 
 fn valid_owner_command(command: &[String]) -> bool {
@@ -618,6 +625,11 @@ impl InteractionConfig {
         Some((engine, config))
     }
 
+    pub(crate) fn supports_visible_handoff(&self, key: SessionKey) -> bool {
+        self.portable_route(key)
+            .is_some_and(|(engine, _)| engine.attributed_handoff_text_limit().is_some())
+    }
+
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
         self.targets
             .iter()
@@ -880,7 +892,7 @@ impl SubscriptionLimit {
 
 /// Render the selected session-authored payload without importing unrelated
 /// creation context. Admission and dispatch use these same immutable fields.
-pub(crate) fn local_claude_packet(
+pub(crate) fn portable_handoff_packet(
     instruction: &Instruction,
     author: &serde_json::Value,
 ) -> Result<String> {
@@ -898,7 +910,7 @@ pub(crate) fn local_claude_packet(
     );
     anyhow::ensure!(
         packet.len() <= 16 * 1024,
-        "The complete Claude handoff exceeds the native byte limit"
+        "The complete handoff exceeds the portable packet byte limit"
     );
     Ok(packet)
 }
@@ -927,6 +939,8 @@ pub struct Instruction {
     pub local_turn: Option<i64>,
     pub native_thread: Option<String>,
     pub native_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_input_accepted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

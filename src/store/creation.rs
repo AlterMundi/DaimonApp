@@ -167,11 +167,16 @@ impl Store {
                             && !label.chars().any(char::is_control)
                     })
                     .unwrap_or(&target.name);
-                Ok(json!({
+                let mut selection = json!({
                     "name": target.name,
                     "display_name": display_name,
                     "stable_selector": format!("t{}", target.topic_id)
-                }))
+                });
+                if cfg.supports_visible_handoff(SessionKey::new(cfg.chat_id, Some(target.topic_id)))
+                {
+                    selection["visible_handoff"] = json!(true);
+                }
+                Ok(selection)
             })
             .collect()
     }

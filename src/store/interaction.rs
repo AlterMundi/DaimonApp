@@ -427,6 +427,7 @@ fn admit_selected_with_origin_on(
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,
+        native_input_accepted: false,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
     tx.execute("INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'queued',?5,?6)",params![instruction.id,instruction.input_id,session,sequence,serde_json::to_string(&instruction)?,instance])?;

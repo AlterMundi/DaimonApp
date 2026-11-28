@@ -293,6 +293,7 @@ impl Store {
         store.init_goal_alerts()?;
         store.init_observer_cards()?;
         store.init_observer_freshness()?;
+        store.init_report_request_view()?;
         // A restarted process cannot continue a previous command's activity lease.
         store.conn.lock().expect("store mutex poisoned").execute(
             "DELETE FROM bot_state WHERE key LIKE 'command_activity:%' OR key LIKE 'interaction-response-draft:%'",

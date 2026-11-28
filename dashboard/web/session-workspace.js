@@ -399,8 +399,9 @@
         if(direction!=='before'&&!technical){
           for(const item of result.items)if(item.role==='user')localSubmissions.delete(item.input_id);
           const pending=Array.isArray(result.pending_items)
-            ?result.pending_items.slice(0,8).filter(item=>item.pending===true&&item.role==='user'):[];
-          for(const item of pending)localSubmissions.delete(item.input_id);
+            ?result.pending_items.slice(0,8).filter(item=>item.pending===true&&
+              (item.role==='user'||(item.role==='assistant'&&item.handoff===true))):[];
+          for(const item of pending)if(item.role==='user')localSubmissions.delete(item.input_id);
           pending.push(...localSubmissions.values());
           const visible=new Set(pending.map(item=>item.id));
           for(const box of [...entries.children])if(box.dataset.pending&&!visible.has(box.dataset.event))box.remove();

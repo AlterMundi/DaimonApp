@@ -1297,6 +1297,39 @@ impl Store {
         Ok(())
     }
 
+    /// Record incorporation separately from result settlement. Preparation and
+    /// transport commitment alone supply no native acceptance evidence.
+    pub(crate) fn record_routed_input_acceptance(
+        &self,
+        input: &Instruction,
+        local: i64,
+        native: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = super::interaction::instruction_on(&tx, &input.id, input.human_id)?
+            .context("Routed input missing")?;
+        if current.phase != Phase::Submitting
+            || current.local_turn != Some(local)
+            || current.native_thread.as_deref() != Some(native)
+            || !current_on(&tx, &current, &self.instance_id)?
+        {
+            return Ok(false);
+        }
+        let changed = tx.execute(
+            "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_input_accepted',json('true'))
+             WHERE id=?1 AND instance_id=?2 AND phase='submitting'
+             AND coalesce(json_extract(doc,'$.native_input_accepted'),0)=0
+             AND EXISTS(SELECT 1 FROM turns WHERE id=?3 AND status='running' AND native_thread_id=?4)",
+            params![input.id, self.instance_id, local, native],
+        )?;
+        if changed == 1 {
+            super::topic_publications::accepted_handoff_projection_on(&tx, input, local)?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
     pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
@@ -1436,9 +1469,12 @@ impl Store {
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
-                _ if outcome["phase"] == "not_submitted"
-                    || (limit.is_some()
-                        && crate::interaction::SubscriptionLimit::refused_before_work(outcome)) =>
+                _ if !current.native_input_accepted
+                    && (outcome["phase"] == "not_submitted"
+                        || (limit.is_some()
+                            && crate::interaction::SubscriptionLimit::refused_before_work(
+                                outcome,
+                            ))) =>
                 {
                     Phase::Rejected
                 }
@@ -1473,7 +1509,7 @@ impl Store {
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
             [input.target_session],
         )?;
-        super::topic_publications::portable_report_on(&tx, input, local, &deliveries)?;
+        super::topic_publications::completed_handoff_projection_on(&tx, input, local, &deliveries)?;
         if let Some(entry) = projection_entry {
             for original in exchange_inputs {
                 super::topic_publications::portable_exchange_on(&tx, &original, local, entry)?;

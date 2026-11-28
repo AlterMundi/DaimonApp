@@ -106,7 +106,7 @@ async function connectedCatalog(native, expected, signal) {
  * be advertised separately when their native behavior has been qualified.
  */
 export async function runClaudeTurn({
-  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering,
+  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering, onInputAccepted,
 }) {
   if (typeof input?.text !== 'string' || (input.text.length === 0 && !input.attachments?.length)
       || Buffer.byteLength(input.text) > MAX_INPUT_BYTES
@@ -148,6 +148,7 @@ export async function runClaudeTurn({
   let reason = 'matrix_identity_unverified';
   let observedLimit, throttle;
   let observedWork = false;
+  let observedAcceptance = false;
   let rootOutcome;
   let steeringReady = false;
   let steerDeadline;
@@ -361,7 +362,11 @@ export async function runClaudeTurn({
       // This CLI version echoes incorporated UUIDs on the status frame before
       // the next model request, even when the reply frames have no echo.
       const rootStatus = !rootOutcome && event.type === 'system' && event.subtype === 'status'
-        && answered.includes(input.id);
+        && event.parent_tool_use_id == null && answered.includes(input.id);
+      if (!observedAcceptance && onInputAccepted && (rootReply || rootStatus)) {
+        await onInputAccepted();
+        observedAcceptance = true;
+      }
       if (steerEnabled() && steeringReady && (rootReply || rootStatus)) {
         const incorporated = [...new Set(answered)].filter(id => submitted.has(id) && !acceptedInRoot.has(id));
         if (incorporated.length) {

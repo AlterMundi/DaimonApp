@@ -1092,13 +1092,14 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
     ) && i
         .target_execution
         .as_ref()
-        .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+        .and_then(|binding| crate::interaction::ForegroundEngine::for_harness(binding.harness))
+        .is_some_and(|engine| engine.attributed_handoff_text_limit().is_some())
     {
-        return crate::interaction::local_claude_packet(
+        return crate::interaction::portable_handoff_packet(
             i,
             author
                 .as_ref()
-                .context("Attributed Claude handoff has no author")?,
+                .context("Attributed portable handoff has no author")?,
         );
     }
     let original = shared

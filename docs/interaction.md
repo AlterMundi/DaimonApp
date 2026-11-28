@@ -1408,12 +1408,32 @@ recipient receives the request as session-authored context and cannot use it to
 authorize a second dependency. Gateway checks the retained parent independently
 of the helper's text.
 
-When a paired human explicitly requests visible progress in a selected Claude
-topic, `session_request` can set `report_to_topic`. The completed answer uses
-the same working native history as paired direct turns in that topic. Only the
-selected canonical result is available in the topic's Conversation and Telegram
-projection. The dependency input and private sibling handoffs remain internal.
-The report freezes its destination and keeps its separate internal return.
+When a paired human explicitly requests a visible handoff, `session_request`
+can set `report_to_topic` for a destination with a compatible connector. The
+caller must be bound to an authenticated Conversation original or an exact
+Telegram receipt. The completed answer uses the same working native history
+as paired direct turns in that topic. The
+topic's Conversation and Telegram views receive the selected request, labeled
+with its sending conversation, and its canonical result. Both are projected
+when the report completes. Private sibling handoffs remain internal. The report
+freezes its destination and keeps its separate internal return.
+Gateway projects the canonical delivery identity and verifies both conversation
+generations. The projection uses negotiated adapter capabilities and retained
+evidence, independent of the harness name. Each adapter translates its native
+signals into the same receipts and enforces its own packet limits. An adapter
+without early incorporation evidence can publish after a canonical result
+settles if it supports selected reports. The current portable adapter
+qualification for selected reports is Claude.
+Connectors that can prove early native incorporation may negotiate an
+`input_accepted` receipt. Gateway retains the exact evidence on the admitted
+instruction and queues the attributed handoff for the selected destination
+topic in the same transaction. Conversation can show that handoff during the
+native turn. Telegram uses the existing publication queue and revalidates the
+selection before sending. The final result settles separately and keeps the
+handoff in the normal Conversation history without a second Telegram send.
+An incorporated
+input with an unobserved result must remain uncertain even if the worker
+subsequently reports a pre-submission refusal.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 
