@@ -3,6 +3,24 @@ use super::*;
 use crate::voice::TranscriptSource;
 use anyhow::bail;
 
+pub(super) fn portable_generation_matches_on(
+    conn: &Connection,
+    update: i64,
+    target: SessionKey,
+    human: i64,
+) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_voice_inputs v
+         JOIN sessions s ON s.id=v.session_id
+         JOIN conversation_entry_generations g ON g.session_id=s.id
+         WHERE v.update_id=?1 AND v.human_id=?2 AND s.creator_user_id=?2
+           AND s.chat_id=?3 AND s.thread_id=?4 AND v.portable_generation=g.generation
+           AND v.phase='committed')",
+        params![update, human, target.chat_id, target.thread_id],
+        |row| row.get(0),
+    ).map_err(Into::into)
+}
+
 pub(super) fn content_on(
     conn: &Connection,
     update: &crate::telegram::Update,
@@ -47,6 +65,13 @@ impl Store {
     pub(super) fn init_voice(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_voice_inputs(update_id INTEGER PRIMARY KEY REFERENCES incoming_updates(update_id),human_id INTEGER NOT NULL,session_id INTEGER NOT NULL,native TEXT,phase TEXT NOT NULL,text TEXT,source TEXT,instance_id TEXT NOT NULL);")?;
+        let has_portable: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('interaction_voice_inputs')
+             WHERE name='portable_generation')", [], |row| row.get(0),
+        )?;
+        if !has_portable {
+            conn.execute("ALTER TABLE interaction_voice_inputs ADD COLUMN portable_generation TEXT", [])?;
+        }
         let continuity = super::conversation_entry::CODEX_PROJECT_CONTINUATION;
         conn.execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS voice_binding_retired;
             CREATE TRIGGER voice_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
@@ -59,7 +84,9 @@ impl Store {
         conn.execute("UPDATE interaction_voice_inputs SET phase='uncertain' WHERE phase='preparing' AND instance_id!=?1",[&self.instance_id])?;
         Ok(())
     }
-    pub fn voice_begin(&self, update: i64, key: SessionKey, human: i64) -> Result<()> {
+    pub fn voice_begin(
+        &self, update: i64, key: SessionKey, human: i64, portable_topic: bool,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let eligible:Option<(i64,Option<String>,String)>=tx.query_row("SELECT s.id,s.codex_thread_id,i.payload_json FROM incoming_updates i JOIN sessions s ON s.chat_id=?2 AND s.thread_id=?3 JOIN users u ON u.tg_user_id=s.creator_user_id JOIN bot_state epoch ON epoch.key='stop_input_epoch:'||i.update_id LEFT JOIN bot_state current ON current.key='stop_admission_epoch:'||s.creator_user_id WHERE i.update_id=?1 AND i.status='processing' AND i.instance_id=?5 AND s.creator_user_id=?4 AND u.allowed=1 AND json_extract(i.payload_json,'$.message.from.id')=?4 AND json_extract(i.payload_json,'$.message.chat.id')=?2 AND json_extract(i.payload_json,'$.message.message_thread_id')=?3 AND epoch.value=COALESCE(current.value,'initial')",params![update,key.chat_id,key.thread_id,human,self.instance_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -77,7 +104,16 @@ impl Store {
         {
             bail!("Voice adapter requires one original voice clip");
         }
-        tx.execute("INSERT INTO interaction_voice_inputs(update_id,human_id,session_id,native,phase,instance_id) VALUES(?1,?2,?3,?4,'preparing',?5)",params![update,human,session,native,self.instance_id])?;
+        let generation: Option<String> = if portable_topic {
+            anyhow::ensure!(original.direct_human_attachment, "Portable voice requires a direct original");
+            Some(tx.query_row(
+                "SELECT generation FROM conversation_entry_generations WHERE session_id=?",
+                [session], |row| row.get(0),
+            )?)
+        } else {
+            None
+        };
+        tx.execute("INSERT INTO interaction_voice_inputs(update_id,human_id,session_id,native,phase,instance_id,portable_generation) VALUES(?1,?2,?3,?4,'preparing',?5,?6)",params![update,human,session,native,self.instance_id,generation])?;
         tx.execute(
             "UPDATE incoming_updates SET status='queued',updated_at=?2 WHERE update_id=?1",
             params![update, now_string()],
@@ -231,7 +267,7 @@ mod tests {
         let key = SessionKey::new(100, Some(1));
         store.ensure_session(key, 100, &defaults).unwrap();
         store.set_session_codex_thread(key, "entry-native").unwrap();
-        let original=serde_json::from_value(json!({"update_id":20,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"voice":{"file_id":"synthetic-voice-file"}}})).unwrap();
+        let original=serde_json::from_value(json!({"update_id":20,"direct_human_attachment":true,"message":{"message_id":20,"message_thread_id":1,"from":{"id":100,"is_bot":false,"first_name":"Human"},"chat":{"id":100,"type":"private"},"voice":{"file_id":"synthetic-voice-file"}}})).unwrap();
         store.admit_update(&original).unwrap();
         store.begin_update(20).unwrap();
         (file, store, key, original)
@@ -264,9 +300,47 @@ mod tests {
             .unwrap()
     }
     #[test]
+    fn portable_voice_accepts_only_the_committed_clip_in_the_same_topic_generation() {
+        let (_file, store, key, _) = setup();
+        store.voice_begin(20, key, 100, true).unwrap();
+        let proof = proof();
+        store.voice_commit(20, 100, "A spoken direction.", &proof).unwrap();
+        let connection = store.conn.lock().unwrap();
+        connection.execute(
+            "INSERT INTO bot_state(key,value) VALUES('telegram_identity',?1)",
+            [json!({"id":123}).to_string()],
+        ).unwrap();
+        let mut source = SourceInput {
+            channel: "telegram:123".into(),
+            event_id: "20".into(),
+            update_id: Some(20),
+            human_id: 100,
+            target_sessions: vec![],
+            origin: ReturnRoute { chat_id: 100, thread_id: 1, message_id: Some(20) },
+            text: "A spoken direction.".into(),
+            telegram_files: vec![],
+            tribu_source: None,
+            transcription: Some(proof.clone()),
+        };
+        let epoch = |source: &SourceInput| {
+            super::super::routed_portable::telegram_original_epoch(&connection, source, key).unwrap()
+        };
+        assert!(epoch(&source).is_some());
+        source.transcription.as_mut().unwrap().audio_sha256 = "1".repeat(64);
+        assert!(epoch(&source).is_none());
+        source.transcription = Some(proof);
+        connection.execute(
+            "UPDATE conversation_entry_generations SET generation='replaced'
+             WHERE session_id=(SELECT session_id FROM interaction_voice_inputs WHERE update_id=20)",
+            [],
+        ).unwrap();
+        assert!(epoch(&source).is_none());
+    }
+
+    #[test]
     fn original_preserved_and_fast_preparation_cannot_be_settled_by_outer_dispatch() {
         let (_file, store, key, original) = setup();
-        store.voice_begin(20, key, 100).unwrap();
+        store.voice_begin(20, key, 100, false).unwrap();
         assert!(store.interaction_input_content(&original, 100).is_err());
         store.finish_update_dispatch(20, true).unwrap();
         assert_eq!(status(&store), "queued");
@@ -308,7 +382,7 @@ mod tests {
     fn changed_native_owner_or_stop_epoch_prevents_late_transcript_admission() {
         for change in ["native", "epoch", "owner"] {
             let (_file, store, key, _) = setup();
-            store.voice_begin(20, key, 100).unwrap();
+            store.voice_begin(20, key, 100, false).unwrap();
             match change {
                 "native" => store
                     .set_session_codex_thread(key, "changed-native")
@@ -342,7 +416,7 @@ mod tests {
     #[test]
     fn interrupted_preparation_is_retained_without_restart_retry() {
         let (file, store, key, original) = setup();
-        store.voice_begin(20, key, 100).unwrap();
+        store.voice_begin(20, key, 100, false).unwrap();
         drop(store);
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         assert_eq!(status(&store), "undetermined");
@@ -365,7 +439,7 @@ mod tests {
     #[test]
     fn deleted_entry_preserves_original_and_transcription_without_rebinding() {
         let (_file, store, key, original) = setup();
-        store.voice_begin(20, key, 100).unwrap();
+        store.voice_begin(20, key, 100, false).unwrap();
         store
             .voice_commit(20, 100, "Historical voice", &proof())
             .unwrap();
@@ -392,7 +466,7 @@ mod tests {
     fn post_commit_generation_and_owner_changes_reject_queue_and_native_write() {
         for change in ["clear", "rebind", "owner", "revoke", "epoch"] {
             let (_file, store, key, _) = setup();
-            store.voice_begin(20, key, 100).unwrap();
+            store.voice_begin(20, key, 100, false).unwrap();
             store
                 .voice_commit(20, 100, "Original generation only", &proof())
                 .unwrap();
@@ -436,7 +510,7 @@ mod tests {
         for clear in [false, true] {
             let (_file, store, key, _) = setup();
             store.clear_session_conversation(key).unwrap();
-            store.voice_begin(20, key, 100).unwrap();
+            store.voice_begin(20, key, 100, false).unwrap();
             store
                 .voice_commit(20, 100, "First native voice", &proof())
                 .unwrap();
@@ -484,12 +558,12 @@ mod tests {
         for cleared in [false, true] {
             let (_file, store, key, mut original) = setup();
             store.clear_session_conversation(key).unwrap();
-            store.voice_begin(20, key, 100).unwrap();
+            store.voice_begin(20, key, 100, false).unwrap();
             original.update_id = 21;
             original.message.as_mut().unwrap().message_id = 21;
             store.admit_update(&original).unwrap();
             store.begin_update(21).unwrap();
-            store.voice_begin(21, key, 100).unwrap();
+            store.voice_begin(21, key, 100, false).unwrap();
             store
                 .voice_commit(20, 100, "First voice", &proof())
                 .unwrap();
@@ -525,7 +599,7 @@ mod tests {
     #[test]
     fn native_entry_plan_requires_the_retained_transcript_and_its_provenance() {
         let (_file, store, key, original) = setup();
-        store.voice_begin(20, key, 100).unwrap();
+        store.voice_begin(20, key, 100, false).unwrap();
         let proof = proof();
         store
             .voice_commit(20, 100, "Investiguemos el gesto", &proof)

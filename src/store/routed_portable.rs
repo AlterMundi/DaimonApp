@@ -57,7 +57,6 @@ fn telegram_original_epoch_on(
     // requires retained native acceptance in the owned source conversation.
     if source.event_id != update.to_string()
         || source.tribu_source.is_some()
-        || source.transcription.is_some()
         || source.origin.chat_id != target.chat_id
         || source.text.len() > 16 * 1024
     {
@@ -78,6 +77,16 @@ fn telegram_original_epoch_on(
         return Ok(None);
     };
     let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+    let matching_voice = if let Some(proof) = &source.transcription {
+        source.origin.thread_id == target.thread_id
+            && source.telegram_files.is_empty()
+            && original.direct_human_attachment
+            && super::voice::portable_generation_matches_on(conn, update, target, source.human_id)?
+            && super::voice::content_on(conn, &original, source.human_id)
+                .is_ok_and(|(text, observed)| text == source.text && observed.as_ref() == Some(proof))
+    } else {
+        false
+    };
     let matching = original.update_id == update
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
@@ -87,7 +96,9 @@ fn telegram_original_epoch_on(
                     .from
                     .as_ref()
                     .is_some_and(|user| user.id == source.human_id && !user.is_bot)
-                && if source.telegram_files.is_empty() {
+                && if source.transcription.is_some() {
+                    matching_voice
+                } else if source.telegram_files.is_empty() {
                     original.direct_human_text
                         && message.text.as_deref() == Some(source.text.as_str())
                         && message.is_text_only()

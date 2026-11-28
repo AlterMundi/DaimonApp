@@ -794,6 +794,9 @@ impl App {
         {
             return Ok(());
         }
+        if voice::handle(self, &message, from.id, direct_human_attachment).await? {
+            return Ok(());
+        }
         if let Some((engine, profile)) = routing::portable_topic(&self.shared, topic_key) {
             if !message.has_own_attachment()
                 && is_foreign_bot_command(text, self.shared.bot_username().as_deref())
@@ -877,9 +880,6 @@ impl App {
                 profile,
             )
             .await;
-        }
-        if voice::handle(self, &message, from.id).await? {
-            return Ok(());
         }
         if tribu::handle_topic_control(self, &message, from.id, text).await? {
             return Ok(());
