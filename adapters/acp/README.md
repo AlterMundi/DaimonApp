@@ -37,6 +37,13 @@ authorizes one call with those exact arguments. Its per-turn socket only
 relays the call to Gateway, which authorizes it against the current original.
 The canonical return must still match the requesting native session,
 generation, workspace and signed incarnation before Gateway exposes it.
+The current agy worker can negotiate a scoped native interruption. After
+the journal commits the prompt, the worker sends `session/cancel` and retains
+the result only from that prompt's ACP response. A matching `cancelled`
+response settles the original as interrupted without publishing a partial
+answer. A disconnected worker or missing response leaves the effect
+uncertain. The next original still uses the existing exact-session lookup.
+A Gateway shutdown keeps its existing teardown behavior.
 An owner that also has the Antigravity SDK worker can select it for private
 Matrix originals in `interaction.antigravity_matrix_foreground`. The two
 profiles must designate the same signed embodiment. This preserves the private
@@ -75,6 +82,11 @@ incorporation receipt, visible request and response, and one canonical return
 in the original Codex conversation. It then checks the reverse direction:
 agy starts a request to the fixture Codex topic and uses the result in its
 original native history.
+Use the same fixture with `--interrupt` to qualify the current Gateway and
+worker against the selected real CLI in a disposable Telegram topic. It
+interrupts an active prompt, checks the retained receipt and absence of a
+partial publication, and verifies that a duplicate update does not run
+again and a new original resumes the same native session.
 
 Live receiving acceptance on ITACA also used an ordinary Telegram message.
 Antigravity opened one request to an owned Codex topic. Gateway retained the

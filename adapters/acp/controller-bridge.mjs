@@ -82,10 +82,13 @@ export async function controllerBridge(correlation, output, stop) {
       }
     })();
   });
-  async function close() {
+  function interrupt() {
     active = undefined;
-    for (const socket of sockets) socket.destroy();
     for (const resolve of pending.values()) resolve(uncertain());
+  }
+  async function close() {
+    interrupt();
+    for (const socket of sockets) socket.destroy();
     pending.clear();
     server.close();
     await rm(directory, { recursive: true, force: true });
@@ -98,7 +101,7 @@ export async function controllerBridge(correlation, output, stop) {
     throw error;
   }
   return {
-    access, close,
+    access, close, interrupt,
     async serve(input, nativeSessionId, claim) {
       active = { nativeSessionId, claim };
       try {

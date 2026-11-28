@@ -198,7 +198,12 @@ pub(in crate::app) async fn execute_worker(
     let negotiated_interrupt = AtomicBool::new(false);
     let shutdown = steering
         .as_ref()
-        .map(|adapter| adapter.app.shared.shutdown.clone());
+        .map(|adapter| adapter.app.shared.shutdown.clone())
+        .or_else(|| {
+            controller
+                .as_ref()
+                .map(|owner| owner.app.shared.shutdown.clone())
+        });
     let deadline = tokio::time::sleep(Duration::from_secs(130));
     let exchange = async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
@@ -385,9 +390,11 @@ pub(in crate::app) async fn execute_worker(
                 decision["steering"] = json!(true);
             }
             if committed
-                && engine == ForegroundEngine::Claude
-                && steering.is_some()
                 && frame["targetedInterrupt"] == true
+                && ((engine == ForegroundEngine::Claude && steering.is_some())
+                    || (engine == ForegroundEngine::Antigravity
+                        && agy.is_some()
+                        && shutdown.is_some()))
             {
                 negotiated_interrupt.store(true, Ordering::Relaxed);
                 decision["targetedInterrupt"] = json!(true);
@@ -398,6 +405,7 @@ pub(in crate::app) async fn execute_worker(
         let mut next_call = 1;
         let mut steer_ready = false;
         let mut interrupt_sent = false;
+        let interrupt_command = json!({"schema":schema,"type":"interrupt","inputId":id,"sessionId":session});
         let mut steer_results = Vec::new();
         loop {
             if frame.is_null() {
@@ -409,8 +417,7 @@ pub(in crate::app) async fn execute_worker(
                         _ = cancel.cancelled(), if negotiated_interrupt.load(Ordering::Relaxed) && !interrupt_sent => {
                             anyhow::ensure!(!shutdown.as_ref().is_some_and(|token| token.is_cancelled()),
                                 "Native worker stopped for Gateway shutdown");
-                            send(&mut input, json!({"schema":schema,"type":"interrupt",
-                                "inputId":id,"sessionId":session})).await?;
+                            send(&mut input, interrupt_command.clone()).await?;
                             interrupt_sent = true;
                         }
                         observed = &mut next => {
@@ -514,6 +521,11 @@ pub(in crate::app) async fn execute_worker(
                     && frame["arguments"].to_string().len() <= 15600,
                 "Invalid native controller call"
             );
+            if agy.is_some() && interrupt_sent {
+                next_call += 1;
+                frame = Value::Null;
+                continue;
+            }
             let request = ToolInvocation {
                 local_turn: owner.local_turn,
                 harness: engine.harness(),
@@ -541,9 +553,19 @@ pub(in crate::app) async fn execute_worker(
                     controller_closed.clone(),
                 )
             };
-            let reply = result
-                .await
-                .context("Native controller result unavailable; inspect retained effects")?;
+            let reply = tokio::select! {
+                biased;
+                _ = cancel.cancelled(), if agy.is_some() && negotiated_interrupt.load(Ordering::Relaxed) => {
+                    anyhow::ensure!(!shutdown.as_ref().is_some_and(|token| token.is_cancelled()),
+                        "Native worker stopped for Gateway shutdown");
+                    send(&mut input, interrupt_command.clone()).await?;
+                    interrupt_sent = true;
+                    next_call += 1;
+                    frame = Value::Null;
+                    continue;
+                }
+                reply = result => reply.context("Native controller result unavailable; inspect retained effects")?,
+            };
             let mut response = json!({"schema":schema,"type":"controller_reply",
                 "inputId":id,"sessionId":session,"callId":next_call,
                 "success":reply.success,"text":reply.text});
@@ -585,10 +607,14 @@ pub(in crate::app) async fn execute_worker(
                             && outcome["terminalObserved"].is_boolean(),
                     Some("interrupted") =>
                         interrupt_sent
-                            && engine == ForegroundEngine::Claude
                             && native_session.is_some()
                             && outcome["sessionId"].as_str() == native_session.as_deref()
-                            && outcome["cancelled"].is_array(),
+                            && match engine {
+                                ForegroundEngine::Claude => outcome["cancelled"].is_array(),
+                                ForegroundEngine::Antigravity =>
+                                    agy.is_some() && outcome.get("cancelled").is_none(),
+                                _ => false,
+                            },
                     Some("not_submitted") => true,
                     _ => false,
                 },

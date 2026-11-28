@@ -1588,10 +1588,9 @@ impl Store {
             }
         } else if current.phase == Phase::Submitting
             && outcome["phase"] == "interrupted"
-            && current
-                .target_execution
-                .as_ref()
-                .is_some_and(|binding| binding.harness == Harness::Claude)
+            && current.target_execution.as_ref().is_some_and(|binding| {
+                matches!(binding.harness, Harness::Claude | Harness::Antigravity)
+            })
             && current.native_thread.as_deref() == outcome["sessionId"].as_str()
         {
             super::interaction::transport_on(

@@ -70,7 +70,7 @@ async function runWorker(t, profile, text, beforeDecision, agy, controller) {
   const { nativeSessionId, ...correlation } = first;
   assert.ok(nativeSessionId);
   assert.deepEqual(correlation, { ...same, type: 'prepare_submission',
-    ...(agy ? { workspace: agy.workspace, inputAcceptance: true, workAcceptance: true } : {}) });
+    ...(agy ? { workspace: agy.workspace, inputAcceptance: true, workAcceptance: true, targetedInterrupt: true } : {}) });
   const committed = beforeDecision(nativeSessionId);
   await writeFrame(child.stdin, {
     ...same, type: 'submission_decision', committed,
@@ -155,6 +155,19 @@ test('the ACP controller socket requires turn activation, native tool selection 
       success: true, text: 'confirmed' });
     assert.deepEqual(await result, { isError: false, content: [{ type: 'text', text: 'confirmed' }] });
     assert.equal((await callController(bridge.access, call, signal)).isError, true);
+    grants.add(controllerCallKey(call));
+    const pending = callController(bridge.access, call, signal);
+    assert.equal((await wire.next()).value?.callId, 2);
+    bridge.interrupt();
+    assert.deepEqual(await pending, {
+      isError: true, content: [{ type: 'text', text: 'Controller result unconfirmed. Inspect retained state.' }],
+    });
+    await writeFrame(input, { ...correlation, type: 'controller_reply', callId: 2,
+      success: true, text: 'late confirmation' });
+    assert.equal(stop.signal.aborted, false);
+    grants.add(controllerCallKey(call));
+    assert.equal((await callController(bridge.access, call, signal)).isError, true);
+    assert.equal(grants.size, 1);
     input.end();
     await serving;
     assert.equal(stop.signal.aborted, true);
