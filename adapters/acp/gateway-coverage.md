@@ -189,7 +189,14 @@ DaimonCraft design has separate evidence requirements.
 
 ### Next receiving pilots
 
-Antigravity CLI goes first, then Muse Code. The ITACA `agy` 1.5.18 probe
+Antigravity has a live ITACA topic. Qwen Code and MiniMax Code remain in
+the qualification queue. For Qwen, qualify the Gateway topic using the selected
+Singapore Token Plan account. For MiniMax, verify subscription-backed access and
+qualify the topic and native resumption with that account. Muse Code is on hold
+pending Meta's response to the submitted support case. Check the response before
+resuming the subscription-backed trial.
+
+The ITACA `agy` 1.5.18 probe
 negotiated ACP v1, opened a sandboxed session, selected Neon with medium
 reasoning and received the expected synthetic reply from the selected
 account. The common ACP client then reopened the exact native ID in a fresh
@@ -236,8 +243,11 @@ refusal on the installed echo provider. ITACA now selects the official
 Canary channel. Stable and Canary both returned an empty visible model
 catalog with the selected credential. A clean Canary configuration reproduced
 the failure, and the explicit model probe was refused by Meta. A prior
-interactive reply is retained, with no model ID in its export. A real
-subscription-backed MSP turn and Gateway topic binding remain open.
+interactive reply is retained, with no model ID in its export. Meta acknowledged
+a support case about the empty catalog on the selected paid account and the
+availability of nonprofit research or open-source discounts or credits. Checking
+that response is pending. A real subscription-backed MSP turn and Gateway topic
+binding remain open.
 Its exact-turn steering and stable command IDs are
 useful candidates for the existing Gateway acceptance contract. ACP v1
 for Muse is a separate experimental route.
