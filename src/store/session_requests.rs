@@ -1783,15 +1783,21 @@ mod tests {
         if paired {
             let (_, delivered, _) = send("revoked", "Retire before exposure", true).unwrap();
             let (local, _) = begin(&delivered);
-            store
-                .conn
-                .lock()
-                .unwrap()
-                .execute(
-                    "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
-                    [&event],
-                )
-                .unwrap();
+            if let Some(update) = update {
+                store
+                    .save_bot_state(&format!("stop_input_epoch:{update}"), "revoked")
+                    .unwrap();
+            } else {
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE conversation_inputs SET retired=1 WHERE id=?1",
+                        [&event],
+                    )
+                    .unwrap();
+            }
             assert!(!store.expose_routed_portable(
                 &delivered,
                 local,
