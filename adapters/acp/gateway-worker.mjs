@@ -282,6 +282,7 @@ async function main(path) {
         return;
       }
     }
+    const interrupt = new AbortController();
     let providerUnavailable = false;
     let reportAcceptance = false;
     let receipt;
@@ -296,7 +297,7 @@ async function main(path) {
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
         nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions, images,
-        onInputAccepted: accept,
+        onInputAccepted: accept, interruptSignal: interrupt.signal,
         async onToolPermission(nativeSessionId, toolCall) {
           if (toolCall.name !== 'mcp_matrix_' + CONTROLLER) return true;
           const key = controllerCallKey(toolCall.rawInput);
@@ -333,17 +334,31 @@ async function main(path) {
           }
         }
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId,
-          ...(agy ? { workspace: profile.cwd, inputAcceptance: true, workAcceptance: true } : {}) }, stop.signal);
+          ...(agy ? { workspace: profile.cwd, inputAcceptance: true, workAcceptance: true, targetedInterrupt: true } : {}) }, stop.signal);
         const decision = (await pipe.next()).value;
-        const acceptanceFields = ['observeAcceptance', 'requireWork'].filter(field => agy && decision?.[field] === true);
+        const acceptanceFields = ['observeAcceptance', 'requireWork', 'targetedInterrupt'].filter(field => agy && decision?.[field] === true);
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed', ...acceptanceFields])
             || (decision.requireWork === true && decision.observeAcceptance !== true)
             || decision.schema !== schema || decision.type !== 'submission_decision'
             || decision.inputId !== first.inputId || decision.sessionId !== first.sessionId
             || decision.committed !== true) return false;
         reportAcceptance = decision.observeAcceptance === true;
+        async function* commands() {
+          for await (const command of pipe) {
+            if (decision.targetedInterrupt === true && command.type === 'interrupt'
+                && closed(command, ['schema', 'type', 'inputId', 'sessionId'])
+                && command.schema === schema && command.inputId === first.inputId
+                && command.sessionId === first.sessionId) {
+              interrupt.abort();
+              bridge?.interrupt();
+              continue;
+            }
+            yield command;
+          }
+        }
+        const pendingCommands = commands();
         if (bridge) {
-          void bridge.serve(pipe, nativeSessionId, key => {
+          void bridge.serve(pendingCommands, nativeSessionId, key => {
             const count = controllerGrants.get(key);
             if (!count) return false;
             if (count === 1) controllerGrants.delete(key);
@@ -351,7 +366,7 @@ async function main(path) {
             return true;
           }).catch(() => stop.abort());
         } else {
-          void pipe.next().then(() => stop.abort(), () => stop.abort());
+          void pendingCommands.next().then(() => stop.abort(), () => stop.abort());
         }
         return true;
       },
