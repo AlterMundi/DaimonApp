@@ -10,7 +10,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,toolbarHost,noticeHost,daimonName='Daimon',onTarget=()=>{},focusComposer=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,toolbarHost,noticeHost,portableDeliveryText=()=>undefined,daimonName='Daimon',onTarget=()=>{},focusComposer=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -310,7 +310,12 @@
     }
     function appendItem(item,prepend=false){
       const found=[...entries.children].find(box=>box.dataset.event===item.id);
-      if(found)return;
+      const delivery=portableDeliveryText(item.portable_phase);
+      if(found){
+        const status=found.children[2];
+        if(delivery&&status?.className==='reply-status'&&status.textContent!==delivery)status.textContent=delivery;
+        return;
+      }
       const ordinary=!technical&&item.kind==='message';
       const messageStyle=ordinary?'session-message reply'+(item.role==='user'?' human-message':''):'session-message';
       const box=el('article',undefined,messageStyle);box.dataset.event=item.id;box.dataset.position=String(item.position);box.dataset.end=String(item.next_position);
@@ -327,7 +332,7 @@
       };
       renderText();
       box.append(caption,text);
-      if(item.local)box.append(el('p',item.status||'Sending…','reply-status'));
+      if(item.local||delivery)box.append(el('p',delivery||item.status||'Sending…','reply-status'));
       if(item.timestamp){
         const time=el('time');time.dateTime=item.timestamp;
         const stamp=new Date(item.timestamp);

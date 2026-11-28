@@ -353,6 +353,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             assert f"Launching skill: {skill}" in payload or expected_result in payload
                             payload = json.dumps(messages, ensure_ascii=False)
                         assert expected_result in payload, (tool, prior, payload) if steer else tool
+                        if steer and prior == len(steps):
+                            steer["assert_delivery"]("accepted")
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:

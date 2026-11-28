@@ -13,7 +13,7 @@ class Element{
   focus(){this.focused=true;}
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=false}={}){
+function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=false,portableDeliveryText}={}){
   const document={createElement:tag=>new Element(tag)},window={localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}},root=new Element('main'),timeline=new Element('div');root.append(timeline);
   let observer;
   window.IntersectionObserver=class{
@@ -40,7 +40,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:completedItems||[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage,pending_items:pendingItems,links_input_ids:true};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
-  const control=window.SessionWorkspace.mount({timeline,api,daimonName,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
+  const control=window.SessionWorkspace.mount({timeline,api,daimonName,portableDeliveryText,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
     audio:row=>({muted:mutes.has(row.id),solo:solos.has(row.id),filtered:mutes.size+solos.size>0}),
     onAudio:(action,row)=>{audioCalls.push([action,row?.id]);if(action==='mute'){if(mutes.has(row.id))mutes.delete(row.id);else mutes.add(row.id);}if(action==='solo'){if(solos.has(row.id))solos.delete(row.id);else solos.add(row.id);}if(action==='reset'){mutes.clear();solos.clear();}control.syncAudio();}});
   const all=()=>{const result=[];const visit=n=>{result.push(n);n.children.forEach(visit);};visit(root);return result;};
@@ -77,7 +77,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   quiet.failWorkspace(true);await quiet.control.refresh('binding');quiet.control.reset();quiet.advance(9000);
   assert.equal(quiet.byLabel('Retry session status').hidden,true,'Old binding notices cannot reappear after reset');
 
-  const saved=boot();await saved.control.refresh('binding');
+  const saved=boot({portableDeliveryText:phase=>({steering:'Waiting to enter',accepted:'Received by the session'})[phase]});await saved.control.refresh('binding');
   saved.byText('Busy work').click();await tick();
   const inputId='a1111111-1111-4111-8111-111111111111';
   const original={kind:'message',role:'user',id:'pending-original',input_id:inputId,text:'Please start the selected work',pending:true};
@@ -91,7 +91,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.match(visible()[0].textContent,/Sending/);
   saved.control.settlePreview(inputId,'Message saved.');
   assert.match(visible()[0].textContent,/Message saved/);
-  saved.pending([original]);
+  saved.pending([{...original,portable_phase:"steering"}]);
   saved.control.observeSubmission(saved.reference(7,'b'));await tick();
   assert.equal(saved.reads.length,start,'A change to the selected revision fences the immediate refresh');
   saved.control.observeSubmission(saved.reference(7));await tick();
@@ -99,6 +99,13 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.match(saved.reads.at(-1),/^interaction\/sessions\/b\?/);
   assert.equal(visible().length,1);
   assert.equal(visible()[0].dataset.event,'pending-original','The retained input replaces the local preview');
+  assert.match(visible()[0].textContent,/Waiting to enter/);
+  const pendingCard=visible()[0];
+  saved.pending([{...original,portable_phase:"accepted"}]);
+  saved.control.observeSubmission(saved.reference(7));await tick();
+  assert.equal(visible().length,1);
+  assert.equal(visible()[0],pendingCard,'A receipt updates the existing input card');
+  assert.match(visible()[0].textContent,/Received by the session/);
   saved.pending([]);saved.completed([{...original,id:'completed-original',pending:false,position:150,next_position:160}]);
   saved.control.observeSubmission(saved.reference(7));await tick();
   assert.equal(visible().length,1);
