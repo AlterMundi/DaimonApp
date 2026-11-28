@@ -68,6 +68,21 @@ and verify one attributed correction on the same session. The
 [Agentic AI Foundation](https://aaif.io/projects) is a related venue for
 shared work on Goose, MCP and Agent Skills.
 
+## Upstream contribution map
+
+Wiggle Stash researched these entry points on 2026-11-28.
+
+| Audience | First contribution |
+| --- | --- |
+| ACP maintainers | Run the exact mid-turn correction and reconnect case against the ACP v2 prompt lifecycle. Bring one reproducible trace to the open prompt-delivery RFD. [Governance](https://agentclientprotocol.com/community/governance) · [RFD #1261](https://github.com/agentclientprotocol/agent-client-protocol/pull/1261) |
+| Harness and adapter maintainers | For Codex and Claude, run the same correction over ACP and over the native harness interface. Report the boundary at which the exact original, turn, or incorporation evidence diverges. [Codex ACP](https://github.com/agentclientprotocol/codex-acp/issues) · [Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp/issues) |
+| AAIF and MCP groups | Present a synthetic trace that distinguishes transport receipt, model insertion, reconnect readback, and user-visible projection. Goose can supply another comparison. Bring a gap involving MCP tool events or transports to the relevant MCP group. [AAIF Observability and Traceability](https://github.com/aaif/wg-observability-and-traceability) · [MCP working groups](https://modelcontextprotocol.io/community/working-interest-groups) |
+
+Zed and JetBrains share ACP's interim governance. Its [AAIF
+application](https://github.com/aaif/project-proposals/issues/1) is a separate
+record. Keep published traces synthetic and omit identities, account details
+and private history.
+
 ## Stack parity inventory
 
 Snapshot for 2026-11-28. **Live** means a receiving route was observed with the
