@@ -42,7 +42,7 @@ pub(super) fn freshness(
     Ok((current, correction))
 }
 
-fn bind_message(
+pub(super) fn bind_message(
     conn: &Connection,
     route: &ReturnRoute,
     human: i64,

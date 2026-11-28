@@ -57,6 +57,71 @@ const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind='portable_report' AND t.status='c
         AND call.phase IN ('requested','returned') AND original.retired=0
         AND json_extract(original.doc,'$.paired_actor')=1))"#;
 
+// The transport receives one derived view of an ordinary completed exchange.
+const PORTABLE_EXCHANGE_SCOPE: &str = r#"(p.kind IN ('portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original')
+    AND t.status='completed' AND t.execution_harness<>'codex' AND t.private_handoff=0
+    AND EXISTS(
+      SELECT 1 FROM interaction_results r
+      JOIN interaction_instructions i ON json_extract(i.doc,'$.local_turn')=t.id
+        AND json_extract(i.doc,'$.native_turn')=r.native_turn AND i.phase='accepted'
+      JOIN interaction_sources x ON x.id=i.input_id AND x.human_id=p.human_id
+      JOIN sessions w ON w.id=t.session_id AND w.id=i.session_id AND w.creator_user_id=p.human_id
+      JOIN conversation_entry_generations g ON g.session_id=w.id AND g.generation=t.execution_generation
+      WHERE r.id=p.source AND r.local_turn=t.id AND r.native_thread=t.native_thread_id
+        AND r.item_id='final' AND w.chat_id=s.chat_id AND x.origin_chat=w.chat_id
+        AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id)
+        AND json_type(x.doc,'$.tribu_source') IS NOT 'object'
+        AND ((p.kind IN ('portable_topic_exchange','portable_topic_original') AND s.id=w.id AND x.channel='conversation'
+              AND EXISTS(SELECT 1 FROM conversation_inputs c WHERE c.id=x.event_id
+                AND c.human_id=p.human_id AND c.retired=0 AND json_extract(c.doc,'$.paired_actor')=1))
+          OR (p.kind IN ('portable_entry_exchange','portable_entry_original') AND s.id<>w.id AND x.channel LIKE 'telegram:%'
+              AND x.origin_thread=w.thread_id))))"#;
+
+pub(super) fn portable_exchange_on(
+    conn: &Connection,
+    input: &crate::interaction::Instruction,
+    local: i64,
+    entry: SessionKey,
+) -> Result<()> {
+    let source = super::routing::source_on(conn, &input.id, input.human_id)?;
+    if source.tribu_source.is_some()
+        || super::session_requests::author_on(conn, &input.input_id)?.is_some()
+        || input.target == entry
+    {
+        return Ok(());
+    }
+    let (target, kind, label) = match source.channel.as_str() {
+        "conversation" => (input.target, "portable_topic_exchange", "Conversation"),
+        channel
+            if channel.starts_with("telegram:")
+                && source.origin.thread_id == input.target.thread_id =>
+        {
+            (entry, "portable_entry_exchange", "Telegram")
+        }
+        _ => return Ok(()),
+    };
+    conn.execute(
+        "WITH projection(position,kind) AS (VALUES (0,replace(?2,'_exchange','_original')),(1,?2))
+         INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+         SELECT t.id,s.id,?1,projection.kind,r.id,
+           CASE WHEN ?2='portable_entry_exchange' THEN '#'||coalesce(nullif(trim(w.session_title),''),'t'||w.thread_id)||' · update'||char(10)||char(10) ELSE '' END
+           ||CASE WHEN projection.position=0 THEN 'You · '||?3||char(10)||?4 ELSE r.body END,'ready',''
+         FROM projection CROSS JOIN turns t JOIN sessions s ON s.chat_id=?7 AND s.thread_id=?8 AND s.creator_user_id=?1
+         JOIN interaction_results r ON r.local_turn=t.id
+         JOIN interaction_instructions current ON current.id=?5 AND json_extract(current.doc,'$.native_turn')=r.native_turn
+         JOIN sessions w ON w.id=t.session_id
+         WHERE t.id=?6 AND t.from_user_id=?1 AND t.private_handoff=0 AND r.item_id='final' AND length(trim(r.body))>0
+           AND EXISTS(SELECT 1 FROM users u WHERE u.tg_user_id=?1 AND u.allowed=1)
+           AND (projection.position<>0 OR length(trim(?4))>0)
+           AND NOT EXISTS(SELECT 1 FROM interaction_public_deliveries d WHERE d.result_id=r.id AND d.human_id=?1
+             AND json_extract(d.doc,'$.origin.chat_id')=s.chat_id AND json_extract(d.doc,'$.origin.thread_id')=s.thread_id
+             AND (?2='portable_entry_exchange' OR json_type(d.doc,'$.origin.message_id')='integer'))
+         ORDER BY projection.position",
+        params![input.human_id, kind, label, source.text, input.id, local, target.chat_id, target.thread_id],
+    )?;
+    Ok(())
+}
+
 fn portable_report_delivery_current(
     conn: &Connection,
     delivery: &crate::interaction::Delivery,
@@ -520,7 +585,7 @@ impl Store {
             return Ok(None);
         }
         loop {
-            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
             let Some((id, body, valid, kind, source, local_turn, direct)) = row else {
                 tx.commit()?;
                 return Ok(None);
@@ -637,7 +702,33 @@ impl Store {
                 return Ok(false);
             }
         }
-        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
+        let exchange: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT source,human_id FROM topic_publications
+             WHERE id=?1 AND kind IN ('portable_topic_exchange','portable_entry_exchange')",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((result, human)) = exchange {
+            let mut query = tx.prepare(
+                "SELECT doc FROM interaction_public_deliveries WHERE result_id=?1 AND human_id=?2",
+            )?;
+            let mut rows = query.query(params![result, human])?;
+            let mut eligible = false;
+            while let Some(row) = rows.next()? {
+                let raw: String = row.get(0)?;
+                let delivery: crate::interaction::Delivery = serde_json::from_str(&raw)?;
+                if super::routing::delivery_freshness(&tx, &delivery)?.1 {
+                    return Ok(false);
+                }
+                eligible = true;
+            }
+            if !eligible {
+                return Ok(false);
+            }
+        }
+        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
         tx.commit()?;
         Ok(changed)
     }
@@ -656,6 +747,41 @@ impl Store {
             return Err(anyhow!("Topic publication receipt ownership changed"));
         }
         if let Some(message) = message {
+            let exchange: Option<(String, i64, i64, i64, i64)> = tx
+                .query_row(
+                    "SELECT p.source,p.human_id,t.session_id,s.chat_id,s.thread_id
+                 FROM topic_publications p JOIN turns t ON t.id=p.local_turn
+                 JOIN sessions s ON s.id=p.session_id WHERE p.id=?1
+                   AND p.kind IN ('portable_topic_exchange','portable_entry_exchange')",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()?;
+            if let Some((result, human, session, chat, topic)) = exchange {
+                let mut query = tx.prepare(
+                    "SELECT request_id FROM interaction_public_deliveries
+                     WHERE result_id=?1 AND human_id=?2
+                     UNION SELECT member.request_id FROM interaction_public_deliveries d
+                     JOIN interaction_delivery_requests member ON member.delivery_id=d.id
+                     WHERE d.result_id=?1 AND d.human_id=?2 ORDER BY request_id",
+                )?;
+                let requests = query
+                    .query_map(params![result, human], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                if !requests.is_empty() {
+                    super::routing::bind_message(
+                        &tx,
+                        &crate::interaction::ReturnRoute {
+                            chat_id: chat,
+                            thread_id: topic,
+                            message_id: Some(message),
+                        },
+                        human,
+                        session,
+                        &requests,
+                    )?;
+                }
+            }
             tx.execute("INSERT OR IGNORE INTO handoff_messages(chat_id,thread_id,message_id,turn_id,text) SELECT s.chat_id,s.thread_id,?3,p.local_turn,x.body FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN topic_publication_parts x ON x.publication=p.id WHERE p.id=?1 AND x.part=?2",params![id,part,message])?;
         }
         tx.commit()?;

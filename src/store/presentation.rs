@@ -92,6 +92,18 @@ pub(super) fn heartbeat_progress_on(
     Ok((next, offers))
 }
 
+// A topic exchange can be visible in the entry without changing its original
+// return address or creating a second delivery.
+const DELIVERY_ENTRY_SCOPE: &str = r#"(json_extract(d.doc,'$.origin.chat_id')=?3
+    AND json_extract(d.doc,'$.origin.thread_id')=?4 OR EXISTS(
+      SELECT 1 FROM topic_publications p JOIN sessions entry ON entry.id=p.session_id
+      WHERE p.source=d.result_id AND p.human_id=d.human_id
+        AND p.kind='portable_entry_exchange'
+        AND d.rowid=(SELECT min(first.rowid) FROM interaction_public_deliveries first
+           WHERE first.result_id=d.result_id AND first.human_id=d.human_id)
+        AND entry.chat_id=?3 AND entry.thread_id=?4 AND entry.creator_user_id=d.human_id
+    ))"#;
+
 pub(super) fn entry_on(conn: &Connection, human: i64, entry: SessionKey) -> Result<(i64, String)> {
     conn.query_row(
         "SELECT s.id,COALESCE(s.codex_thread_id,'') FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
@@ -554,7 +566,7 @@ impl Store {
             JOIN interaction_sources x ON x.id=r.input_id
             JOIN sessions s ON s.id=r.session_id
             WHERE d.rowid{comparison}?1 AND d.human_id=?2 AND r.human_id=?2 AND x.human_id=?2
-            AND s.creator_user_id=?2 AND json_extract(d.doc,'$.origin.chat_id')=?3 AND json_extract(d.doc,'$.origin.thread_id')=?4
+            AND s.creator_user_id=?2 AND {DELIVERY_ENTRY_SCOPE}
             ORDER BY d.rowid {order} LIMIT 9"
         ))?;
         let deliveries = stmt
@@ -886,7 +898,7 @@ pub(super) fn source_on(
         source
     } else if let Some(id) = id.strip_prefix("delivery:") {
         let row:Option<(String,String,Option<String>,String,bool,String)>=conn.query_row(
-            "SELECT d.doc,d.phase,
+            &format!("SELECT d.doc,d.phase,
              CASE WHEN t.execution_harness<>'codex' THEN (
                SELECT p.native_thread_id FROM turns p WHERE p.session_id=s.id AND p.from_user_id=?2
                AND p.execution_harness=t.execution_harness AND p.execution_generation=g.generation
@@ -901,13 +913,19 @@ pub(super) fn source_on(
              JOIN turns t ON t.id=o.local_turn AND t.session_id=s.id
              JOIN conversation_entry_generations g ON g.session_id=s.id
              WHERE d.id=?1 AND d.human_id=?2 AND r.human_id=?2 AND x.human_id=?2 AND s.creator_user_id=?2
-             AND json_extract(d.doc,'$.origin.chat_id')=?3 AND json_extract(d.doc,'$.origin.thread_id')=?4",
+             AND {DELIVERY_ENTRY_SCOPE}"),
              params![id,human,entry.chat_id,entry.thread_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
         let Some((doc, phase, current_native, result_native, force_fresh, result_id)) = row else {
             return Ok(None);
         };
         let delivery: crate::interaction::Delivery = serde_json::from_str(&doc)?;
         let (current, pending) = super::routing::delivery_freshness(conn, &delivery)?;
+        if (delivery.origin.chat_id != entry.chat_id
+            || delivery.origin.thread_id != entry.thread_id)
+            && pending
+        {
+            return Ok(None);
+        }
         let request_ids = delivery.requests().to_vec();
         json!({"id":format!("delivery:{id}"),"kind":"worker_result","text":delivery.body,
             "request_id":delivery.request_id,"request_ids":request_ids,"result_id":result_id,"target":delivery.target,"current":current,
@@ -2066,8 +2084,50 @@ mod tests {
         other_topic.origin.thread_id = instruction.target.thread_id;
         assert_eq!(
             claude_telegram_quote_on(&conn, &other_topic, instruction.target, 21).unwrap(),
-            TelegramQuote::Selected(seed)
+            TelegramQuote::Selected(seed.clone())
         );
+        for (kind, session, message, origin) in [
+            ("portable_topic_exchange", worker.id, 22, &other_topic),
+            (
+                "portable_entry_exchange",
+                entry_on(&conn, 100, entry).unwrap().0,
+                23,
+                &source,
+            ),
+        ] {
+            let mirror: i64 = conn.query_row(
+                "INSERT INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+                 VALUES(?1,?2,100,?3,?4,?5,'sent','fixture') RETURNING id",
+                params![local,session,kind,result,format!("#Worker · update\n\n{}",body.trim_end())],
+                |r|r.get(0),
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO topic_publication_parts(publication,part,body,phase,message_id)
+                 VALUES(?1,0,'Projected exchange part','sent',?2)",
+                params![mirror, message],
+            )
+            .unwrap();
+            assert_eq!(
+                claude_telegram_quote_on(&conn, origin, instruction.target, message).unwrap(),
+                TelegramQuote::Selected(seed.clone())
+            );
+            let original: i64 = conn.query_row(
+                "INSERT INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+                 VALUES(?1,?2,100,?3,?4,'The human original only','sent','fixture') RETURNING id",
+                params![local,session,kind.replace("_exchange","_original"),result],
+                |r|r.get(0),
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO topic_publication_parts(publication,part,body,phase,message_id)
+                 VALUES(?1,0,'The human original only','sent',?2)",
+                params![original, message + 10],
+            )
+            .unwrap();
+            assert_eq!(
+                claude_telegram_quote_on(&conn, origin, instruction.target, message + 10).unwrap(),
+                TelegramQuote::Unrelated
+            );
+        }
         conn.execute(
             "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",
             [worker.id],

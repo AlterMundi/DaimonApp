@@ -1482,6 +1482,7 @@ mod tests {
                     &delivered,
                     local,
                     &json!({"phase":"completed","sessionId":native,"text":partial}),
+                    None,
                 )
                 .unwrap();
             assert!(!partial[0].completed);
@@ -1506,6 +1507,7 @@ mod tests {
                         &next,
                         next_local,
                         &json!({"phase":"completed","sessionId":native,"text":text}),
+                        None,
                     )
                     .unwrap();
                 assert_eq!(deliveries.len(), usize::from(allowed));
@@ -1533,6 +1535,7 @@ mod tests {
                 &delivered,
                 local,
                 &json!({"phase":"completed", "sessionId":native, "text":text}),
+                None,
             )
             .unwrap();
         assert_eq!(deliveries[0].internal, Some(true));
@@ -1593,6 +1596,7 @@ mod tests {
                     &stale,
                     stale_local,
                     &json!({"phase":"completed","sessionId":native,"text":stale_text}),
+                    None,
                 )
                 .unwrap();
             assert_eq!(result[0].internal, Some(true));
