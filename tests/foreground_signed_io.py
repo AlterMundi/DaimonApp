@@ -1536,7 +1536,8 @@ timeout_seconds=5
             current = send(newer_original, newer_answer, destination)
             approval = "Sí, adelante."
             approval_answer = "I'll proceed with the copper clasp."
-            interrupt = browser and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT") == "1"
+            interrupt = os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT" if browser else
+                                       "FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE_INTERRUPT") == "1"
             try:
                 self.assertTrue(arrived.wait(20), provider.failure)
                 pending = send(approval, approval_answer, older)
@@ -1554,9 +1555,12 @@ timeout_seconds=5
                 provider.quote_answer_gate = None
                 if interrupt:
                     provider.interrupted_quote_original = newer_original
-                    interrupt_id, stopped = browser.text("/interrupt", reply=destination)
-                    self.assertEqual(stopped["phase"], "interruption")
-                    self.assertEqual(stopped["routing"]["phase"], "requested")
+                    if browser:
+                        interrupt_id, stopped = browser.text("/interrupt", reply=destination)
+                        self.assertEqual(stopped["phase"], "interruption")
+                        self.assertEqual(stopped["routing"]["phase"], "requested")
+                    else:
+                        interrupt_id = journey.admit("/interrupt", topic=7)
 
                     def interrupted():
                         return journey.row(
@@ -1582,11 +1586,14 @@ timeout_seconds=5
             self.assertEqual(len(provider.calls), 3)
             if interrupt:
                 self.assertEqual(reply_native, native)
-                _, replay = browser.text("/interrupt", reply=destination, original_id=interrupt_id)
-                self.assertIs(replay["new_input"], False)
                 self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])
-                self.assertFalse(any(row.get("preview") == newer_answer
-                                     for row in browser.get("/api/interaction")["items"]))
+                if browser:
+                    _, replay = browser.text("/interrupt", reply=destination, original_id=interrupt_id)
+                    self.assertIs(replay["new_input"], False)
+                    self.assertFalse(any(row.get("preview") == newer_answer
+                                         for row in browser.get("/api/interaction")["items"]))
+                else:
+                    self.assertFalse(journey.has(newer_answer, 7))
             else:
                 self.assertEqual(reply_native, native)
 

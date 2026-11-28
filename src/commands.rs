@@ -191,7 +191,10 @@ pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<P
         "/rename" => BridgeCommand::Rename {
             title: required_arg(args, "/rename <new name>")?.to_string(),
         },
-        "/stop" if args.trim().is_empty() => BridgeCommand::Stop,
+        "/interrupt" | "/stop" if args.trim().is_empty() => BridgeCommand::Stop,
+        "/interrupt" => {
+            bail!("Use /interrupt without arguments to stop the current conversation's turn.")
+        }
         "/stop" => BridgeCommand::StopControl {
             args: args.trim().to_string(),
         },
@@ -598,6 +601,15 @@ fn choice_help(title: &str, commands: &[&str]) -> CommandHelp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupt_is_scoped_to_the_current_turn() {
+        assert!(matches!(
+            parse_command("/interrupt", "", "/interrupt").unwrap(),
+            ParsedInput::Bridge(BridgeCommand::Stop)
+        ));
+        assert!(parse_command("/interrupt", "all", "/interrupt all").is_err());
+    }
 
     #[test]
     fn fork_requires_a_named_topic() {
