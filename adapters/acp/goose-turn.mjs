@@ -11,7 +11,7 @@ function isSelectedCatalog(catalog, expected) {
 }
 
 export async function runGooseTurn({
-  binary, cwd, env, mcpServers, toolNames, text, beforeSubmit, signal, nativeSessionId,
+  binary, cwd, env, mcpServers, toolNames, text, beforeSubmit, signal, nativeSessionId, interruptSignal,
 }) {
   if (!Array.isArray(toolNames) || !toolNames.length
       || toolNames.some(name => typeof name !== 'string' || !name)
@@ -20,7 +20,7 @@ export async function runGooseTurn({
   }
   const expected = [...toolNames].sort();
   return runAcpTurn({
-    binary, args: [], cwd, text, beforeSubmit, signal,
+    binary, args: [], cwd, text, beforeSubmit, signal, interruptSignal,
     env: {
       ...env, GOOSE_DISABLE_SESSION_NAMING: 'true',
       GOOSE_DISABLE_SKILLS: 'true', GOOSE_SLASH_COMMANDS_ENABLED: 'false',

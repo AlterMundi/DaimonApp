@@ -33,6 +33,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
+    pub shutdown: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
     pub steering: Option<&'a mut WorkerSteering<'s>>,
     pub acceptance: Option<WorkerAcceptance<'a>>,
@@ -171,6 +172,7 @@ pub(in crate::app) async fn execute_worker(
         attachments,
         body,
         cancel,
+        shutdown,
         controller,
         mut steering,
         acceptance,
@@ -198,14 +200,6 @@ pub(in crate::app) async fn execute_worker(
         engine == ForegroundEngine::Claude && (human_original || routed_host_access);
     let committed_long_turn = AtomicBool::new(false);
     let negotiated_interrupt = AtomicBool::new(false);
-    let shutdown = steering
-        .as_ref()
-        .map(|adapter| adapter.app.shared.shutdown.clone())
-        .or_else(|| {
-            controller
-                .as_ref()
-                .map(|owner| owner.app.shared.shutdown.clone())
-        });
     let deadline = tokio::time::sleep(Duration::from_secs(130));
     let exchange = async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
@@ -396,9 +390,7 @@ pub(in crate::app) async fn execute_worker(
             if committed
                 && frame["targetedInterrupt"] == true
                 && ((engine == ForegroundEngine::Claude && steering.is_some())
-                    || (engine == ForegroundEngine::Antigravity
-                        && agy.is_some()
-                        && shutdown.is_some()))
+                    || acp_topic.is_some())
             {
                 negotiated_interrupt.store(true, Ordering::Relaxed);
                 decision["targetedInterrupt"] = json!(true);
@@ -419,7 +411,7 @@ pub(in crate::app) async fn execute_worker(
                     tokio::select! {
                         biased;
                         _ = cancel.cancelled(), if negotiated_interrupt.load(Ordering::Relaxed) && !interrupt_sent => {
-                            anyhow::ensure!(!shutdown.as_ref().is_some_and(|token| token.is_cancelled()),
+                            anyhow::ensure!(!shutdown.is_cancelled(),
                                 "Native worker stopped for Gateway shutdown");
                             send(&mut input, interrupt_command.clone()).await?;
                             interrupt_sent = true;
@@ -590,7 +582,7 @@ pub(in crate::app) async fn execute_worker(
             let reply = tokio::select! {
                 biased;
                 _ = cancel.cancelled(), if agy.is_some() && negotiated_interrupt.load(Ordering::Relaxed) => {
-                    anyhow::ensure!(!shutdown.as_ref().is_some_and(|token| token.is_cancelled()),
+                    anyhow::ensure!(!shutdown.is_cancelled(),
                         "Native worker stopped for Gateway shutdown");
                     send(&mut input, interrupt_command.clone()).await?;
                     interrupt_sent = true;
@@ -645,9 +637,8 @@ pub(in crate::app) async fn execute_worker(
                             && outcome["sessionId"].as_str() == native_session.as_deref()
                             && match engine {
                                 ForegroundEngine::Claude => outcome["cancelled"].is_array(),
-                                ForegroundEngine::Antigravity =>
-                                    agy.is_some() && outcome.get("cancelled").is_none(),
-                                _ => false,
+                                ForegroundEngine::Antigravity | ForegroundEngine::Goose =>
+                                    acp_topic.is_some() && outcome.get("cancelled").is_none(),
                             },
                     Some("not_submitted") => true,
                     _ => false,
@@ -690,7 +681,7 @@ pub(in crate::app) async fn execute_worker(
         _ = async {
             cancel.cancelled().await;
             if negotiated_interrupt.load(Ordering::Relaxed)
-                && !shutdown.as_ref().is_some_and(|token| token.is_cancelled())
+                && !shutdown.is_cancelled()
             {
                 tokio::time::sleep(Duration::from_secs(4)).await;
             }
@@ -930,6 +921,7 @@ pub(super) async fn run_portable_turn(
                 attachments: &[],
                 body: body.clone(),
                 cancel: &cancel,
+                shutdown: &app.shared.shutdown,
                 steering: None,
                 acceptance: None,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
@@ -1190,6 +1182,7 @@ pub(super) async fn run_routed_portable(
                     attachments: &request.attachments,
                     body: body.clone(),
                     cancel: &cancel,
+                    shutdown: &app.shared.shutdown,
                     controller,
                     steering: steering.as_mut(),
                     acceptance: ((engine == ForegroundEngine::Claude || config.agy_cli)

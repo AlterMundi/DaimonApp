@@ -146,6 +146,7 @@ pub(super) async fn run_selected(
             attachments: &[],
             body,
             cancel: &cancel,
+            shutdown: &app.shared.shutdown,
             controller: None,
             steering: None,
             acceptance: None,
