@@ -127,9 +127,24 @@ journal's original and return uniqueness.
 Goose keeps cancelled text in its native transcript. The ACP client can load
 an explicitly selected existing native session in a new process and rechecks
 the exact tool catalog before journal admission. A missing or mismatched
-session leaves the original unsent. Gateway has yet to select a Goose native
-session for continuation through this entry point. Status and recovery
-must preserve uncertain originals.
+session leaves the original unsent. Status and recovery preserve uncertain
+originals.
+
+For a topic, set both `interaction_direct = true` and
+`goose_topic_store_id` (a UUID) on its selected Goose foreground profile.
+Keep the same UUID in the owner-only `goose-topic-store-id` file alongside
+the worker's Goose configuration and session data in `stateRoot`. A new
+independent store needs its own UUID. Use the topic's exact canonical
+workspace as the worker profile's `cwd`. Gateway selects the last exposed
+session for that topic, generation, workspace, store, and signed incarnation.
+The worker verifies the store and native session before exposing the original.
+A memory grant for one original is unavailable on this resumable route,
+since native history can retain its result. The private Matrix route continues to use its existing
+worker contract. To exercise both topic surfaces through Gateway, run
+`python3 tests/goose_topic_io.py /absolute/telecodex /absolute/goose-acp` with the
+pinned patched binary. The fixture uses a disposable journal and a loopback
+provider, restarts Gateway, and checks continuation, duplicate suppression and
+workspace mismatch.
 
 ## Selecting Goose in Gateway
 

@@ -9,16 +9,17 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(super) struct AgyTurn<'a> {
+pub(super) struct AcpTopicTurn<'a> {
     workspace: &'a str,
     native_session_id: Option<&'a str>,
+    store_id: Option<&'a str>,
 }
 
 pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub id: &'a str,
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
-    pub(super) agy: Option<AgyTurn<'a>>,
+    pub(super) acp_topic: Option<AcpTopicTurn<'a>>,
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
@@ -149,14 +150,14 @@ pub(in crate::app) async fn execute_worker(
     let schema = match engine {
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
-        ForegroundEngine::Antigravity if turn.agy.is_some() => "daimon-gateway.antigravity-turn/v2",
+        ForegroundEngine::Antigravity if turn.acp_topic.is_some() => "daimon-gateway.antigravity-turn/v2",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
         id,
         session,
         resume,
-        agy,
+        acp_topic,
         human_original,
         native_goal_command,
         routed_human,
@@ -174,6 +175,7 @@ pub(in crate::app) async fn execute_worker(
         mut steering,
         acceptance,
     } = turn;
+    let agy = acp_topic.as_ref().filter(|_| engine == ForegroundEngine::Antigravity);
     anyhow::ensure!(
         !cancel.is_cancelled(),
         "Native worker cancelled before preparation"
@@ -274,9 +276,14 @@ pub(in crate::app) async fn execute_worker(
                 crate::store::ClaudeContextUnavailable
             );
         }
-        if let Some(agy) = &agy {
-            start["workspace"] = json!(agy.workspace);
-            start["resumeNativeSessionId"] = json!(agy.native_session_id);
+        if let Some(topic) = &acp_topic {
+            start["workspace"] = json!(topic.workspace);
+            start["resumeNativeSessionId"] = json!(topic.native_session_id);
+            if let Some(store_id) = topic.store_id {
+                start["storeId"] = json!(store_id);
+            }
+        }
+        if agy.is_some() {
             if controller.is_some() {
                 start["controller"] = json!(true);
             }
@@ -317,22 +324,10 @@ pub(in crate::app) async fn execute_worker(
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
                     .context("Goose preparation omitted its native session")?,
-                ForegroundEngine::Antigravity if agy.is_some() => {
-                    let agy = agy.as_ref().expect("selected agy adapter");
-                    let native = observed
-                        .and_then(Value::as_str)
-                        .filter(|id| {
-                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id)
-                        })
-                        .context("agy preparation omitted its native session")?;
-                    anyhow::ensure!(
-                        agy.native_session_id
-                            .is_none_or(|expected| expected == native)
-                            && frame["workspace"].as_str() == Some(agy.workspace),
-                        "agy preparation changed the selected session or workspace"
-                    );
-                    native
-                }
+                ForegroundEngine::Antigravity if agy.is_some() => observed
+                    .and_then(Value::as_str)
+                    .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+                    .context("agy preparation omitted its native session")?,
                 ForegroundEngine::Antigravity
                     if observed.and_then(Value::as_str) == Some(session) =>
                 {
@@ -356,9 +351,18 @@ pub(in crate::app) async fn execute_worker(
                     prepared["workspace"] = json!(path);
                 }
             }
-            if let Some(agy) = &agy {
-                prepared["adapter"] = json!("agy");
-                prepared["workspace"] = json!(agy.workspace);
+            if let Some(topic) = &acp_topic {
+                anyhow::ensure!(
+                    topic.native_session_id.is_none_or(|expected| expected == selected)
+                        && frame["workspace"].as_str() == Some(topic.workspace)
+                        && frame["storeId"].as_str() == topic.store_id,
+                    "ACP preparation changed the selected session, workspace or store"
+                );
+                prepared["adapter"] = json!(if agy.is_some() { "agy" } else { "goose" });
+                prepared["workspace"] = json!(topic.workspace);
+                if let Some(store_id) = topic.store_id {
+                    prepared["store_id"] = json!(store_id);
+                }
             }
             let committed = commit(prepared)?;
             if committed {
@@ -881,7 +885,7 @@ pub(super) async fn run_portable_turn(
                 id: &input.id,
                 session: &input.id,
                 resume: resume.as_slice(),
-                agy: None,
+                acp_topic: None,
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && crate::interaction::native_claude_goal(&input.text),
@@ -1071,24 +1075,26 @@ pub(super) async fn run_routed_portable(
         } else {
             Vec::new()
         };
-        let agy_workspace = if config.agy_cli {
+        let goose_store = config.goose_topic_store_id.as_deref();
+        let acp_workspace = if config.agy_cli || goose_store.is_some() {
             anyhow::ensure!(routed_host_access && paired_work,
-                "agy requires a paired original or attributed handoff in the selected workspace");
-            let path = session.cwd.to_str().context("Invalid Antigravity workspace")?;
+                "ACP requires a paired original or attributed handoff in the selected workspace");
+            let path = session.cwd.to_str().context("Invalid ACP workspace")?;
             anyhow::ensure!(session.cwd.is_absolute() && path.len() <= 4096,
-                "Invalid Antigravity workspace");
+                "Invalid ACP workspace");
             Some(path)
         } else {
             None
         };
-        let agy_resume = agy_workspace
-            .map(|workspace| store.routed_agy_session(local, &body, workspace))
+        let acp_resume = acp_workspace
+            .map(|workspace| store.routed_acp_session(local, engine.harness(), &body, workspace, goose_store))
             .transpose()?.flatten();
-        if let Some(workspace) = agy_workspace
+        if config.agy_cli
+            && let Some(workspace) = acp_workspace
             && let Some(author) = author.as_ref().filter(|a| a["kind"] == "session_result")
         {
             anyhow::ensure!(
-                store.routed_agy_return_matches(input, author, agy_resume.as_deref(), workspace, &body)?,
+                store.routed_agy_return_matches(input, author, acp_resume.as_deref(), workspace, &body)?,
                 "Antigravity return cannot resume its requesting native session"
             );
         }
@@ -1135,9 +1141,10 @@ pub(super) async fn run_routed_portable(
                     id: &input.id,
                     session: &attempt,
                     resume: if missing_resume.is_some() { &[] } else { &resume },
-                    agy: agy_workspace.map(|workspace| AgyTurn {
+                    acp_topic: acp_workspace.map(|workspace| AcpTopicTurn {
                         workspace,
-                        native_session_id: agy_resume.as_deref(),
+                        native_session_id: acp_resume.as_deref(),
+                        store_id: goose_store,
                     }),
                     human_original,
                     native_goal_command,

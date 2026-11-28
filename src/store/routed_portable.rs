@@ -710,8 +710,14 @@ fn owned_history_seed_on(
     Ok(Some(seed))
 }
 
-fn agy_scope(workspace: &str) -> String {
-    format!("agy-cli/{:x}", Sha256::digest(workspace.as_bytes()))
+fn acp_scope(harness: Harness, workspace: &str, store_id: Option<&str>) -> Result<String> {
+    let workspace = Sha256::digest(workspace.as_bytes());
+    match (harness, store_id) {
+        (Harness::Antigravity, None) => Ok(format!("agy-cli/{workspace:x}")),
+        (Harness::Goose, Some(id)) if Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) =>
+            Ok(format!("goose-acp/{id}/{workspace:x}")),
+        _ => anyhow::bail!("Invalid ACP topic store"),
+    }
 }
 
 fn agy_return_matches_on(
@@ -758,7 +764,7 @@ impl Store {
         body: &Value,
     ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        agy_return_matches_on(&conn, input, author, native, &agy_scope(workspace), body)
+        agy_return_matches_on(&conn, input, author, native, &acp_scope(Harness::Antigravity, workspace, None)?, body)
     }
 
     pub(crate) fn routed_portable_status(
@@ -826,26 +832,29 @@ impl Store {
         Ok((local, paired))
     }
 
-    pub(crate) fn routed_agy_session(
+    pub(crate) fn routed_acp_session(
         &self,
         local: i64,
+        harness: Harness,
         body: &Value,
         workspace: &str,
+        store_id: Option<&str>,
     ) -> Result<Option<String>> {
+        let scope = acp_scope(harness, workspace, store_id)?;
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.query_row(
             "SELECT p.native_thread_id FROM turns p
              JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
-             WHERE p.id<t.id AND p.execution_harness='antigravity'
+             WHERE p.id<t.id AND p.execution_harness=?4
                AND p.execution_generation=t.execution_generation
                AND p.execution_native_scope=?2 AND p.native_thread_id IS NOT NULL
                AND json_extract(p.execution_body,'$.beingRef')=json_extract(?3,'$.beingRef')
                AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?3,'$.embodimentId')
                AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?3,'$.incarnationId')
              ORDER BY p.id DESC LIMIT 1",
-            params![local, agy_scope(workspace), body.to_string()],
+            params![local, scope, body.to_string(), harness.name()],
             |row| row.get(0),
-        ).optional().context("Could not read the selected agy session")
+        ).optional().context("Could not read the selected ACP topic session")
     }
 
     pub(crate) fn routed_claude_continuations(
@@ -1223,12 +1232,16 @@ impl Store {
                     .context("Routed native session scope missing")?
                     .to_owned(),
             )
-        } else if harness == Harness::Antigravity && prepared["adapter"] == "agy" {
-            Some(agy_scope(
+        } else if (harness == Harness::Antigravity && prepared["adapter"] == "agy")
+            || (harness == Harness::Goose && prepared["adapter"] == "goose")
+        {
+            Some(acp_scope(
+                harness,
                 prepared["workspace"]
                     .as_str()
-                    .context("agy preparation omitted its workspace")?,
-            ))
+                    .context("ACP preparation omitted its workspace")?,
+                prepared["store_id"].as_str(),
+            )?)
         } else {
             None
         };
@@ -2092,7 +2105,7 @@ mod tests {
             .unwrap();
         let body = json!({"beingRef":"being","embodimentId":"body","incarnationId":"current"});
         let retired = json!({"beingRef":"being","embodimentId":"body","incarnationId":"retired"});
-        let scope = agy_scope("/workspace/topic");
+        let scope = acp_scope(Harness::Antigravity, "/workspace/topic", None).unwrap();
         let record = |session: i64, generation: &str, scope: Option<&str>, identity: &Value| {
             let native = Uuid::new_v4().to_string();
             let conn = store.conn.lock().unwrap();
@@ -2112,13 +2125,13 @@ mod tests {
         let (local, _) = record(topic.id, "current", None, &body);
         assert_eq!(
             store
-                .routed_agy_session(local, &body, "/workspace/topic")
+                .routed_acp_session(local, Harness::Antigravity, &body, "/workspace/topic", None)
                 .unwrap(),
             Some(expected.clone())
         );
         assert_eq!(
             store
-                .routed_agy_session(local, &body, "/workspace/moved")
+                .routed_acp_session(local, Harness::Antigravity, &body, "/workspace/moved", None)
                 .unwrap(),
             None
         );
@@ -2163,7 +2176,7 @@ mod tests {
         assert!(!matches(None, &scope, &body));
         assert!(!matches(Some("other"), &scope, &body));
         assert!(!matches(Some(&expected), &scope, &retired));
-        let moved = agy_scope("/workspace/moved");
+        let moved = acp_scope(Harness::Antigravity, "/workspace/moved", None).unwrap();
         assert!(!matches(Some(&expected), &moved, &body));
         conn.execute(
             "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",

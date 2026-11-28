@@ -11,6 +11,7 @@ import { runAntigravityTurn } from './antigravity-turn.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
 import { retainedImages } from './images.mjs';
 import { sharedSkill } from './shared-skills.mjs';
+import { validateSessionId } from './turn.mjs';
 import { recallProperties, sharedMemory, validSharedMemory } from './shared-memory.mjs';
 
 const GOOSE_SCHEMA = 'daimon-gateway.goose-turn/v1';
@@ -235,8 +236,9 @@ async function main(path) {
       throw new Error('Invalid ACP owner profile');
     }
     const first = (await pipe.next()).value;
+    const topic = agy || Object.hasOwn(first ?? {}, 'workspace');
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body',
-      ...(agy ? ['workspace', 'resumeNativeSessionId'] : []),
+      ...(topic ? ['workspace', 'resumeNativeSessionId', ...(!agy ? ['storeId'] : [])] : []),
       ...(agy && Object.hasOwn(first ?? {}, 'attachments') ? ['attachments'] : []),
       ...(agy && first?.controller === true ? ['controller'] : [])])
         || first.schema !== schema || first.type !== 'start'
@@ -245,11 +247,24 @@ async function main(path) {
         || !closed(first.body, BINDING) || !BINDING.every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid ACP foreground start');
     }
-    if (agy && (first.workspace !== profile.cwd
-        || await realpath(profile.cwd) !== profile.cwd
-        || (first.resumeNativeSessionId !== null
-          && (typeof first.resumeNativeSessionId !== 'string' || !UUID.test(first.resumeNativeSessionId))))) {
-      throw new Error('Antigravity workspace or native session differs from the owner selection');
+    if (topic) {
+      if (first.workspace !== profile.cwd || await realpath(profile.cwd) !== profile.cwd) {
+        throw new Error('ACP workspace differs from the owner selection');
+      }
+      if (!agy) {
+        if (typeof first.storeId !== 'string' || !UUID.test(first.storeId)
+            || await realpath(profile.stateRoot) !== profile.stateRoot
+            || (await privateBytes(join(profile.stateRoot, 'goose-topic-store-id'), 64)).toString('utf8').trim() !== first.storeId) {
+          throw new Error('Goose session store differs from the owner selection');
+        }
+        if (profile.selectedMemory?.inputId === first.inputId) {
+          throw new Error('One-original memory is unavailable in a resumable Goose history');
+        }
+      }
+      if (first.resumeNativeSessionId !== null) {
+        const selected = validateSessionId(first.resumeNativeSessionId);
+        if (agy && !UUID.test(selected)) throw new Error('Invalid Antigravity session ID');
+      }
     }
     const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
     const env = agy ? { HOME: profile.home, PATH: '/usr/bin:/bin' } : await gooseEnvironment(profile);
@@ -295,8 +310,9 @@ async function main(path) {
     const run = agy ? runAntigravityTurn : runGooseTurn;
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
+      nativeSessionId: first.resumeNativeSessionId ?? undefined,
       ...(agy ? { model: profile.model, effort: profile.effort,
-        nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions, images,
+        instructions, images,
         onInputAccepted: accept, interruptSignal: interrupt.signal,
         async onToolPermission(nativeSessionId, toolCall) {
           if (toolCall.name !== 'mcp_matrix_' + CONTROLLER) return true;
@@ -316,8 +332,8 @@ async function main(path) {
       }],
       toolNames: ['matrix__' + STATUS, ...(selectedMemory ? ['matrix__' + MEMORY] : [])], text: first.text,
       async beforeSubmit(nativeSessionId) {
-        if (agy && (!UUID.test(nativeSessionId)
-            || (first.resumeNativeSessionId && first.resumeNativeSessionId !== nativeSessionId))) return false;
+        if ((agy && !UUID.test(nativeSessionId))
+            || (first.resumeNativeSessionId && first.resumeNativeSessionId !== nativeSessionId)) return false;
         await observe(binding, stop.signal);
         if (profile.providerPort) {
           const socket = createConnection({ host: '127.0.0.1', port: profile.providerPort });
@@ -334,7 +350,8 @@ async function main(path) {
           }
         }
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId,
-          ...(agy ? { workspace: profile.cwd, inputAcceptance: true, workAcceptance: true, targetedInterrupt: true } : {}) }, stop.signal);
+          ...(topic ? { workspace: profile.cwd, ...(!agy ? { storeId: first.storeId } : {}) } : {}),
+          ...(agy ? { inputAcceptance: true, workAcceptance: true, targetedInterrupt: true } : {}) }, stop.signal);
         const decision = (await pipe.next()).value;
         const acceptanceFields = ['observeAcceptance', 'requireWork', 'targetedInterrupt'].filter(field => agy && decision?.[field] === true);
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed', ...acceptanceFields])

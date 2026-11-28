@@ -193,6 +193,8 @@ pub struct ForegroundConfig {
     /// Use the signed-in agy CLI worker for the selected Antigravity topic.
     #[serde(default)]
     pub agy_cli: bool,
+    /// Stable identity stored alongside the selected Goose topic's ACP sessions.
+    pub goose_topic_store_id: Option<String>,
     /// Owner-fixed sending body and command for explicitly selected Interaction text.
     pub interaction_origin: Option<MatrixTransportConfig>,
 }
@@ -527,6 +529,18 @@ impl InteractionConfig {
                 .is_some_and(|foreground| foreground.agy_cli && !foreground.interaction_direct)
         {
             bail!("The agy CLI requires an explicitly selected Antigravity topic");
+        }
+        if [&self.claude_foreground, &self.antigravity_foreground, &self.antigravity_matrix_foreground]
+            .into_iter()
+            .flatten()
+            .any(|foreground| foreground.goose_topic_store_id.is_some())
+            || self.goose_foreground.as_ref().is_some_and(|foreground| {
+                foreground.goose_topic_store_id.as_deref().is_some_and(|id|
+                    !foreground.interaction_direct
+                        || !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id))
+            })
+        {
+            bail!("Goose ACP continuity requires an explicitly selected Goose topic");
         }
         if let Some(matrix) = &self.antigravity_matrix_foreground {
             if matrix.agy_cli
