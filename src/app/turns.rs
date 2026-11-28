@@ -1516,46 +1516,80 @@ pub(super) async fn process_turn(
     let final_result = async {
         match run_result {
             Ok(summary) => {
-                if let Some(key)=notice_key.as_deref() { shared.store.take_bot_state(key)?; }
+                if let Some(key) = notice_key.as_deref() {
+                    shared.store.take_bot_state(key)?;
+                }
                 shared.store.set_session_busy(session.key, false)?;
                 let sink_for_success = sink.clone();
                 let sink_for_failure = sink.clone();
-                let result = finalize_foreground_turn(
-                    ForegroundTurnSuccess {
-                        store: &shared.store,
-                        session: &session,
-                        turn_id,
-                        review_mode: queued.request.review_mode.is_some(),
-                        summary: &summary,
-                    },
-                    || async {
-                        if fs::symlink_metadata(turn_workspace.root.join(interactions::MANIFEST)).is_ok() {
-                        let native=summary.codex_thread_id.as_deref().context("human task source native thread was not observed")?;
-                        interactions::register_tasks(&shared,session.key,queued.request.from_user_id,turn_id,native,&turn_workspace.root).await?;
-                        }
-                        send_generated_artifacts(&shared, &session, turn_id, &turn_workspace.out_dir, &summary.assistant_text).await
-                    },
-                    || async move { sink_for_success.lock().await.finish(None).await },
-                    |message| async move { sink_for_failure.lock().await.finish(Some(message)).await },
-                )
-                .await;
+                let result =
+                    finalize_foreground_turn(
+                        ForegroundTurnSuccess {
+                            store: &shared.store,
+                            session: &session,
+                            turn_id,
+                            review_mode: queued.request.review_mode.is_some(),
+                            summary: &summary,
+                        },
+                        || async {
+                            if fs::symlink_metadata(
+                                turn_workspace.root.join(interactions::MANIFEST),
+                            )
+                            .is_ok()
+                            {
+                                let native = summary
+                                    .codex_thread_id
+                                    .as_deref()
+                                    .context("human task source native thread was not observed")?;
+                                interactions::register_tasks(
+                                    &shared,
+                                    session.key,
+                                    queued.request.from_user_id,
+                                    turn_id,
+                                    native,
+                                    &turn_workspace.root,
+                                )
+                                .await?;
+                            }
+                            send_generated_artifacts(
+                                &shared,
+                                &session,
+                                turn_id,
+                                &turn_workspace.out_dir,
+                                &summary.assistant_text,
+                            )
+                            .await
+                        },
+                        || async move { sink_for_success.lock().await.finish(None).await },
+                        |message| async move {
+                            sink_for_failure.lock().await.finish(Some(message)).await
+                        },
+                    )
+                    .await;
                 if result.is_ok() && !shared.store.conversation_turn_return(turn_id)? {
                     notify_turn_completion(&shared, session.key, turn_id).await;
                 }
                 result
             }
             Err(error) => {
-                if error.is::<crate::codex::NativeInputNotSubmitted>() {shared.store.native_collection_rejected(turn_id)?;}
+                if error.is::<crate::codex::NativeInputNotSubmitted>() {
+                    shared.store.native_collection_rejected(turn_id)?;
+                }
                 let status = if error.to_string().contains("cancelled") {
                     "cancelled"
                 } else {
                     "failed"
                 };
                 shared.store.set_session_busy(session.key, false)?;
-                let recovery_note = saved_thread_is_unavailable(&error).then(||
-                    "The saved native thread is unavailable. Its binding and your input are preserved. Recover the native context or explicitly clear this topic to start a new context.".to_string());
-                finish_failed_turn(&shared.store, turn_id, &sink, status, &error, recovery_note, capacity_failure.load(std::sync::atomic::Ordering::Acquire))
-                    .await?;
+                finish_failed_turn(
+                    &shared.store,
+                    turn_id,
+                    &sink,
+                    status,
+                    &error,
+                    capacity_failure.load(std::sync::atomic::Ordering::Acquire),
+                )
+                .await?;
                 Err(error)
             }
         }
@@ -1767,7 +1801,14 @@ where
         context
             .store
             .record_turn_finished(context.turn_id, "failed", None)?;
-        if let Err(finish_error) = finish_failure(format!("Turn failed: {error:#}")).await {
+        tracing::warn!(
+            turn_id = context.turn_id,
+            "Foreground response could not be delivered"
+        );
+        if let Err(finish_error) =
+            finish_failure("I finished the work, but couldn't deliver the full response.".into())
+                .await
+        {
             tracing::warn!("failed to report foreground turn failure: {finish_error:#}");
         }
         return Err(error);
@@ -1782,23 +1823,47 @@ async fn finish_failed_turn(
     sink: &Arc<Mutex<LiveTurnSink>>,
     status: &str,
     error: &anyhow::Error,
-    recovery_note: Option<String>,
     quiet_capacity_retry: bool,
 ) -> Result<()> {
     store.record_turn_finished(turn_id, status, None)?;
-    if quiet_capacity_retry {
-        // Structured native failure and scheduler state remain retained. A
-        // routine retry does not add another Turn failed message to the chat.
-        sink.lock().await.finish(None).await?;
-        return Ok(());
-    }
-    let mut message = format!("Turn {status}: {error:#}");
-    if let Some(note) = recovery_note {
-        message.push_str("\n\n");
-        message.push_str(&note);
-    }
-    sink.lock().await.finish(Some(message)).await?;
+    let native_not_submitted = error.is::<crate::codex::NativeInputNotSubmitted>();
+    let saved_thread_unavailable = saved_thread_is_unavailable(error);
+    tracing::warn!(
+        turn_id,
+        status,
+        quiet_capacity_retry,
+        native_not_submitted,
+        saved_thread_unavailable,
+        "Foreground turn ended with a failure"
+    );
+    let message = foreground_failure_message(
+        status,
+        native_not_submitted,
+        saved_thread_unavailable,
+        quiet_capacity_retry,
+    );
+    sink.lock().await.finish(message.map(str::to_owned)).await?;
     Ok(())
+}
+
+fn foreground_failure_message(
+    status: &str,
+    native_not_submitted: bool,
+    saved_thread_unavailable: bool,
+    quiet_capacity_retry: bool,
+) -> Option<&'static str> {
+    if quiet_capacity_retry {
+        return None;
+    }
+    Some(if status == "cancelled" {
+        "I stopped working on this message."
+    } else if saved_thread_unavailable {
+        "I couldn't open this conversation. Your message is still here."
+    } else if native_not_submitted {
+        "Your message didn't reach me. Please send it again in a moment."
+    } else {
+        "I couldn't finish responding to this message."
+    })
 }
 
 fn finish_pre_codex_turn_failure(
@@ -1813,7 +1878,7 @@ fn finish_pre_codex_turn_failure(
             "Telegram rate limit prevented this turn from starting. Retry after {retry_after}s."
         )
     } else {
-        format!("Turn failed before Codex started: {error:#}")
+        "Your message didn't reach me. Please send it again in a moment.".to_owned()
     };
     shared
         .store
@@ -3192,5 +3257,33 @@ Hi. What should we do next?"
         let banner = turn_start_banner(Some("Limits: ok".to_string()), &session).unwrap();
 
         assert_eq!(banner, "Limits: ok");
+    }
+}
+
+#[cfg(test)]
+mod foreground_failure_copy_tests {
+    use super::foreground_failure_message;
+
+    #[test]
+    fn foreground_notices_only_suggest_resending_after_confirmed_non_submission() {
+        assert!(
+            foreground_failure_message("failed", true, false, false)
+                .unwrap()
+                .contains("send it again")
+        );
+        assert!(
+            !foreground_failure_message("failed", false, false, false)
+                .unwrap()
+                .contains("send it again")
+        );
+        assert!(
+            !foreground_failure_message("failed", true, true, false)
+                .unwrap()
+                .contains("send it again")
+        );
+        assert_eq!(
+            foreground_failure_message("failed", true, false, true),
+            None
+        );
     }
 }

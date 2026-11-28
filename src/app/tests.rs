@@ -2766,7 +2766,7 @@ async fn upload_failure_marks_turn_failed_and_retains_output_for_explicit_recove
     .await;
     let result = finish_turn_cleanup(&[attachment], &turn_root, result);
 
-    assert!(result.is_err());
+    assert!(format!("{:#}", result.unwrap_err()).contains("upload failed"));
     assert_eq!(
         store.turn_status(turn_id).unwrap().as_deref(),
         Some("failed")
@@ -2777,11 +2777,9 @@ async fn upload_failure_marks_turn_failed_and_retains_output_for_explicit_recove
         "recover this output"
     );
     assert!(
-        failure_messages
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|message| message.contains("upload failed"))
+        failure_messages.lock().unwrap().iter().any(
+            |message| message == "I finished the work, but couldn't deliver the full response."
+        )
     );
 }
 
