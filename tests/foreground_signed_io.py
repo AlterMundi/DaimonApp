@@ -508,7 +508,7 @@ timeout_seconds=5
                         self._conversation_goal(journey, provider)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
-                        self._exact_claude_quote(journey, provider, web_profile=profile)
+                        self._exact_claude_quote(journey, provider, profile, web=True)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
                         self._conversation_attachments(journey, provider)
@@ -525,7 +525,7 @@ timeout_seconds=5
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
-                                self._exact_claude_quote(journey, provider)
+                                self._exact_claude_quote(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -1299,12 +1299,12 @@ timeout_seconds=5
                              [(0,)])
             self.assertEqual(provider.calls, calls)
 
-        def _exact_claude_quote(self, journey, provider, *, web_profile=None):
+        def _exact_claude_quote(self, journey, provider, worker_profile, *, web=False):
             import hashlib
 
             browser, destination = None, None
-            numbered_history = web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_NUMBERED_HISTORY") == "1"
-            if web_profile:
+            numbered_history = web and os.environ.get("FOREGROUND_TEST_CLAUDE_NUMBERED_HISTORY") == "1"
+            if web:
                 from conversation_cold_entry_http_io import Browser
 
                 browser = Browser(journey)
@@ -1424,9 +1424,9 @@ timeout_seconds=5
                 self.assertEqual(reply_native, native)
 
             missing_resume = os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1"
-            if web_profile and (numbered_history or missing_resume):
+            if numbered_history or missing_resume:
                 if missing_resume:
-                    fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                    fixture_home = Path(json.loads(worker_profile.read_text())["home"])
                     transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
                     self.assertEqual(len(transcripts), 1)
                     transcripts[0].rename(fixture_home / "retained-predecessor.jsonl")
@@ -1451,10 +1451,13 @@ timeout_seconds=5
                     recovered_quote = destination
                     original = "Contame qué clips dejamos listos en Fixture v29 y qué quedó pendiente."
                 else:
-                    current = next(row for row in browser.get("/api/interaction")["items"]
-                                   if row["id"] == older["source"])
-                    recovered_quote = {"source": current["id"], "revision": current["revision"]}
-                    provider.expected_quote = {**recovered_quote, "assistant": proposal}
+                    recovered_quote, recovered_selection = older, selection
+                    if browser:
+                        current = next(row for row in browser.get("/api/interaction")["items"]
+                                       if row["id"] == older["source"])
+                        recovered_quote = {"source": current["id"], "revision": current["revision"]}
+                        recovered_selection = recovered_quote
+                    provider.expected_quote = {**recovered_selection, "assistant": proposal}
                     original = "Sí, retomá esa propuesta."
                 answer = "I recovered the copper clasp proposal."
                 try:
@@ -1467,7 +1470,7 @@ timeout_seconds=5
                 self.assertEqual(len(provider.calls), 4)
 
                 if numbered_history and os.environ.get("FOREGROUND_TEST_CLAUDE_TOPIC_LOOKUP") == "1":
-                    fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                    fixture_home = Path(json.loads(worker_profile.read_text())["home"])
                     predecessor = list((fixture_home / "projects").rglob(f"{replacement}.jsonl"))
                     self.assertEqual(len(predecessor), 1)
                     predecessor[0].rename(fixture_home / "retained-lookup-predecessor.jsonl")
