@@ -1429,6 +1429,12 @@ handoff in the normal Conversation history without a second Telegram send.
 An incorporated
 input with an unobserved result must remain uncertain even if the worker
 subsequently reports a pre-submission refusal.
+The opt-in `FOREGROUND_TEST_VISIBLE_HANDOFF=1` case in
+`tests/foreground_signed_io.py` holds the Claude response stream open after
+incorporation. With `FOREGROUND_TEST_TELEGRAM_TOPIC=1`, the case uses the
+selected SDK and CLI with a loopback provider and checks the attributed request
+in Telegram and the authenticated Conversation workspace before releasing the
+final response. It also checks the return to the caller and stable request reuse.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 

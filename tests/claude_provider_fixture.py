@@ -375,7 +375,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)
 
-    def send_fixture_message(self, data, ident, block, delta, reason):
+    def send_fixture_message(self, data, ident, block, delta, reason, *, before_finish=None):
         message = {
             "id": f"msg_{ident}", "type": "message", "role": "assistant", "content": [],
             "model": data["model"], "stop_reason": None, "stop_sequence": None,
@@ -390,12 +390,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                                "usage": {"output_tokens": 4}}),
             ("message_stop", {}),
         ]
-        response = "".join(
-            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
+        encoded = [
+            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n".encode()
             for event, value in frames
-        ).encode()
+        ]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Content-Length", str(sum(map(len, encoded))))
         self.end_headers()
-        self.wfile.write(response)
+        if before_finish:
+            self.wfile.write(b"".join(encoded[:3]))
+            self.wfile.flush()
+            before_finish()
+            encoded = encoded[3:]
+        self.wfile.write(b"".join(encoded))

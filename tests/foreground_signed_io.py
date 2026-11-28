@@ -177,9 +177,11 @@ operator.main()
                 initial_database = database.read_bytes()
             journey = CanonicalRouting(gateway) if mixed or inverse else Inputs(gateway)
             self.addCleanup(journey.close)
+            visible_handoff = telegram_topic and os.environ.get(
+                "FOREGROUND_TEST_VISIBLE_HANDOFF") == "1"
             if mixed or inverse:
                 journey.start()
-                for topic in (1, 7) if inverse else (7,):
+                for topic in (1, 7, 8) if visible_handoff else (1, 7) if inverse else (7,):
                     journey.admit("Fixture seed for the owned Codex conversation", topic=topic)
                     journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
                     journey.idle()
@@ -201,7 +203,7 @@ operator.main()
                     "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1))
             adapter_recovery = telegram_topic and os.environ.get(
                 "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
-            if adapter_recovery:
+            if adapter_recovery or visible_handoff:
                 journey.config.write_text(journey.config.read_text().replace(
                     "[interaction]\n",
                     "[interaction]\ntelegram_projection=true\ntelegram_entry_projection=true\n", 1))
@@ -310,7 +312,41 @@ operator.main()
                     self.server.current = ident
                     self.server.exposures.append(ident)
 
-            if engine == "claude":
+            class VisibleHandoffProvider(ClaudeProvider):
+                def do_POST(self):
+                    try:
+                        assert self.path.startswith("/v1/messages")
+                        length = int(self.headers["Content-Length"])
+                        assert 0 < length < 262_144
+                        data = json.loads(self.rfile.read(length))
+                        row, = journey.row(
+                            """SELECT i.id,i.phase,i.doc,t.status,t.prompt
+                               FROM interaction_session_requests c
+                               JOIN interaction_instructions i ON i.id=c.target_instruction
+                               JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')""")
+                        instruction, phase, doc, status, prompt = row
+                        assert (phase, status) == ("submitting", "running")
+                        assert '"kind":"session_request"' in prompt
+                        assert self.server.handoff_text in json.dumps(data["messages"])
+                        self.server.exposures.append(instruction)
+                        requests = json.loads(doc)["requests"]
+                        claim = {"requests": requests, "covered": [instruction], "completed": requests}
+                        def hold():
+                            self.server.handoff_stream.set()
+                            assert self.server.handoff_release.wait(20), "The early projection did not settle"
+                        self.send_fixture_message(data, "visible_handoff",
+                            {"type": "text", "text": ""},
+                            {"type": "text_delta", "text": ANSWER + "\n<daimon-result>"
+                             + json.dumps(claim) + "</daimon-result>"},
+                            "end_turn", before_finish=hold)
+                    except Exception as error:
+                        self.server.failure = error
+                        if not self.server.handoff_stream.is_set():
+                            self.send_error(400)
+
+            if visible_handoff:
+                handler = VisibleHandoffProvider
+            elif engine == "claude":
                 handler = DirectProvider if direct else InteractionProvider if interaction else ClaudeProvider
             else:
                 handler = RoutedProvider if inverse else foreground.Provider
@@ -522,7 +558,9 @@ timeout_seconds=5
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                         )
                         try:
-                            if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
+                            if visible_handoff:
+                                self._visible_handoff(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
                                 self._exact_claude_quote(journey, provider, profile)
@@ -803,6 +841,95 @@ timeout_seconds=5
             self.assertEqual(provider.calls, [ident] * 2)
             self.assertEqual(journey.telegram_methods, [])
             self.assertEqual(journey.rpc, [])
+
+        def _visible_handoff(self, journey, provider):
+            from conversation_cold_entry_http_io import Browser
+
+            journey.allow_local_dependencies = True
+            browser = Browser(journey)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            alpha = next(row for row in browser.get("/api/interaction/sessions")["sessions"]
+                         if row["audio_key"] == "100:7")
+            path = "/api/interaction/sessions/" + alpha["id"]
+            provider.handoff_text = "Check the synthetic design summary."
+            provider.handoff_stream = Event()
+            provider.handoff_release = Event()
+            original = str(uuid.uuid4())
+            original_text = "Ask Alpha for a visible report on the synthetic design."
+            page = journey.read("presentation", "list", "0", "0")["result"]
+            body = {"id": original, "binding": page["binding"], "text": original_text}
+            journey.read("input", "submit-human", json.dumps(body))
+            journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                             (original,)) == [("accepted",)])
+            route = journey.call("route-visible-caller", "dispatch", {
+                "input_ref": original, "destinations": [
+                    {"selector": "Beta", "relation": "new", "requests": []}],
+            })["results"][0]
+            self.assertTrue(route["new_admission"], route)
+            journey.wait(lambda: journey.instructions(8) and journey.instructions(8)[0][1] == "accepted")
+            caller_native = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=8")[0][0]
+            caller_turn = journey.workers[caller_native]
+            caller_send = next(send for native, send in journey.clients.values()
+                               if native == caller_native)
+
+            def caller_call(ident, operation, arguments):
+                caller_send({"id": ident, "method": "item/tool/call", "params": {
+                    "threadId": caller_native, "turnId": caller_turn, "callId": ident,
+                    "tool": "interaction_controller",
+                    "arguments": {"operation": operation, "arguments": arguments},
+                }})
+                journey.wait(lambda: ident in journey.tool_results)
+                result = journey.tool_results[ident]
+                self.assertTrue(result["success"], result)
+                return json.loads(result["contentItems"][0]["text"])
+
+            parents = caller_call("route-visible-inputs", "coordination_inputs", {})["inputs"]
+            parent, = [item for item in parents if item["eligible_coordination_parent"]]
+            request = {"parent_instruction": parent["instruction"], "request_id": "visible-fixture",
+                       "selector": "Alpha", "text": provider.handoff_text, "report_to_topic": True}
+            try:
+                first = caller_call("route-visible-admit", "session_request", request)
+                self.assertTrue(first.get("new_admission"), first)
+                self.assertTrue(provider.handoff_stream.wait(15), (
+                    provider.failure, journey.row(
+                        """SELECT i.phase,t.status,t.execution_native_scope IS NOT NULL
+                           FROM interaction_session_requests c
+                           JOIN interaction_instructions i ON i.id=c.target_instruction
+                           LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')"""),
+                ))
+                journey.wait(lambda: provider.failure or journey.has(provider.handoff_text, 7), seconds=12)
+                self.assertIsNone(provider.failure)
+                pending, = browser.get(path)["pending_items"]
+                self.assertEqual(pending["role"], "assistant")
+                self.assertTrue(pending["handoff"])
+                self.assertIn(provider.handoff_text, pending["text"])
+                self.assertFalse(journey.has(ANSWER, 7))
+                self.assertEqual(journey.row("""SELECT t.status,json_extract(i.doc,'$.native_input_accepted')
+                    FROM interaction_session_requests c JOIN interaction_instructions i ON i.id=c.target_instruction
+                    JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')"""), [("running",1)])
+            finally:
+                provider.handoff_release.set()
+            journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=20)
+            self.assertIsNone(provider.failure)
+            items = browser.get(path)
+            self.assertEqual(items["pending_items"], [])
+            self.assertEqual([(row["role"], row["text"]) for row in items["items"][-2:]],
+                             [("assistant", pending["text"]), ("assistant", ANSWER)])
+            self.assertEqual(sum(provider.handoff_text in message["text"] for message, _ in journey.messages), 1)
+            self.assertEqual(len(provider.exposures), 1)
+            repeat = caller_call("route-visible-reuse", "session_request", request)
+            self.assertFalse(repeat["new_admission"])
+            self.assertEqual(repeat["instruction"]["id"], first["instruction"]["id"])
+            journey.wait(lambda: journey.row("""
+                SELECT c.phase,i.phase,json_extract(i.doc,'$.native_thread')
+                FROM interaction_session_requests c JOIN interaction_instructions i
+                ON i.id=json_extract(c.doc,'$.return_instruction')
+            """) == [("returned", "accepted", caller_native)])
+            self.assertEqual(sum(ANSWER in json.dumps(packet["input"])
+                                 for packet in journey.worker_packets[caller_native]), 1)
+            journey.finish(caller_native, caller_turn)
+            journey.finish(journey.web_thread, journey.web_turn)
 
         def _telegram_codex_handoff(self, journey, provider):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
