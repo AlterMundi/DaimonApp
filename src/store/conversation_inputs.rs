@@ -791,6 +791,7 @@ impl Store {
             playback,
             capture_questions,
             Vec::new(),
+            false,
         )
     }
 
@@ -808,12 +809,13 @@ impl Store {
         playback: Option<ConversationPlayback>,
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
+        paired_actor: bool,
     ) -> Result<(ConversationInput, bool)> {
         voice.validate()?;
         if voice.transcription.is_some() {
             bail!("Transcription is receiving-owned");
         }
-        self.capture_original(
+        self.capture_original_mode(
             human,
             entry,
             binding,
@@ -826,6 +828,9 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
+            None,
+            paired_actor.then_some(SelectedRoute::PairedOriginal),
         )
     }
 
@@ -1056,6 +1061,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &self,

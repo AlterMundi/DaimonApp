@@ -1057,7 +1057,9 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         try:
             data = await request.body()
             from starlette.concurrency import run_in_threadpool
-            result = await run_in_threadpool(provider.conversation_voice_submit, metadata, data)
+            result = await run_in_threadpool(
+                provider.conversation_voice_submit, metadata, data,
+                paired=not dict(session).get('_companion_credential', False))
         except RetentionUnavailable as exc:
             raise HTTPException(507, str(exc)) from None
         except VisualSelectionInvalid:

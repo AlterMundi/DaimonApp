@@ -522,10 +522,12 @@ incorporates the original canonical result into the same Claude session.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
-- `FOREGROUND_TEST_CLAUDE_TOPIC_VOICE=1` for a direct Telegram note in the
-  selected topic. Gateway uses its configured recognizer and retains both
-  the original ingress and the machine transcript with the clip digest.
-  The fixture verifies exact native resume and a reply to that same clip.
+- `FOREGROUND_TEST_CLAUDE_TOPIC_VOICE=1` for Telegram and Conversation
+  voice notes reaching the same selected native session. Gateway retains
+  each original and the machine transcript with its clip digest. The
+  dashboard uses the Gateway capability `voice_paired_actor=v1` to preserve
+  paired authority for ordinary Conversation recordings. Companion
+  credentials and an older Gateway use the existing restricted submit path.
 - `FOREGROUND_TEST_CLAUDE_OUTPUT_ARTIFACTS=1` for a native file write,
   immutable result provenance, Telegram upload, and Conversation download
   after exact native resume. The paired routed topic uses Gateway's existing

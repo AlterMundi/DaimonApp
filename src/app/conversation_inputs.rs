@@ -748,12 +748,16 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
                 .as_ref()
                 .is_some_and(|v| v.completed_transcription_command.is_some())
         );
+        result["voice_paired_actor"] = json!("v1");
         result["max_bytes"] = json!(crate::voice::MAX_BYTES);
         result["max_seconds"] = json!(120);
         return Ok(result);
     }
+    if let Some(body) = args.strip_prefix("voice submit-human ") {
+        return voice_submit(app, human, cfg.entry(), body, false, true).await;
+    }
     if let Some(body) = args.strip_prefix("voice submit ") {
-        return voice_submit(app, human, cfg.entry(), body, false).await;
+        return voice_submit(app, human, cfg.entry(), body, false, false).await;
     }
     if let Some(body) = args.strip_prefix("voice recover ") {
         #[derive(Deserialize)]
@@ -782,7 +786,7 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         if let Some(dialogue) = input.foreground_dialogue {
             payload["foreground_dialogue"] = json!(dialogue);
         }
-        return voice_submit(app, human, cfg.entry(), &payload.to_string(), true).await;
+        return voice_submit(app, human, cfg.entry(), &payload.to_string(), true, false).await;
     }
     if let Some((body, paired)) = args
         .strip_prefix("retry-human ")
@@ -1614,6 +1618,7 @@ async fn voice_submit(
     entry: SessionKey,
     body: &str,
     recover: bool,
+    paired_actor: bool,
 ) -> Result<Value> {
     use crate::store::ConversationVoice;
     let mut request: VoiceSubmit = serde_json::from_str(body)?;
@@ -1760,6 +1765,7 @@ async fn voice_submit(
             request.playback,
             request.capture_questions,
             request.files,
+            paired_actor,
         )?
     };
     if recover {

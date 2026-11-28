@@ -355,6 +355,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": "I recovered the retained design context."}
                 reason = "end_turn"
+            elif digest := getattr(self.server, "conversation_voice_digest", None):
+                original = data["messages"][-1]["content"]
+                assert digest in json.dumps(original)
+                assert self.server.human_original in json.dumps(original)
+                assert submission["native_session_id"] == self.server.previous_session
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": self.server.followup_answer}
+                reason = "end_turn"
+                fixture_id = "conversation_voice"
             elif previous is not None:
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
