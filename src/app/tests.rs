@@ -1214,9 +1214,19 @@ async fn owned_existing_topic_adopts_one_folder_without_moving_native_work() {
             .is_err()
     );
     store.set_session_busy(key, true).unwrap();
+    let turn = store
+        .record_turn_started(stored.id, &sample_turn_request(key))
+        .unwrap();
+    let hold = "native_writer_hold:100:13";
+    store.save_bot_state(hold, "fixture-hold").unwrap();
     assert!(creation::workspace_owner_command(&app, 100, &selected).is_err());
-    store.set_session_busy(key, false).unwrap();
+    assert!(store.topic_folder(key, 100).unwrap().is_none());
+    store.take_bot_state(hold).unwrap();
     let adopted = creation::workspace_owner_command(&app, 100, &selected).unwrap();
+    assert_eq!(store.turn_status(turn).unwrap().as_deref(), Some("running"));
+    let active = store.get_session(key).unwrap().unwrap();
+    assert!(active.busy);
+    assert_eq!(active.codex_thread_id.as_deref(), Some("older-native-thread"));
     assert_eq!(adopted["folder_ready"], true);
     assert_eq!(
         adopted["working_directory"],
@@ -1248,11 +1258,7 @@ async fn owned_existing_topic_adopts_one_folder_without_moving_native_work() {
         .reserve_topic_folder(interrupted, 100, &reserved, Some(session.id))
         .unwrap();
     store.set_session_busy(interrupted, true).unwrap();
-    assert!(
-        creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).is_err()
-    );
     assert!(!reserved.exists());
-    store.set_session_busy(interrupted, false).unwrap();
     assert_eq!(
         creation::workspace_owner_command(&app, 100, &format!("adopt 14 {}", session.id)).unwrap()
             ["folder_ready"],
