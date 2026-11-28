@@ -299,7 +299,10 @@ pub(super) async fn handle_portable_topic(
         .store
         .get_session(key)?
         .context("Selected topic session is missing")?;
-    let telegram_files = if with_files {
+    let group_generation = (with_files && message.media_group_id.is_some())
+        .then(|| app.shared.store.telegram_album_generation(session.id))
+        .transpose()?;
+    let mut telegram_files = if with_files {
         match app.retain_portable_attachments(message).await {
             Ok(files) => files,
             Err(error) => {
@@ -316,6 +319,62 @@ pub(super) async fn handle_portable_topic(
     } else {
         Vec::new()
     };
+    let mut album = Vec::new();
+    let mut album_bytes = telegram_files.iter().map(|file| file.size).sum::<u64>();
+    if group_generation.is_some() {
+        let mut caption_bytes = text.len();
+        // Telegram gives each album member its own update and can split the
+        // album across polls. Polling and journaling continue during this wait.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let max_bytes = if profile.agy_cli {
+            4 * 1024 * 1024
+        } else {
+            2 * crate::files::MAX_BYTES
+        };
+        let max_files = if profile.agy_cli {
+            crate::files::MAX_FILES
+        } else {
+            10
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+        for member in app
+            .shared
+            .store
+            .telegram_album_candidates(update, message, human)?
+        {
+            let member_message = member.message.expect("validated album member");
+            let caption = member_message.attachment_caption();
+            let separator = if caption_bytes > 0 && !caption.is_empty() {
+                2
+            } else {
+                0
+            };
+            let combined_bytes = caption_bytes + separator + caption.len();
+            if combined_bytes > 16 * 1024 {
+                break;
+            }
+            let Ok(Ok(files)) =
+                tokio::time::timeout_at(deadline, app.retain_portable_attachments(&member_message))
+                    .await
+            else {
+                break;
+            };
+            let bytes = files.iter().map(|file| file.size).sum::<u64>();
+            if album_bytes + bytes > max_bytes
+                || telegram_files.len() + files.len() > max_files
+                || (profile.agy_cli
+                    && files.iter().any(|file| {
+                        !matches!(file.mime.as_str(), "image/png" | "image/jpeg") || file.size == 0
+                    }))
+            {
+                break;
+            }
+            album_bytes += bytes;
+            caption_bytes = combined_bytes;
+            telegram_files.extend(files);
+            album.push((member.update_id, member_message));
+        }
+    }
     if profile.agy_cli
         && with_files
         && (telegram_files.iter().any(|file| {
@@ -329,8 +388,22 @@ pub(super) async fn handle_portable_topic(
         );
         return Ok(());
     }
+    let combined;
+    let text = if album.is_empty() {
+        text
+    } else {
+        combined = crate::store::album_text(
+            std::iter::once(text).chain(
+                album
+                    .iter()
+                    .map(|(_, message)| message.attachment_caption()),
+            ),
+        );
+        &combined
+    };
     let source = SourceInput {
         telegram_files,
+        telegram_album_members: album.iter().map(|(update, _)| *update).collect(),
         tribu_source: None,
         transcription: None,
         channel: format!("telegram:{}", app.shared.bot_id),
@@ -345,6 +418,7 @@ pub(super) async fn handle_portable_topic(
         &source,
         key,
         (engine, &profile.transport.source, profile.agy_cli),
+        group_generation.as_deref(),
     )?;
     if fresh {
         dispatch(app, &instruction.id, human).await?;
@@ -361,6 +435,7 @@ pub(super) async fn admit_portable_voice(
     let session = app.shared.store.get_session(key)?.context("Voice topic session missing")?;
     let source = SourceInput {
         telegram_files: Vec::new(),
+        telegram_album_members: Vec::new(),
         tribu_source: None,
         transcription: Some(proof),
         channel: format!("telegram:{}", app.shared.bot_id),
@@ -372,7 +447,10 @@ pub(super) async fn admit_portable_voice(
         text: text.to_owned(),
     };
     let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
-        &source, key, (engine, &profile.transport.source, profile.agy_cli),
+        &source,
+        key,
+        (engine, &profile.transport.source, profile.agy_cli),
+        None,
     )?;
     if fresh {
         dispatch(app, &instruction.id, human).await?;
@@ -927,6 +1005,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
     if targets.len() != 1 {
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: app
                 .shared
@@ -1124,6 +1203,7 @@ async fn admit_message(
         .context("Selected interaction session missing")?;
     let source = SourceInput {
         telegram_files: vec![],
+        telegram_album_members: Vec::new(),
         tribu_source: None,
         transcription: app
             .shared

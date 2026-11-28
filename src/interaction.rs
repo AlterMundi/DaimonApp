@@ -876,6 +876,9 @@ impl TribuSource {
 pub struct SourceInput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub telegram_files: Vec<crate::files::FileReference>,
+    /// Additional direct Telegram updates included in the same native original.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub telegram_album_members: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tribu_source: Option<TribuSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

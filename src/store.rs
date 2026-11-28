@@ -68,7 +68,7 @@ pub(crate) use matrix::publication::{
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routed_portable;
-pub(crate) use routed_portable::ClaudeContextUnavailable;
+pub(crate) use routed_portable::{ClaudeContextUnavailable, album_text};
 mod routing;
 mod session_requests;
 mod workflows;
