@@ -962,6 +962,23 @@ pub(super) async fn process_turn(
                                 *observed_native_profile.lock().expect("native profile mutex poisoned")=Some((thread_id,model,provider));
                                 Ok(CodexEventOutcome::None)
                             }
+                            CodexEvent::ProjectSuccessor { previous, candidate } => {
+                                let authorized = if let (Some(id), Some(cfg)) = (
+                                    interaction.as_deref(), shared.config.interaction.as_ref(),
+                                ) {
+                                    let accepted = shared.store.advance_codex_successor(
+                                        cfg.entry(), requester_user_id, id, turn_id,
+                                        &previous, candidate.as_deref(),
+                                    )?;
+                                    if accepted && let Some(native) = candidate.as_deref() {
+                                        shared.store.interaction_select_native_return(id, requester_user_id, native)?;
+                                    }
+                                    accepted
+                                } else {
+                                    false
+                                };
+                                Ok(CodexEventOutcome::ProjectSuccessorAuthorized(authorized))
+                            }
                             CodexEvent::ThreadStarted(thread_id) => {
                                 if conversation_native.as_deref().is_some_and(|native|native!=thread_id) {bail!("Conversation input returned another native binding; original retained");}
                                 if let Some(id)=conversation_input.as_deref() {shared.store.conversation_input_validate(requester_user_id,id)?;}
@@ -2082,6 +2099,7 @@ impl LiveTurnSink {
             CodexEvent::NativeMessageCompleted { .. }
             | CodexEvent::NativeMessageDraft { .. }
             | CodexEvent::NativeModelConfigured { .. }
+            | CodexEvent::ProjectSuccessor { .. }
             | CodexEvent::UserInputRequest { .. }
             | CodexEvent::DynamicToolRequest { .. }
             | CodexEvent::NativeInputRejected

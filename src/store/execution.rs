@@ -99,8 +99,16 @@ impl Store {
              WHERE t.id=?1 AND t.status='running' AND t.completed_at IS NULL
                AND t.execution_harness='codex' AND t.execution_generation=g.generation
                AND t.native_thread_id IS NOT NULL
-               AND (NOT ?2 OR (t.native_thread_id=s.codex_thread_id AND s.force_fresh_thread=0)))",
-            params![local, selected_session],
+               AND (NOT ?2 OR (s.force_fresh_thread=0 AND
+                 (t.native_thread_id=s.codex_thread_id OR EXISTS(
+                   SELECT 1 FROM interaction_instructions i JOIN bot_state root ON root.key='execution_root:'||t.id
+                   WHERE i.id=json_extract(root.value,'$') AND i.session_id=s.id
+                     AND i.phase='submitting' AND i.instance_id=?3
+                     AND json_extract(i.doc,'$.codex_successor_reservation.creation_turn')=t.id
+                     AND json_extract(i.doc,'$.codex_successor_reservation.previous_native')=s.codex_thread_id
+                     AND json_extract(i.doc,'$.codex_successor_reservation.candidate_native')=t.native_thread_id
+                 )))))",
+            params![local, selected_session, self.instance_id],
             |row| row.get(0),
         )?;
         anyhow::ensure!(valid, "Codex native submission binding changed");

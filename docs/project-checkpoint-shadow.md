@@ -131,24 +131,29 @@ route. Reading this status does not reserve a successor or authorize another
 submission. The fixture restarts Gateway and verifies the same receipt,
 generation and preserved native binding, with no fresh thread or turn.
 
-On the existing authenticated paired-human retry, Gateway can reserve the
-successor against that same instruction. It verifies the checkout outside the
+On the existing authenticated paired-human retry, Gateway reserves the
+successor against the same instruction. It verifies the checkout outside the
 owner transaction and rechecks the current source, native binding and checkpoint
-digest in the requeue transaction. Identical retries reuse one reservation and
-one audit entry. The route status includes `codex_successor_reservation` when
-the saved thread is still missing. On an ordinary accepted resume the pending
-reservation is cleared from the route. Existing checkpoint-free retries keep
-their normal behavior. A reservation has no successor native ID or inference
-receipt. The current implementation still checks the saved thread on retry.
+digest when requeueing. If the original native thread resumes, the existing
+submission path runs. If metadata resume definitively reports missing history,
+Gateway records the creation attempt before `thread/start` and records the
+returned candidate ID before allowing the original input on the same native
+connection. The release check still requires the current source and matching
+checkpoint. This first turn carries the checkpoint and the unchanged receipt
+references. The canonical result returns through the original Conversation
+route.
 
-The ordinary native replacement changes the conversation generation and
-retires queued inputs tied to the old binding. Cold continuation needs a
-different binding transition in that same writer. Preserve the logical
-generation and record the old native lineage for existing originals, goals
-and receipts. Revalidate the selected checkpoint and current authority before
-exposing the known-unsent original in the successor. A lost metadata or turn
-acknowledgment must be reconciled from its reserved attempt.
+A lost `thread/start` acknowledgment leaves one held creation attempt. The
+owner input status lists it under `codex_recovery_holds`, with no repeatable
+route. Add `FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK=1` to withhold that
+acknowledgment in the fixture and verify that duplicate requests and a Gateway
+restart create no second thread or turn.
 
+The candidate first turn preserves the topic generation and the saved native
+binding. Selecting the observed, materialized successor for later turns is
+a separate remaining transition. Ordinary replacement would advance the
+generation and retire old-bound inputs. The successor transition needs to keep
+earlier originals, goals and receipts on their existing native lineage.
 
 ### Native Codex successor boundary
 

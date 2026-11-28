@@ -303,6 +303,113 @@ impl Store {
         Ok(())
     }
 
+    /// Advance the exact reservation once before thread/start and persist the
+    /// observed candidate before the adapter can submit an input.
+    pub(crate) fn advance_codex_successor(
+        &self,
+        entry: SessionKey,
+        human: i64,
+        original_id: &str,
+        local: i64,
+        previous: &str,
+        candidate: Option<&str>,
+    ) -> Result<bool> {
+        use crate::interaction::TransportPhase;
+
+        let Some(original) = self.interaction_instruction(original_id, human)? else {
+            return Ok(false);
+        };
+        if original.codex_successor_reservation.is_none() {
+            return Ok(false);
+        }
+        let startup = self.project_startup(original.target, entry, human);
+        let digest = startup
+            .is_verified()
+            .then(|| startup.context())
+            .flatten()
+            .map(|context| format!("{:x}", Sha256::digest(context.as_bytes())));
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let Some(mut original) = interaction::instruction_on(&tx, original_id, human)? else {
+            return Ok(false);
+        };
+        let Some(mut reservation) = original.codex_successor_reservation.take() else {
+            return Ok(false);
+        };
+        let bound: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_entry_generations g ON g.session_id=s.id
+             JOIN bot_state b ON b.key='execution_root:'||t.id
+             JOIN interaction_instructions i ON i.id=json_extract(b.value,'$') AND i.session_id=s.id
+             WHERE t.id=?1 AND t.status='running' AND t.execution_harness='codex'
+               AND t.execution_generation=g.generation AND t.native_thread_id IS NULL
+               AND t.from_user_id=?2 AND s.creator_user_id=?2 AND s.codex_thread_id=?3
+               AND s.force_fresh_thread=0 AND i.id=?4 AND i.instance_id=?5)",
+            params![local, human, previous, original_id, self.instance_id],
+            |row| row.get(0),
+        )?;
+        let authorized = bound
+            && original.phase == TransportPhase::Queued
+            && reservation.previous_native == previous
+            && digest.as_deref() == Some(reservation.checkpoint_sha256.as_str())
+            && interaction::target_execution_allowed_on(&tx, &original)?
+            && !stopping::fenced_on(&tx, original.target)?
+            && !maintenance_writer_held_on(&tx, original.target)?
+            && startup.current_on(&tx, entry, &original).unwrap_or(false);
+        match candidate {
+            None if authorized && reservation.creation_turn.is_none() => {
+                reservation.creation_turn = Some(local);
+            }
+            Some(native)
+                if reservation.creation_turn == Some(local)
+                    && reservation.candidate_native.is_none()
+                    && reservation.previous_native == previous
+                    && native != previous
+                    && Uuid::parse_str(native).is_ok() =>
+            {
+                let claimed: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE codex_thread_id=?1)
+                         OR EXISTS(SELECT 1 FROM turns WHERE native_thread_id=?1)",
+                    [native],
+                    |row| row.get(0),
+                )?;
+                if claimed {
+                    return Ok(false);
+                }
+                reservation.candidate_native = Some(native.to_owned());
+                if authorized {
+                    tx.execute(
+                        "UPDATE turns SET native_thread_id=?2 WHERE id=?1",
+                        params![local, native],
+                    )?;
+                }
+            }
+            _ => return Ok(false),
+        }
+        let audit = json!({"instruction":original_id,"reservation":reservation});
+        original.codex_successor_reservation = Some(reservation);
+        tx.execute(
+            "UPDATE interaction_instructions SET doc=?2 WHERE id=?1",
+            params![original_id, serde_json::to_string(&original)?],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_log(actor_user_id,action,details_json,created_at)
+             VALUES(?1,?2,?3,?4)",
+            params![
+                human,
+                if candidate.is_some() {
+                    "codex_project_successor_observed"
+                } else {
+                    "codex_project_successor_creation_started"
+                },
+                audit.to_string(),
+                now_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(authorized)
+    }
+
     /// Called only by existing paired-human startup paths. It never dispatches
     /// or writes another copy of an original effect.
     pub(crate) fn project_startup(
@@ -446,6 +553,8 @@ impl ProjectStartup {
             id: Uuid::now_v7(),
             previous_native: refusal.previous_native.clone(),
             checkpoint_sha256: digest,
+            creation_turn: None,
+            candidate_native: None,
         }))
     }
 

@@ -540,6 +540,13 @@ impl Store {
         {
             bail!("Selected work session is held");
         }
+        if selected
+            .codex_successor_reservation
+            .as_ref()
+            .is_some_and(|r| r.creation_turn.is_some())
+        {
+            return Ok((false, selected.target));
+        }
         let reservation = startup
             .as_ref()
             .map(|startup| startup.successor_reservation_on(&tx, entry, &selected))

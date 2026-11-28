@@ -1040,50 +1040,132 @@ timeout_seconds=5
                 self.assertEqual(len(journey.row(audit_query)), 1)
                 self.assertEqual(journey.row(generation_query, (session,)), generation)
 
+                lost_ack = os.environ.get("FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK") == "1"
+                candidate = str(uuid.uuid4())
+                physical = "materialized-project-successor"
+                answer = "The selected project and its unresolved effect are ready."
+                successor_packets = []
+                candidate_connection = []
                 reservation_audit = (
-                    "SELECT details_json FROM audit_log WHERE action='codex_project_successor_reserved'"
+                    "SELECT action,details_json FROM audit_log "
+                    "WHERE action IN ('codex_project_successor_reserved',"
+                    "'codex_project_successor_creation_started','codex_project_successor_observed') "
+                    "ORDER BY id"
                 )
 
-                def retry(count):
-                    saved = restored_browser.status(original)
+                def cold_native(message, send):
+                    method = message.get("method")
+                    if method == "thread/start":
+                        actions = [row[0] for row in journey.row(reservation_audit)]
+                        self.assertEqual(actions, [
+                            "codex_project_successor_reserved",
+                            "codex_project_successor_creation_started",
+                        ])
+                        candidate_connection.append(send)
+                        if not lost_ack:
+                            send({"id": message["id"], "result": {
+                                "thread": {"id": candidate}, "model": "fixture-model",
+                            }})
+                        return True
+                    if method == "turn/start" and message["params"]["threadId"] == candidate:
+                        self.assertIs(send, candidate_connection[0])
+                        successor_packets.append(message["params"])
+                        send({"id": message["id"], "result": {"turn": {"id": physical}}})
+                        send({"method": "turn/started", "params": {
+                            "threadId": candidate, "turn": {"id": physical, "status": "inProgress"},
+                        }})
+                        claim = {"requests": [recovery["instruction"]],
+                                 "covered": [recovery["instruction"]],
+                                 "completed": [recovery["instruction"]]}
+                        send({"method": "item/completed", "params": {
+                            "threadId": candidate, "turnId": physical,
+                            "item": {"id": "successor-answer", "type": "agentMessage",
+                                     "phase": "final_answer",
+                                     "text": answer + "\n<daimon-result>" + json.dumps(claim) + "</daimon-result>"},
+                        }})
+                        send({"method": "turn/completed", "params": {
+                            "threadId": candidate, "turn": {"id": physical, "status": "completed"},
+                        }})
+                        return True
+                    return missing_native_history(message, send)
+
+                journey.handle_extra_rpc = cold_native
+                saved = restored_browser.status(original)
+
+                def retry():
                     response = restored_browser.client.post(
                         f"/api/interaction/inputs/{original}/retry",
                         headers=restored_browser.headers,
                         json={"binding": saved["binding"], "instruction": recovery["instruction"]},
                     )
                     self.assertEqual(response.status_code, 200, response.text)
-                    journey.wait(lambda: len(journey.row(audit_query)) == count and retained_unsent())
-                    journey.idle()
-                    return restored_browser.status(original)["recoveries"][0]
 
-                reserved = retry(2)
-                reservation_id = reserved["codex_successor_reservation"]
-                self.assertEqual(str(uuid.UUID(reservation_id)), reservation_id)
-                self.assertEqual(retry(3), reserved)
-                notes = [json.loads(row[0]) for row in journey.row(reservation_audit)]
-                self.assertEqual(notes, [{
-                    "original": original,
-                    "instruction": recovery["instruction"],
-                    "reservation": {
-                        "id": reservation_id,
-                        "previous_native": codex,
-                        "checkpoint_sha256": refusal["checkpoint_sha256"],
-                    },
-                }])
-                self.assertEqual(rejected_resumes, [codex] * 3)
-                self.assertFalse([
-                    rpc["method"] for rpc in journey.rpc[offset:]
-                    if rpc.get("method") in ("thread/start", "turn/start", "turn/steer")
+                retry()
+                if lost_ack:
+                    journey.wait(lambda: candidate_connection and retained_unsent(), seconds=25)
+                    journey.idle()
+                    held = restored_browser.status(original)
+                    self.assertEqual(held["recoveries"], [])
+                    self.assertEqual(held["codex_recovery_holds"][0]["codex_recovery"],
+                                     "successor_creation_unconfirmed")
+                    retry()
+                    self.assertEqual(len(candidate_connection), 1)
+                    self.assertEqual(len(journey.row(reservation_audit)), 2)
+                    self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                    journey.stop()
+                    journey.start()
+                    journey.wait_control_socket(journey.socket)
+                    restarted, _ = selected_browser()
+                    self.assertEqual(restarted.status(original)["codex_recovery_holds"],
+                                     held["codex_recovery_holds"])
+                    self.assertEqual(successor_packets, [])
+                    self.assertEqual(len(candidate_connection), 1)
+                    return
+
+                journey.wait(lambda: journey.row(
+                    "SELECT count(*) FROM interaction_results WHERE native_thread=? AND body=?",
+                    (candidate, answer),
+                ) == [(1,)], seconds=25)
+                journey.idle()
+                final = restored_browser.status(original)
+                self.assertEqual(final["native_acceptance"], "observed", final)
+                self.assertEqual(final["routing"]["instruction"], recovery["instruction"])
+                journey.wait(lambda: any(
+                    item.get("preview") == answer
+                    for item in restored_browser.get("/api/interaction")["items"]
+                ), seconds=20)
+                self.assertEqual(len(successor_packets), 1)
+                request = successor_packets[0]
+                self.assertEqual(len(request["input"]), 1)
+                self.assertIn(prompt, request["input"][0]["text"])
+                history = json.loads("".join(
+                    chunk["value"] for key, chunk in sorted(request["additionalContext"].items())
+                    if key.startswith("gateway.history.") and key != "gateway.history.source"
+                ))
+                checkpoint = json.loads(history["projectCheckpoint"])
+                for key, expected in provider.expected_verified_checkpoint.items():
+                    self.assertEqual(checkpoint[key], expected)
+                notes = [(action, json.loads(doc)) for action, doc in journey.row(reservation_audit)]
+                self.assertEqual([action for action, _ in notes], [
+                    "codex_project_successor_reserved",
+                    "codex_project_successor_creation_started",
+                    "codex_project_successor_observed",
                 ])
+                reserved = notes[0][1]["reservation"]
+                self.assertEqual(reserved["checkpoint_sha256"], refusal["checkpoint_sha256"])
+                self.assertEqual(notes[-1][1]["reservation"]["id"], reserved["id"])
+                self.assertEqual(notes[-1][1]["reservation"]["candidate_native"], candidate)
+                retry()
+                self.assertEqual(len(journey.row(reservation_audit)), 3)
+                self.assertEqual(len(candidate_connection), 1)
+                self.assertEqual(len(successor_packets), 1)
+                self.assertEqual(rejected_resumes, [codex, codex])
                 self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
                 self.assertEqual(journey.row(generation_query, (session,)), generation)
-                journey.stop()
-                journey.start()
-                journey.wait_control_socket(journey.socket)
-                restarted, _ = selected_browser()
-                self.assertEqual(restarted.status(original)["recoveries"], [reserved])
-                self.assertEqual(len(journey.row(reservation_audit)), 1)
-                self.assertEqual(rejected_resumes, [codex] * 3)
+                self.assertEqual(journey.row(
+                    "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
+                ), [(codex,)])
+                self.assertEqual(provider.calls, calls_before_switch)
                 return
 
             def native_start(original):

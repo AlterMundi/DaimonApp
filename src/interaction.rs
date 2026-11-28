@@ -945,6 +945,10 @@ pub(crate) struct CodexSuccessorReservation {
     pub id: uuid::Uuid,
     pub previous_native: String,
     pub checkpoint_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_turn: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_native: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
