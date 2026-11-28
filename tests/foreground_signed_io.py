@@ -181,6 +181,8 @@ operator.main()
             visible_handoff = os.environ.get("FOREGROUND_TEST_VISIBLE_HANDOFF") if telegram_topic else None
             if visible_handoff not in {"1", "entry"}:
                 visible_handoff = None
+            if os.environ.get("FOREGROUND_TEST_NATIVE_CODEX_PROJECT"):
+                journey.fixture_native_thread_id = lambda _: str(uuid.uuid4())
             if mixed or inverse:
                 # The seeded topics represent an existing embedded Telegram
                 # install. Only that predecessor runs in the legacy role.
@@ -576,7 +578,7 @@ timeout_seconds=5
                         self._conversation_attachments(journey, provider)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1":
-                        self._telegram_codex_handoff(journey, provider)
+                        self._telegram_codex_handoff(journey, provider, profile)
                         return
                     if telegram_topic:
                         teledaimon = journey.root / "teledaimon"
@@ -605,7 +607,7 @@ timeout_seconds=5
                             elif skill_refresh:
                                 self._telegram_skill_refresh(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_HANDOFF") == "1":
-                                self._telegram_codex_handoff(journey, provider)
+                                self._telegram_codex_handoff(journey, provider, profile)
                             else:
                                 self._telegram_topic_exchange(journey, provider, return_attempts, profile)
                         finally:
@@ -972,7 +974,7 @@ timeout_seconds=5
             if not entry:
                 journey.finish(journey.web_thread, journey.web_turn)
 
-        def _telegram_codex_handoff(self, journey, provider):
+        def _telegram_codex_handoff(self, journey, provider, profile):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
             provider.expected_codex_handoff = {
                 "native": codex,
@@ -980,6 +982,45 @@ timeout_seconds=5
                 "reply": "Initial goal turn delivered.",
             }
             web_roundtrip = os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1"
+            verified_roundtrip = os.environ.get("FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP") == "1"
+            if verified_roundtrip:
+                from project_checkpoint_shadow_io import select_project
+
+                self.assertTrue(web_roundtrip)
+                journey.idle()
+                journey.stop()
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                config = journey.config.read_text().replace(
+                    "[interaction]\n",
+                    "[interaction]\ntopic_workspace_root="
+                    + json.dumps(str(folder_root)) + "\n",
+                    1,
+                )
+                selected_harness = 'name="Alpha"\nharness="claude"'
+                self.assertIn(selected_harness, config)
+                journey.config.write_text(config.replace(selected_harness, 'name="Alpha"', 1))
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                journey.routing = True
+                repositories, effects, workspace_claim, _, _, _, shadow = select_project(journey)
+                provider.expected_verified_checkpoint = {
+                    "kind": "gateway_project_recovery", "status": "verified",
+                    "repositories": repositories, "effectReceipts": effects,
+                }
+                journey.broadcast(codex, "turn/completed", {
+                    "turn": {"id": journey.workers[codex], "status": "completed"},
+                })
+                journey.finish(journey.web_thread, journey.web_turn)
+                journey.idle()
+                journey.stop()
+                journey.config.write_text(config)
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                provider.expected_codex_handoff["original"] = "Record the selected revision."
+                provider.expected_codex_handoff["reply"] = "Staged the selected repo."
+                # The selector must retain its references, never admit any original again.
+                retained_before_switch = journey.instructions(7)
 
             def selected_browser():
                 from conversation_cold_entry_http_io import Browser
@@ -998,19 +1039,30 @@ timeout_seconds=5
                 provider.paired_human = False
                 provider.routed_paired_human = 100
                 provider.human_original = str(uuid.uuid4())
-                update, _ = browser.text(provider.original, reply=destination,
-                                         original_id=provider.human_original)
-                journey.wait(lambda: provider.failure or journey.row(
-                    "SELECT i.phase,t.status FROM interaction_instructions i "
-                    "JOIN interaction_sources s ON s.id=i.input_id "
-                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
-                    (update,),
-                ) == [("accepted", "completed")], seconds=30)
-                self.assertIsNone(provider.failure)
-                journey.wait(lambda: any(
-                    ANSWER in item.get("preview", "")
-                    for item in browser.get("/api/interaction")["items"]
-                ), seconds=20)
+                def submit(answer):
+                    update, _ = browser.text(provider.original, reply=destination,
+                                             original_id=provider.human_original)
+
+                    def attempt():
+                        return journey.row(
+                            "SELECT i.phase,t.status,t.native_thread_id FROM interaction_instructions i "
+                            "JOIN interaction_sources s ON s.id=i.input_id "
+                            "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                            (update,),
+                        )
+                    journey.wait(
+                        lambda: provider.failure or (attempt() and attempt()[0][1] != "running"),
+                        seconds=35,
+                    )
+                    self.assertIsNone(provider.failure)
+                    self.assertEqual(attempt()[0][:2], ("accepted", "completed"), browser.status(update))
+                    journey.wait(lambda: any(
+                        answer in item.get("preview", "")
+                        for item in browser.get("/api/interaction")["items"]
+                    ), seconds=20)
+                    return update, attempt()[0][2]
+
+                update, _ = submit(ANSWER)
             else:
                 provider.human_original = str(journey.sequence + 1)
                 update = journey.admit(provider.original, topic=7)
@@ -1025,6 +1077,61 @@ timeout_seconds=5
             self.assertNotEqual(provider.codex_handoff_native, codex)
             self.assertEqual(journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7"),
                              [(codex,)])
+            claude_answer = ANSWER
+            if os.environ.get("FOREGROUND_TEST_CLAUDE_COLD_PROJECT") == "1":
+                self.assertTrue(verified_roundtrip)
+                journey.idle()
+                provider.previous_session = provider.codex_handoff_native
+                fixture_home = Path(json.loads(profile.read_text())["configurationDirectory"])
+                transcripts = list((fixture_home / "projects").rglob(provider.previous_session + ".jsonl"))
+                self.assertEqual(len(transcripts), 1)
+                transcript = transcripts[0]
+                original_bytes = transcript.read_bytes()
+                retained = transcript.with_suffix(".unavailable")
+                transcript.rename(retained)
+
+                del provider.expected_codex_handoff
+                provider.expected_recovered_history = provider.original
+                provider.original = "Continue the selected project after losing local history."
+                provider.human_original = str(uuid.uuid4())
+                claude_answer = "I recovered the retained design context."
+                before_calls = len(provider.calls)
+                started = time.monotonic()
+                _, recovered_native = submit(claude_answer)
+                elapsed_ms = round((time.monotonic() - started) * 1000)
+                self.assertNotEqual(recovered_native, provider.previous_session)
+                self.assertFalse(transcript.exists())
+                self.assertEqual(retained.read_bytes(), original_bytes)
+                self.assertEqual(provider.calls[before_calls:], [provider.current])
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+
+                # Read only the result from this run's private, disposable
+                # native transcript. Export counts without IDs or content.
+                recovered = list((fixture_home / "projects").rglob(recovered_native + ".jsonl"))
+                self.assertEqual(len(recovered), 1)
+                messages = {}
+                for line in recovered[0].read_text().splitlines():
+                    entry = json.loads(line)
+                    if entry.get("type") != "assistant":
+                        continue
+                    message = entry["message"]
+                    if message.get("id", "").startswith("msg_fixture_"):
+                        messages[message["id"]] = message["usage"]
+                self.assertEqual(len(messages), 1)
+                usage = next(iter(messages.values()))
+                self.assertEqual(usage["input_tokens"], 8)
+                self.assertEqual(usage["output_tokens"], 4)
+                print(json.dumps({
+                    "fixture": "native_claude_project_cold_recovery",
+                    "recovery_to_visible_answer_ms": elapsed_ms,
+                    "loopback_calls": len(provider.calls) - before_calls,
+                    "reported_fixture_input_tokens": usage["input_tokens"],
+                    "reported_fixture_output_tokens": usage["output_tokens"],
+                    "prior_instructions_redispatched": 0,
+                    "real_provider_calls": 0,
+                }, sort_keys=True), flush=True)
+                provider.codex_handoff_native = recovered_native
+                del provider.expected_recovered_history
             if os.environ.get("FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP") != "1":
                 return
 
@@ -1035,10 +1142,11 @@ timeout_seconds=5
             config = journey.config.read_text()
             selected = 'name="Alpha"\nharness="claude"'
             self.assertIn(selected, config)
-            folder_root = journey.root / "conversation-folders"
-            folder_root.mkdir(mode=0o700)
-            config = config.replace("[interaction]\n",
-                "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
+            if not verified_roundtrip:
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                config = config.replace("[interaction]\n",
+                    "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
             journey.config.write_text(config.replace(selected, 'name="Alpha"', 1))
             journey.start()
             journey.wait_control_socket(journey.socket)
@@ -1054,6 +1162,362 @@ timeout_seconds=5
             if web_roundtrip:
                 journey.routing = True
                 browser, destination = selected_browser()
+
+            if os.environ.get("FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL") == "1":
+                self.assertTrue(verified_roundtrip)
+                fallback = journey.handle_extra_rpc
+                rejected_resumes = []
+                generation_query = (
+                    "SELECT generation FROM conversation_entry_generations WHERE session_id=?"
+                )
+                generation = journey.row(generation_query, (session,))
+                self.assertEqual(len(generation), 1)
+                native_binary = os.environ.get("FOREGROUND_TEST_NATIVE_CODEX_PROJECT")
+                native_rpc = None
+                if native_binary:
+                    from contextlib import ExitStack
+                    from codex_project_successor_io import connection, loopback_model
+
+                    native_fixture = ExitStack()
+                    self.addCleanup(native_fixture.close)
+                    native_state = journey.root / "native-project-successor"
+                    native_state.mkdir(mode=0o700)
+                    native_model = native_fixture.enter_context(loopback_model(native_state))
+                    native_rpc, native_wait, native_seen = native_fixture.enter_context(
+                        connection(native_binary, native_state)
+                    )
+                    self.assertNotEqual(
+                        os.environ.get("FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK"), "1",
+                        "Use the simulated peer for the intentionally lost acknowledgement",
+                    )
+
+                def missing_native_history(message, send):
+                    if (message.get("method") == "thread/resume"
+                            and message["params"]["threadId"] == codex):
+                        rejected_resumes.append(codex)
+                        error = (native_rpc("thread/resume", message["params"], error=True)
+                                 if native_rpc else {
+                                     "code": -32600,
+                                     "message": f"no rollout found for thread id {codex}",
+                                 })
+                        send({"id": message["id"], "error": error})
+                        return True
+                    return fallback(message, send)
+
+                journey.handle_extra_rpc = missing_native_history
+                offset = len(journey.rpc)
+                prompt = "Continue the selected project in Codex."
+                original, _ = browser.text(prompt, reply=destination)
+
+                def retained_unsent():
+                    return journey.row(
+                        "SELECT i.phase FROM interaction_sources s "
+                        "JOIN interaction_instructions i ON i.input_id=s.id WHERE s.event_id=?",
+                        (original,),
+                    ) == [("retained_unsent",)]
+
+                journey.wait(retained_unsent, seconds=25)
+                receipt = browser.status(original)
+                self.assertEqual(receipt["text"], prompt)
+                self.assertFalse(receipt["retired"])
+                self.assertEqual(receipt["routing"]["phase"], "retained_unsent")
+                recovery = receipt["recoveries"][0]
+                self.assertEqual(recovery["instruction"], receipt["routing"]["instruction"])
+                self.assertEqual(recovery.get("codex_recovery"), "missing_native_history", receipt)
+                refusal, = journey.row(
+                    "SELECT json_extract(doc,'$.codex_recovery_refusal') "
+                    "FROM interaction_instructions WHERE id=?",
+                    (recovery["instruction"],),
+                )[0]
+                refusal = json.loads(refusal)
+                self.assertEqual(refusal["previous_native"], codex)
+                self.assertEqual(len(refusal["checkpoint_sha256"]), 64)
+                audit_query = (
+                    "SELECT details_json FROM audit_log WHERE action='codex_project_recovery_refusal'"
+                )
+                self.assertEqual([json.loads(row[0]) for row in journey.row(audit_query)], [{
+                    "instruction": recovery["instruction"], "receipt": refusal,
+                }])
+                self.assertEqual(rejected_resumes, [codex])
+                self.assertFalse([
+                    rpc["method"] for rpc in journey.rpc[offset:]
+                    if rpc.get("method") in ("thread/start", "turn/start", "turn/steer")
+                ])
+                self.assertEqual(journey.row(
+                    "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
+                ), [(codex,)])
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(provider.calls, calls_before_switch)
+                journey.idle()
+                journey.stop()
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                restored_browser, _ = selected_browser()
+                self.assertEqual(restored_browser.status(original)["recoveries"], [recovery])
+                self.assertEqual(journey.row(audit_query)[0][0].count(recovery["instruction"]), 1)
+                self.assertEqual(len(journey.row(audit_query)), 1)
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
+
+                lost_ack = os.environ.get("FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK") == "1"
+                candidate = str(uuid.uuid4())
+                physical = "materialized-project-successor"
+                answer = "The selected project and its unresolved effect are ready."
+                successor_packets = []
+                candidate_connection = []
+                reservation_audit = (
+                    "SELECT action,details_json FROM audit_log "
+                    "WHERE action IN ('codex_project_successor_reserved',"
+                    "'codex_project_successor_creation_started','codex_project_successor_observed') "
+                    "ORDER BY id"
+                )
+
+                def cold_native(message, send):
+                    nonlocal candidate
+                    method = message.get("method")
+                    if method == "thread/start":
+                        actions = [row[0] for row in journey.row(reservation_audit)]
+                        self.assertEqual(actions, [
+                            "codex_project_successor_reserved",
+                            "codex_project_successor_creation_started",
+                        ])
+                        candidate_connection.append(send)
+                        if native_rpc:
+                            created = native_rpc("thread/start", {
+                                **message["params"], "modelProvider": "fixture",
+                            })
+                            candidate = created["thread"]["id"]
+                            send({"id": message["id"], "result": created})
+                        elif not lost_ack:
+                            send({"id": message["id"], "result": {
+                                "thread": {"id": candidate}, "model": "fixture-model",
+                            }})
+                        return True
+                    if method == "turn/start" and message["params"]["threadId"] == candidate:
+                        self.assertIs(send, candidate_connection[0])
+                        successor_packets.append(message["params"])
+                        if native_rpc:
+                            claim = {key: [recovery["instruction"]]
+                                     for key in ("requests", "covered", "completed")}
+                            native_model.answer = (
+                                answer + "\n<daimon-result>" +
+                                json.dumps(claim) + "</daimon-result>"
+                            )
+                            first_event = len(native_seen)
+                            started = native_rpc("turn/start", message["params"])
+                            send({"id": message["id"], "result": started})
+                            turn_id = started["turn"]["id"]
+
+                            def terminal(event):
+                                return (event.get("method") == "turn/completed"
+                                        and event["params"]["turn"]["id"] == turn_id)
+
+                            events = native_seen[first_event:]
+                            if not any(terminal(event) for event in events):
+                                native_wait(terminal)
+                            for event in native_seen[first_event:]:
+                                if "method" in event and "id" not in event:
+                                    send(event)
+                            return True
+                        send({"id": message["id"], "result": {"turn": {"id": physical}}})
+                        send({"method": "turn/started", "params": {
+                            "threadId": candidate, "turn": {"id": physical, "status": "inProgress"},
+                        }})
+                        claim = {"requests": [recovery["instruction"]],
+                                 "covered": [recovery["instruction"]],
+                                 "completed": [recovery["instruction"]]}
+                        send({"method": "item/completed", "params": {
+                            "threadId": candidate, "turnId": physical,
+                            "item": {"id": "successor-answer", "type": "agentMessage",
+                                     "phase": "final_answer",
+                                     "text": answer + "\n<daimon-result>" + json.dumps(claim) + "</daimon-result>"},
+                        }})
+                        send({"method": "turn/completed", "params": {
+                            "threadId": candidate, "turn": {"id": physical, "status": "completed"},
+                        }})
+                        return True
+                    return missing_native_history(message, send)
+
+                journey.handle_extra_rpc = cold_native
+                saved = restored_browser.status(original)
+
+                def retry():
+                    response = restored_browser.client.post(
+                        f"/api/interaction/inputs/{original}/retry",
+                        headers=restored_browser.headers,
+                        json={"binding": saved["binding"], "instruction": recovery["instruction"]},
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+
+                retry_started = time.monotonic()
+                retry()
+                if lost_ack:
+                    journey.wait(lambda: candidate_connection and retained_unsent(), seconds=25)
+                    journey.idle()
+                    held = restored_browser.status(original)
+                    self.assertEqual(held["recoveries"], [])
+                    self.assertEqual(held["codex_recovery_holds"][0]["codex_recovery"],
+                                     "successor_creation_unconfirmed")
+                    retry()
+                    self.assertEqual(len(candidate_connection), 1)
+                    self.assertEqual(len(journey.row(reservation_audit)), 2)
+                    self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                    journey.stop()
+                    journey.start()
+                    journey.wait_control_socket(journey.socket)
+                    restarted, _ = selected_browser()
+                    self.assertEqual(restarted.status(original)["codex_recovery_holds"],
+                                     held["codex_recovery_holds"])
+                    self.assertEqual(successor_packets, [])
+                    self.assertEqual(len(candidate_connection), 1)
+                    return
+
+                if native_rpc:
+                    def local_completion():
+                        return journey.row(
+                            "SELECT status FROM turns WHERE native_thread_id=? AND status!='running'",
+                            (candidate,),
+                        )
+
+                    journey.wait(local_completion, seconds=25)
+                    self.assertEqual(local_completion(), [("completed",)])
+                journey.wait(lambda: journey.row(
+                    "SELECT count(*) FROM interaction_results WHERE native_thread=? AND body=?",
+                    (candidate, answer),
+                ) == [(1,)], seconds=25)
+                journey.idle()
+                final = restored_browser.status(original)
+                self.assertEqual(final["native_acceptance"], "observed", final)
+                self.assertEqual(final["routing"]["instruction"], recovery["instruction"])
+                journey.wait(lambda: any(
+                    item.get("preview") == answer
+                    for item in restored_browser.get("/api/interaction")["items"]
+                ), seconds=20)
+                recovery_ms = round((time.monotonic() - retry_started) * 1000)
+                self.assertEqual(len(successor_packets), 1)
+                request = successor_packets[0]
+                self.assertEqual(len(request["input"]), 1)
+                self.assertIn(prompt, request["input"][0]["text"])
+                history = json.loads("".join(
+                    chunk["value"] for key, chunk in sorted(request["additionalContext"].items())
+                    if key.startswith("gateway.history.") and key != "gateway.history.source"
+                ))
+                checkpoint = json.loads(history["projectCheckpoint"])
+                for key, expected in provider.expected_verified_checkpoint.items():
+                    self.assertEqual(checkpoint[key], expected)
+                notes = [(action, json.loads(doc)) for action, doc in journey.row(reservation_audit)]
+                self.assertEqual([action for action, _ in notes], [
+                    "codex_project_successor_reserved",
+                    "codex_project_successor_creation_started",
+                    "codex_project_successor_observed",
+                ])
+                reserved = notes[0][1]["reservation"]
+                self.assertEqual(reserved["checkpoint_sha256"], refusal["checkpoint_sha256"])
+                self.assertEqual(notes[-1][1]["reservation"]["id"], reserved["id"])
+                self.assertEqual(notes[-1][1]["reservation"]["candidate_native"], candidate)
+                retry()
+                self.assertEqual(len(journey.row(reservation_audit)), 3)
+                self.assertEqual(len(candidate_connection), 1)
+                self.assertEqual(len(successor_packets), 1)
+                self.assertEqual(rejected_resumes, [codex, codex])
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
+                self.assertEqual(journey.row(
+                    "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
+                ), [(candidate,)])
+                self.assertEqual(journey.row(
+                    "SELECT generation,previous_native,successor_native,instruction,sealed "
+                    "FROM codex_project_lineage WHERE session_id=?", (session,),
+                ), [(generation[0][0], codex, candidate, recovery["instruction"], 1)])
+
+                if native_rpc:
+                    self.assertEqual(len(native_model.packets), 1)
+                    packet = json.dumps(native_model.packets[0])
+                    self.assertIn(prompt, packet)
+                    self.assertTrue(all(item["original"] in packet for item in effects))
+                    native_usage = [
+                        event["params"]["tokenUsage"]["last"]["totalTokens"]
+                        for event in native_seen
+                        if event.get("method") == "thread/tokenUsage/updated"
+                        and event["params"]["threadId"] == candidate
+                    ]
+                    self.assertEqual(native_usage[-1], 218)
+                    # Release the fixture's native writer before reopening.
+                    native_fixture.close()
+                    with connection(native_binary, native_state) as (read_native, _, _):
+                        resumed = read_native("thread/resume", {
+                            "threadId": candidate, "excludeTurns": True,
+                        })
+                        self.assertEqual(resumed["thread"]["id"], candidate)
+                        history = read_native("thread/read", {
+                            "threadId": candidate, "includeTurns": True,
+                        })["thread"]
+                        self.assertEqual(len(history["turns"]), 1)
+                        self.assertIn(answer, json.dumps(history["turns"]))
+                    print(json.dumps({
+                        "fixture": "gateway_native_codex_project_successor",
+                        "loopback_calls": len(native_model.packets),
+                        "real_provider_calls": 0,
+                        "prior_instructions_redispatched": 0,
+                        "native_successor_resumed": True,
+                        "retry_to_visible_answer_ms": recovery_ms,
+                        "reported_fixture_tokens": native_usage[-1],
+                    }), flush=True)
+                    return
+
+                # Start a new process to ensure the next original uses the
+                # persisted successor and can still read the exact old citation.
+                journey.stop()
+                journey.handle_extra_rpc = missing_native_history
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                following, following_destination = selected_browser()
+                later_prompt = "Continue reviewing the selected scene on the recovered thread."
+                offset = len(journey.rpc)
+                later, _ = following.text(later_prompt, reply=following_destination)
+                journey.wait(lambda: candidate in journey.workers)
+                starts = [rpc["params"] for rpc in journey.rpc[offset:]
+                          if rpc.get("method") == "turn/start"]
+                self.assertEqual(len(starts), 1)
+                self.assertEqual(starts[0]["threadId"], candidate)
+                self.assertIn(later_prompt, starts[0]["input"][0]["text"])
+                self.assertFalse(any(rpc.get("method") == "thread/start"
+                                     for rpc in journey.rpc[offset:]))
+                self.assertFalse(any(key.startswith("gateway.history.")
+                                     for key in starts[0]["additionalContext"]))
+                journey.wait(lambda: following.status(later)["native_acceptance"] == "observed")
+                catalog = journey.read("input", "topic-projects",
+                    json.dumps({"chat_id": 100, "thread_id": 7}))["result"]
+                self.assertEqual(len(catalog["repositories"]), len(repositories), catalog)
+                old_checkpoint = shadow(7, "after-codex-adoption", {
+                    "action": "read", "workspace": workspace_claim,
+                    "checkout": repositories[0]["checkout"],
+                    "project": repositories[0]["link"]["project"],
+                    "repository": repositories[0]["link"].get("repository", repositories[0]["link"]["project"]),
+                })
+                self.assertEqual(old_checkpoint["delta"]["sources"], repositories[0]["sources"])
+                self.assertEqual(old_checkpoint["delta"]["work"], repositories[0]["work"])
+                self.assertEqual(old_checkpoint["revision"], repositories[0]["revision"])
+                later_instruction = following.status(later)["routing"]["instruction"]
+                native_turn = journey.workers[candidate]
+                claim = {"requests": [later_instruction], "covered": [later_instruction],
+                         "completed": [later_instruction]}
+                journey.broadcast(candidate, "item/completed", {
+                    "turnId": native_turn, "item": {"id": "answer-after-adoption",
+                    "type": "agentMessage", "phase": "final_answer",
+                    "text": "Review continued.\n<daimon-result>" + json.dumps(claim) + "</daimon-result>"},
+                })
+                journey.broadcast(candidate, "turn/completed", {
+                    "turn": {"id": native_turn, "status": "completed"},
+                })
+                journey.wait(lambda: any(
+                    item.get("preview") == "Review continued."
+                    for item in following.get("/api/interaction")["items"]
+                ))
+                journey.idle()
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(provider.calls, calls_before_switch)
+                return
 
             def native_start(original):
                 offset = len(journey.rpc)
@@ -1072,7 +1536,7 @@ timeout_seconds=5
                 self.assertEqual(len(request["input"]), 1)
                 if browser:
                     self.assertNotIn(claude_prompt, request["input"][0]["text"])
-                    self.assertNotIn(ANSWER, request["input"][0]["text"])
+                    self.assertNotIn(claude_answer, request["input"][0]["text"])
                     item = "codex-return-" + original_id
                     answer = "Owned Codex answer for " + original
                     journey.answer_worker(7, answer, item=item)
@@ -1096,10 +1560,25 @@ timeout_seconds=5
             self.assertTrue(fragments, "The resumed Codex turn received no Claude context")
             self.assertTrue(all(f["kind"] == "untrusted" and f["name"] == "gateway_history" for f in fragments))
             seed = json.loads("".join(f["value"] for f in fragments))
-            self.assertEqual(seed["ownedExchanges"]["human"], claude_prompt)
-            self.assertIn(ANSWER, seed["ownedExchanges"]["assistant"])
-            self.assertEqual(seed["ownedExchanges"]["nativeThread"], provider.codex_handoff_native)
-            self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
+            exchange = seed["ownedExchanges"]
+            if claude_answer != ANSWER:
+                first, exchange = exchange["exchanges"]
+                self.assertEqual(first["nativeThread"], provider.previous_session)
+                self.assertEqual(first["human"], "Continue our existing design from the Codex exchange.")
+                self.assertIn(ANSWER, first["assistant"])
+            self.assertEqual(exchange["human"], claude_prompt)
+            self.assertIn(claude_answer, exchange["assistant"])
+            self.assertEqual(exchange["nativeThread"], provider.codex_handoff_native)
+            if verified_roundtrip:
+                recovered = json.loads(seed["projectCheckpoint"])
+                for key, expected in provider.expected_verified_checkpoint.items():
+                    self.assertEqual(recovered[key], expected)
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(journey.row("SELECT revision FROM project_checkpoint_deltas"), [(1,), (2,), (3,)])
+                originals = [effect["original"] for effect in recovered["effectReceipts"]]
+                self.assertEqual(len(set(originals)), 2)
+            else:
+                self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
             later = native_start("Continue normally in Codex.")
             self.assertFalse(any(key.startswith("gateway.history.") for key in later))
             self.assertEqual(provider.calls, calls_before_switch)

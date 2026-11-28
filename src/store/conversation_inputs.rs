@@ -669,18 +669,24 @@ impl Store {
         )?;
         // These are retained source identities, not live foreign keys. Retire
         // monotonically even when a binding or grant is subsequently restored.
-        conn.execute_batch("CREATE TRIGGER IF NOT EXISTS conversation_input_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions BEGIN
+        let continuity = super::conversation_entry::CODEX_PROJECT_CONTINUATION;
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS conversation_input_binding_retired;
+            CREATE TRIGGER conversation_input_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
+            WHEN NOT ({continuity}) BEGIN
             UPDATE conversation_inputs SET retired=1 WHERE session_id=NEW.id AND (native_thread IS NOT NEW.codex_thread_id OR NEW.force_fresh_thread=1 OR human_id!=NEW.creator_user_id); END;
             CREATE TRIGGER IF NOT EXISTS conversation_input_session_deleted AFTER DELETE ON sessions BEGIN UPDATE conversation_inputs SET retired=1 WHERE session_id=OLD.id; END;
-            CREATE TRIGGER IF NOT EXISTS conversation_input_owner_revoked AFTER UPDATE OF allowed ON users WHEN NEW.allowed=0 BEGIN UPDATE conversation_inputs SET retired=1 WHERE human_id=NEW.tg_user_id; END;")?;
+            CREATE TRIGGER IF NOT EXISTS conversation_input_owner_revoked AFTER UPDATE OF allowed ON users WHEN NEW.allowed=0 BEGIN UPDATE conversation_inputs SET retired=1 WHERE human_id=NEW.tg_user_id; END; COMMIT;"))?;
         // A held reply may not silently adopt an unrelated native replacement or
         // a restored ownership grant. Initial native establishment is compatible;
         // fresh human inputs can select the current logical session after renewal.
-        conn.execute_batch("CREATE TRIGGER IF NOT EXISTS conversation_focus_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
-            WHEN (OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id) OR NEW.force_fresh_thread=1 OR OLD.creator_user_id!=NEW.creator_user_id BEGIN
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS conversation_focus_binding_retired;
+            CREATE TRIGGER conversation_focus_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
+            WHEN ((OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id)
+                OR NEW.force_fresh_thread=1 OR OLD.creator_user_id!=NEW.creator_user_id)
+              AND NOT ({continuity}) BEGIN
             UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=NEW.id AND phase IN ('preparing','retained','queued','awaiting_target'); END;
             CREATE TRIGGER IF NOT EXISTS conversation_focus_session_deleted AFTER DELETE ON sessions BEGIN
-            UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=OLD.id AND phase IN ('preparing','retained','queued','awaiting_target'); END;")?;
+            UPDATE conversation_inputs SET doc=json_set(doc,'$.focus.retired',json('true')) WHERE json_extract(doc,'$.focus.session')=OLD.id AND phase IN ('preparing','retained','queued','awaiting_target'); END; COMMIT;"))?;
         let recovery = conn.unchecked_transaction()?;
         portable::recover_retired_writer(&recovery, &self.instance_id)?;
         recovery.execute("UPDATE conversation_inputs SET phase=CASE WHEN phase IN ('sending','steering') THEN 'uncertain' WHEN phase='preparing' THEN 'preparation_unconfirmed' ELSE 'retained_unsent' END WHERE instance_id!=?1 AND phase IN ('retained','queued','sending','steering','preparing')",[&self.instance_id])?;
