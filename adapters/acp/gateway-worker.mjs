@@ -1,7 +1,7 @@
 import { once } from 'node:events';
 import { lstat, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mjs';
@@ -215,7 +215,7 @@ async function main(path) {
     const fields = ['binary', 'cwd', 'model', 'matrixStatusCommand', 'body',
       ...(agy ? ['adapter', 'home', 'effort'] : ['stateRoot', 'provider', 'providerKeyFile'])];
     const absolute = value => typeof value === 'string' && isAbsolute(value);
-    if (agy && (!absolute(profile.home) || typeof profile.effort !== 'string' || !profile.effort)) {
+    if (agy && (!absolute(profile.home) || profile.home.includes(delimiter) || typeof profile.effort !== 'string' || !profile.effort)) {
       throw new Error('Invalid Antigravity owner profile');
     }
     if (agy && Object.hasOwn(profile, 'nativeTools')) {
@@ -273,7 +273,11 @@ async function main(path) {
       }
     }
     const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
-    const env = agy ? { HOME: profile.home, PATH: '/usr/bin:/bin' } : await gooseEnvironment(profile);
+    const developmentTools = agy && profile.nativeTools === 'unrestricted';
+    const env = agy ? {
+      HOME: profile.home,
+      PATH: developmentTools ? ['/usr/bin', '/bin', join(profile.home, '.local', 'bin')].join(delimiter) : '/usr/bin:/bin',
+    } : await gooseEnvironment(profile);
     const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
     const { sharedSkillsDirectory } = profile;
     const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand,
@@ -288,6 +292,7 @@ async function main(path) {
         .decode(await privateBytes(profile.bodyGuidanceFile, 6 * 1024)).trim();
       if (!document || document.includes('\0')) throw new Error('Invalid Antigravity receiving guidance');
       instructions = '[Receiving body instructions from your signed Gateway profile]\n' + document
+        + (developmentTools ? '\nThe current owner profile enables native shell commands and includes the owner’s local executables. Verify tool availability from this turn’s actual command results.' : '')
         + (profile.sharedMemory ? '\nUse dmk_recall when past experience or decisions matter.' : '')
         + (sharedSkillsDirectory ? '\nFor any installed skill or SKILL.md path mentioned in the body instructions, load it with the MCP tool shared_skill using the skill name. Use that tool for skills instead of read_file, shell commands or absolute paths.' : '')
         + (bridge ? '\nFor an owned conversation request, use the MCP interaction_controller. If you need the gateway coordination skill, call shared_skill with name daimon-gateway. Then call interaction_controller with operation capabilities and arguments {} to discover current routing.' : '')

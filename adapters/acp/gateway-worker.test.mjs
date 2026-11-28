@@ -93,6 +93,31 @@ async function runWorker(t, profile, text, beforeDecision, agy, controller) {
   return { nativeSessionId, outcome: settled.outcome };
 }
 
+test('agy unrestricted profiles expose owner-installed development tools', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agy-development-path-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile.json');
+  const pathReceipt = join(root, 'observed-path');
+  const binary = join(root, 'agy-fixture');
+  await writeFile(binary, `#!/bin/sh
+printf '%s' "$PATH" > "${pathReceipt}"
+`, { mode: 0o700 });
+  const matrixStatusCommand = await fixtureObservation(root);
+  for (const nativeTools of ['sandboxed', 'unrestricted']) {
+    await writeFile(profile, JSON.stringify({
+      adapter: 'agy', binary, cwd: root, home: root,
+      model: 'gemini-4-neon', effort: 'medium', body, matrixStatusCommand, nativeTools,
+    }), { mode: 0o600 });
+    const result = await runWorker(t, profile, 'Fixture', null, {
+      workspace: root, resumeNativeSessionId: null,
+    });
+    assert.equal(result.outcome.phase, 'not_submitted');
+    const path = await readFile(pathReceipt, 'utf8');
+    const expected = nativeTools === 'unrestricted' ? `/usr/bin:/bin:${join(root, '.local', 'bin')}` : '/usr/bin:/bin';
+    assert.equal(path, expected);
+  }
+});
+
 test('agy foreground worker journals, uses its selected tool and resumes the same native session', {
   skip: !process.env.AGY_TEST_AUTHENTICATED_BINARY, timeout: 90_000,
 }, async t => {

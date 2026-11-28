@@ -129,8 +129,12 @@ synthetic memory and a loopback model responder.
 
 Antigravity defaults to sandboxed tools. An owner-selected topic profile can set
 `nativeTools: "unrestricted"` to start its own agy process without `--sandbox`
-and approve native tool requests without interaction. The topic retains its
-signed body and workspace selection. Other profiles keep their default.
+and approve native tool requests without interaction. This mode puts the
+owner's installed local executables on PATH after the system directories.
+The worker exposes the active mode in its receiving instructions so tool
+denials in retained history do not obscure present capability. The topic
+retains its signed body and workspace selection. Other profiles keep their
+system PATH and sandbox defaults.
 The Gateway controller remains subject to its existing tool grant and receipt.
 
 The sandboxed Antigravity pilot can ask for native tools outside the provided
