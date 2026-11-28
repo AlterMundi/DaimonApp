@@ -407,17 +407,21 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
-        let selected: Option<(String, Option<String>, bool)> = conn
+        let selected: Option<(String, Option<String>, bool, bool)> = conn
             .query_row(
-                "SELECT phase,json_extract(doc,'$.subscription_limit'),coalesce(json_extract(doc,'$.context_unavailable'),0) FROM interaction_instructions WHERE id=?1",
+                "SELECT phase,json_extract(doc,'$.subscription_limit'),
+                 coalesce(json_extract(doc,'$.context_unavailable'),0),
+                 coalesce(json_extract(doc,'$.goal_control_unavailable'),0)
+                 FROM interaction_instructions WHERE id=?1",
                 [instruction],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        if let Some((phase, limit, context_unavailable)) = selected {
+        if let Some((phase, limit, context_unavailable, goal_control_unavailable)) = selected {
             route.phase = phase;
             route.subscription_limit = limit.as_deref().map(serde_json::from_str).transpose()?;
             route.context_unavailable = context_unavailable;
+            route.goal_control_unavailable = goal_control_unavailable;
         } else {
             route.phase = "unavailable".into();
         }
@@ -2076,6 +2080,7 @@ impl Store {
                 "native_acceptance":phase=="accepted","target_available":available,
                 "subscription_limit":instruction.subscription_limit,
                 "context_unavailable":instruction.context_unavailable,
+                "goal_control_unavailable":instruction.goal_control_unavailable,
                 "results":results,"more_results":more_results,"results_cursor":result_cursor}),
             );
         }

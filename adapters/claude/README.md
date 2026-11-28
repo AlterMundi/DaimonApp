@@ -600,11 +600,14 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   additional provider call and a retained refusal for an unpaired companion.
   Add `FOREGROUND_TEST_CLAUDE_GOAL_LIFECYCLE=completed` for goal creation and
   evaluation, or `=active` to leave a goal unresolved in the native session.
-  The active case verifies that the pause and resume originals stay unsent,
-  the existing objective stays inspectable, and a subsequent clear addresses
+  The active case verifies that the pause and resume originals stay unsent with
+  an explicit unavailable control status, the existing objective stays
+  inspectable, and a subsequent clear addresses
   that same session while the earlier turn remains uncertain.
   Both cases verify that resubmitting the same input ID does not run the goal
   again and that an unpaired browser cannot set a goal.
+- `FOREGROUND_TEST_TELEGRAM_GOAL_CONTROLS=1` checks the original-anchored
+  explanation for unsupported pause and resume without provider exposure.
 - `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
   `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` submit an exact reply to an older
   proposal while a newer request is still running in the same native session.
