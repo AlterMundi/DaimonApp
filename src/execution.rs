@@ -9,6 +9,7 @@ pub(crate) enum Harness {
     Antigravity,
     Goose,
     Qwen,
+    MiniMax,
 }
 
 impl Harness {
@@ -23,6 +24,7 @@ impl Harness {
             Self::Antigravity => "antigravity",
             Self::Goose => "goose",
             Self::Qwen => "qwen",
+            Self::MiniMax => "minimax",
         }
     }
 }

@@ -53,6 +53,7 @@ pub struct InteractionConfig {
     pub claude_foreground: Option<ForegroundConfig>,
     pub goose_foreground: Option<ForegroundConfig>,
     pub qwen_foreground: Option<ForegroundConfig>,
+    pub minimax_foreground: Option<ForegroundConfig>,
     pub antigravity_foreground: Option<ForegroundConfig>,
     /// Existing SDK worker for signed Matrix originals when a topic uses agy.
     pub antigravity_matrix_foreground: Option<ForegroundConfig>,
@@ -205,6 +206,7 @@ pub(crate) enum ForegroundEngine {
     Claude,
     Goose,
     Qwen,
+    MiniMax,
     Antigravity,
 }
 
@@ -220,6 +222,7 @@ impl ForegroundEngine {
             Harness::Claude => Some(Self::Claude),
             Harness::Goose => Some(Self::Goose),
             Harness::Qwen => Some(Self::Qwen),
+            Harness::MiniMax => Some(Self::MiniMax),
             Harness::Antigravity => Some(Self::Antigravity),
         }
     }
@@ -230,6 +233,7 @@ impl ForegroundEngine {
             Self::Claude => Harness::Claude,
             Self::Goose => Harness::Goose,
             Self::Qwen => Harness::Qwen,
+            Self::MiniMax => Harness::MiniMax,
             Self::Antigravity => Harness::Antigravity,
         }
     }
@@ -242,7 +246,7 @@ impl ForegroundEngine {
         match self {
             Self::Claude => Some(8192),
             Self::Antigravity if agy_cli => Some(8192),
-            Self::Goose | Self::Antigravity | Self::Qwen => None,
+            Self::Goose | Self::Antigravity | Self::Qwen | Self::MiniMax => None,
         }
     }
 }
@@ -501,6 +505,7 @@ impl InteractionConfig {
             &self.claude_foreground,
             &self.goose_foreground,
             &self.qwen_foreground,
+            &self.minimax_foreground,
             &self.antigravity_foreground,
             &self.antigravity_matrix_foreground,
         ]
@@ -584,6 +589,7 @@ impl InteractionConfig {
             &self.goose_foreground,
             &self.antigravity_foreground,
             &self.qwen_foreground,
+            &self.minimax_foreground,
         ]
         .into_iter()
         .flatten()
@@ -666,6 +672,7 @@ impl InteractionConfig {
             ForegroundEngine::Claude => self.claude_foreground.as_ref(),
             ForegroundEngine::Goose => self.goose_foreground.as_ref(),
             ForegroundEngine::Qwen => self.qwen_foreground.as_ref(),
+            ForegroundEngine::MiniMax => self.minimax_foreground.as_ref(),
             ForegroundEngine::Antigravity => self.antigravity_foreground.as_ref(),
         }
     }
@@ -1208,6 +1215,7 @@ mod tests {
             claude_foreground: None,
             goose_foreground: None,
             qwen_foreground: None,
+            minimax_foreground: None,
             antigravity_foreground: None,
             antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,

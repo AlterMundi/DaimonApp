@@ -2,12 +2,12 @@ import { lstat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
+import { closed, privateBytes } from '../worker-pipes.mjs';
 import { observeMatrixBody, validObservationCommand } from '../owner-observation.mjs';
+import { BODY, readBodyGuidance, runBoundedWorker } from './bounded-worker.mjs';
 import { runQwenTurn } from './qwen-turn.mjs';
 
 const SCHEMA = 'daimon-gateway.qwen-turn/v1';
-const BODY = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
 const SETTINGS = fileURLToPath(new URL('./qwen-pilot-settings.json', import.meta.url));
 const TOKEN_PLAN = 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
 
@@ -51,25 +51,11 @@ async function run(path) {
     throw new Error('Private Qwen state directory required');
   }
 
-  const pipe = frames(process.stdin);
-  const stop = new AbortController();
-  try {
-    const first = (await pipe.next()).value;
-    if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body', 'workspace', 'resume'])
-        || first.schema !== SCHEMA || first.type !== 'start'
-        || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
-        || first.workspace !== profile.cwd
-        || (first.resume !== null && typeof first.resume !== 'string')
-        || !closed(first.body, BODY) || !BODY.every(key => first.body[key] === profile.body[key])) {
-      throw new Error('Invalid Qwen foreground start');
-    }
-    const correlation = { schema: SCHEMA, inputId: first.inputId, sessionId: first.sessionId };
+  await runBoundedWorker(SCHEMA, profile, async (input, signal, beforeSubmit) => {
     await requireCleanProviderSettings(await realpath(profile.cwd), await realpath(profile.stateRoot));
     if (!(await lstat(SETTINGS)).isFile()) throw new Error('Qwen pilot settings required');
-    const document = new TextDecoder('utf-8', { fatal: true })
-      .decode(await privateBytes(profile.bodyGuidanceFile, 6 * 1024)).trim();
-    if (!document || document.includes('\0')) throw new Error('Invalid Qwen receiving guidance');
-    await observeMatrixBody(profile.matrixStatusCommand, profile.body, stop.signal);
+    const document = await readBodyGuidance(profile.bodyGuidanceFile);
+    await observeMatrixBody(profile.matrixStatusCommand, profile.body, signal);
     const credential = (await privateBytes(profile.providerKeyFile, 4096)).toString('utf8').trim();
     if (!/^[!-~]+$/.test(credential)) throw new Error('Invalid Qwen subscription credential');
     const env = {
@@ -84,28 +70,15 @@ async function run(path) {
       OPENAI_BASE_URL: TOKEN_PLAN,
       OPENAI_MODEL: profile.model,
     };
-    const outcome = await runQwenTurn({
-      binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
-      mcpServers: [], nativeSessionId: first.resume ?? undefined, freshSessionId: first.sessionId,
-      model: profile.model, text: first.text,
+    return runQwenTurn({
+      binary: profile.binary, cwd: profile.cwd, env, signal,
+      mcpServers: [], nativeSessionId: input.resume ?? undefined, freshSessionId: input.sessionId,
+      model: profile.model, text: input.text,
       instructions: '[Receiving body instructions from your signed Gateway profile]\n'
         + document + '\nThe following content block is the current original.',
-      async beforeSubmit(nativeSessionId) {
-        await writeFrame(process.stdout, {
-          ...correlation, type: 'prepare_submission', nativeSessionId, workspace: first.workspace,
-        }, stop.signal);
-        const decision = (await pipe.next()).value;
-        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
-            || !Object.entries(correlation).every(([name, value]) => decision[name] === value)
-            || decision.type !== 'submission_decision' || decision.committed !== true) return false;
-        void pipe.next().then(() => stop.abort(), () => stop.abort());
-        return true;
-      },
+      beforeSubmit,
     });
-    await writeFrame(process.stdout, { ...correlation, type: 'outcome', outcome }, stop.signal);
-  } finally {
-    process.stdin.destroy();
-  }
+  });
 }
 
 try {

@@ -133,7 +133,7 @@ pub(super) async fn run_selected(
             session: &attempt.session_id,
             resume: attempt.resume.as_slice(),
             acp_topic: None,
-            qwen_resume: None,
+            bounded_acp_resume: None,
             human_original: attempt.human_original,
             native_goal_command: false,
             routed_human: false,

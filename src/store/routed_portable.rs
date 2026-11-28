@@ -1038,21 +1038,22 @@ impl Store {
         ).optional().context("Could not read the selected ACP topic session")
     }
 
-    pub(crate) fn routed_qwen_continuation(
+    pub(crate) fn routed_bounded_acp_continuation(
         &self,
         local: i64,
+        harness: Harness,
         body: &Value,
     ) -> Result<Option<String>> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         Ok(conn.query_row(
             "SELECT p.native_thread_id FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
-             WHERE p.id<t.id AND p.execution_harness='qwen'
+             WHERE p.id<t.id AND p.execution_harness=?3
                AND p.execution_generation=t.execution_generation AND p.native_thread_id IS NOT NULL
                AND json_extract(p.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
                AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId')
                AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?2,'$.incarnationId')
              ORDER BY p.id DESC LIMIT 1",
-            params![local, serde_json::to_string(body)?],
+            params![local, serde_json::to_string(body)?, harness.name()],
             |row| row.get(0),
         ).optional()?)
     }
@@ -1416,7 +1417,7 @@ impl Store {
                 Harness::Claude | Harness::Antigravity => {
                     Uuid::parse_str(id).is_ok_and(|v| v.to_string() == *id)
                 }
-                Harness::Goose | Harness::Qwen => {
+                Harness::Goose | Harness::Qwen | Harness::MiniMax => {
                     !id.is_empty()
                         && id.len() <= 256
                         && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
@@ -2041,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_continuation_keeps_the_topic_generation_and_signed_body() {
+    fn bounded_acp_continuation_keeps_the_harness_topic_generation_and_signed_body() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let defaults = super::super::tests::defaults();
         let store = Store::open(file.path(), &[100], &defaults).unwrap();
@@ -2085,14 +2086,22 @@ mod tests {
             &previous_body,
             Some("other-incarnation"),
         );
+        add(current, "minimax", "active", &body, Some("minimax-native"));
         add(current, "qwen", "active", &body, None);
         let local = add(current, "qwen", "active", &body, None);
         assert_eq!(
             store
-                .routed_qwen_continuation(local, &body)
+                .routed_bounded_acp_continuation(local, Harness::Qwen, &body)
                 .unwrap()
                 .as_deref(),
             Some("retained")
+        );
+        assert_eq!(
+            store
+                .routed_bounded_acp_continuation(local, Harness::MiniMax, &body)
+                .unwrap()
+                .as_deref(),
+            Some("minimax-native")
         );
     }
 

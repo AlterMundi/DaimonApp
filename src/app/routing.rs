@@ -1372,6 +1372,7 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
             crate::execution::Harness::Goose
                 | crate::execution::Harness::Antigravity
                 | crate::execution::Harness::Qwen
+                | crate::execution::Harness::MiniMax
         )
     }) {
         "Return a plain-language answer to the attributed input."

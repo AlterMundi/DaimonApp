@@ -221,8 +221,14 @@ runtime. The test configures a disposable loopback provider and verifies
 both refusal paths and native context after reopening ACP. The provider
 request contains the guidance and both originals after the reopen.
 
-This covers the turn adapter. The Gateway topic route, authenticated
-MiniMax Global provider turn and signed receiving body still need live
-qualification. The CLI advertises steering, queue and goals through
+The owner-selected Global Token Plan account completed a real ACP turn on
+ITACA. For a topic, set `harness = "minimax"` and configure
+`[interaction.minimax_foreground]` with `interaction_direct = true`, the
+signed receiving body's Matrix transport and the absolute Node command for
+`adapters/acp/minimax-gateway-worker.mjs --profile PROFILE`. The private
+profile selects `body`, `binary`, `cwd`, `stateRoot`, `bodyGuidanceFile`
+and `matrixStatusCommand`. The worker checks the signed body and selected
+OAuth account before opening the native topic. Live signed topic delivery
+remains separate from the provider qualification. The CLI advertises steering, queue and goals through
 `minimax-code/extensions`. A method in this inventory does not establish
 insertion, replay or goal lifecycle semantics.

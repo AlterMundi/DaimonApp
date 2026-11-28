@@ -20,7 +20,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
     pub(super) acp_topic: Option<AcpTopicTurn<'a>>,
-    pub qwen_resume: Option<&'a str>,
+    pub bounded_acp_resume: Option<&'a str>,
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
@@ -155,6 +155,7 @@ pub(in crate::app) async fn execute_worker(
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
         ForegroundEngine::Antigravity if turn.acp_topic.is_some() => "daimon-gateway.antigravity-turn/v2",
         ForegroundEngine::Qwen => "daimon-gateway.qwen-turn/v1",
+        ForegroundEngine::MiniMax => "daimon-gateway.minimax-turn/v1",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
@@ -162,7 +163,7 @@ pub(in crate::app) async fn execute_worker(
         session,
         resume,
         acp_topic,
-        qwen_resume,
+        bounded_acp_resume,
         human_original,
         native_goal_command,
         routed_human,
@@ -300,13 +301,13 @@ pub(in crate::app) async fn execute_worker(
                 );
             }
         }
-        if engine == ForegroundEngine::Qwen {
+        if matches!(engine, ForegroundEngine::Qwen | ForegroundEngine::MiniMax) {
             let path = workspace
                 .and_then(std::path::Path::to_str)
                 .filter(|path| path.len() <= 4096 && std::path::Path::new(path).is_absolute())
-                .context("Selected Qwen workspace is invalid")?;
+                .context("Selected ACP workspace is invalid")?;
             start["workspace"] = json!(path);
-            start["resume"] = json!(qwen_resume);
+            start["resume"] = json!(bounded_acp_resume);
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
@@ -331,13 +332,14 @@ pub(in crate::app) async fn execute_worker(
                     );
                     expected
                 }
-                ForegroundEngine::Qwen => {
+                ForegroundEngine::Qwen | ForegroundEngine::MiniMax => {
                     let native = observed
                         .and_then(Value::as_str)
-                        .context("Qwen preparation omitted its native session")?;
+                        .context("ACP preparation omitted its native session")?;
                     anyhow::ensure!(
-                        qwen_resume.unwrap_or(session) == native,
-                        "Qwen preparation returned another native session"
+                        bounded_acp_resume.or((engine == ForegroundEngine::Qwen).then_some(session))
+                            .is_none_or(|expected| expected == native),
+                        "ACP preparation returned another native session"
                     );
                     native
                 }
@@ -384,11 +386,11 @@ pub(in crate::app) async fn execute_worker(
                     prepared["store_id"] = json!(store_id);
                 }
             }
-            if engine == ForegroundEngine::Qwen {
+            if matches!(engine, ForegroundEngine::Qwen | ForegroundEngine::MiniMax) {
                 let requested = workspace.and_then(std::path::Path::to_str);
                 anyhow::ensure!(
                     frame["workspace"].as_str() == requested,
-                    "Qwen preparation omitted or changed the selected workspace"
+                    "ACP preparation omitted or changed the selected workspace"
                 );
                 prepared["workspace"] = json!(requested);
             }
@@ -673,7 +675,7 @@ pub(in crate::app) async fn execute_worker(
                                 ForegroundEngine::Claude => outcome["cancelled"].is_array(),
                                 ForegroundEngine::Antigravity | ForegroundEngine::Goose =>
                                     acp_topic.is_some() && outcome.get("cancelled").is_none(),
-                                ForegroundEngine::Qwen => false,
+                                ForegroundEngine::Qwen | ForegroundEngine::MiniMax => false,
                             },
                     Some("not_submitted") => true,
                     _ => false,
@@ -942,7 +944,7 @@ pub(super) async fn run_portable_turn(
                 session: &input.id,
                 resume: resume.as_slice(),
                 acp_topic: None,
-                qwen_resume: None,
+                bounded_acp_resume: None,
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && crate::interaction::native_claude_goal(&input.text),
@@ -1175,8 +1177,8 @@ pub(super) async fn run_routed_portable(
                 "Antigravity return cannot resume its requesting native session"
             );
         }
-        let qwen_resume = if engine == ForegroundEngine::Qwen {
-            store.routed_qwen_continuation(local, &body)?
+        let bounded_acp_resume = if matches!(engine, ForegroundEngine::Qwen | ForegroundEngine::MiniMax) {
+            store.routed_bounded_acp_continuation(local, engine.harness(), &body)?
         } else {
             None
         };
@@ -1228,14 +1230,14 @@ pub(super) async fn run_routed_portable(
                         native_session_id: acp_resume.as_deref(),
                         store_id: goose_store,
                     }),
-                    qwen_resume: qwen_resume.as_deref(),
+                    bounded_acp_resume: bounded_acp_resume.as_deref(),
                     human_original,
                     native_goal_command,
                     routed_human: !human_original,
                     routed_host_access: routed_host_access && !human_original,
                     session_instructions: session.session_prompt.as_deref(),
                     workspace: ((engine == ForegroundEngine::Claude && routed_host_access)
-                        || engine == ForegroundEngine::Qwen)
+                        || matches!(engine, ForegroundEngine::Qwen | ForegroundEngine::MiniMax))
                         .then_some(session.cwd.as_path()),
                     output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),
                     history_seed: history_seed.as_ref(),

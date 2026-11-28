@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { frames } from '../worker-pipes.mjs';
 import { runMiniMaxTurn } from './minimax-turn.mjs';
 
 const binary = process.env.MINIMAX_TEST_ACP_BINARY;
@@ -85,6 +89,86 @@ test('MiniMax Code loads its own exact session and waits for the Gateway journal
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('MiniMax worker verifies the signed body and the OAuth selection before opening ACP', {
+  timeout: 6_000,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'minimax-gateway-'));
+  try {
+    const cwd = join(home, 'workspace');
+    const status = join(home, 'matrix.cjs');
+    const binary = join(home, 'mcode');
+    const selectionFile = join(home, 'provider.json');
+    const profile = join(home, 'profile.json');
+    const bodyGuidanceFile = join(home, 'guidance.md');
+    const body = { beingRef: 'fixture', embodimentId: 'body', incarnationId: 'inc', manifestHash: 'hash' };
+    await mkdir(cwd);
+    await writeFile(bodyGuidanceFile, 'Receiving guidance.', { mode: 0o600 });
+    await writeFile(status, 'process.stdout.write(' + JSON.stringify(JSON.stringify({
+      schema: 'dm.runtime.status/v1', integrity: 'ok',
+      being_ref: body.beingRef, manifest_hash: body.manifestHash,
+      local_origin: { embodiment_id: body.embodimentId, incarnation_id: body.incarnationId },
+    })) + ');');
+    await writeFile(binary, `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv[2] === 'provider') {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(selectionFile)}));
+} else {
+  const lines = require('node:readline').createInterface({input: process.stdin});
+  lines.on('line', line => {
+    const {id, method} = JSON.parse(line);
+    let result;
+    if (method === 'initialize') {
+      result = {protocolVersion:1,agentCapabilities:{loadSession:true},
+        agentInfo:{name:'minimax-code',version:'0.8.0'}};
+    } else if (method === 'session/new') {
+      result = {sessionId:'minimax-selected'};
+    } else {
+      process.exitCode = 1;
+      lines.close();
+      return;
+    }
+    console.log(JSON.stringify({jsonrpc:'2.0', id, result}));
+  });
+}
+`, { mode: 0o700 });
+    const signed = { binary, cwd, stateRoot: home, bodyGuidanceFile, body,
+      matrixStatusCommand: [process.execPath, status] };
+    const worker = fileURLToPath(new URL('./minimax-gateway-worker.mjs', import.meta.url));
+    async function prepare(config, kind) {
+      await writeFile(profile, JSON.stringify(config), { mode: 0o600 });
+      await writeFile(selectionFile, JSON.stringify({
+        minimaxModelSource: 'token_plan', providers: [{ active: true, kind }],
+      }));
+      const child = spawn(process.execPath, [worker, '--profile', profile], {
+        env: {}, stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const done = once(child, 'close');
+      const pipe = frames(child.stdout);
+      const start = { schema: 'daimon-gateway.minimax-turn/v1', type: 'start',
+        inputId: randomUUID(), sessionId: randomUUID(), text: 'Kept original.',
+        body: config.body, workspace: cwd, resume: null };
+      child.stdin.write(JSON.stringify(start) + '\n');
+      const preparation = await pipe.next();
+      if (preparation.done) return (await done)[0];
+      assert.equal(preparation.value.nativeSessionId, 'minimax-selected');
+      assert.equal(preparation.value.workspace, cwd);
+      const { schema, inputId, sessionId } = start;
+      child.stdin.write(JSON.stringify({ schema, inputId, sessionId,
+        type: 'submission_decision', committed: false }) + '\n');
+      const terminal = await pipe.next();
+      assert.equal(terminal.value.outcome.phase, 'not_submitted');
+      child.stdin.end();
+      return (await done)[0];
+    }
+
+    assert.equal(await prepare({ ...signed, body: { ...body, manifestHash: 'wrong' } }, 'minimax-oauth'), 1);
+    assert.equal(await prepare(signed, 'minimax-api-key'), 1);
+    assert.equal(await prepare(signed, 'minimax-oauth'), 0);
+  } finally {
     await rm(home, { recursive: true, force: true });
   }
 });
