@@ -127,7 +127,10 @@ DaimonCraft design has separate evidence requirements.
 Antigravity CLI goes first, then Muse Code. The ITACA `agy` 1.5.18 probe
 negotiated ACP v1, opened a sandboxed session, selected Neon with medium
 reasoning and received the expected synthetic reply from the selected
-account. The probe also advertised exact session load and image input.
+account. The common ACP client then reopened the exact native ID in a fresh
+process and recovered a synthetic marker from the earlier turn. Its live
+check also kept a denied admission and a missing session unsent. The server
+advertised image input.
 The production Antigravity Gateway worker still uses the SDK/local-provider
 route. A real CLI reply does not yet qualify its topic binding.
 
