@@ -139,6 +139,8 @@ def qualify(binary, source_profile):
         handoff = journey.call("route-agy-request", "session_request", request)
         assert handoff.get("new_admission"), handoff
         instruction = handoff["instruction"]["id"]
+        repeat = journey.call("route-agy-inspect-existing", "session_request", request)
+        assert not repeat["new_admission"] and repeat["instruction"]["id"] == instruction, repeat
         caller = journey.web_thread
         journey.finish(caller, journey.web_turn)
 
@@ -159,6 +161,10 @@ def qualify(binary, source_profile):
         journey.wait(lambda: handoff_state()[0][-1] == "returned", seconds=12)
         journey.wait(lambda: any("COLOR-BLUE" in str(packet["input"]).upper()
                                 for packet in journey.worker_packets.get(caller, [])), seconds=12)
+        assert sum("COLOR-BLUE" in str(packet["input"]).upper()
+                   for packet in journey.worker_packets[caller]) == 1
+        assert sum(request["text"] in message["text"]
+                   for message, _ in journey.messages) == 1
         print("A paired Codex handoff reached the same Antigravity history, appeared in the topic and returned its canonical result to Codex.")
     finally:
         journey.close()
