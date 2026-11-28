@@ -491,7 +491,8 @@ pub(super) fn paired_result_parent_on(conn: &Connection, child: &Instruction) ->
     let parent = instruction_on(conn, &parent, child.human_id)?;
     if parent.target != child.target
         || !parent.target_execution.as_ref().is_some_and(|selection| {
-            selection.harness == crate::execution::Harness::Claude
+            use crate::execution::Harness;
+            matches!(selection.harness, Harness::Claude | Harness::Antigravity)
                 && child.target_execution.as_ref() == Some(selection)
         })
     {

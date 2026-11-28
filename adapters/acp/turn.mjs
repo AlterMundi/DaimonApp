@@ -72,7 +72,7 @@ export async function runAcpTurn({
           if ('id' in value) {
             if (value.method === 'session/request_permission' && selectPermission) {
               const optionId = exposed && value.params?.sessionId === nativeSessionId
-                ? selectPermission(value.params) : undefined;
+                ? await selectPermission(value.params) : undefined;
               await send({ id: value.id, result: { outcome: optionId
                 ? { outcome: 'selected', optionId } : { outcome: 'cancelled' } } });
             } else {

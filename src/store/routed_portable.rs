@@ -212,16 +212,18 @@ pub(super) fn controller_parent_on(
     local: i64,
     instance: &str,
 ) -> Result<bool> {
+    let Some(harness) = parent.target_execution.as_ref().map(|value| value.harness) else {
+        return Ok(false);
+    };
     if parent.id != turn
         || parent.target != caller
         || parent.human_id != human
         || parent.phase != Phase::Submitting
         || parent.local_turn != Some(local)
         || parent.native_thread.as_deref() != Some(native)
-        || !parent
-            .target_execution
-            .as_ref()
-            .is_some_and(|value| value.harness == Harness::Claude)
+        || !matches!(harness, Harness::Claude | Harness::Antigravity)
+        || (harness == Harness::Antigravity
+            && (!parent.native_input_accepted || !paired_host_access_on(conn, parent)?))
         || !super::session_requests::controller_parent_eligible_on(conn, human, parent)?
         || !current_on(conn, parent, instance)?
     {
@@ -233,10 +235,19 @@ pub(super) fn controller_parent_on(
          JOIN conversation_entry_generations g ON g.session_id=s.id
          JOIN interaction_instructions i ON i.session_id=s.id
          WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND s.creator_user_id=?3
-           AND u.allowed=1 AND t.native_thread_id=?4 AND t.execution_harness='claude'
+           AND u.allowed=1 AND t.native_thread_id=?4 AND t.execution_harness=?7
+           AND (?7='claude' OR t.execution_native_scope LIKE 'agy-cli/%')
            AND t.execution_generation=g.generation AND t.status='running'
            AND i.id=?5 AND i.instance_id=?6 AND i.phase='submitting')",
-        params![local, parent.target_session, human, native, turn, instance],
+        params![
+            local,
+            parent.target_session,
+            human,
+            native,
+            turn,
+            instance,
+            harness.name()
+        ],
         |row| row.get(0),
     )?)
 }
@@ -693,7 +704,53 @@ fn agy_scope(workspace: &str) -> String {
     format!("agy-cli/{:x}", Sha256::digest(workspace.as_bytes()))
 }
 
+fn agy_return_matches_on(
+    conn: &Connection,
+    input: &Instruction,
+    author: &Value,
+    native: Option<&str>,
+    scope: &str,
+    body: &Value,
+) -> Result<bool> {
+    let Some(native) = native else {
+        return Ok(false);
+    };
+    let call = author["local_request"]
+        .as_str()
+        .context("Return request missing")?;
+    let body = body.to_string();
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_session_requests c
+         JOIN interaction_instructions p ON p.id=c.parent_instruction
+         JOIN turns t ON t.id=json_extract(p.doc,'$.local_turn')
+         JOIN conversation_entry_generations g ON g.session_id=t.session_id
+         WHERE c.id=?1 AND c.human_id=?2 AND c.phase='returned'
+           AND json_extract(c.doc,'$.return_instruction')=?3
+           AND json_extract(c.doc,'$.caller_native')=?4
+           AND t.native_thread_id=?4 AND t.execution_native_scope=?5
+           AND t.session_id=?6 AND t.execution_harness='antigravity'
+           AND t.execution_generation=g.generation
+           AND json_extract(t.execution_body,'$.beingRef')=json_extract(?7,'$.beingRef')
+           AND json_extract(t.execution_body,'$.embodimentId')=json_extract(?7,'$.embodimentId')
+           AND json_extract(t.execution_body,'$.incarnationId')=json_extract(?7,'$.incarnationId'))",
+        params![call, input.human_id, input.id, native, scope, input.target_session, body],
+        |row| row.get(0),
+    )?)
+}
+
 impl Store {
+    pub(crate) fn routed_agy_return_matches(
+        &self,
+        input: &Instruction,
+        author: &Value,
+        native: Option<&str>,
+        workspace: &str,
+        body: &Value,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        agy_return_matches_on(&conn, input, author, native, &agy_scope(workspace), body)
+    }
+
     pub(crate) fn routed_portable_status(
         &self,
         session: i64,
@@ -1166,6 +1223,20 @@ impl Store {
                 .channel
                 .starts_with("local-session")
             && !paired_host_access_on(&tx, &current)?
+        {
+            return Ok(false);
+        }
+        if harness == Harness::Antigravity
+            && let Some(author) = super::session_requests::author_on(&tx, &current.input_id)?
+            && author["kind"] == "session_result"
+            && !agy_return_matches_on(
+                &tx,
+                &current,
+                &author,
+                Some(native),
+                scope.as_deref().unwrap_or_default(),
+                body,
+            )?
         {
             return Ok(false);
         }
@@ -1979,7 +2050,7 @@ mod tests {
             ).unwrap();
             (local, native)
         };
-        let (_, expected) = record(topic.id, "current", Some(&scope), &body);
+        let (requesting_turn, expected) = record(topic.id, "current", Some(&scope), &body);
         record(other.id, "current", Some(&scope), &body);
         record(topic.id, "previous", Some(&scope), &body);
         record(topic.id, "current", None, &body);
@@ -1989,7 +2060,7 @@ mod tests {
             store
                 .routed_agy_session(local, &body, "/workspace/topic")
                 .unwrap(),
-            Some(expected)
+            Some(expected.clone())
         );
         assert_eq!(
             store
@@ -1997,6 +2068,55 @@ mod tests {
                 .unwrap(),
             None
         );
+
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='current' WHERE session_id=?1",
+            [topic.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_sources
+            (id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+            VALUES('original',100,'conversation','original',100,7,'{}','2026-11-28')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_instructions
+            (id,input_id,session_id,sequence,phase,doc,instance_id)
+            VALUES('parent','original',?1,1,'accepted',?2,'test')",
+            params![topic.id, json!({"local_turn":requesting_turn}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_session_requests
+            VALUES('call',100,100,7,'parent','helper','returned',?1)",
+            [json!({"caller_native":expected,"return_instruction":"return"}).to_string()],
+        )
+        .unwrap();
+        let input: Instruction = serde_json::from_value(json!({
+            "id":"return","input_id":"result","human_id":100,"target_session":topic.id,
+            "target":topic.key,"sequence":2,"relation":{"kind":"new"},"requests":[],
+            "text":"result","origin":{"chat_id":100,"thread_id":7},"phase":"queued"
+        }))
+        .unwrap();
+        let author = json!({"kind":"session_result","local_request":"call"});
+        let matches = |native, scope, body| {
+            agy_return_matches_on(&conn, &input, &author, native, scope, body).unwrap()
+        };
+        assert!(matches(Some(&expected), &scope, &body));
+        assert!(!matches(None, &scope, &body));
+        assert!(!matches(Some("other"), &scope, &body));
+        assert!(!matches(Some(&expected), &scope, &retired));
+        let moved = agy_scope("/workspace/moved");
+        assert!(!matches(Some(&expected), &moved, &body));
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",
+            [topic.id],
+        )
+        .unwrap();
+        assert!(!matches(Some(&expected), &scope, &body));
     }
 
     #[test]

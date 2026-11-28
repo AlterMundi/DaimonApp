@@ -10,7 +10,7 @@ function readSelection(state, category) {
 
 /** Use the paired, sandboxed agy account for one journaled native turn. */
 export async function runAntigravityTurn({
-  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, allowedReadTools = [], instructions, images, onInputAccepted,
+  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, allowedTools = [], instructions, images, onInputAccepted, onToolPermission,
 }) {
   if (typeof model !== 'string' || !model || typeof effort !== 'string' || !effort) {
     throw new TypeError('Select the Antigravity model and reasoning effort');
@@ -20,11 +20,13 @@ export async function runAntigravityTurn({
     unavailable: 'antigravity_cli_unavailable',
     openFailure: 'antigravity_cli_session_unconfirmed',
     allowLargeCommandList: true,
-    selectPermission({ toolCall, options }) {
-      if (!allowedReadTools.includes(toolCall?.name) || !Array.isArray(options)) return;
+    async selectPermission({ sessionId, toolCall, options }) {
+      if (!allowedTools.includes(toolCall?.name) || !Array.isArray(options)) return;
       const once = options.filter(option => option?.kind === 'allow_once'
         && typeof option.optionId === 'string' && option.optionId.length <= 128);
-      if (once.length === 1) return once[0].optionId;
+      if (once.length === 1 && await onToolPermission?.(sessionId, toolCall) !== false) {
+        return once[0].optionId;
+      }
     },
     async openSession(request, initialized) {
       if (initialized.agentInfo?.name !== 'Antigravity ACP Server') {

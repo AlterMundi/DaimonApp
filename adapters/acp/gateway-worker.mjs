@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mjs';
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
+import { CONTROLLER, callController, controllerBridge, controllerCallKey, controllerError } from './controller-bridge.mjs';
 import { runAntigravityTurn } from './antigravity-turn.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
 import { retainedImages } from './images.mjs';
@@ -104,6 +105,14 @@ async function serveMcp(binding) {
         break;
       case 'tools/list':
         response.result = { tools: [
+          ...(binding.controller ? [{
+            name: CONTROLLER,
+            description: 'Coordinate with owned conversations. Start with capabilities and use coordination_inputs to select the current original.',
+            inputSchema: {
+              type: 'object', required: ['operation', 'arguments'], additionalProperties: false,
+              properties: { operation: { type: 'string' }, arguments: { type: 'object' } },
+            },
+          }] : []),
           toolDefinition(STATUS, 'Read authenticated metadata for this Matrix body.'),
           ...(binding.selectedMemory ? [toolDefinition(MEMORY, 'Read the one memory selected by the owner.')] : []),
           ...(binding.sharedMemory ? [toolDefinition(RECALL,
@@ -115,6 +124,17 @@ async function serveMcp(binding) {
         ] };
         break;
       case 'tools/call':
+        if (params?.name === CONTROLLER && binding.controller) {
+          try {
+            const args = { ...params.arguments };
+            delete args.toolSummary;
+            await observe(binding, AbortSignal.timeout(8000));
+            response.result = await callController(binding.controller, args, AbortSignal.timeout(40_000));
+          } catch {
+            response.result = controllerError('Current receiving body unavailable.');
+          }
+          break;
+        }
         if (params?.name === RECALL && binding.sharedMemory) {
           try {
             const signal = AbortSignal.timeout(8000);
@@ -186,6 +206,7 @@ async function main(path) {
   const deadline = setTimeout(() => stop.abort(), 125_000);
   stop.signal.addEventListener('abort', () => process.stdin.destroy(), { once: true });
   const pipe = frames(process.stdin);
+  let bridge;
   try {
     const profile = JSON.parse(await privateBytes(path, 16 * 1024));
     const agy = profile?.adapter === 'agy';
@@ -216,7 +237,8 @@ async function main(path) {
     const first = (await pipe.next()).value;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body',
       ...(agy ? ['workspace', 'resumeNativeSessionId'] : []),
-      ...(agy && Object.hasOwn(first ?? {}, 'attachments') ? ['attachments'] : [])])
+      ...(agy && Object.hasOwn(first ?? {}, 'attachments') ? ['attachments'] : []),
+      ...(agy && first?.controller === true ? ['controller'] : [])])
         || first.schema !== schema || first.type !== 'start'
         || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
         || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
@@ -235,6 +257,10 @@ async function main(path) {
     const { sharedSkillsDirectory } = profile;
     const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand,
       selectedMemory, sharedSkillsDirectory, sharedMemory: profile.sharedMemory };
+    if (first.controller === true) {
+      bridge = await controllerBridge(correlation, process.stdout, stop);
+      binding.controller = bridge.access;
+    }
     let instructions;
     if (agy && profile.bodyGuidanceFile) {
       const document = new TextDecoder('utf-8', { fatal: true })
@@ -257,17 +283,28 @@ async function main(path) {
     }
     let providerUnavailable = false;
     let reportAcceptance = false;
+    let receipt;
+    const controllerGrants = new Map();
+    function accept(nativeSessionId) {
+      if (!reportAcceptance) return;
+      receipt ??= writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
+      return receipt;
+    }
     const run = agy ? runAntigravityTurn : runGooseTurn;
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
         nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions, images,
-        async onInputAccepted(nativeSessionId) {
-          if (reportAcceptance) {
-            await writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
-          }
+        onInputAccepted: accept,
+        async onToolPermission(nativeSessionId, toolCall) {
+          if (toolCall.name !== 'mcp_matrix_' + CONTROLLER) return true;
+          const key = controllerCallKey(toolCall.rawInput);
+          if (!bridge || !reportAcceptance || !key || controllerGrants.size >= 8) return false;
+          await accept(nativeSessionId);
+          controllerGrants.set(key, (controllerGrants.get(key) ?? 0) + 1);
+          return true;
         },
-        allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : []),
+        allowedTools: ['mcp_matrix_' + STATUS, ...(bridge ? ['mcp_matrix_' + CONTROLLER] : []), ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : []),
           ...(sharedSkillsDirectory ? ['mcp_matrix_' + SKILL] : []),
           ...(profile.sharedMemory ? ['mcp_matrix_' + RECALL] : [])],
       } : {}),
@@ -304,7 +341,17 @@ async function main(path) {
             || decision.inputId !== first.inputId || decision.sessionId !== first.sessionId
             || decision.committed !== true) return false;
         reportAcceptance = decision.observeAcceptance === true;
-        void pipe.next().then(() => stop.abort(), () => stop.abort());
+        if (bridge) {
+          void bridge.serve(pipe, nativeSessionId, key => {
+            const count = controllerGrants.get(key);
+            if (!count) return false;
+            if (count === 1) controllerGrants.delete(key);
+            else controllerGrants.set(key, count - 1);
+            return true;
+          }).catch(() => stop.abort());
+        } else {
+          void pipe.next().then(() => stop.abort(), () => stop.abort());
+        }
         return true;
       },
     });
@@ -315,6 +362,7 @@ async function main(path) {
   } finally {
     clearTimeout(deadline);
     process.stdin.destroy();
+    await bridge?.close();
   }
 }
 
