@@ -222,10 +222,12 @@ writes, interruption and broader receiving equivalence are still open.
 
 Muse Code 1.4.25 answered the `muse serve` MSP handshake with its echo
 provider. The exported stable schema includes native start, resume, steer
-and interrupt. A disposable echo-provider session accepted and completed a
-native turn. The same MSP path on the installed Meta account reported
-`not logged in` at its first turn. Verify the subscription sign-in, native
-resume and stable command behavior before adopting it. Its exact-turn steering and stable command IDs are
+and interrupt. The [MSP foreground candidate](../muse/README.md) passed
+exact session resume across processes, journal denial and missing-session
+refusal on the installed echo provider. The selected Meta browser account
+is visible locally, while its headless model catalog reports no visible
+models and the first MSP model turn reports `not logged in`. A real
+subscription-backed turn and Gateway topic binding remain open. Its exact-turn steering and stable command IDs are
 useful candidates for the existing Gateway acceptance contract. ACP v1
 for Muse is a separate experimental route.
 [MSP wire guide](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) ·
