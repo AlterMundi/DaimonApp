@@ -76,6 +76,12 @@ in the original Codex conversation. It then checks the reverse direction:
 agy starts a request to the fixture Codex topic and uses the result in its
 original native history.
 
+Live receiving acceptance on ITACA also used an ordinary Telegram message.
+Antigravity opened one request to an owned Codex topic. Gateway retained the
+canonical return and observed its acceptance on the same Antigravity native
+session. The Antigravity answer used the returned result and Telegram
+acknowledged it in the originating topic.
+
 ## Goose
 
 `runGooseTurn` is the native ACP client for the Goose candidate in
