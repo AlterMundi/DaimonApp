@@ -208,8 +208,7 @@ fn validate_workspace_adoption_on(
     let eligible: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
           WHERE s.id=?1 AND s.chat_id=?2 AND s.thread_id=?3 AND s.creator_user_id=?4
-            AND u.allowed=1 AND s.busy=0
-            AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=s.id AND status='running')
+            AND u.allowed=1
             AND NOT EXISTS(SELECT 1 FROM interaction_creations c WHERE c.topic=?3
               AND COALESCE(json_extract(c.doc,'$.target_chat'),c.entry_chat)=?2
               AND (c.phase IN ('topic_known','retained_topic') OR (c.phase='ready' AND c.topic_release_ready=0))))",
@@ -217,7 +216,7 @@ fn validate_workspace_adoption_on(
     )?;
     anyhow::ensure!(
         eligible && !stopping::fenced_on(conn, key)? && !maintenance_writer_held_on(conn, key)?,
-        "Topic changed, is active or held, or has an unfinished creation"
+        "Topic changed, is held, or has an unfinished creation"
     );
     Ok(())
 }
@@ -1146,11 +1145,12 @@ impl Store {
         }
         let folder = folder.to_str().context("Topic folder is not UTF-8")?;
         let claim = uuid::Uuid::now_v7().to_string();
+        // Initial allocation needs a pristine topic. Exact owner adoption only
+        // attaches the folder and leaves an existing execution intact.
         let changed = tx.execute(
             "UPDATE sessions SET topic_folder=?1, topic_folder_owner=?4, topic_folder_claim=?5
              WHERE chat_id=?2 AND thread_id=?3 AND creator_user_id=?4
-             AND busy=0
-             AND ((?6 IS NULL AND codex_thread_id IS NULL
+             AND ((?6 IS NULL AND busy=0 AND codex_thread_id IS NULL
                    AND NOT EXISTS(SELECT 1 FROM turns WHERE session_id=sessions.id))
                OR id=?6)
              AND EXISTS(SELECT 1 FROM users WHERE tg_user_id=?4 AND allowed=1)

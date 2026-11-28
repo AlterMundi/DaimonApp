@@ -1276,6 +1276,8 @@ To attach a permanent folder to an existing owned topic, use the local owner
 socket. Read `topics workspace status TOPIC`, then pass its exact session ID to
 `topics workspace adopt TOPIC SESSION_ID`. Adoption reuses the recorded folder
 on retry while preserving the current working directory and native history.
+This folder-only operation can run during an active turn. Stop, maintenance
+and unfinished creation holds still apply.
 Verify the returned folder and directory before separately selecting a new
 execution directory with the ordinary workspace control.
 
