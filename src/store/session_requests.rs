@@ -1444,7 +1444,21 @@ mod tests {
                 .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
                 .unwrap()
         );
-        if paired && !recover_onward {
+        let early_handoff = paired && !recover_onward;
+        let visible_early = || {
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM visible_portable_handoff_inputs WHERE source=?",
+                    [&delivered.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(visible_early(), 0);
+        if early_handoff {
             assert!(
                 !store
                     .record_routed_input_acceptance(&delivered, local, "another-session")
@@ -1461,6 +1475,48 @@ mod tests {
                 .unwrap();
             assert!(observed.native_input_accepted);
             assert_eq!(observed.phase, P::Submitting);
+            assert_eq!(visible_early(), 1);
+            assert!(
+                !store
+                    .record_routed_input_acceptance(&delivered, local, &native)
+                    .unwrap()
+            );
+            let handoff = store
+                .topic_publication_claim(target.key, 100)
+                .unwrap()
+                .unwrap();
+            assert_eq!(handoff.kind, "portable_handoff_input");
+            assert_eq!(handoff.source, delivered.id);
+            assert!(handoff.body.starts_with("Handoff from #"));
+            assert!(handoff.body.ends_with("A scoped context handoff"));
+            store
+                .topic_publication_parts(handoff.id, &[handoff.body])
+                .unwrap();
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO interaction_session_withdrawals VALUES(?)",
+                    [&instruction.id],
+                )
+                .unwrap();
+            assert_eq!(visible_early(), 0);
+            assert!(!store.topic_publication_reserve(handoff.id, 0).unwrap());
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "DELETE FROM interaction_session_withdrawals WHERE parent_instruction=?",
+                    [&instruction.id],
+                )
+                .unwrap();
+            assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
+            store
+                .topic_publication_receipt(handoff.id, 0, Some(42), false)
+                .unwrap();
+            store.topic_publication_finish(handoff.id).unwrap();
         }
         assert_eq!(
             store
@@ -1625,9 +1681,13 @@ mod tests {
                 .native_input_accepted,
             paired
         );
-        let handoff = store.topic_publication_claim(target.key, 100).unwrap();
+        let handoff: Option<(i64, String)> = store.conn.lock().unwrap().query_row(
+            "SELECT id,source FROM topic_publications WHERE local_turn=?1 AND kind='portable_report_request'",
+            [local],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().unwrap();
         assert_eq!(handoff.is_some(), paired);
-        if let Some(handoff) = handoff {
+        if let Some((handoff_id, result_source)) = handoff {
             let visible_handoffs = || {
                 store
                     .conn
@@ -1635,12 +1695,11 @@ mod tests {
                     .unwrap()
                     .query_row(
                         "SELECT count(*) FROM visible_portable_report_requests WHERE id=?",
-                        [handoff.id],
+                        [handoff_id],
                         |row| row.get::<_, i64>(0),
                     )
                     .unwrap()
             };
-            assert_eq!(handoff.kind, "portable_report_request");
             assert_eq!(visible_handoffs(), 1);
             if let Some(update) = update {
                 let generation: String = store
@@ -1731,32 +1790,29 @@ mod tests {
                 }
                 assert_eq!(visible_handoffs(), expected);
             }
-            assert!(handoff.body.starts_with("Handoff from #"));
-            assert!(handoff.body.ends_with("A scoped context handoff"));
-            store
-                .topic_publication_parts(handoff.id, &[handoff.body])
-                .unwrap();
-            assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
-            store
-                .topic_publication_receipt(handoff.id, 0, Some(42), false)
-                .unwrap();
-            store.topic_publication_finish(handoff.id).unwrap();
-            store
-                .conn
-                .lock()
-                .unwrap()
-                .execute(
-                    "UPDATE topic_publications SET phase='retired' WHERE id=?",
-                    [handoff.id],
-                )
-                .unwrap();
-            assert_eq!(visible_handoffs(), 1);
+            if !early_handoff {
+                let handoff = store
+                    .topic_publication_claim(target.key, 100)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(handoff.id, handoff_id);
+                assert_eq!(handoff.kind, "portable_report_request");
+                assert!(handoff.body.ends_with("A scoped context handoff"));
+                store
+                    .topic_publication_parts(handoff.id, &[handoff.body])
+                    .unwrap();
+                assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
+                store
+                    .topic_publication_receipt(handoff.id, 0, Some(42), false)
+                    .unwrap();
+                store.topic_publication_finish(handoff.id).unwrap();
+            }
             let report = store
                 .topic_publication_claim(target.key, 100)
                 .unwrap()
                 .unwrap();
             assert_eq!(report.kind, "portable_report");
-            assert_eq!(report.source, handoff.source);
+            assert_eq!(report.source, result_source);
             assert_eq!(report.body, "Worked on the rig");
             store
                 .topic_publication_parts(report.id, &[report.body, "Second part".into()])

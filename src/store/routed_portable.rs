@@ -1259,9 +1259,13 @@ impl Store {
         let changed = tx.execute(
             "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_input_accepted',json('true'))
              WHERE id=?1 AND instance_id=?2 AND phase='submitting'
+             AND coalesce(json_extract(doc,'$.native_input_accepted'),0)=0
              AND EXISTS(SELECT 1 FROM turns WHERE id=?3 AND status='running' AND native_thread_id=?4)",
             params![input.id, self.instance_id, local, native],
         )?;
+        if changed == 1 {
+            super::topic_publications::accepted_handoff_projection_on(&tx, input, local)?;
+        }
         tx.commit()?;
         Ok(changed == 1)
     }

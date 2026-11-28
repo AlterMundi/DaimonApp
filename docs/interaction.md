@@ -1421,7 +1421,12 @@ settles if it supports selected reports. The current portable adapter
 qualification for selected reports is Claude.
 Connectors that can prove early native incorporation may negotiate an
 `input_accepted` receipt. Gateway retains the exact evidence on the admitted
-instruction and keeps completion and publication separate. An incorporated
+instruction and queues the attributed handoff for the selected destination
+topic in the same transaction. Conversation can show that handoff during the
+native turn. Telegram uses the existing publication queue and revalidates the
+selection before sending. The final result settles separately and keeps the
+handoff in the normal Conversation history without a second Telegram send.
+An incorporated
 input with an unobserved result must remain uncertain even if the worker
 subsequently reports a pre-submission refusal.
 Telegram revalidates corrections and authorization before each attempted part.

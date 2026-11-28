@@ -30,7 +30,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
 }
 
 pub(in crate::app) struct WorkerAcceptance<'a> {
-    store: &'a crate::store::Store,
+    shared: &'a Arc<AppShared>,
     input: &'a crate::interaction::Instruction,
     local_turn: i64,
 }
@@ -374,11 +374,13 @@ pub(in crate::app) async fn execute_worker(
                 );
                 // A withdrawal or reset may fence this receipt after dispatch.
                 // Keep collecting the exposed worker's outcome in that case.
-                receipt.store.record_routed_input_acceptance(
+                if receipt.shared.store.record_routed_input_acceptance(
                     receipt.input,
                     receipt.local_turn,
                     native,
-                )?;
+                )? {
+                    super::topic_publications::wake(receipt.shared.clone(), receipt.input.target);
+                }
                 observe_acceptance = false;
                 frame = Value::Null;
                 continue;
@@ -975,7 +977,7 @@ pub(super) async fn run_routed_portable(
                     controller,
                     steering: steering.as_mut(),
                     acceptance: author.as_ref().is_some_and(|a| a["report_to_topic"] == true).then_some(WorkerAcceptance {
-                        store, input, local_turn: local,
+                        shared: &app.shared, input, local_turn: local,
                     }),
                 },
                 |prepared| {

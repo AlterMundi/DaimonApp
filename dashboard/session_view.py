@@ -336,6 +336,22 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                 pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
                                       'timestamp':started,'pending':True})
                 if input_id:pending_items[-1]['input_id']=input_id
+        has_early_view = db.execute("""SELECT 1 FROM sqlite_schema
+            WHERE type='view' AND name='visible_portable_handoff_inputs'""").fetchone()
+        if has_early_view:
+            handoffs = db.execute("""SELECT h.source,t.started_at,substr(h.body,1,1001)
+                FROM visible_portable_handoff_inputs h JOIN turns t ON t.id=h.local_turn
+                WHERE h.session_id=? AND h.human_id=? AND t.execution_harness=?
+                  AND t.execution_generation=? AND t.status='running'
+                ORDER BY h.id DESC LIMIT 8""", scope)
+            for instruction, started, text in reversed(handoffs.fetchall()):
+                if len(text) > 1000:
+                    text = text[:1000] + '…'
+                item_id = hashlib.sha256(f'{identity}:handoff:{instruction}'.encode()).hexdigest()[:32]
+                pending_items.append({'id':item_id,'kind':'message','role':'assistant','text':text,
+                                      'timestamp':started,'pending':True,'handoff':True})
+            pending_items.sort(key=lambda item: item['timestamp'] or '')
+            pending_items = pending_items[-8:]
     ordered = after is not None
     bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)
     order = 'ASC' if ordered else 'DESC'

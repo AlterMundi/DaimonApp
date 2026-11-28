@@ -231,6 +231,17 @@ class PortableHistory(unittest.TestCase):
                              ['Human 1','First','Human 5','Last'])
             self.assertEqual([item['text'] for item in page['pending_items']], ['Human 7'])
             self.assertEqual(page['pending_items'][0]['input_id'],'input7')
+            db.execute("INSERT INTO topic_publications VALUES(4,'portable_handoff_input','instruction8',20,10,8,'Handoff from #Design')")
+            db.execute("INSERT INTO topic_publications VALUES(5,'portable_handoff_input','foreign',20,11,8,'Foreign handoff')")
+            db.execute("CREATE VIEW visible_portable_handoff_inputs AS SELECT * FROM topic_publications WHERE id IN (4,5)")
+            early = read_portable(db,20,10,'claude')
+            self.assertEqual(early['items'],page['items'])
+            self.assertEqual([(item['role'],item['text']) for item in early['pending_items']],
+                             [('user','Human 7'),('assistant','Handoff from #Design')])
+            self.assertTrue(early['pending_items'][1]['handoff'])
+            self.assertNotIn('input_id',early['pending_items'][1])
+            db.execute("UPDATE turns SET status='completed' WHERE id=8")
+            self.assertEqual(read_portable(db,20,10,'claude')['pending_items'],page['pending_items'])
             end=page['after']
             revision=page['revision']
             self.assertEqual(read_portable(db,20,10,'claude',after=end,revision=revision)['items'],[])
