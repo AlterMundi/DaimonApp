@@ -1542,7 +1542,20 @@ mod tests {
         let handoff = store.topic_publication_claim(target.key, 100).unwrap();
         assert_eq!(handoff.is_some(), paired);
         if let Some(handoff) = handoff {
+            let visible_handoffs = || {
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM visible_portable_report_requests WHERE id=?",
+                        [handoff.id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap()
+            };
             assert_eq!(handoff.kind, "portable_report_request");
+            assert_eq!(visible_handoffs(), 1);
             assert!(handoff.body.starts_with("Handoff from #"));
             assert!(handoff.body.ends_with("A scoped context handoff"));
             store
@@ -1600,6 +1613,7 @@ mod tests {
                     RequestRelation::Amends(instruction.requests.clone()),
                 )
                 .unwrap();
+            assert_eq!(visible_handoffs(), 0);
 
             let stale_text = format!(
                 "Superseded work\n<daimon-result>{}</daimon-result>",

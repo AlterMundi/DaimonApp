@@ -57,6 +57,38 @@ const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind IN ('portable_report','portable_r
         AND call.phase IN ('requested','returned') AND original.retired=0
         AND json_extract(original.doc,'$.paired_actor')=1))"#;
 
+// Web reads are independent of Telegram delivery, but must apply the same
+// retained permission and correction fences before disclosing a request.
+const REPORT_REQUEST_CURRENT: &str = r#"EXISTS (
+    SELECT 1 FROM interaction_deliveries d
+    JOIN interaction_session_requests call ON call.target_instruction=d.request_id
+    JOIN interaction_instructions parent ON parent.id=call.parent_instruction
+    JOIN interaction_sources root ON root.id=parent.input_id AND root.channel='conversation'
+    JOIN original_ingress_order original ON original.channel='conversation' AND original.event_id=root.event_id
+    WHERE d.result_id=p.source AND d.human_id=p.human_id AND call.human_id=p.human_id
+      AND json_extract(call.doc,'$.report_to_topic')=1 AND call.phase IN ('requested','returned')
+      AND json_extract(d.doc,'$.declared')=1 AND json_extract(d.doc,'$.completed')=1
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(coalesce(json_extract(d.doc,'$.request_ids'),json_array(d.request_id))) needed
+        WHERE NOT EXISTS (SELECT 1 FROM interaction_request_links l
+          JOIN interaction_instructions i ON i.id=l.instruction_id
+          WHERE l.request_id=needed.value AND i.phase NOT IN ('cancelled','rejected'))
+        OR EXISTS (SELECT 1 FROM interaction_request_links l
+          JOIN interaction_instructions i ON i.id=l.instruction_id
+          WHERE l.request_id=needed.value AND i.phase NOT IN ('cancelled','rejected')
+          AND (i.phase<>'accepted' OR NOT EXISTS (SELECT 1 FROM json_each(d.doc,'$.covered') c WHERE c.value=i.id)))
+      )
+      AND NOT EXISTS (SELECT 1 FROM interaction_request_links old
+        JOIN interaction_request_links newer ON newer.request_id=old.request_id
+        JOIN interaction_instructions i ON i.id=newer.instruction_id
+        JOIN interaction_sources x ON x.id=i.input_id
+        JOIN original_ingress_order ingress ON ingress.event_id=x.event_id
+          AND ingress.channel=CASE WHEN x.update_id IS NOT NULL THEN 'telegram' ELSE 'conversation' END
+        WHERE old.instruction_id=parent.id AND ingress.id>original.id AND x.human_id=p.human_id
+          AND i.phase NOT IN ('cancelled','rejected') AND json_extract(i.doc,'$.relation.kind')='amends'
+          AND NOT EXISTS (SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id))
+  )"#;
+
 // The transport receives one derived view of an ordinary completed exchange.
 const PORTABLE_EXCHANGE_SCOPE: &str = r#"(p.kind IN ('portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original')
     AND t.status='completed' AND t.execution_harness<>'codex' AND t.private_handoff=0
@@ -517,6 +549,19 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn init_report_request_view(&self) -> Result<()> {
+        self.conn.lock().expect("store mutex poisoned").execute_batch(&format!(
+            "CREATE VIEW IF NOT EXISTS visible_portable_report_requests AS
+             SELECT p.id,p.source,p.session_id,p.local_turn,p.human_id,p.body
+             FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id
+             JOIN users u ON u.tg_user_id=p.human_id
+             WHERE p.kind='portable_report_request' AND p.phase<>'retired'
+               AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id
+               AND {PORTABLE_REPORT_SCOPE} AND {REPORT_REQUEST_CURRENT}"
+        ))?;
+        Ok(())
+    }
+
     pub fn topic_projection_register(&self, local: i64, human: i64, key: SessionKey) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let valid: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE t.id=?1 AND t.from_user_id=?2 AND s.creator_user_id=?2 AND u.allowed=1 AND s.chat_id=?3 AND s.thread_id=?4)",params![local,human,key.chat_id,key.thread_id],|r|r.get(0))?;
@@ -594,7 +639,7 @@ impl Store {
             return Ok(None);
         }
         loop {
-            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
+            let row:Option<(i64,String,bool,String,String,i64,bool)>=tx.query_row(&format!("SELECT p.id,p.body,COALESCE((u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR ({PORTABLE_REPORT_SCOPE} AND (p.kind='portable_report' OR EXISTS(SELECT 1 FROM visible_portable_report_requests h WHERE h.id=p.id))) OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now'))))),0),p.kind,p.source,p.local_turn,(p.kind NOT IN ('control','task_control','entry_progress','entry_input') AND EXISTS(SELECT 1 FROM direct_topic_turns pt WHERE pt.local_turn=p.local_turn)) FROM topic_publications p JOIN sessions s ON s.id=p.session_id JOIN turns t ON t.id=p.local_turn JOIN users u ON u.tg_user_id=p.human_id WHERE s.chat_id=?1 AND s.thread_id=?2 AND p.human_id=?3 AND p.phase='ready' AND (p.kind='artifact')=?4 ORDER BY p.id LIMIT 1"),params![key.chat_id,key.thread_id,human,files],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()?;
             let Some((id, body, valid, kind, source, local_turn, direct)) = row else {
                 tx.commit()?;
                 return Ok(None);
@@ -692,7 +737,7 @@ impl Store {
             .query_row(
                 "SELECT p.kind,d.doc,call.parent_instruction,p.human_id
              FROM topic_publications p
-             LEFT JOIN interaction_deliveries d ON p.kind IN ('portable_report','portable_report_request')
+             LEFT JOIN interaction_deliveries d ON p.kind='portable_report'
                   AND d.result_id=p.source AND d.human_id=p.human_id
              LEFT JOIN interaction_session_requests call ON call.target_instruction=d.request_id
              WHERE p.id=?1",
@@ -701,7 +746,7 @@ impl Store {
             )
             .optional()?;
         if let Some((kind, raw, parent, human)) = report
-            && matches!(kind.as_str(), "portable_report" | "portable_report_request")
+            && kind == "portable_report"
         {
             let Some((raw, parent)) = raw.zip(parent) else {
                 return Ok(false);
@@ -737,7 +782,7 @@ impl Store {
                 return Ok(false);
             }
         }
-        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR {PORTABLE_REPORT_SCOPE} OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
+        let changed = tx.execute(&format!("UPDATE topic_publication_parts SET phase='sending' WHERE publication=?1 AND part=?2 AND phase='ready' AND EXISTS(SELECT 1 FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id JOIN users u ON u.tg_user_id=p.human_id WHERE p.id=?1 AND p.phase='publishing' AND p.instance_id=?3 AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id AND (((p.kind NOT IN ('artifact','control','task_control','portable_report','portable_report_request','portable_topic_exchange','portable_entry_exchange','portable_topic_original','portable_entry_original') AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0) OR {CONTROL_NOTICE_SCOPE} OR {ENTRY_PROGRESS_SCOPE} OR {ENTRY_INPUT_SCOPE} OR ({PORTABLE_REPORT_SCOPE} AND (p.kind='portable_report' OR EXISTS(SELECT 1 FROM visible_portable_report_requests h WHERE h.id=p.id))) OR {PORTABLE_EXCHANGE_SCOPE} OR (p.kind='notice' AND t.native_thread_id IS NULL)) OR (p.kind='artifact' AND EXISTS(SELECT 1 FROM interaction_artifacts a JOIN interaction_artifact_blobs b ON b.sha256=a.sha256 WHERE a.id=p.source AND a.source_local=p.local_turn AND a.source_session=p.session_id AND a.human_id=p.human_id AND a.phase='ready' AND b.present=1 AND julianday(a.expires_at)>julianday('now')))))"),params![id,part,&self.instance_id])?==1;
         tx.commit()?;
         Ok(changed)
     }

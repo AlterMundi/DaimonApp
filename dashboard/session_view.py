@@ -303,11 +303,16 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     final = """r.local_turn=t.id AND r.native_thread=t.native_thread_id
           AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
           AND length(trim(r.body))>0 AND t.status='completed'"""
+    # An older Gateway can serve this dashboard during a rolling update. Its
+    # selected answer remains readable before it exposes the scoped request view.
+    has_request_view = db.execute("""SELECT 1 FROM sqlite_schema
+        WHERE type='view' AND name='visible_portable_report_requests'""").fetchone()
+    handoff_view = ('visible_portable_report_requests' if has_request_view else
+                    '(SELECT id,source,session_id,human_id,local_turn,body FROM topic_publications WHERE 0)')
     source = f"""{accepted} JOIN interaction_results r ON {final}
         LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
           AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
-        LEFT JOIN topic_publications handoff ON p.id IS NOT NULL
-          AND handoff.kind='portable_report_request' AND handoff.source=r.id
+        LEFT JOIN {handoff_view} handoff ON p.id IS NOT NULL AND handoff.source=r.id
           AND handoff.session_id=p.session_id AND handoff.human_id=p.human_id AND handoff.local_turn=p.local_turn
         WHERE {ownership} AND (p.id IS NOT NULL OR {human_original})"""
     scope = (session, human, harness, generation)
