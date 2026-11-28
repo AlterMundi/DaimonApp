@@ -32,6 +32,26 @@ function boot(options){
  assert.equal(catalogue.rooms[0].room,topic);
  assert.equal('private_text' in catalogue.rooms[0],false);
  assert.deepEqual(reads,[topic]);
+ let release,closes=0;
+ const result=boot({openResult:async(room,current)=>{
+   assert.equal(room,topic);
+   await new Promise(resolve=>{release=resolve;});
+   return current();
+ },closeResult:()=>{closes++;}});
+ result.receive({type:'connect',features:{topicResult:true}});
+ const open={type:'topic-result-open',request:id(),room:topic};
+ result.receive(open,{},'https://wrong.test');assert.equal(release,undefined);
+ result.receive(open);assert.equal(typeof release,'function');
+ result.receive({type:'topic-result-cancel',request:open.request});release();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(result.sent.some(({message})=>message.type==='topic-result-readback'),false);
+ const later={...open,request:id()};
+ result.receive(later);release();
+ await new Promise(resolve=>setImmediate(resolve));
+ const resultAck=result.sent.at(-1).message;
+ assert.equal(resultAck.opened,true);assert.equal(resultAck.request,later.request);
+ assert.deepEqual(Object.keys(resultAck).sort(),['actor','binding','channel','opened','request','room','schema','type','visit'].sort());
+ assert.ok(closes>0);
  const direct=boot({selectTopic:async(room,current)=>current()?{room}:null});
  direct.receive({type:'connect',features:{topicDirect:true}});
  const selected={type:'topic-direct-select',request:id(),room:topic};

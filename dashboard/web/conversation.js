@@ -18,11 +18,55 @@ window.Conversation = (() => {
     element.title=date.toLocaleString(locale,{dateStyle:"full",timeStyle:"long",hour12:false});
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
-    let hostedTopic;
+    let hostedTopic,hostedResult;
+    function closeHostedResult(){hostedResult?.close();hostedResult=undefined;}
+    async function openHostedResult(room,current){
+      const result=await workspace?.readHostedResult(room,binding,current);
+      if(!result||!current()||document.querySelector('dialog[open]'))return false;
+      const dialog=node('dialog',undefined,'conversation-decision-dialog');
+      const heading=node('h2',result.title),body=node('div',undefined,'reply-text');
+      dialog.setAttribute('aria-label',`Result from ${result.title}`);
+      const close=node('button','Close'),more=node('button','Continue reading');
+      const status=node('p');status.setAttribute('role','status');
+      close.onclick=()=>dialog.close();
+      let item=result.item,text=item.text;
+      const render=()=>{
+        if(window.ConversationMarkdown)window.ConversationMarkdown.render(body,text);
+        else body.textContent=text;
+        more.hidden=!item.more;
+      };
+      more.onclick=async()=>{
+        if(more.disabled)return;
+        more.disabled=true;
+        try{
+          const part=await result.part(item.next);
+          if(!part||!dialog.open)throw Error('Result changed');
+          item=part;text+=part.text;render();
+        }catch{if(dialog.open)status.textContent='This result changed or is no longer available.';}
+        finally{more.disabled=false;}
+      };
+      dialog.addEventListener('close',()=>{if(hostedResult===dialog)hostedResult=undefined;dialog.remove();},{once:true});
+      dialog.append(heading,close,body,more,status);
+      render();
+      document.body.append(dialog);hostedResult=dialog;dialog.showModal();close.focus();
+      return true;
+    }
     const hostSurface=window.ConversationSurface?.create({
       readTopics:readOnly?undefined:room=>api('interaction/sessions?'+new URLSearchParams({
         projection:'holodeck',...(room?{room}:{})
       })),
+      openResult:readOnly?undefined:openHostedResult,closeResult:closeHostedResult,
+      openQuestion:readOnly?undefined:async(room,current)=>{
+        const row=await workspace?.hostedRoom(room,binding,current);
+        if(!row||!current()||!pendingNavigation||document.querySelector('dialog[open]'))return false;
+        const match=/^(-?\d+):(\d+)$/.exec(row.audio_key||'');
+        if(!match)return false;
+        const target={chat_id:Number(match[1]),thread_id:Number(match[2])};
+        if(!Object.values(target).every(Number.isSafeInteger))return false;
+        const questions=await requestControls.questionIds(target,current);
+        return pendingNavigation.openSelected(questions,current);
+      },
+      closeQuestion:()=>pendingNavigation?.closeSelected(),
       selectTopic:readOnly?undefined:async(room,current)=>{
         const allowed=()=>current()&&!posting&&!captureBusy&&!transcriptPreview&&
           !voiceMode?.active&&!microphone?.ownsSend?.()&&!attachedFiles?.hasFiles();

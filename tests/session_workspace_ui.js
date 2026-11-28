@@ -37,7 +37,7 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
     if(held){const hold=held;held=undefined;return hold;}
     if(historyFailures.length)throw Object.assign(Error('Synthetic replaced history'),{status:historyFailures.shift()});
     if(failHistory)throw Object.assign(Error('Synthetic history connection lost'),{status:typeof failHistory==='number'?failHistory:undefined});
-    return {schema:'daimon.session-view/v1',revision:'f'.repeat(64),items:completedItems||[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage,pending_items:pendingItems,links_input_ids:true};
+    return {schema:'daimon.session-view/v1',session:url.pathname.split('/').at(-1),revision:'f'.repeat(64),items:completedItems||[{kind:'message',role:'assistant',text:'Retained answer',result_revision:resultRevision,id:url.pathname,position:50,next_position:150,timestamp:'2026-11-05T01:00:00Z',next:15,more:false}],before:50,after:150,before_scan:scanPage,after_scan:scanPage,has_earlier:scanPage,more:scanPage,pending_items:pendingItems,links_input_ids:true};
   }
   vm.runInNewContext(fs.readFileSync('dashboard/web/session-workspace.js','utf8'),{window,document,URLSearchParams,Map,Set,JSON,Number,Error,Date:class extends Date{static now(){return now;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,at:now+ms});return id;},clearTimeout:id=>timers.delete(id)});
   const control=window.SessionWorkspace.mount({timeline,api,daimonName,hosted,portableDeliveryText,noticeHost:noticePanel,onTarget:()=>targets.push(true),focusComposer:()=>focuses.push(true),onReply:(ref,title)=>replies.push({ref,title}),
@@ -68,6 +68,21 @@ function boot({storage=new Map(),defaultFilter,daimonName='Daimon',noticeHost=fa
   assert.equal((await hosted.control.selectHostedTopic(null,'owned')).room,null);
   assert.equal(hosted.control.capture(),undefined);
   assert.equal(hosted.storage.has('interaction.followed-session.v1'),false);
+  const resultTopic=boot({hosted:true}),revision='d'.repeat(64),session='7'.repeat(24);
+  resultTopic.setSessions(resultTopic.getSessions().map(row=>row.id==='b'?{
+    ...row,id:session,topic_ref:topic,result_available:true,result_revision:revision
+  }:row));
+  resultTopic.resultHistory(revision);
+  let current=true;
+  const openedResult=await resultTopic.control.readHostedResult(topic,'owned',()=>current);
+  assert.equal(openedResult.item.text,'Retained answer');
+  assert.equal(resultTopic.control.capture(),undefined,'Opening a result leaves General as recipient');
+  assert.equal(await resultTopic.control.readHostedResult('c'.repeat(64),'owned',()=>true),null);
+  resultTopic.resultHistory('a'.repeat(64));
+  assert.equal(await resultTopic.control.readHostedResult(topic,'owned',()=>true),null,'Old canonical result is refused');
+  current=false;
+  assert.equal(await openedResult.part(0),null,'Leaving the room fences later reads');
+
 
   // Returning to a suspended view may fail one metadata read. Keep that normal
   // recovery quiet; a persistent failure uses the existing compact notice panel.
