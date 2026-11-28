@@ -6,11 +6,13 @@ import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { frames, writeFrame } from '../worker-pipes.mjs';
+import { callController, controllerBridge, controllerCallKey } from './controller-bridge.mjs';
 import { sharedMemory } from './shared-memory.mjs';
 
 const binary = process.env.GOOSE_TEST_ACP_BINARY;
@@ -46,7 +48,7 @@ async function isolatedGooseProfile(root) {
   return key;
 }
 
-async function runWorker(t, profile, text, beforeDecision, agy) {
+async function runWorker(t, profile, text, beforeDecision, agy, controller) {
   const child = spawn(process.execPath, [worker, '--profile', profile], {
     env: {}, stdio: ['pipe', 'pipe', 'ignore'],
   });
@@ -55,7 +57,7 @@ async function runWorker(t, profile, text, beforeDecision, agy) {
   const messages = frames(child.stdout);
   const same = { schema: agy ? 'daimon-gateway.antigravity-turn/v2' : 'daimon-gateway.goose-turn/v1',
     inputId, sessionId: '00000000-0000-4000-8000-000000000002' };
-  await writeFrame(child.stdin, { ...same, type: 'start', text, body, ...agy });
+  await writeFrame(child.stdin, { ...same, type: 'start', text, body, ...agy, ...(controller ? { controller: true } : {}) });
   const first = (await messages.next()).value;
   if (beforeDecision === null) {
     assert.deepEqual(first, { ...same, type: 'outcome', outcome: first.outcome });
@@ -77,7 +79,14 @@ async function runWorker(t, profile, text, beforeDecision, agy) {
   if (agy && committed) {
     assert.deepEqual((await messages.next()).value, { ...same, type: 'input_accepted', nativeSessionId });
   }
-  const settled = (await messages.next()).value;
+  let settled = (await messages.next()).value;
+  while (controller && settled?.type === 'controller_call') {
+    const { callId, operation, arguments: args } = settled;
+    assert.deepEqual(settled, { ...same, type: 'controller_call', nativeSessionId, callId, operation, arguments: args });
+    await writeFrame(child.stdin, { ...same, type: 'controller_reply', callId,
+      success: true, text: controller(operation, args) });
+    settled = (await messages.next()).value;
+  }
   assert.deepEqual(settled, { ...same, type: 'outcome', outcome: settled.outcome });
   child.stdin.end();
   assert.deepEqual(await finished, [0, null]);
@@ -117,6 +126,66 @@ test('agy foreground worker journals, uses its selected tool and resumes the sam
     { ...start, resumeNativeSessionId: first.nativeSessionId });
   assert.equal(resumed.outcome.phase, 'completed', resumed.outcome.reason);
   assert.deepEqual(resumed.outcome.text.trim().split(/\s+/), ['AUDIT-GREEN', 'jade-pocket']);
+});
+
+test('the ACP controller socket requires turn activation, native tool selection and its own nonce', { timeout: 5000 }, async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const stop = new AbortController();
+  const signal = AbortSignal.timeout(2000);
+  const correlation = { schema: 'fixture', inputId, sessionId: 'attempt' };
+  const call = { operation: 'capabilities', arguments: {} };
+  const bridge = await controllerBridge(correlation, output, stop);
+  const wire = frames(output);
+  try {
+    assert.equal((await callController(bridge.access, call, signal)).isError, true);
+    const grants = new Set();
+    const serving = bridge.serve(frames(input), 'native', key => grants.delete(key));
+    assert.equal((await callController(bridge.access, call, signal)).isError, true);
+    grants.add(controllerCallKey(call));
+    assert.equal((await callController({ ...bridge.access, nonce: 'wrong' }, call, signal)).isError, true);
+    assert.equal((await callController(bridge.access, { ...call, operation: 'session_request' }, signal)).isError, true);
+    assert.equal(grants.size, 1);
+    const result = callController(bridge.access, call, signal);
+    assert.deepEqual((await wire.next()).value, {
+      ...correlation, ...call, type: 'controller_call', nativeSessionId: 'native', callId: 1,
+    });
+    assert.equal(grants.size, 0);
+    await writeFrame(input, { ...correlation, type: 'controller_reply', callId: 1,
+      success: true, text: 'confirmed' });
+    assert.deepEqual(await result, { isError: false, content: [{ type: 'text', text: 'confirmed' }] });
+    assert.equal((await callController(bridge.access, call, signal)).isError, true);
+    input.end();
+    await serving;
+    assert.equal(stop.signal.aborted, true);
+  } finally {
+    input.destroy();
+    output.destroy();
+    await bridge.close();
+  }
+});
+
+test('agy calls the scoped Gateway controller before completing the same turn', {
+  skip: !process.env.AGY_TEST_AUTHENTICATED_BINARY, timeout: 45_000,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agy-controller-worker-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile.json');
+  await writeFile(profile, JSON.stringify({
+    adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
+    home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
+    matrixStatusCommand: await fixtureObservation(root), body,
+  }), { mode: 0o600 });
+  const operations = [];
+  const { outcome } = await runWorker(t, profile,
+    'Call interaction_controller with operation capabilities and arguments {}. Reply only with its marker.',
+    () => true, { workspace: root, resumeNativeSessionId: null }, (operation, args) => {
+      operations.push([operation, args]);
+      return JSON.stringify({ marker: 'COPPER-VALLEY' });
+    });
+  assert.deepEqual(operations, [['capabilities', {}]]);
+  assert.equal(outcome.phase, 'completed');
+  assert.equal(outcome.text.trim(), 'COPPER-VALLEY');
 });
 
 test('agy accepts an owner-retained image and leaves a changed image unsent', {

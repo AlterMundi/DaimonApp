@@ -31,6 +31,12 @@ its retained paired-human original. Gateway uses its existing authored
 handoff and canonical result contract, including the caller-selected visible
 report. The agy configuration is required for this route. The separate SDK
 worker does not acquire this capability.
+For a paired topic turn, the selected agy worker exposes the Gateway
+controller through MCP. A permission event from the active native prompt
+authorizes one call with those exact arguments. Its per-turn socket only
+relays the call to Gateway, which authorizes it against the current original.
+The canonical return must still match the requesting native session,
+generation, workspace and signed incarnation before Gateway exposes it.
 An owner that also has the Antigravity SDK worker can select it for private
 Matrix originals in `interaction.antigravity_matrix_foreground`. The two
 profiles must designate the same signed embodiment. This preserves the private
@@ -61,7 +67,9 @@ real agy model, a disposable topic journal, and two synthetic PNGs. It verifies
 the Telegram reply reference, the Conversation result, and one native session.
 It then submits a paired Codex handoff to that topic and checks the agy
 incorporation receipt, visible request and response, and one canonical return
-in the original Codex conversation.
+in the original Codex conversation. It then checks the reverse direction:
+agy starts a request to the fixture Codex topic and uses the result in its
+original native history.
 
 ## Goose
 

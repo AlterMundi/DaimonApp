@@ -268,6 +268,9 @@ pub(in crate::app) async fn execute_worker(
         if let Some(agy) = &agy {
             start["workspace"] = json!(agy.workspace);
             start["resumeNativeSessionId"] = json!(agy.native_session_id);
+            if controller.is_some() {
+                start["controller"] = json!(true);
+            }
             if !attachments.is_empty() {
                 start["attachments"] = json!(
                     attachments
@@ -492,7 +495,7 @@ pub(in crate::app) async fn execute_worker(
             );
             let request = ToolInvocation {
                 local_turn: owner.local_turn,
-                harness: Harness::Claude,
+                harness: engine.harness(),
                 native_session: native.clone(),
                 native_turn: id.to_owned(),
                 tool: "interaction_controller".into(),
@@ -995,6 +998,14 @@ pub(super) async fn run_routed_portable(
         let agy_resume = agy_workspace
             .map(|workspace| store.routed_agy_session(local, &body, workspace))
             .transpose()?.flatten();
+        if let Some(workspace) = agy_workspace
+            && let Some(author) = author.as_ref().filter(|a| a["kind"] == "session_result")
+        {
+            anyhow::ensure!(
+                store.routed_agy_return_matches(input, author, agy_resume.as_deref(), workspace, &body)?,
+                "Antigravity return cannot resume its requesting native session"
+            );
+        }
         let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
@@ -1013,7 +1024,7 @@ pub(super) async fn run_routed_portable(
         let mut missing_resume: Option<(String, Value)> = None;
         loop {
             let mut exposed = false;
-            let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
+            let controller = ((engine == ForegroundEngine::Claude || config.agy_cli) && routed_host_access && paired_work)
                 .then_some(WorkerController {
                     app,
                     key: input.target,
@@ -1051,7 +1062,7 @@ pub(super) async fn run_routed_portable(
                     controller,
                     steering: steering.as_mut(),
                     acceptance: ((engine == ForegroundEngine::Claude || config.agy_cli)
-                        && ((routed_host_access && human_authored)
+                        && ((routed_host_access && (human_authored || (config.agy_cli && paired_work)))
                             || author.as_ref().is_some_and(|a| a["report_to_topic"] == true)))
                     .then_some(WorkerAcceptance {
                         shared: &app.shared, input, local_turn: local, require_work: human_authored,

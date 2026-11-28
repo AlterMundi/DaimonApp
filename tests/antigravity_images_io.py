@@ -33,7 +33,7 @@ def qualify(binary, source_profile):
     journey = CanonicalRouting(binary)
     try:
         journey.start()
-        for topic in (1, 7):
+        for topic in (1, 7, 8):
             journey.admit("Seed an isolated topic", topic=topic)
             journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
             journey.idle()
@@ -166,6 +166,42 @@ def qualify(binary, source_profile):
         assert sum(request["text"] in message["text"]
                    for message, _ in journey.messages) == 1
         print("A paired Codex handoff reached the same Antigravity history, appeared in the topic and returned its canonical result to Codex.")
+        journey.finish(caller, journey.workers[caller])
+        latest = str(uuid.uuid4())
+        original = (
+            "#Alpha Use interaction_controller coordination_inputs to find this current original. "
+            "Call session_request once with that parent_instruction, request_id agy-outbound, "
+            "selector Beta and text 'Give me the synthetic fixture marker.' "
+            "Finish your turn while waiting for the canonical result. In the next turn "
+            "containing the canonical result, reply with its marker."
+        )
+        assert journey.read("input", "submit-human", json.dumps({
+            "id": latest, "binding": binding, "text": original,
+        }))["result"]["new_input"]
+        beta = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=8")[0][0]
+        journey.wait(lambda: beta in journey.workers, seconds=45)
+        assert "Give me the synthetic fixture marker." in str(journey.worker_packets[beta])
+        marker = "RUBY-LANTERN"
+        journey.answer_worker(8, marker)
+
+        def returned():
+            return journey.row("""
+                SELECT i.phase,t.native_thread_id,json_extract(i.doc,'$.native_input_accepted'),
+                       t.assistant_text
+                FROM interaction_session_requests c
+                JOIN interaction_instructions i ON i.id=json_extract(c.doc,'$.return_instruction')
+                JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
+                WHERE c.caller_topic=7 AND c.target_instruction IN
+                  (SELECT id FROM interaction_instructions WHERE session_id=(SELECT id FROM sessions WHERE thread_id=8))
+            """)
+
+        journey.wait(lambda: returned() and returned()[0][0] in
+                     {"accepted", "retained_unsent", "uncertain", "rejected"}, seconds=45)
+        row, = returned()
+        assert row[:3] == ("accepted", first, 1) and marker in row[3], row
+        assert len(journey.worker_packets[beta]) == 1
+        print("Antigravity started one paired request and incorporated its Codex result in the same history.")
+
     finally:
         journey.close()
 
