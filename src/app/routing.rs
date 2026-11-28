@@ -1216,7 +1216,9 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
     let result_instructions = if i.target_execution.as_ref().is_some_and(|binding| {
         matches!(
             binding.harness,
-            crate::execution::Harness::Goose | crate::execution::Harness::Antigravity
+            crate::execution::Harness::Goose
+                | crate::execution::Harness::Antigravity
+                | crate::execution::Harness::Qwen
         )
     }) {
         "Return a plain-language answer to the attributed input."
