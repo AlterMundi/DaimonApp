@@ -160,6 +160,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert codex_handoff["original"] in seed and codex_handoff["reply"] in seed, (
                     "The new Claude turn lacked the receipt-bound Codex exchange"
                 )
+            if expected := getattr(self.server, "expected_verified_checkpoint", None):
+                checkpoints = [
+                    block["text"] for message in data["messages"]
+                    if isinstance(message["content"], list)
+                    for block in message["content"] if block.get("type") == "text"
+                    and block["text"].startswith("Gateway project checkpoint (JSON):")
+                ]
+                assert len(checkpoints) == 1, checkpoints
+                recovered = json.loads(json.loads(checkpoints[0].split("\n", 1)[1]))
+                for key, value in expected.items():
+                    assert recovered[key] == value, (key, recovered[key], value)
             distinct_request = getattr(self.server, "test_session_request", False)
             fixture_id = "scoped" if distinct_request else "fixture"
             returned_dependency = getattr(self.server, "returned_dependency", None)

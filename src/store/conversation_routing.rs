@@ -516,6 +516,15 @@ impl Store {
         instruction: &str,
         paired: bool,
     ) -> Result<(bool, SessionKey)> {
+        // Git verification must not hold the owner writer. The same
+        // checkpoint and authority are checked again in the requeue transaction.
+        let startup = if paired {
+            self.interaction_instruction(instruction, human)?
+                .filter(|selected| selected.codex_recovery_refusal.is_some())
+                .map(|selected| self.project_startup(selected.target, entry, human))
+        } else {
+            None
+        };
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let input = super::conversation_inputs::read_on(&tx, id, human)?;
@@ -523,13 +532,26 @@ impl Store {
             bail!("Recovery belongs to another entry");
         }
         super::conversation_inputs::eligible_on(&tx, &input)?;
-        let raw:String=tx.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources source ON source.id=i.input_id WHERE i.id=?1 AND source.channel='conversation' AND source.event_id=?2 AND source.human_id=?3",params![instruction,id,human],|r|r.get(0)).context("Recovery does not match this original route")?;
-        let selected: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+        let (raw, phase): (String, String)=tx.query_row("SELECT i.doc,i.phase FROM interaction_instructions i JOIN interaction_sources source ON source.id=i.input_id WHERE i.id=?1 AND source.channel='conversation' AND source.event_id=?2 AND source.human_id=?3",params![instruction,id,human],|r|Ok((r.get(0)?,r.get(1)?))).context("Recovery does not match this original route")?;
+        let mut selected: crate::interaction::Instruction = serde_json::from_str(&raw)?;
+        selected.phase = phase.as_str().try_into()?;
         if super::stopping::fenced_on(&tx, selected.target)?
             || super::maintenance_writer_held_on(&tx, selected.target)?
         {
             bail!("Selected work session is held");
         }
+        if selected
+            .codex_successor_reservation
+            .as_ref()
+            .is_some_and(|r| r.creation_turn.is_some())
+        {
+            return Ok((false, selected.target));
+        }
+        let reservation = startup
+            .as_ref()
+            .map(|startup| startup.successor_reservation_on(&tx, entry, &selected))
+            .transpose()?
+            .flatten();
         let changed = super::interaction::recover_on(
             &tx,
             instruction,
@@ -538,6 +560,27 @@ impl Store {
             paired,
             None,
         )?;
+        if changed && let Some(reservation) = reservation {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.codex_successor_reservation',json(?2))
+                 WHERE id=?1 AND phase='queued'",
+                params![instruction, serde_json::to_string(&reservation)?],
+            )?;
+            if selected.codex_successor_reservation.as_ref() != Some(&reservation) {
+                tx.execute(
+                    "INSERT INTO audit_log(actor_user_id,action,details_json,created_at)
+                     VALUES(?1,'codex_project_successor_reserved',?2,?3)",
+                    params![
+                        human,
+                        json!({
+                            "original": id, "instruction": instruction, "reservation": reservation
+                        })
+                        .to_string(),
+                        now_string()
+                    ],
+                )?;
+            }
+        }
         if changed {
             tx.execute("INSERT INTO audit_log(actor_user_id,action,details_json,created_at) VALUES(?1,'conversation_route_recovery',?2,?3)",params![human,json!({"original":id,"instruction":instruction,"entry":entry,"target":selected.target,"kind":"explicit_known_unsent_recovery"}).to_string(),now_string()])?;
         }

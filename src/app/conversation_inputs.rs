@@ -113,9 +113,41 @@ fn decorate_recovery(
     id: &str,
     value: &mut Value,
 ) -> Result<()> {
-    let recoveries=app.shared.store.conversation_recoverable_routes(human,entry,id)?.into_iter()
-        .filter(|i|super::routing::instruction_available(&app.shared,i))
-        .map(|i|json!({"instruction":i.id,"label":super::routing::label(&app.shared,i.target),"target":i.target})).collect::<Vec<_>>();
+    let mut holds = Vec::new();
+    let mut recoveries = Vec::new();
+    for i in app
+        .shared
+        .store
+        .conversation_recoverable_routes(human, entry, id)?
+    {
+        if !super::routing::instruction_available(&app.shared, &i) {
+            continue;
+        }
+        let mut route = json!({
+            "instruction": i.id,
+            "label": super::routing::label(&app.shared, i.target),
+            "target": i.target,
+        });
+        if let Some(reservation) = i.codex_successor_reservation {
+            route["codex_successor_reservation"] = json!(reservation.id);
+            if reservation.creation_turn.is_some() {
+                route["codex_recovery"] = json!(if reservation.candidate_native.is_some() {
+                    "successor_input_unsubmitted"
+                } else {
+                    "successor_creation_unconfirmed"
+                });
+                holds.push(route);
+                continue;
+            }
+        }
+        if i.codex_recovery_refusal.is_some() {
+            route["codex_recovery"] = json!("missing_native_history");
+        }
+        recoveries.push(route);
+    }
+    if !holds.is_empty() {
+        value["codex_recovery_holds"] = json!(holds);
+    }
     if !recoveries.is_empty() {
         value["binding"] = app
             .shared
@@ -386,6 +418,32 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         .context("Missing integrating entry")?;
     if args == "workspace" {
         return super::execution_status::workspace(app, human, cfg).await;
+    }
+    if let Some(target) = args.strip_prefix("topic-projects ") {
+        #[derive(Deserialize)]
+        struct ProjectPage {
+            #[serde(flatten)]
+            target: SessionKey,
+            cursor: Option<String>,
+            project: Option<Uuid>,
+            repository: Option<Uuid>,
+            #[serde(default)]
+            evidence: Vec<crate::store::ProjectEvidence>,
+        }
+        let page: ProjectPage = serde_json::from_str(target)?;
+        let selected = match (page.project, page.repository) {
+            (None, None) => None,
+            (Some(project), Some(repository)) => Some((project, repository)),
+            _ => bail!("Select a project and its linked repository"),
+        };
+        return app.shared.store.topic_project_projection(
+            human,
+            cfg.entry(),
+            page.target,
+            page.cursor.as_deref(),
+            selected,
+            &page.evidence,
+        );
     }
     if let Some(body) = args.strip_prefix("foreground context ") {
         let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;

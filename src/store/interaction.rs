@@ -427,6 +427,8 @@ fn admit_selected_with_origin_on(
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,
+        codex_recovery_refusal: None,
+        codex_successor_reservation: None,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
     tx.execute("INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'queued',?5,?6)",params![instruction.id,instruction.input_id,session,sequence,serde_json::to_string(&instruction)?,instance])?;
@@ -513,6 +515,17 @@ pub(super) fn transport_on(
     }
     instruction.phase = phase;
     instruction.local_turn = Some(local_turn);
+    if phase == P::Accepted
+        && instruction
+            .codex_successor_reservation
+            .as_ref()
+            .is_some_and(|reservation| {
+                reservation.creation_turn != Some(local_turn)
+                    || reservation.candidate_native.as_deref() != native.as_deref()
+            })
+    {
+        instruction.codex_successor_reservation = None;
+    }
     if native.is_some() {
         instruction.native_thread = native;
     }
@@ -690,6 +703,8 @@ pub(super) fn recover_on(
     instruction.local_turn = None;
     instruction.native_turn = None;
     instruction.admission_epoch = epoch;
+    instruction.codex_recovery_refusal = None;
+    instruction.codex_successor_reservation = None;
     conn.execute(
         "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
         params![id, serde_json::to_string(&instruction)?, instance],

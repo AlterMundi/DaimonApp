@@ -19,6 +19,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub workspace: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
+    pub project_checkpoint_required: bool,
     pub require_recovery_context: bool,
     pub text: &'a str,
     pub attachments: &'a [crate::models::LocalAttachment],
@@ -147,6 +148,7 @@ pub(in crate::app) async fn execute_worker(
         workspace,
         history_seed,
         project_checkpoint,
+        project_checkpoint_required,
         require_recovery_context,
         text,
         attachments,
@@ -239,6 +241,10 @@ pub(in crate::app) async fn execute_worker(
             if let Some(checkpoint) = project_checkpoint {
                 attach_project_checkpoint(&mut start, checkpoint)?;
             }
+            anyhow::ensure!(
+                !project_checkpoint_required || start.get("projectCheckpoint").is_some(),
+                "Selected project recovery does not fit the Claude worker input"
+            );
             anyhow::ensure!(
                 !require_recovery_context
                     || start.get("historySeed").is_some()
@@ -703,6 +709,7 @@ pub(super) async fn run_portable_turn(
                 workspace: None,
                 history_seed: None,
                 project_checkpoint: None,
+                project_checkpoint_required: false,
                 require_recovery_context: false,
                 text: &input.text,
                 attachments: &[],
@@ -883,19 +890,22 @@ pub(super) async fn run_routed_portable(
             Vec::new()
         };
         let human_original = direct_original || conversation_goal;
-        let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
+        let (history_seed, project_checkpoint, verified_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
             && !native_goal_command
         {
-            (
-                store.routed_claude_history_seed(input, local, &body)?,
+            let startup = store.project_startup(input.target, cfg.entry(), input.human_id);
+            let checkpoint = if startup.is_selected() {
+                startup.context()
+            } else {
                 store
                     .topic_folder_claim(input.target, input.human_id)?
-                    .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim)),
-            )
+                    .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim))
+            };
+            (store.routed_claude_history_seed(input, local, &body)?, checkpoint, Some(startup))
         } else {
-            (None, None)
+            (None, None, None)
         };
         let mut missing_resume: Option<(String, Value)> = None;
         loop {
@@ -926,6 +936,7 @@ pub(super) async fn run_routed_portable(
                         .then_some(session.cwd.as_path()),
                     history_seed: history_seed.as_ref(),
                     project_checkpoint: project_checkpoint.as_deref(),
+                    project_checkpoint_required: verified_checkpoint.as_ref().is_some_and(crate::store::ProjectStartup::is_selected),
                     require_recovery_context: missing_resume.is_some(),
                     text: &request.prompt,
                     attachments: &request.attachments,
@@ -951,7 +962,16 @@ pub(super) async fn run_routed_portable(
                     {
                         return Ok(false);
                     }
-                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())?;
+                    if verified_checkpoint.as_ref().is_some_and(|startup| startup.is_selected()
+                        && *startup != store.project_startup(input.target, cfg.entry(), input.human_id))
+                    {
+                        return Ok(false);
+                    }
+                    let evidence = crate::store::RoutedStartupEvidence {
+                        history: history_seed.as_ref(),
+                        project: verified_checkpoint.as_ref().map(|startup| (startup, cfg.entry())),
+                    };
+                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, evidence)?;
                     Ok(exposed)
                 },
             ).await;
@@ -963,7 +983,9 @@ pub(super) async fn run_routed_portable(
             let Ok(outcome) = result else {
                 break result;
             };
-            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || project_checkpoint.is_some()) else {
+            let usable_project = verified_checkpoint.as_ref().filter(|startup| startup.is_selected())
+                .map_or(project_checkpoint.is_some(), crate::store::ProjectStartup::is_verified);
+            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || usable_project) else {
                 break Ok(outcome);
             };
             missing_resume = Some((scope.to_owned(), outcome));

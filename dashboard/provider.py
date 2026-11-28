@@ -393,7 +393,8 @@ class Provider:
                     row={**row,'execution':execution,'observed_at':sampled,'fresh':True,
                          'goal_state':'unknown','waiting_for_human':None,'tools_running':None,
                          'error':None,'marker':'⚙' if execution=='working' else ''}
-                items.append({'id':ident,'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
+                items.append({'id':ident,'topic_ref':self.logical_topic_ref(self.human,row['session'],chat,topic),
+                    'runtime':runtime,'audio_key':row['key'],'title':row['title_summary'] or 'Untitled session',
                     'last_activity_at':row['last_observed_conversation_at'],'observed_at':row['observed_at'],
                     **{k:row[k] for k in ('fresh','execution','goal_state','waiting_for_human','tools_running','error','marker')},
                     'human_action_pending':bool(requests and requests['pending']) or row['waiting_for_human'] is True,
@@ -408,6 +409,51 @@ class Provider:
             'connected':inventory['connected'],'truncated':False,'destinations_state':destinations_state,
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
+
+    def topic_rooms(self, room=None, *, include_projects=False, project_cursor=None, project_selection=None):
+        """Project the current owned workspace into a bounded room catalogue."""
+        if room is not None and (not isinstance(room,str) or re.fullmatch('[a-f0-9]{64}',room) is None):
+            raise ValueError('Select a topic room')
+        workspace=self.session_workspace()
+        rooms=[]
+        for row in workspace['sessions']:
+            if room is not None and row['topic_ref'] != room:
+                continue
+            selected={'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
+                      'direct_available':row['is_entry'] or row['destination'] is not None}
+            if include_projects and room is not None:
+                chat,topic=map(int,row['audio_key'].split(':'))
+                target={'chat_id':chat,'thread_id':topic}
+                selection={**target, **({'cursor':project_cursor} if project_cursor is not None else {})}
+                if project_selection is not None:
+                    selection.update(project=project_selection['project'],repository=project_selection['repository'])
+                    if project_selection.get('evidence'):
+                        selection['evidence']=project_selection['evidence']
+                try:
+                    projects=self.presentation('input topic-projects '+json.dumps(selection,separators=(',',':')))
+                except ProviderUnavailable:
+                    pass  # Older owners can still describe the room.
+                else:
+                    if (projects.get('schema')!='daimon.topic-projects/v1' or projects.get('target')!=target
+                        or projects.get('project')!=(project_selection or {}).get('project')
+                        or not isinstance(projects.get('repositories'),list) or len(projects['repositories'])>8):
+                        raise ProviderUnavailable('Invalid topic project projection')
+                    next_page=projects.get('next')
+                    restarted=projects.get('restarted',False)
+                    if ((next_page is not None and (not isinstance(next_page,str) or
+                         re.fullmatch(r'[0-9]{1,19}\.[0-9]{1,19}',next_page) is None))
+                        or type(restarted) is not bool):
+                        raise ProviderUnavailable('Invalid topic project page')
+                    selected['projects']={'repositories':projects['repositories'],'next':next_page,'restarted':restarted}
+                    if project_selection:
+                        selected['projects']['project']=projects['project']
+                        if project_selection.get('evidence'):
+                            evidence=projects.get('evidence',[])
+                            if not isinstance(evidence,list) or len(evidence)>8:
+                                raise ProviderUnavailable('Invalid project evidence')
+                            selected['projects']['evidence']=evidence
+            rooms.append(selected)
+        return {'schema':'daimon.topic-rooms/v1','rooms':rooms}
 
     def portable_session_runtime(self, selected):
         profile=self.receiver.get('interaction',{})
@@ -1535,6 +1581,12 @@ class Provider:
         if not valid:
             raise ValueError('Invalid request action')
         return self.presentation(('requests internal decide ' if internal else 'requests decide ') + json.dumps({**body, 'id':ident}, ensure_ascii=False))
+
+    @staticmethod
+    def logical_topic_ref(human, session, chat, topic):
+        """Stable logical topic identity, independent of the native thread and title."""
+        key=json.dumps(['daimon.logical-topic/v1',human,session,chat,topic],separators=(',',':'))
+        return hashlib.sha256(key.encode()).hexdigest()
 
     @staticmethod
     def identity(row):

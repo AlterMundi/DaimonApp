@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
@@ -154,10 +155,65 @@ topic_id=8
                 with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
                     client.cookies.set('__Host-home','h'*43)
                     self.assertEqual(client.get('/api/interaction/sessions').status_code,expected)
+                    self.assertEqual(client.get('/api/interaction/sessions?projection=holodeck').status_code,expected)
             identity['actor']['ref']='human:telegram:101'
             with TestClient(create_app(self.config,self.provider,lambda raw,bot:int(raw)),base_url=self.config['origin']) as client:
                 client.cookies.set('__Host-home','h'*43)
                 self.assertEqual(client.get('/api/interaction/sessions').status_code,403)
+
+    def test_topic_rooms_resolve_current_owned_topics_without_native_history(self):
+        self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},
+                           {'audio_key':'100:8','destination':{'source':'session:3','revision':'c'*64}}]
+        url='/api/interaction/sessions?projection=holodeck'
+        self.assertEqual(self.client.get(url).status_code,401)
+        with patch.object(self.provider,'topic_rooms',wraps=self.provider.topic_rooms) as project_read:
+            response=self.client.get(url,headers=self.owner)
+        project_read.assert_called_once_with(None)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        self.assertEqual(response.json()['schema'],'daimon.topic-rooms/v1')
+        rooms={row['title']:row for row in response.json()['rooms']}
+        self.assertEqual(set(rooms),{'Entry','Worker'})
+        worker=rooms['Worker']
+        self.assertEqual(set(worker),{'title','room','general','direct_available'})
+        self.assertTrue(worker['direct_available'])
+        self.assertTrue(rooms['Entry']['general'])
+        foreign=self.provider.logical_topic_ref(101,3,100,8)
+        self.assertEqual(self.client.get(url+'&room='+foreign,headers=self.owner).status_code,404)
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute("UPDATE sessions SET codex_thread_id='new-harness-thread' WHERE id=2")
+            db.commit()
+        opened=self.client.get(url+'&room='+worker['room'],headers=self.owner)
+        self.assertEqual(opened.json()['rooms'],[worker])
+        target={'chat_id':100,'thread_id':7}
+        repositories=[{'project':str(uuid.uuid4()),'repository':str(uuid.uuid4()),'label':'Story','commit':'a'*40}]
+        def with_projects(command):
+            if command.startswith('input topic-projects '):
+                self.assertEqual(command,'input topic-projects {"chat_id":100,"thread_id":7}')
+                return {'schema':'daimon.topic-projects/v1','target':target,'repositories':repositories}
+            return self.presentation(command)
+        self.provider.presentation.side_effect=with_projects
+        self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['projects'],
+                         {'repositories':repositories,'next':None,'restarted':False})
+        self.assertTrue(all('projects' not in room for room in self.provider.topic_rooms(include_projects=True)['rooms']))
+        row=repositories[0]
+        historical={**row,'commit':'b'*40}
+        selection={key:row[key] for key in ('project','repository')}
+        selection['evidence']=[{'repository':row['repository'],'commit':historical['commit']}]
+        def with_evidence(command):
+            if command.startswith('input topic-projects '):
+                self.assertEqual(json.loads(command.removeprefix('input topic-projects ')),{**target,**selection})
+                return {'schema':'daimon.topic-projects/v1','target':target,'project':row['project'],
+                        'repositories':repositories,'evidence':[historical]}
+            return self.presentation(command)
+        self.provider.presentation.side_effect=with_evidence
+        evidence=self.provider.topic_rooms(worker['room'],include_projects=True,project_selection=selection)
+        self.assertEqual(evidence['rooms'][0]['projects']['evidence'],[historical])
+        with closing(sqlite3.connect(self.db)) as db:
+            db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=2')
+            db.commit()
+        self.assertEqual(self.client.get(url+'&room='+worker['room'],headers=self.owner).status_code,404)
+        self.assertIsNone(self.provider.native)
 
     def test_workspace_joins_only_native_owned_destination_references_and_validates_shape(self):
         self.destinations=[{'audio_key':'100:7','destination':{'source':'session:2','revision':'b'*64}},

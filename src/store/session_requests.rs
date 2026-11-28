@@ -1381,7 +1381,14 @@ mod tests {
         let body = json!({"beingRef":"fixture","embodimentId":"fixture","incarnationId":"fixture"});
         assert!(
             store
-                .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
+                .expose_routed_portable(
+                    &delivered,
+                    local,
+                    &body,
+                    &prepared,
+                    paired,
+                    Default::default()
+                )
                 .unwrap()
         );
         assert_eq!(
@@ -1499,7 +1506,14 @@ mod tests {
                     json!({"native_session_id":native, "native_session_scope":scope.repeat(64)});
                 assert!(
                     store
-                        .expose_routed_portable(&next, next_local, &body, &selected, false, None)
+                        .expose_routed_portable(
+                            &next,
+                            next_local,
+                            &body,
+                            &selected,
+                            false,
+                            Default::default()
+                        )
                         .unwrap()
                 );
                 let deliveries = store
@@ -1555,7 +1569,14 @@ mod tests {
             let (stale_local, _) = begin(&stale);
             assert!(
                 store
-                    .expose_routed_portable(&stale, stale_local, &json!({}), &prepared, true, None)
+                    .expose_routed_portable(
+                        &stale,
+                        stale_local,
+                        &json!({}),
+                        &prepared,
+                        true,
+                        Default::default()
+                    )
                     .unwrap()
             );
 
@@ -1627,7 +1648,7 @@ mod tests {
                 &json!({}),
                 &json!({"native_session_id": Uuid::now_v7().to_string(), "native_session_scope": "a".repeat(64)}),
                 true,
-                None,
+                Default::default(),
             ).unwrap());
         }
         assert!(

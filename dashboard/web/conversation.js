@@ -18,7 +18,22 @@ window.Conversation = (() => {
     element.title=date.toLocaleString(locale,{dateStyle:"full",timeStyle:"long",hour12:false});
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
-    const hostSurface=window.ConversationSurface?.create();
+    let hostedTopic;
+    const hostSurface=window.ConversationSurface?.create({
+      readTopics:readOnly?undefined:room=>api('interaction/sessions?'+new URLSearchParams({
+        projection:'holodeck',...(room?{room}:{})
+      })),
+      selectTopic:readOnly?undefined:async(room,current)=>{
+        const allowed=()=>current()&&!posting&&!captureBusy&&!transcriptPreview&&
+          !voiceMode?.active&&!microphone?.ownsSend?.()&&!attachedFiles?.hasFiles();
+        const result=await workspace?.selectHostedTopic?.(room,binding,allowed);
+        if(!result)return null;
+        hostedTopic=room||undefined;
+        voiceContext=undefined;
+        draftState?.setTopic(hostedTopic);
+        return result;
+      },
+    });
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
     const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;
@@ -946,7 +961,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
+    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,hosted:!!hostSurface,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();syncRuntimeSummary();},
       focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
@@ -961,7 +976,7 @@ window.Conversation = (() => {
     function inputReference(){
       if(replyFocus)return replyFocus.reference;
       const selection=workspace?.capture();
-      return selection?selection.reference:voiceContext;
+      return selection?selection.reference:hostSurface?undefined:voiceContext;
     }
     function syncWorkspaceAudio(){
       const row=workspace?.audioScope?.();
@@ -1341,7 +1356,7 @@ window.Conversation = (() => {
       inputBinding = result.binding;
       inputEntryBinding = Array.isArray(result.entry_binding)&&result.entry_binding.length===4?result.entry_binding:undefined;
       setCsrf(result.csrf);routingChoices=result.routing_choices||[];
-      if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding);
+      if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding,hostedTopic);
       for (const value of result.items) inputCard(value, observation,value.native_binding_current===true?inputBinding:undefined);
       draftState?.observe(result.conversation_draft);
       if (direction === "after" || (remember && !inputNewest)) inputNewest = Math.max(inputNewest, result.newest || 0);
@@ -2082,7 +2097,7 @@ window.Conversation = (() => {
       const value = await api(`interaction?${new URLSearchParams({...cursor, direction})}`);
       if (binding && value.binding !== binding) {
         draftState?.bind();
-        workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
+        hostedTopic=undefined;workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
         newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
         $("#conversation-answers").replaceChildren(); $("#conversation-results").replaceChildren();
       }
@@ -2216,7 +2231,7 @@ window.Conversation = (() => {
       $("#conversation-refresh").disabled = true;
       try {
         const previousBinding=binding;
-        if(previousBinding)void workspace?.refresh(previousBinding);
+        if(previousBinding&&(!hostSurface||hostedTopic))void workspace?.refresh(previousBinding);
         if (!initialized) {
           newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
           await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before");
@@ -2234,7 +2249,7 @@ window.Conversation = (() => {
         // Saved input receipts and transcripts have their own bounded reader.
         // Sound, questions and presentation must not hold their readback.
         saved ||= refreshSavedInputs();
-        if(binding!==previousBinding)void workspace?.refresh(binding);
+        if(binding!==previousBinding&&(!hostSurface||hostedTopic))void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input
         // history, Telegram and inspector reads do not gate useful playback.
         const questionsCurrent=readOnly || await requestControls.refresh();

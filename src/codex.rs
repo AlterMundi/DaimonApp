@@ -51,6 +51,19 @@ impl std::fmt::Display for NativeInputNotSubmitted {
 }
 impl std::error::Error for NativeInputNotSubmitted {}
 
+/// App Server rejected metadata resume for the exact selected thread before
+/// accepting any input. Keep this distinct from later failures mentioning a rollout.
+#[derive(Debug)]
+pub(crate) struct MissingNativeRollout;
+
+impl std::fmt::Display for MissingNativeRollout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the selected Codex native history is unavailable")
+    }
+}
+
+impl std::error::Error for MissingNativeRollout {}
+
 #[derive(Debug)]
 pub struct NativeFreshExecutionRequired;
 impl std::fmt::Display for NativeFreshExecutionRequired {
@@ -226,6 +239,10 @@ pub enum CodexEvent {
         async_questions: Option<Value>,
     },
     ThreadStarted(String),
+    ProjectSuccessor {
+        previous: String,
+        candidate: Option<String>,
+    },
     NativeModelConfigured {
         thread_id: String,
         model: String,
@@ -409,6 +426,7 @@ impl NativeInferenceAllowance {
 #[derive(Debug)]
 pub enum CodexEventOutcome {
     None,
+    ProjectSuccessorAuthorized(bool),
     /// Release only this completed collector for retained canonical attention.
     YieldGoalCollector,
     InferenceAllowance(NativeInferenceAllowance),
@@ -613,6 +631,13 @@ fn idle_capacity_rejection(error: &RpcError) -> bool {
                 )
         })
 }
+impl RpcError {
+    fn is_missing_rollout_for(&self, thread: &str) -> bool {
+        self.code == Some(-32600)
+            && self.message.strip_prefix("no rollout found for thread id ") == Some(thread)
+    }
+}
+
 impl std::fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&format_rpc_error(self))
@@ -1756,9 +1781,36 @@ where
         elapsed_ms = preparation_started.elapsed().as_millis(),
         "native turn preparation"
     );
-    let (thread_id, native_model) = process
+    let initial = process
         .start_or_resume_thread(session, bounded.is_some(), dynamic_tools, profile)
-        .await?;
+        .await;
+    let (thread_id, native_model, cold_project) = match initial {
+        Ok((thread, model)) => (thread, model, false),
+        Err(error) if error.is::<MissingNativeRollout>()
+            && historical_context.is_some()
+            && bounded.is_none() && tool_output.is_none() && goal_activation.is_none()
+            && !idle_only && !cancel.is_cancelled() =>
+        {
+            let previous = session.codex_thread_id.clone().context("Cold predecessor missing")?;
+            if !matches!(on_event(CodexEvent::ProjectSuccessor {
+                previous: previous.clone(), candidate: None,
+            }).await?, CodexEventOutcome::ProjectSuccessorAuthorized(true)) {
+                return Err(error);
+            }
+            anyhow::ensure!(!cancel.is_cancelled(), "Cancelled before Codex successor creation");
+            let mut fresh = session.clone();
+            fresh.codex_thread_id = None;
+            let (thread, model) = tokio::time::timeout(
+                Duration::from_secs(15), process.start_or_resume_thread(&fresh, false, dynamic_tools, profile),
+            ).await.context("Codex successor creation acknowledgment is unconfirmed")??;
+            anyhow::ensure!(matches!(on_event(CodexEvent::ProjectSuccessor {
+                previous, candidate: Some(thread.clone()),
+            }).await?, CodexEventOutcome::ProjectSuccessorAuthorized(true)),
+                "Codex project successor no longer matches the reservation");
+            (thread, model, true)
+        }
+        Err(error) => return Err(error),
+    };
     tracing::debug!(
         stage = "thread_bound",
         elapsed_ms = preparation_started.elapsed().as_millis(),
@@ -1788,8 +1840,17 @@ where
         stderr_text: String::new(),
             draft_item: None,
     };
-    let _ = on_event(CodexEvent::ThreadStarted(thread_id.clone())).await?;
-    if let Some(profile) = profile {
+    if cold_project {
+        steer_rx.close();
+        let mut pending = VecDeque::new();
+        while let Ok(steer) = steer_rx.try_recv() {
+            pending.push_back(steer);
+        }
+        reject_outstanding_steers(pending, HashMap::new());
+    } else {
+        let _ = on_event(CodexEvent::ThreadStarted(thread_id.clone())).await?;
+    }
+    if let Some(profile) = profile.filter(|_| !cold_project) {
         let _ = on_event(CodexEvent::NativeModelConfigured {
             thread_id: thread_id.clone(), model: profile.model.clone(),
             provider: profile.provider.clone(), effort: profile.effort.clone(),
@@ -1973,7 +2034,7 @@ where
     // before a fast model can finish the earlier request without seeing them.
     let mut initial_steers = Vec::new();
     let mut queued_steers = VecDeque::new();
-    if adopted_turn.is_none() {
+    if adopted_turn.is_none() && !cold_project {
         while let Ok(steer) = steer_rx.try_recv() {
             if steer.observation.is_some() {
                 let _=steer.response.send(Err(CodexSteerError::Rejected("No native writer is attached yet".into())));
@@ -2336,10 +2397,14 @@ where
               }
               RpcMessage::Notification{method,params}=>{
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
-                // Native idle precedes turn/completed on current Core. Owned
-                // heartbeat work needs that exact terminal receipt; the legacy
-                // idle fallback would close collection and strand ownership.
-                if idle_only && method == "thread/status/changed" && params["status"]["type"]=="idle" {
+                // The reserved successor is already pinned from thread/start.
+                // A delayed announcement must not invoke the ordinary binding writer.
+                if cold_project && method == "thread/started" {
+                    continue;
+                }
+                // Current Core can announce idle before the exact terminal receipt.
+                // Owned heartbeat and cold adoption need that receipt.
+                if (idle_only || cold_project) && method == "thread/status/changed" && params["status"]["type"]=="idle" {
                     continue;
                 }
                 if method == "thread/goal/updated" {
@@ -3105,7 +3170,7 @@ where
     loop {
         tokio::select! {
           _=cancel.cancelled()=>{terminate_child(&mut child).await; let _=stderr_task.await; bail!("codex turn cancelled");}
-          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeTurnReleasing|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
+          next_line=stdout_lines.next_line()=>{match next_line.context("reading codex stdout failed")?{Some(line)=>{if let Some(event)=parse_exec_event(&line)?{match &event{CodexEvent::ThreadStarted(thread_id)=>summary.codex_thread_id=Some(thread_id.clone()),CodexEvent::AssistantText(text)|CodexEvent::CommentaryCompleted(text)|CodexEvent::FinalAnswerCompleted(text)=>summary.assistant_text=text.clone(),CodexEvent::NativeGoalIdle|CodexEvent::NativeModelConfigured { .. }|CodexEvent::ProjectSuccessor { .. }|CodexEvent::DynamicToolRequest { .. }|CodexEvent::NativeMessageDraft { .. }|CodexEvent::NativeMessageCompleted { .. }|CodexEvent::NativeProviderAttemptReservation(_)|CodexEvent::NativeProviderAttemptUsage(_)|CodexEvent::NativeTurnSubmitting|CodexEvent::NativeTurnReleasing|CodexEvent::NativeExternalInputSubmitting|CodexEvent::NativeTurnStarted(_)|CodexEvent::NativeInputAccepted(_)|CodexEvent::NativeInternalReturnDetached {..}|CodexEvent::NativeSteerAccepted { .. }|CodexEvent::NativeInputRejected|CodexEvent::NativeInputDeferred|CodexEvent::NativeTurnTerminal { .. }|CodexEvent::NativeGoalBlocked { .. }|CodexEvent::NativeTurnFailure { .. }|CodexEvent::Progress(_)|CodexEvent::ApprovalRequest(_)|CodexEvent::UserInputRequest { .. }|CodexEvent::UserInputClosed(_)|CodexEvent::UserInputAnswered(_)=>{}} let _ = on_event(event).await?;}},None=>break,}}
         }
     }
     let status = child.wait().await.context("waiting for codex failed")?;
@@ -3869,7 +3934,16 @@ impl AppServerProcess {
             params["config"]["features.multi_agent"] = json!(false);
         }
         let request_id = self.send_request(method, params).await?;
-        let response = self.await_response(request_id).await?;
+        let response = self.await_response(request_id).await.map_err(|error| {
+            if let Some(thread) = &session.codex_thread_id
+                && error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|rpc| rpc.is_missing_rollout_for(thread))
+            {
+                return error.context(MissingNativeRollout);
+            }
+            error
+        })?;
         if let Some(profile) = profile {
             profile.verify(&response)?;
         }
@@ -4478,6 +4552,40 @@ mod tests {
                 false,
             )
             .await;
+        }
+    }
+
+    #[test]
+    fn missing_rollout_requires_the_native_code_and_exact_thread() {
+        for (code, message, missing) in [
+            (
+                Some(-32600),
+                "no rollout found for thread id selected",
+                true,
+            ),
+            (Some(-32600), "no rollout found for thread id other", false),
+            (
+                Some(-32600),
+                "no rollout found for thread id selected-suffix",
+                false,
+            ),
+            (
+                Some(-32603),
+                "no rollout found for thread id selected",
+                false,
+            ),
+            (
+                Some(-32600),
+                "failed to load rollout for thread id selected",
+                false,
+            ),
+        ] {
+            let error = RpcError {
+                code,
+                message: message.into(),
+                data: None,
+            };
+            assert_eq!(error.is_missing_rollout_for("selected"), missing, "{error}");
         }
     }
 
