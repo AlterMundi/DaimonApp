@@ -192,6 +192,17 @@ result are unavailable. A successful root answer remains visible when a
 submitted correction is unaccounted for, but normal resume on that thread
 stays fenced. Goal pause and provider-side goal accounting are separate.
 
+The installed native interruption fixture also checks both SDK token counters.
+`usage` in the returned result covers the visible model response. In the
+fixture it omits the separate provider call that evaluates the goal condition.
+`modelUsage` includes that evaluation and accumulates across native session
+resume, even when `/goal` reports that its condition has yet to be evaluated.
+An interrupted response before the provider's terminal usage event may report
+zero. These fields therefore cannot directly supply per-goal or billing totals.
+Recovering goal accounting requires a goal-bound baseline and an exact retained
+observation of each advancing native session total. Missing provider usage
+remains unknown.
+
 ### Topic continuity across harnesses
 
 When the last eligible exchange came from the topic's current Codex thread,

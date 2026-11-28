@@ -9,11 +9,23 @@ import { test } from 'node:test';
 
 const { CLAUDE_TEST_SDK_PATH, CLAUDE_TEST_NATIVE_BINARY } = process.env;
 
+function tokenCounts(result) {
+  const session = { input: 0, output: 0 };
+  for (const model of Object.values(result.modelUsage)) {
+    session.input += model.inputTokens;
+    session.output += model.outputTokens;
+  }
+  return {
+    result: { input: result.usage.input_tokens, output: result.usage.output_tokens },
+    session,
+  };
+}
+
 for (const earlierEvaluation of [null, false, true]) {
   const condition = earlierEvaluation === null ? null : 'Confirm the synthetic goal after reopening this session.';
   const label = earlierEvaluation === null ? 'cancels a queued correction and resumes the same native session'
     : earlierEvaluation ? 'restores its objective after an evaluated turn'
-      : 'restores an interrupted goal before any provider work';
+      : 'restores a goal interrupted before its first complete response';
   test('installed Claude ' + label, {
     skip: !CLAUDE_TEST_SDK_PATH || !CLAUDE_TEST_NATIVE_BINARY,
     timeout: 30_000,
@@ -116,6 +128,10 @@ for (const earlierEvaluation of [null, false, true]) {
           assert.equal(value.is_error, !earlierEvaluation);
           assert.equal(value.subtype, earlierEvaluation ? 'success' : 'error_during_execution');
           assert.deepEqual(value.user_message_uuids, [original]);
+          assert.deepEqual(tokenCounts(value), {
+            result: earlierEvaluation ? { input: 8, output: 4 } : { input: 0, output: 0 },
+            session: earlierEvaluation ? { input: 16, output: 8 } : { input: 0, output: 0 },
+          });
           if (earlierEvaluation) assert.equal(value.result, '');
           break;
         }
@@ -157,6 +173,12 @@ for (const earlierEvaluation of [null, false, true]) {
       }
       assert.equal(resumed.session_id, session);
       assert.equal(resumed.result, 'Continuation confirmed.');
+      const completedCallsBeforeResume = earlierEvaluation ? 2 : 0; // Answer and goal evaluation.
+      const accountedCalls = completedCallsBeforeResume + 1 + (condition ? 1 : 0);
+      assert.deepEqual(tokenCounts(resumed), {
+        result: { input: 8, output: 4 },
+        session: { input: 8 * accountedCalls, output: 4 * accountedCalls },
+      });
       assert.equal(payloads.length, callsBeforeInterrupt + 1);
       assert.equal(evaluations, evaluationsBeforeInterrupt + (condition ? 1 : 0));
       assert.match(JSON.stringify(payloads.at(-1)), /new original after the interruption/);
