@@ -628,16 +628,28 @@ impl Store {
         let tx = conn.transaction()?;
         let p = instruction_on(&tx, parent, human)?;
         let caller_owned = if let Some(local) = portable_local {
-            super::routed_portable::controller_parent_on(
-                &tx,
-                &p,
-                caller,
-                human,
-                native,
-                turn,
-                local,
-                &self.instance_id,
-            )?
+            let root = instruction_on(&tx, turn, human)?;
+            let matches_root = p.id == root.id
+                || (p.phase == crate::interaction::TransportPhase::Accepted
+                    && p.local_turn == Some(local)
+                    && p.native_turn.as_deref() == Some(format!("gateway:claude:{turn}").as_str())
+                    && p.target_execution == root.target_execution
+                    && super::routed_portable::controller_parent_eligible_steer_on(
+                        &tx,
+                        &p,
+                        &self.instance_id,
+                    )?);
+            matches_root
+                && super::routed_portable::controller_parent_on(
+                    &tx,
+                    &root,
+                    caller,
+                    human,
+                    native,
+                    turn,
+                    local,
+                    &self.instance_id,
+                )?
         } else {
             p.phase == crate::interaction::TransportPhase::Accepted
                 && p.native_turn.as_deref() == Some(turn)

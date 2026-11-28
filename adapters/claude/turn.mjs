@@ -153,6 +153,7 @@ export async function runClaudeTurn({
   let steerDeadline;
   const submitted = new Set();
   const outstanding = new Set();
+  const acceptedInRoot = new Set();
   const steerEnabled = () => !!steering && steering.enabled?.() !== false;
   const withSteering = outcome => steerEnabled()
     ? { ...outcome, steerSubmitted: [...submitted] }
@@ -227,6 +228,7 @@ export async function runClaudeTurn({
       prompt: prompt(),
       options: {
         abortController, cwd: profile.cwd, pathToClaudeCodeExecutable: profile.binary,
+        ...(steering ? { includePartialMessages: true } : {}),
         env: {
           ...profile.env,
           CLAUDE_CODE_GOAL_CHECKIN_MINUTES: '0',
@@ -349,10 +351,23 @@ export async function runClaudeTurn({
       }
       const answered = event.user_message_uuids
         ?? (event.user_message_uuid ? [event.user_message_uuid] : []);
-      if (steerEnabled() && !steeringReady && !rootOutcome
-          && event.type === 'assistant' && answered.includes(input.id)) {
+      const rootReply = !rootOutcome && answered.includes(input.id) && event.parent_tool_use_id == null
+        && ((event.type === 'assistant' && !event.error && !event.aborted)
+          || (event.type === 'stream_event' && event.event?.type !== 'ping'));
+      if (steerEnabled() && rootReply && !steeringReady) {
         await steering.ready();
         steeringReady = true;
+      }
+      // This CLI version echoes incorporated UUIDs on the status frame before
+      // the next model request, even when the reply frames have no echo.
+      const rootStatus = !rootOutcome && event.type === 'system' && event.subtype === 'status'
+        && answered.includes(input.id);
+      if (steerEnabled() && steeringReady && (rootReply || rootStatus)) {
+        const incorporated = [...new Set(answered)].filter(id => submitted.has(id) && !acceptedInRoot.has(id));
+        if (incorporated.length) {
+          await steering.accepted(incorporated);
+          for (const id of incorporated) acceptedInRoot.add(id);
+        }
       }
       if (event.type !== 'result') continue;
       const successful = event.subtype === 'success' && event.is_error === false

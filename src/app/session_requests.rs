@@ -45,7 +45,14 @@ pub(super) fn tool_call(
             };
             let active_inputs=|| -> Result<Vec<crate::interaction::Instruction>> {
                 if portable_local.is_some() {
-                    return Ok(app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect());
+                    let anchor=format!("gateway:claude:{}",request.native_turn);
+                    let mut inputs:Vec<_>=app.shared.store.interaction_instruction(&request.native_turn,human)?.into_iter().collect();
+                    inputs.extend(app.shared.store.interaction_dependency_inputs(request.local_turn,human)?
+                        .into_iter().filter(|i| i.id != request.native_turn && i.target == key
+                            && i.phase == crate::interaction::TransportPhase::Accepted
+                            && i.native_thread.as_deref() == Some(&request.native_session)
+                            && i.native_turn.as_deref() == Some(anchor.as_str())));
+                    return Ok(inputs);
                 }
                 Ok(app.shared.store.interaction_dependency_inputs(request.local_turn,human)?
                     .into_iter().filter(|i| {

@@ -364,6 +364,36 @@ pub(in crate::app) async fn execute_worker(
                 frame = Value::Null;
                 continue;
             }
+            if frame["type"] == "steer_accepted" {
+                let adapter = steering
+                    .as_deref()
+                    .filter(|_| steer_ready)
+                    .context("Unexpected Claude steering receipt")?;
+                let ids = frame["ids"]
+                    .as_array()
+                    .filter(|ids| !ids.is_empty() && ids.len() <= MAX_CLAUDE_STEERS)
+                    .context("Invalid Claude steering receipt")?;
+                anyhow::ensure!(
+                    frame.as_object().is_some_and(|object| object.len() == 5),
+                    "Invalid Claude steering receipt"
+                );
+                let mut selected = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let id = id.as_str().context("Invalid Claude steer ID")?;
+                    anyhow::ensure!(
+                        adapter.sent.iter().any(|(sent, _)| sent == id) && !selected.contains(&id),
+                        "Claude acknowledged an unknown or duplicate steer"
+                    );
+                    selected.push(id);
+                }
+                adapter.app.shared.store.acknowledge_claude_steer(
+                    adapter.root,
+                    adapter.active.turn_id,
+                    &selected,
+                )?;
+                frame = Value::Null;
+                continue;
+            }
             if frame["type"] == "steer_result" {
                 anyhow::ensure!(steer_ready && steer_results.len() < MAX_CLAUDE_STEERS
                     && frame.as_object().is_some_and(|object| object.len() == 6)

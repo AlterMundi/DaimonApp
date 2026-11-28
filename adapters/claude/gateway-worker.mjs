@@ -671,6 +671,9 @@ async function main() {
         steerClosed = true;
         wakeSteering?.();
       },
+      async accepted(ids) {
+        await writeFrame(process.stdout, { ...correlation, type: 'steer_accepted', ids }, stop.signal);
+      },
       async result(ids, text) {
         await writeFrame(process.stdout, { ...correlation, type: 'steer_result', ids, text }, stop.signal);
       },

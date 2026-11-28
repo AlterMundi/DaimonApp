@@ -1599,6 +1599,7 @@ timeout_seconds=5
             started = journey.root / "steer-tool-started"
             release = journey.root / "steer-tool-release"
             provider.host_tools = ["Bash"]
+            journey.allow_local_dependencies = True
             provider.steer_fixture = {
                 "text": "New Telegram original while the tool is working.",
                 "conversation_text": "New Conversation original while the tool is working.",
@@ -1654,6 +1655,7 @@ timeout_seconds=5
                     state(conversation) and state(conversation)[0][1] == "steering"), seconds=6)
                 self.assertEqual(state(followup)[0][2], state(root)[0][2])
                 self.assertEqual(state(conversation)[0][2], state(root)[0][2])
+                provider.steer_fixture["parent"] = state(followup)[0][0]
             finally:
                 release.touch()
             journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=25)
@@ -1662,7 +1664,9 @@ timeout_seconds=5
             self.assertEqual(original[1:], followup[1:])
             self.assertEqual(original[1:], state(conversation)[0][1:])
             self.assertEqual(original[1], "accepted")
-            self.assertEqual(provider.calls, [original[0], original[0]])
+            self.assertEqual(provider.calls, [original[0]] * 4)
+            self.assertEqual(journey.row("SELECT parent_instruction FROM interaction_session_requests"),
+                             [(followup[0],)])
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1,)])
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_delivery_requests"), [(3,)])
             self.assertEqual(journey.row(
