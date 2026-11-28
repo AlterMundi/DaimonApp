@@ -1525,6 +1525,9 @@ impl Update {
 pub struct Message {
     pub message_id: i64,
     pub message_thread_id: Option<i64>,
+    /// Group identifier scoped to this chat; each member keeps its own update ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_group_id: Option<String>,
     pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,
