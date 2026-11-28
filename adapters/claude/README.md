@@ -15,10 +15,13 @@ adapter owns no journal, queue or reply publisher.
 
 Stage the `adapters/claude/` worker with the relative modules
 `adapters/worker-pipes.mjs` and `adapters/owner-observation.mjs` from the same
-revision. Preserve that directory layout. The Gateway profile preflight
-does not load JavaScript imports. Use the staged worker path via
-`CLAUDE_TEST_WORKER_PATH` in the joined fixture to verify that the installed
-adapter loads and executes.
+revision and preserve that directory layout. Set
+`worker_preflight_command` in the foreground configuration to the staged
+Node worker command with `--check-profile` in place of `--profile`. That check
+loads the worker and SDK modules and validates the selected executable and
+directories without starting a turn or calling the provider. Include the
+shared modules in the release manifest. Use the staged worker path via
+`CLAUDE_TEST_WORKER_PATH` in the joined fixture for the actual execution check.
 
 The Agent SDK must finish initialization before the adapter reads the effective
 MCP inventory. The adapter checks the pinned CLI version, exact tools and

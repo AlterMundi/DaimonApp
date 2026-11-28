@@ -58,6 +58,35 @@ async fn main() -> Result<()> {
     if gateway && first == Some("--preflight") {
         anyhow::ensure!(args.len() == 3, "Usage: daimon-gateway --preflight CONFIG");
         let config = config::Config::load_gateway_preflight(args[2].clone().into())?;
+        if let Some(interaction) = &config.interaction {
+            for engine in [
+                interaction::ForegroundEngine::Claude,
+                interaction::ForegroundEngine::Goose,
+                interaction::ForegroundEngine::Antigravity,
+            ] {
+                let Some(command) = interaction
+                    .foreground(engine)
+                    .and_then(|worker| worker.worker_preflight_command.as_deref())
+                else {
+                    continue;
+                };
+                use std::process::Stdio;
+                let mut process = tokio::process::Command::new(&command[0]);
+                process
+                    .args(&command[1..])
+                    .env_clear()
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true);
+                let result = tokio::time::timeout(Duration::from_secs(8), process.status()).await;
+                anyhow::ensure!(
+                    matches!(result, Ok(Ok(status)) if status.success()),
+                    "{} worker package preflight failed",
+                    engine.name()
+                );
+            }
+        }
         if store::Store::preflight_receiving(&config)? {
             println!("Gateway profile and selected Reports record are readable.");
         } else {

@@ -448,6 +448,18 @@ async function observeRuntime(path) {
 
 async function main() {
   const [flag, path, ...extra] = process.argv.slice(2);
+  if (flag === '--check-profile' && extra.length === 0) {
+    const profile = await ownerProfile(path);
+    await access(profile.binary, constants.X_OK);
+    if (!(await stat(profile.cwd)).isDirectory() || !(await stat(profile.home)).isDirectory()) {
+      throw new Error('Invalid Claude profile directories');
+    }
+    const sdk = await import(pathToFileURL(profile.sdk));
+    if (![sdk.query, sdk.createSdkMcpServer, sdk.tool].every(value => typeof value === 'function')) {
+      throw new Error('Required Claude SDK exports are missing');
+    }
+    return;
+  }
   if (flag === '--observe-runtime' && extra.length === 0) {
     process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
     return;
