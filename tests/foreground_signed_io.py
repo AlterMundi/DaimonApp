@@ -1398,6 +1398,27 @@ timeout_seconds=5
                 self.assertEqual(replacement == native, not missing_resume)
                 self.assertEqual(len(provider.calls), 4)
 
+                if numbered_history and os.environ.get("FOREGROUND_TEST_CLAUDE_TOPIC_LOOKUP") == "1":
+                    fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                    predecessor = list((fixture_home / "projects").rglob(f"{replacement}.jsonl"))
+                    self.assertEqual(len(predecessor), 1)
+                    predecessor[0].rename(fixture_home / "retained-lookup-predecessor.jsonl")
+                    provider.expected_quote = None
+                    provider.topic_history_lookup = {
+                        "predecessor": replacement, "query": "landing heroic clips", "expected": proposal,
+                        "exchange": {"turn": first_turn, "human": question, "assistant": proposal,
+                                     "harness": "claude", "nativeThread": native},
+                    }
+                    try:
+                        original = "What did we leave ready for the fixture?"
+                        answer = "We kept the heroic idle and landing clips."
+                        _, lookup_session, _ = finish(send(original, answer, destination),
+                                                      original, answer, destination)
+                        self.assertNotEqual(lookup_session, replacement)
+                        self.assertEqual(len(provider.calls), 6)
+                    finally:
+                        del provider.topic_history_lookup
+
         def _conversation_attachments(self, journey, provider):
             import base64
             import hashlib

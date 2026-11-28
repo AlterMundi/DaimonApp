@@ -246,6 +246,28 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
+            elif lookup := getattr(self.server, "topic_history_lookup", None):
+                assert CONTROLLER in by_name and not by_name[CONTROLLER].get("defer_loading")
+                assert submission["native_session_id"] != lookup["predecessor"]
+                result = next((item for item in result
+                               if item["tool_use_id"] == "toolu_topic_history_lookup"), None)
+                if result is None:
+                    assert lookup["expected"] not in json.dumps(messages, ensure_ascii=False)
+                    block = {"type": "tool_use", "id": "toolu_topic_history_lookup",
+                             "name": CONTROLLER, "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps({
+                        "operation": "topic_history", "arguments": {"query": lookup["query"]},
+                    })}
+                    reason = "tool_use"
+                else:
+                    assert result.get("is_error") is not True, result
+                    payload = "".join(item["text"] for item in result["content"])
+                    evidence, _ = json.JSONDecoder().raw_decode(payload)
+                    assert evidence["source_data"] is True
+                    assert evidence["exchanges"] == [lookup["exchange"]], evidence
+                    block = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": self.server.quote_response}
+                    reason = "end_turn"
             elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
                 if expected := getattr(self.server, "expected_quote", None):
                     # Only the current exchange's context may resolve this
