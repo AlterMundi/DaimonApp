@@ -1,18 +1,36 @@
 // Canonical frame protocol: synthetic parent/file metadata only, zero media/models.
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),crypto=require('node:crypto').webcrypto;
 const id=()=>crypto.randomUUID(),binding='b'.repeat(64),actor='human:fixture:one';
-function boot(){
+function boot(options){
  let now=500;
  const sent=[],events={},timers=[],domEvents={},parent={postMessage:(message,origin)=>sent.push({message,origin})};
  const window={parent,addEventListener:(name,fn)=>events[name]=fn,removeEventListener:()=>{}};
  const document={hidden:false,addEventListener:(name,fn)=>domEvents[name]=fn,documentElement:{dataset:{surfaceParent:'https://world.test',surfaceVisit:id()}}};
  const context={window,crypto,document,performance:{now:()=>now},setTimeout:(fn,ms)=>{const t={fn,ms};timers.push(t);return t;},clearTimeout:t=>{t.closed=true;}};
  vm.runInNewContext(fs.readFileSync('dashboard/web/conversation-surface.js','utf8'),context);
- const ui=window.ConversationSurface.create();ui.identity(actor);ui.bind(binding);const envelope=sent.at(-1).message;
+ const ui=window.ConversationSurface.create(options);ui.identity(actor);ui.bind(binding);const envelope=sent.at(-1).message;
  const receive=(value,source=parent,origin='https://world.test')=>events.message({source,origin,data:{...envelope,...value}});
  return{ui,sent,timers,receive,parent,events,envelope,document,domEvents,advance:ms=>now+=ms};
 }
 (async()=>{
+ const topic='1'.repeat(64),reads=[];
+ const room={room:topic,title:'Workshop',general:false,direct_available:true,private_text:'must not cross'};
+ const explorer=boot({readTopics:async selected=>{reads.push(selected);return {schema:'daimon.topic-rooms/v1',rooms:[room]};}});
+ const query={type:'topic-rooms-read',request:id(),room:topic};
+ explorer.receive({type:'connect',features:{}});
+ explorer.receive(query);
+ assert.deepEqual(reads,[]);
+ explorer.receive({type:'connect',features:{topicRooms:true}});
+ explorer.receive(query,{},'https://wrong.test');
+ assert.deepEqual(reads,[]);
+ explorer.receive(query);
+ await new Promise(resolve=>setImmediate(resolve));
+ const catalogue=explorer.sent.at(-1).message;
+ assert.equal(catalogue.type,'topic-rooms-readback');
+ assert.equal(catalogue.request,query.request);
+ assert.equal(catalogue.rooms[0].room,topic);
+ assert.equal('private_text' in catalogue.rooms[0],false);
+ assert.deepEqual(reads,[topic]);
  const b=boot();assert.equal(b.sent.length,1);assert.equal(b.sent[0].message.type,'ready');
  assert.equal(b.sent[0].origin,'https://world.test');
  await assert.rejects(b.ui.prepare({id:id(),binding,modality:'text'}));

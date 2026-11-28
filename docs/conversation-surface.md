@@ -130,3 +130,21 @@ locally and must not infer that the mic is active from the capability.
 No waveform, text, draft, device ID or capture status crosses the frame.
 Continuous engines and recorder fallback with no existing level source
 continue without this optional presentation.
+
+
+### Read-only topic discovery
+
+A compatible Holodeck child advertises `topicRooms` in `ready.features`.
+The already bound parent opts in with `connect.features.topicRooms`. For a
+visitor action it sends `topic-rooms-read` with a fresh request UUID and an
+optional `after` cursor or exact `room`, each an opaque logical topic
+reference. The child reads its own authenticated Session Workspace projection.
+It echoes the UUID in `topic-rooms-readback` with at most 12 room summaries
+and the next cursor, or a bounded unavailable result. Summaries contain only
+room reference, title, general designation and direct availability.
+
+Recheck the exact room before showing it. The frame keeps its configured
+origin, actor, visit, binding and channel checks. Neither message contains
+native references or conversation text. No input, draft or routing change is
+made by the projection. Older compatible Conversation hosts may ignore the
+optional feature.

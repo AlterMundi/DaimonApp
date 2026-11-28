@@ -18,7 +18,11 @@ window.Conversation = (() => {
     element.title=date.toLocaleString(locale,{dateStyle:"full",timeStyle:"long",hour12:false});
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
-    const hostSurface=window.ConversationSurface?.create();
+    const hostSurface=window.ConversationSurface?.create({
+      readTopics:readOnly?undefined:room=>api('interaction/sessions?'+new URLSearchParams({
+        projection:'holodeck',...(room?{room}:{})
+      })),
+    });
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
     const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;

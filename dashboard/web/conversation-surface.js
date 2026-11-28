@@ -2,16 +2,18 @@
 // Host correlation only. No credentials, private chat text or media cross frames.
 window.ConversationSurface=(()=>{
   const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
-  function create(){
+  const topicKey=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+  function create({readTopics}={}){
     const {surfaceParent:parent,surfaceVisit:visit}=(document.documentElement?.dataset||{});
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
     let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
+    let topicsEnabled=false,topicRead;
     let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true}});}
+    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;topicRead=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{})}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function receive(event){
@@ -22,8 +24,13 @@ window.ConversationSurface=(()=>{
       if(d.type==='connect'){
         if(d.features?.avatarMicrophone!==true)microphone(0);
         connected=true;
+        topicsEnabled=!!readTopics&&d.features?.topicRooms===true;
         avatarPlayback=d.features?.avatarPlayback===true;
         avatarMicrophone=d.features?.avatarMicrophone===true;
+        return;
+      }
+      if(d.type==='topic-rooms-read'){
+        if(connected&&topicsEnabled)void projectRooms(d);
         return;
       }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
@@ -36,6 +43,32 @@ window.ConversationSurface=(()=>{
       const old=pending;pending=undefined;clearTimeout(old.timer);
       if(tracked.get(old.id)?.discarded)return;
       old.resolve({...f});
+    }
+    async function projectRooms({request,room,after}){
+      if(!uuid(request)||topicRead||room!==undefined&&!topicKey(room)||
+         after!==undefined&&!topicKey(after)||room!==undefined&&after!==undefined)return;
+      const read={request};topicRead=read;
+      const current=()=>topicRead===read&&connected&&topicsEnabled;
+      try{
+        const value=await readTopics(room);
+        if(!current())return;
+        if(value?.schema!=='daimon.topic-rooms/v1'||!Array.isArray(value.rooms)||value.rooms.length>128)
+          throw Error('Topic catalogue unavailable');
+        const rows=value.rooms.map(item=>{
+          if(!topicKey(item?.room)||typeof item.title!=='string'||typeof item.general!=='boolean'||
+             typeof item.direct_available!=='boolean')throw Error('Invalid topic room');
+          const title=Array.from(item.title.replace(/[\u0000-\u001f\u007f]/g,' ').trim()).slice(0,80).join('');
+          return {room:item.room,title,general:item.general,direct_available:item.direct_available};
+        }).sort((a,b)=>a.room.localeCompare(b.room));
+        if(new Set(rows.map(item=>item.room)).size!==rows.length||
+           room!==undefined&&(rows.length!==1||rows[0].room!==room))throw Error('Topic room unavailable');
+        const page=rows.filter(item=>after===undefined||item.room>after);
+        send('topic-rooms-readback',{request,rooms:page.slice(0,12),next:page.length>12?page[11].room:null});
+      }catch{
+        if(current())send('topic-rooms-readback',{request,unavailable:true});
+      }finally{
+        if(current())topicRead=undefined;
+      }
     }
     window.addEventListener('message',receive);
     async function prepare({id,binding:selected,modality,files=[]}){
