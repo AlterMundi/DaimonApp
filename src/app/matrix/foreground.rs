@@ -140,6 +140,7 @@ pub(super) async fn run_selected(
             session_instructions: None,
             workspace: None,
             topic_id: None,
+            selected_profile: None,
             output_directory: None,
             history_seed: None,
             project_checkpoint: None,

@@ -246,12 +246,22 @@ async function main(path) {
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body',
       ...(topic ? ['workspace', 'resumeNativeSessionId', ...(!agy ? ['storeId'] : [])] : []),
       ...(agy && Object.hasOwn(first ?? {}, 'attachments') ? ['attachments'] : []),
-      ...(agy && first?.controller === true ? ['controller'] : [])])
+      ...(agy && first?.controller === true ? ['controller'] : []),
+      ...(agy && Object.hasOwn(first ?? {}, 'selectedProfile') ? ['selectedProfile'] : [])])
         || first.schema !== schema || first.type !== 'start'
         || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
         || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
         || !closed(first.body, BINDING) || !BINDING.every(key => first.body[key] === profile.body[key])) {
       throw new Error('Invalid ACP foreground start');
+    }
+    const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
+    if (first.selectedProfile !== undefined
+        && (!closed(first.selectedProfile, ['model', 'effort'])
+          || first.selectedProfile.model !== profile.model
+          || first.selectedProfile.effort !== profile.effort)) {
+      await writeFrame(process.stdout, { ...correlation, type: 'outcome',
+        outcome: { phase: 'not_submitted', reason: 'retained_antigravity_profile_changed' } }, stop.signal);
+      return;
     }
     if (topic) {
       if (first.workspace !== profile.cwd || await realpath(profile.cwd) !== profile.cwd) {
@@ -272,7 +282,6 @@ async function main(path) {
         if (agy && !UUID.test(selected)) throw new Error('Invalid Antigravity session ID');
       }
     }
-    const correlation = { schema, inputId: first.inputId, sessionId: first.sessionId };
     const developmentTools = agy && profile.nativeTools === 'unrestricted';
     const env = agy ? {
       HOME: profile.home,

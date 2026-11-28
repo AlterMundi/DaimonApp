@@ -118,6 +118,26 @@ printf '%s' "$PATH" > "${pathReceipt}"
   }
 });
 
+test('an Antigravity topic model mismatch never opens the native worker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agy-profile-mismatch-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile.json');
+  const binary = join(root, 'fixture-binary');
+  const marker = join(root, 'launched');
+  await writeFile(binary, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o700 });
+  await writeFile(profile, JSON.stringify({
+    adapter: 'agy', binary, cwd: root, home: root,
+    model: 'gemini-4-neon', effort: 'medium', body,
+    matrixStatusCommand: await fixtureObservation(root),
+  }), { mode: 0o600 });
+  const result = await runWorker(t, profile, 'Fixture', null, {
+    workspace: root, resumeNativeSessionId: null,
+    selectedProfile: { model: 'gemini-4-neon', effort: 'high' },
+  });
+  assert.equal(result.outcome.phase, 'not_submitted');
+  await assert.rejects(readFile(marker), { code: 'ENOENT' });
+});
+
 test('agy foreground worker journals, uses its selected tool and resumes the same native session', {
   skip: !process.env.AGY_TEST_AUTHENTICATED_BINARY, timeout: 90_000,
 }, async t => {

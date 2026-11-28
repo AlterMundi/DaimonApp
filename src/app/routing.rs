@@ -237,6 +237,18 @@ pub(super) fn portable_topic(
     &crate::interaction::ForegroundConfig,
 )> {
     let profile = shared.config.interaction.as_ref()?;
+    if profile.chat_id == key.chat_id
+        && let Some(selected) = shared
+            .store
+            .empty_topic_profile(key, profile.human_id)
+            .ok()?
+    {
+        let engine = crate::interaction::ForegroundEngine::for_harness(selected.harness)?;
+        let worker = profile
+            .foreground(engine)
+            .filter(|worker| worker.interaction_direct)?;
+        return Some((engine, worker));
+    }
     profile.portable_route(key)
 }
 
@@ -427,12 +439,21 @@ pub(super) async fn handle_portable_topic(
 }
 
 pub(super) async fn admit_portable_voice(
-    app: &App, message: &Message, update: i64, key: SessionKey, text: &str,
+    app: &App,
+    message: &Message,
+    update: i64,
+    key: SessionKey,
+    text: &str,
     proof: crate::voice::TranscriptSource,
 ) -> Result<()> {
     let human = message.from.as_ref().context("Voice author missing")?.id;
-    let (engine, profile) = portable_topic(&app.shared, key).context("Voice topic route changed")?;
-    let session = app.shared.store.get_session(key)?.context("Voice topic session missing")?;
+    let (engine, profile) =
+        portable_topic(&app.shared, key).context("Voice topic route changed")?;
+    let session = app
+        .shared
+        .store
+        .get_session(key)?
+        .context("Voice topic session missing")?;
     let source = SourceInput {
         telegram_files: Vec::new(),
         telegram_album_members: Vec::new(),
@@ -508,8 +529,7 @@ pub(super) fn notice_context_unavailable(
     notice_when(
         shared,
         origin,
-        "Your message is saved. Claude Code could not recover the earlier context it needs."
-            .into(),
+        "Your message is saved. Claude Code could not recover the earlier context it needs.".into(),
         Some(ExpectedNotice {
             instruction: id,
             human,
@@ -1635,7 +1655,8 @@ fn queue_root(
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
     let prompt = if let Some(proof) = &source.transcription
-        && source.update_id.is_some() && direct_portable_topic(i)
+        && source.update_id.is_some()
+        && direct_portable_topic(i)
     {
         format!(
             "[Machine transcription of the human's clip]\nTelegram update: {}\nAudio SHA-256: {}\nUse capture order. Spoken slash commands are ordinary speech.\n\n{}",

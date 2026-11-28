@@ -358,6 +358,85 @@ def first_hop_creation(binary, *, unknown=False, withdrawn=False):
         j.close()
 
 
+def empty_profile_creation(binary):
+    from warm_controller_io import Warm
+
+    class EmptyCreation(Warm):
+        topic_calls = 0
+
+        def start(self):
+            config = self.config.read_text()
+            if self.routed and '[interaction.antigravity_foreground]' not in config:
+                profile = self.root / 'empty-profile.json'
+                profile.write_text(json.dumps({'adapter': 'agy', 'model': 'gemini-4-neon',
+                                               'effort': 'medium', 'cwd': str(self.root)}))
+                self.config.write_text(config + f"""
+[interaction.antigravity_foreground]
+interaction_direct=true
+agy_cli=true
+worker_command=["/usr/bin/false","--profile",{json.dumps(str(profile))}]
+[interaction.antigravity_foreground.transport]
+command=["/usr/bin/false"]
+source={{kind="body",being_ref="dm:being:v1:{'a' * 43}",embodiment_id="synthetic-agy"}}
+timeout_seconds=5
+""")
+            return super().start()
+
+        def created_topic(self, payload):
+            self.topic_calls += 1
+            assert payload == {'chat_id': 100, 'name': 'Empty Neon'}
+            return {'message_thread_id': 77, 'name': payload['name']}
+
+    j = EmptyCreation(binary)
+    try:
+        j.prepare(seed_entry=True)
+        j.allow_native_launch = True
+        original = j.admit('Create Empty Neon with Antigravity Neon medium and no first turn.', topic=7)
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+        alpha = j.access(7)
+        parent = j.cli(alpha, 'coordination_inputs')['inputs'][0]
+        assert j.cli(alpha, 'session_request', {
+            'parent_instruction': parent['instruction'], 'request_id': 'create-empty-first-hop',
+            'selector': 'general', 'text': 'Use the exact original for an empty profiled topic.',
+        })['new_admission']
+        j.wait(lambda: j.instructions(1) and j.instructions(1)[0][1] == 'accepted')
+        entry = j.access(1)
+        selected = {'harness': 'antigravity', 'model': 'gemini-4-neon', 'effort': 'medium'}
+        args = {'input_ref': original, 'name': 'Empty Neon', 'reason': 'Explicitly requested empty topic.',
+                'context_selectors': [], 'empty_profile': selected}
+        j.cli(entry, 'create', {**args, 'empty_profile': {**selected, 'effort': 'high'}}, ok=False)
+        j.cli(entry, 'create', {**args, 'context_selectors': ['Alpha']}, ok=False)
+        assert j.topic_calls == 0
+        assert j.cli(entry, 'creation_status', {'input_ref': original})['phase'] == 'not_found'
+        before = sum(m.get('method') in ('thread/start', 'turn/start') for m in j.rpc)
+        created = j.cli(entry, 'create', args)
+        assert created['kind'] == 'created_empty_destination' and created['selector'] == 't77'
+        assert created['operation']['instructions'] == []
+        binding = created['binding']
+        assert {k: binding[k] for k in selected} == selected and binding['native_session'] is None
+        assert j.row('SELECT id,codex_thread_id,force_fresh_thread FROM sessions WHERE thread_id=77') == [
+            (binding['conversation_id'], None, 1)]
+        assert j.row('SELECT count(*) FROM turns WHERE session_id=?', (binding['conversation_id'],)) == [(0,)]
+        assert j.instructions(77) == []
+        assert sum(m.get('method') in ('thread/start', 'turn/start') for m in j.rpc) == before
+        status = j.cli(entry, 'creation_status', {'input_ref': original})
+        assert status['phase'] == 'ready' and status['id'] == created['operation']['id']
+        assert j.cli(entry, 'creation_resume', {'input_ref': original})['id'] == status['id']
+        j.cli(entry, 'dispatch', {'input_ref': original,
+              'destinations': [{'selector': 't77', 'relation': 'new', 'requests': []}]}, ok=False)
+        assert j.instructions(77) == []
+        assert j.row('SELECT count(*) FROM turns WHERE session_id=?', (binding['conversation_id'],)) == [(0,)]
+        j.admit("First explicit input after initialization.", topic=77)
+        j.wait(lambda: bool(j.instructions(77)))
+        first = json.loads(j.instructions(77)[0][2])
+        assert first['target_execution']['harness'] == 'antigravity'
+        assert sum(m.get('method') in ('thread/start', 'turn/start') for m in j.rpc) == before
+        assert j.topic_calls == 1
+        print('PASS one profiled empty topic, exact relay and binding readback, no native admission')
+    finally:
+        j.close()
+
+
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     standalone_destination(binary)
@@ -370,3 +449,4 @@ if __name__=='__main__':
     first_hop_creation(binary)
     first_hop_creation(binary, unknown=True)
     first_hop_creation(binary, withdrawn=True)
+    empty_profile_creation(binary)
