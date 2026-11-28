@@ -104,6 +104,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             steer = getattr(self.server, "steer_fixture", None)
             if steer:
                 steps = [("Bash", {"command": steer["command"]}, "Native steer gate opened.")]
+                if parent := steer.get("parent"):
+                    steps += [
+                        (CONTROLLER, {"operation": "coordination_inputs", "arguments": {}}, parent),
+                        (CONTROLLER, {"operation": "session_request", "arguments": {
+                            "parent_instruction": parent, "request_id": "steered-original",
+                            "selector": "general", "text": "Check this synthetic work item.",
+                        }}, '"new_admission":true'),
+                    ]
             elif write_memory := getattr(self.server, "memory_write_command", None):
                 assert "owner-configured DMK wrapper" in system
                 steps.append(("Bash", {"command": write_memory}, "Native DMK write accepted."))
@@ -336,7 +344,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             self.server.journey.wait(lambda: self.server.journey.row(
                                 "SELECT count(*) FROM interaction_results") == [(1,)])
                     else:
-                        if (distinct_request or returned_dependency or recover_dependency) and isinstance(entry["content"], list):
+                        if (distinct_request or returned_dependency or recover_dependency or steer) and isinstance(entry["content"], list):
                             payload = "".join(item.get("text", "") for item in entry["content"])
                         tool = steps[prior - 1][0]
                         if tool == "Skill":
@@ -344,7 +352,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                             # tool_result and the instructions in a separate message.
                             assert f"Launching skill: {skill}" in payload or expected_result in payload
                             payload = json.dumps(messages, ensure_ascii=False)
-                        assert expected_result in payload, tool
+                        assert expected_result in payload, (tool, prior, payload) if steer else tool
                 if prior < len(steps):
                     tool, inputs, _ = steps[prior]
                     if tool == FOUNDATION and extra_foundation:
