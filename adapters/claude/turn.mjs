@@ -120,6 +120,12 @@ export async function runClaudeTurn({
     throw new TypeError('Invalid Claude turn selection');
   }
 
+  // These are Gateway goal controls. The native Claude command would treat
+  // them as goal conditions and may replace the current objective.
+  if (input.nativeGoalCommand && /^\/goal\s+(pause|resume)$/.test(input.text.trimEnd())) {
+    return { phase: 'not_submitted', reason: 'claude_goal_control_unavailable' };
+  }
+
   let content = input.attachments?.length
     ? [...(input.text ? [{ type: 'text', text: input.text }] : []), ...await attachmentBlocks(input.attachments)]
     : input.text;

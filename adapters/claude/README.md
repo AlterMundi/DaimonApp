@@ -153,6 +153,10 @@ another local request. An authenticated paired human can use Claude's native
 Claude topic selected. Gateway binds the command to the original and the
 selected topic. Quoted, voice-derived, attached, companion and session-authored
 inputs cannot invoke the native command through that Conversation path.
+The adapter supports native goal inspection, setting a condition and clearing
+it. It declines Gateway's `/goal pause` and `/goal resume` before native
+submission until those controls have a compatible implementation. A plain
+argument to Claude's native `/goal` command may replace the goal condition.
 Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
@@ -528,8 +532,9 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   additional provider call and a retained refusal for an unpaired companion.
   Add `FOREGROUND_TEST_CLAUDE_GOAL_LIFECYCLE=completed` for goal creation and
   evaluation, or `=active` to leave a goal unresolved in the native session.
-  The active case verifies that a subsequent paired status or clear command
-  addresses that same session while the earlier turn remains uncertain.
+  The active case verifies that the pause and resume originals stay unsent,
+  the existing objective stays inspectable, and a subsequent clear addresses
+  that same session while the earlier turn remains uncertain.
   Both cases verify that resubmitting the same input ID does not run the goal
   again and that an unpaired browser cannot set a goal.
 - `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
