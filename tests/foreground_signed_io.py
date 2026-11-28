@@ -894,6 +894,8 @@ timeout_seconds=5
             parents = caller_call("route-visible-inputs", "coordination_inputs", {})["inputs"]
             parent, = [item for item in parents if item["eligible_coordination_parent"]]
             self.assertEqual(parent["source_event"], original)
+            capabilities = caller_call("route-visible-capabilities", "capabilities", {})
+            self.assertIn("report_to_topic", capabilities["operations"]["session_request"]["arguments"])
             request = {"parent_instruction": parent["instruction"], "request_id": "visible-fixture",
                        "selector": "Alpha", "text": provider.handoff_text, "report_to_topic": True}
             try:
