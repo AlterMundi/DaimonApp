@@ -1738,14 +1738,41 @@ timeout_seconds=5
             journey.wait(source_execution)
             native, scope = source_execution()[0]
             result = "The general conversation verified the synthetic design summary."
-            provider.returned_dependency = {
+            expected_return = {
                 "text": result, "native": native, "scope": scope, "parent_prompt": provider.original,
             }
-            provider.original = result
-            provider.paired_human = False
+            recover = os.environ.get("FOREGROUND_TEST_TELEGRAM_DEPENDENCY_RECEIVE") == "1"
             provider.test_session_request = False
             provider.calls.clear()
-            journey.answer_worker(1, result)
+            if recover:
+                # Simulate loss after canonical result storage and before return
+                # admission. Only the fixture's staging transaction is denied.
+                with sqlite3.connect(journey.root / "state.sqlite") as db:
+                    db.execute("""CREATE TRIGGER fixture_deny_initial_return
+                        BEFORE UPDATE OF phase ON interaction_session_requests
+                        WHEN NEW.phase='returned'
+                        BEGIN SELECT RAISE(ABORT,'synthetic crash before return commit'); END""")
+                journey.answer_worker(1, result)
+                retained = """SELECT r.id,d.result_id FROM interaction_session_requests r
+                    JOIN interaction_deliveries d ON d.request_id=r.target_instruction
+                    JOIN interaction_instructions i ON i.id=r.target_instruction
+                    JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
+                    WHERE r.phase='requested' AND t.status='completed'
+                      AND json_extract(d.doc,'$.completed')=1"""
+                journey.wait(lambda: journey.row(retained), seconds=20)
+                request_id, result_id = journey.row(retained)[0]
+                helper_turns = journey.native_turns
+                with sqlite3.connect(journey.root / "state.sqlite") as db:
+                    db.execute("DROP TRIGGER fixture_deny_initial_return")
+                provider.recover_dependency = {**expected_return, "request_id": request_id}
+                provider.original = "Recover the retained answer for this synthetic design."
+                provider.human_original = str(journey.sequence + 1)
+                journey.admit(provider.original, topic=7)
+            else:
+                provider.returned_dependency = expected_return
+                provider.original = result
+                provider.paired_human = False
+                journey.answer_worker(1, result)
             journey.wait(lambda: provider.failure or journey.row(
                 "SELECT i.phase,t.status FROM interaction_session_requests r "
                 "JOIN interaction_instructions i ON i.id=json_extract(r.doc,'$.return_instruction') "
@@ -1758,6 +1785,16 @@ timeout_seconds=5
             )[0][0]
             self.assertEqual(provider.calls, [returned] * 3)
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_session_requests"), [(1,)])
+            if recover:
+                self.assertEqual(journey.native_turns, helper_turns)
+                self.assertEqual(journey.row("""
+                    SELECT count(*),min(d.result_id),min(json_extract(a.doc,'$.canonical_result'))
+                    FROM interaction_session_requests r
+                    JOIN interaction_deliveries d ON d.request_id=r.target_instruction
+                    JOIN interaction_instructions i ON i.id=json_extract(r.doc,'$.return_instruction')
+                    JOIN interaction_session_authors a ON a.input_id=i.input_id
+                    WHERE r.id=? AND json_extract(d.doc,'$.completed')=1
+                """, (request_id,)), [(1, result_id, result_id)])
 
         def _inverse_exchange(self, journey, provider, return_attempts, profile):
             answer = ANSWER if engine == "claude" else "Selected memory: " + foreground.MARKER
