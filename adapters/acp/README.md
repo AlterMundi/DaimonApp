@@ -1,5 +1,8 @@
 # Goose ACP foreground turn
 
+See [Gateway ACP coverage and stack parity](gateway-coverage.md) for the
+native and ACP operation inventory across harnesses.
+
 `runGooseTurn` is the native ACP client for the Goose candidate in
 [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
 It takes an explicit executable, working directory, isolated environment, MCP
