@@ -21,12 +21,14 @@ export async function runAntigravityTurn({
     openFailure: 'antigravity_cli_session_unconfirmed',
     allowLargeCommandList: true,
     async selectPermission({ sessionId, toolCall, options }) {
-      if (!allowedTools.includes(toolCall?.name) || !Array.isArray(options)) return;
-      const once = options.filter(option => option?.kind === 'allow_once'
-        && typeof option.optionId === 'string' && option.optionId.length <= 128);
-      if (once.length === 1 && await onToolPermission?.(sessionId, toolCall) !== false) {
-        return once[0].optionId;
-      }
+      if (!Array.isArray(options)) return;
+      const selected = kind => options.filter(option => option?.kind === kind
+        && typeof option.optionId === 'string' && option.optionId.length > 0 && option.optionId.length <= 128);
+      const once = selected('allow_once');
+      if (allowedTools.includes(toolCall?.name) && once.length === 1
+          && await onToolPermission?.(sessionId, toolCall) !== false) return once[0].optionId;
+      const rejected = selected('reject_once');
+      return rejected.length === 1 ? rejected[0].optionId : undefined;
     },
     async openSession(request, initialized) {
       if (initialized.agentInfo?.name !== 'Antigravity ACP Server') {

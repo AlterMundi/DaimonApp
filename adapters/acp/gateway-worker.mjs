@@ -268,7 +268,8 @@ async function main(path) {
       if (!document || document.includes('\0')) throw new Error('Invalid Antigravity receiving guidance');
       instructions = '[Receiving body instructions from your signed Gateway profile]\n' + document
         + (profile.sharedMemory ? '\nUse dmk_recall when past experience or decisions matter.' : '')
-        + (sharedSkillsDirectory ? '\nUse shared_skill to discover and load current installed skills for a task.' : '')
+        + (sharedSkillsDirectory ? '\nFor any installed skill or SKILL.md path mentioned in the body instructions, load it with the MCP tool shared_skill using the skill name. Use that tool for skills instead of read_file, shell commands or absolute paths.' : '')
+        + (bridge ? '\nFor an owned conversation request, use the MCP interaction_controller. If you need the gateway coordination skill, call shared_skill with name daimon-gateway. Then call interaction_controller with operation capabilities and arguments {} to discover current routing.' : '')
         + '\nThe following content block is the current original.';
     }
     let images;
