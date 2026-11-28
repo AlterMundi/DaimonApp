@@ -23,7 +23,7 @@ search and paginated read. The broker verifies the receiving body's signed
 status on each request and reads the current installed content and memory.
 Optional `selectedMemory` exposes one owner-selected record revision for
 one original.
-The worker accepts only paired text for this topic and uses the journaled
+The worker accepts paired text and images for this topic and uses the journaled
 native ID from the same topic generation, workspace and signed incarnation.
 There is no fallback to a fresh session after a failed native load.
 An owner that also has the Antigravity SDK worker can select it for private
@@ -33,7 +33,8 @@ route without making the SDK worker a fallback for a topic's agy session.
 
 The pilot approves one ACP permission request at a time for its configured
 Matrix status, skills and DMK read tools. No permanent approval is issued. Shipped
-default customizations are disabled for this pilot. The image route sends paired PNG and JPEG input as negotiated ACP content,
+default customizations are disabled for this pilot. The image route sends
+paired PNG and JPEG input as negotiated ACP content,
 with up to eight images and 4 MiB total. The worker checks the retained digest
 before committing exposure. A real PNG fixture exercises the model and the
 known-unsent result when the retained bytes change. Wider tool parity, other
