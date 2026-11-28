@@ -201,7 +201,7 @@ class PortableHistory(unittest.TestCase):
                 CREATE TABLE interaction_sources(id, human_id, doc,channel,event_id);
                 CREATE TABLE interaction_session_authors(input_id);
                 CREATE TABLE interaction_results(id,local_turn,native_thread,native_turn,item_id,body);
-                CREATE TABLE topic_publications(id,kind,source,session_id,human_id,local_turn);
+                CREATE TABLE topic_publications(id,kind,source,session_id,human_id,local_turn,body);
                 CREATE TABLE turns(id, session_id, from_user_id, execution_harness,
                   execution_generation, status, assistant_text, started_at, completed_at, native_thread_id);
                 INSERT INTO users VALUES(10,1);
@@ -235,10 +235,17 @@ class PortableHistory(unittest.TestCase):
             revision=page['revision']
             self.assertEqual(read_portable(db,20,10,'claude',after=end,revision=revision)['items'],[])
             self.assertEqual(read_portable(db,20,10,'claude',before=10,revision=revision)['after'],4)
-            db.execute("INSERT INTO topic_publications VALUES(1,'portable_report',2,20,10,2)")
+            db.execute("INSERT INTO topic_publications VALUES(1,'portable_report',2,20,10,2,'Private result')")
             report=read_portable(db,20,10,'claude')
             self.assertEqual([item['text'] for item in report['items']],
                              ['Human 1','First','Private result','Human 5','Last'])
+            db.execute("INSERT INTO topic_publications VALUES(2,'portable_report_request',2,20,10,2,?)",
+                       ('Handoff from #Design\n\nInspect the rig.',))
+            db.execute("INSERT INTO topic_publications VALUES(3,'portable_report_request',2,20,11,2,'Foreign handoff')")
+            report=read_portable(db,20,10,'claude')
+            self.assertEqual([(item['role'],item['text']) for item in report['items'][2:4]],
+                             [('assistant','Handoff from #Design\n\nInspect the rig.'),('assistant','Private result')])
+            self.assertNotIn('input_id',report['items'][2])
             exchange(6,'<daimon-result>{"requests":[],"covered":[]}</daimon-result>')
             empty=read_portable(db,20,10,'claude',after=end,revision=revision)
             self.assertEqual([v['text'] for v in empty['items']],['Human 6'])

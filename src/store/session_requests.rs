@@ -1539,10 +1539,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(deliveries[0].internal, Some(true));
-        let report = store.topic_publication_claim(target.key, 100).unwrap();
-        assert_eq!(report.is_some(), paired);
-        if let Some(report) = report {
+        let handoff = store.topic_publication_claim(target.key, 100).unwrap();
+        assert_eq!(handoff.is_some(), paired);
+        if let Some(handoff) = handoff {
+            assert_eq!(handoff.kind, "portable_report_request");
+            assert!(handoff.body.starts_with("Handoff from #"));
+            assert!(handoff.body.ends_with("A scoped context handoff"));
+            store
+                .topic_publication_parts(handoff.id, &[handoff.body])
+                .unwrap();
+            assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
+            store
+                .topic_publication_receipt(handoff.id, 0, Some(42), false)
+                .unwrap();
+            store.topic_publication_finish(handoff.id).unwrap();
+            let report = store
+                .topic_publication_claim(target.key, 100)
+                .unwrap()
+                .unwrap();
             assert_eq!(report.kind, "portable_report");
+            assert_eq!(report.source, handoff.source);
             assert_eq!(report.body, "Worked on the rig");
             store
                 .topic_publication_parts(report.id, &[report.body, "Second part".into()])

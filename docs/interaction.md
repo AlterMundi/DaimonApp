@@ -1405,10 +1405,11 @@ of the helper's text.
 
 When a paired human explicitly requests visible progress in a selected Claude
 topic, `session_request` can set `report_to_topic`. The completed answer uses
-the same working native history as paired direct turns in that topic. Only the
-selected canonical result is available in the topic's Conversation and Telegram
-projection. The dependency input and private sibling handoffs remain internal.
-The report freezes its destination and keeps its separate internal return.
+the same working native history as paired direct turns in that topic. The
+topic's Conversation and Telegram views receive the selected request, labeled
+with its sending conversation, and its canonical result. Both are projected
+when the report completes. Private sibling handoffs remain internal. The report
+freezes its destination and keeps its separate internal return.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 
