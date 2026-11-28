@@ -2,16 +2,18 @@
 // Host correlation only. No credentials, private chat text or media cross frames.
 window.ConversationSurface=(()=>{
   const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
-  function create(){
+  const topicKey=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+  function create({readTopics,selectTopic,openResult,closeResult,openQuestion,closeQuestion}={}){
     const {surfaceParent:parent,surfaceVisit:visit}=(document.documentElement?.dataset||{});
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
     let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
+    let topicsEnabled=false,directEnabled=false,resultEnabled=false,questionEnabled=false,topicRead,topicSelection,resultRead;
     let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true}});}
+    function cancel(){closeItem();playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;directEnabled=resultEnabled=questionEnabled=false;topicRead=topicSelection=resultRead=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{}),...(selectTopic?{topicDirect:true}:{}),...(openResult?{topicResult:true}:{}),...(openQuestion?{topicQuestion:true}:{})}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function receive(event){
@@ -22,8 +24,29 @@ window.ConversationSurface=(()=>{
       if(d.type==='connect'){
         if(d.features?.avatarMicrophone!==true)microphone(0);
         connected=true;
+        topicsEnabled=!!readTopics&&d.features?.topicRooms===true;
+        directEnabled=!!selectTopic&&d.features?.topicDirect===true;
+        resultEnabled=!!openResult&&d.features?.topicResult===true;
+        questionEnabled=!!openQuestion&&d.features?.topicQuestion===true;
         avatarPlayback=d.features?.avatarPlayback===true;
         avatarMicrophone=d.features?.avatarMicrophone===true;
+        return;
+      }
+      if(d.type==='topic-rooms-read'){
+        if(connected&&topicsEnabled)void projectRooms(d);
+        return;
+      }
+      if(d.type==='topic-direct-select'){
+        if(connected&&directEnabled)void selectDirect(d);
+        return;
+      }
+      if(d.type==='topic-result-open'||d.type==='topic-question-open'){
+        const question=d.type==='topic-question-open';
+        if(connected&&(question?questionEnabled:resultEnabled))void showItem(d,question);
+        return;
+      }
+      if(d.type==='topic-result-cancel'||d.type==='topic-question-cancel'){
+        if(resultRead&&resultRead.request===d.request&&resultRead.question===(d.type==='topic-question-cancel'))closeItem();
         return;
       }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
@@ -36,6 +59,66 @@ window.ConversationSurface=(()=>{
       const old=pending;pending=undefined;clearTimeout(old.timer);
       if(tracked.get(old.id)?.discarded)return;
       old.resolve({...f});
+    }
+    async function selectDirect({request,room}){
+      if(!uuid(request)||room!==null&&!topicKey(room))return;
+      const selection={request};topicSelection=selection;
+      const current=()=>connected&&directEnabled&&topicSelection===selection;
+      try{
+        const selected=await selectTopic(room,current);
+        if(current())send('topic-direct-readback',selected?.room===room
+          ?{request,room}:{request,unavailable:true});
+      }catch{
+        if(current())send('topic-direct-readback',{request,unavailable:true});
+      }finally{
+        if(current())topicSelection=undefined;
+      }
+    }
+    function closeItem(){
+      const read=resultRead;
+      resultRead=undefined;
+      if(read?.question)closeQuestion?.();
+      if(read&&!read.question)closeResult?.();
+    }
+    async function showItem({request,room},question){
+      if(!uuid(request)||!topicKey(room))return;
+      closeItem();
+      const read={request,question};resultRead=read;
+      const current=()=>connected&&(question?questionEnabled:resultEnabled)&&resultRead===read;
+      const open=question?openQuestion:openResult;
+      const type=question?'topic-question-readback':'topic-result-readback';
+      try{
+        const opened=await open(room,current);
+        if(current())send(type,{request,room,opened:opened===true});
+      }catch{
+        if(current())send(type,{request,room,opened:false});
+      }
+    }
+    async function projectRooms({request,room,after}){
+      if(!uuid(request)||topicRead||room!==undefined&&!topicKey(room)||
+         after!==undefined&&!topicKey(after)||room!==undefined&&after!==undefined)return;
+      const read={request};topicRead=read;
+      const current=()=>topicRead===read&&connected&&topicsEnabled;
+      try{
+        const value=await readTopics(room);
+        if(!current())return;
+        if(value?.schema!=='daimon.topic-rooms/v1'||!Array.isArray(value.rooms)||value.rooms.length>128)
+          throw Error('Topic catalogue unavailable');
+        const rows=value.rooms.map(item=>{
+          if(!topicKey(item?.room)||typeof item.title!=='string'||typeof item.general!=='boolean'||
+             typeof item.direct_available!=='boolean')throw Error('Invalid topic room');
+          const title=Array.from(item.title.replace(/[\u0000-\u001f\u007f]/g,' ').trim()).slice(0,80).join('');
+          return {room:item.room,title,general:item.general,direct_available:item.direct_available};
+        }).sort((a,b)=>a.room.localeCompare(b.room));
+        if(new Set(rows.map(item=>item.room)).size!==rows.length||
+           room!==undefined&&(rows.length!==1||rows[0].room!==room))throw Error('Topic room unavailable');
+        const page=rows.filter(item=>after===undefined||item.room>after);
+        send('topic-rooms-readback',{request,rooms:page.slice(0,12),next:page.length>12?page[11].room:null});
+      }catch{
+        if(current())send('topic-rooms-readback',{request,unavailable:true});
+      }finally{
+        if(current())topicRead=undefined;
+      }
     }
     window.addEventListener('message',receive);
     async function prepare({id,binding:selected,modality,files=[]}){
@@ -97,7 +180,7 @@ window.ConversationSurface=(()=>{
   // The same authenticated Conversation origin owns both copies. The parent
   // never receives draft text or a reason to create original work.
   function mountDraft({field,api,busy,show,check,retry}){
-    const slot='daimon-conversation-draft/v1',ttl=7*86400000;
+    const slot='daimon-conversation-draft/v1',topicSlot='daimon-conversation-topic-drafts/v1',ttl=7*86400000;
     const scope=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
     const textOK=text=>typeof text==='string' && !text.includes('\0') && new TextEncoder().encode(text).length<=32768;
     const bufferOK=text=>typeof text==='string' && text.length<=65536;
@@ -106,13 +189,14 @@ window.ConversationSurface=(()=>{
       && pending.original.binding===binding && pending.original.text===pending.text
       && JSON.stringify(pending.original).length<=262144;
     let current,timer;
-    function buffers(){
-      try{const values=JSON.parse(window.sessionStorage.getItem(slot));return Array.isArray(values)?values.filter(v=>v&&Date.now()-v.at<ttl):[];}
+    function buffers(key=slot){
+      try{const values=JSON.parse(window.sessionStorage.getItem(key));return Array.isArray(values)?values.filter(v=>v&&Date.now()-v.at<ttl):[];}
       catch{return [];}
     }
     function persist(s){
-      try{window.sessionStorage.setItem(slot,JSON.stringify([{key:s.key,at:Date.now(),text:s.text,base:s.base,dirty:s.dirty,pending:s.pending},
-        ...buffers().filter(v=>v.key!==s.key).slice(0,3)]));}catch{}
+      const storageKey=s.topic?topicSlot:slot;
+      try{window.sessionStorage.setItem(storageKey,JSON.stringify([{key:s.key,at:Date.now(),text:s.text,base:s.base,dirty:s.dirty,pending:s.pending},
+        ...buffers(storageKey).filter(v=>v.key!==s.key).slice(0,s.topic?15:3)]));}catch{}
     }
     function render(s){
       if(current!==s || busy())return;
@@ -121,15 +205,15 @@ window.ConversationSurface=(()=>{
       show(pending?'unconfirmed':s.conflict?'conflict':'',pending?()=>checkPending(s):()=>choose(s,true),
         pending?(s.pending.original?()=>checkPending(s,true):undefined):()=>choose(s,false));
     }
-    function bind(owner,binding){
-      const key=scope(owner)&&scope(binding)?owner+'|'+binding:undefined;
+    function bind(owner,binding,topic){
+      const key=scope(owner)&&scope(binding)&&(!topic||topicKey(topic))?owner+'|'+binding+(topic?'|'+topic:''):undefined;
       if(key===current?.key)return;
       clearTimeout(timer);
       if(current){field.value='';show('');}
       current=undefined;
       if(!key)return;
-      const saved=buffers().find(v=>v.key===key);
-      const s={key,binding,text:'',base:0,dirty:false};
+      const saved=buffers(topic?topicSlot:slot).find(v=>v.key===key);
+      const s={key,owner,binding,topic,text:'',base:0,dirty:false};
       if(saved&&Number.isSafeInteger(saved.base)&&saved.base>=0&&bufferOK(saved.text)){
         Object.assign(s,{text:saved.text,base:saved.base,dirty:saved.dirty===true});
         if(uuid(saved.pending?.id)&&textOK(saved.pending?.text)){
@@ -142,7 +226,7 @@ window.ConversationSurface=(()=>{
     }
     function pulse(s){
       clearTimeout(timer);
-      if(!s.remote||!s.dirty||s.conflict||s.posting||s.pending?.text===s.text||!textOK(s.text))return;
+      if(s.topic||!s.remote||!s.dirty||s.conflict||s.posting||s.pending?.text===s.text||!textOK(s.text))return;
       timer=setTimeout(async()=>{
         if(current!==s || s.posting)return;
         const sent=s.text,revision=s.base;
@@ -158,7 +242,7 @@ window.ConversationSurface=(()=>{
     }
     function observe(value){
       const s=current;if(!s)return;
-      if(valid(value)&&(!s.remote||value.revision>=s.remote.revision)){
+      if(!s.topic&&valid(value)&&(!s.remote||value.revision>=s.remote.revision)){
         s.remote=value;
         if(!s.dirty){s.text=value.text;s.base=value.revision;s.conflict=false;}
         else if(!s.posting||s.base===value.revision){s.conflict=value.revision!==s.base&&value.text!==s.text;
@@ -203,7 +287,11 @@ window.ConversationSurface=(()=>{
       const s=current;if(s?.pending?.id!==id)return;
       s.pending=undefined;persist(s);render(s);pulse(s);
     }
-    return {bind,observe,change,attempt,confirm,unsent,
+    function setTopic(topic){
+      if(!current)return;
+      persist(current);bind(current.owner,current.binding,topic);
+    }
+    return {bind,setTopic,observe,change,attempt,confirm,unsent,
       hasUnconfirmed:text=>!!current?.pending&&(!!current.pending.original||current.pending.text===text),
       lockedText:()=>current?.pending?.original&&current.pending.text===current.text?current.pending.text:undefined};
   }

@@ -270,6 +270,34 @@ pub fn rendered(db: &Path, files: &[FileReference]) -> Result<String> {
     ))
 }
 
+pub(crate) fn workspace_marker_matches(folder: &Path, claim: &str) -> Result<bool> {
+    anyhow::ensure!(
+        std::fs::symlink_metadata(folder)?.is_dir(),
+        "Workspace is not a directory"
+    );
+    let marker = folder.join(".daimon-topic");
+    let metadata = match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut contents = String::new();
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() == claim.len() as u64,
+        "Invalid workspace ownership marker"
+    );
+    let file = std::fs::File::open(marker)?;
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(file, claim.len() as u64 + 1),
+        &mut contents,
+    )?;
+    anyhow::ensure!(
+        contents == claim,
+        "Workspace marker belongs to another allocation"
+    );
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

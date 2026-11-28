@@ -10,7 +10,7 @@
   const copy=value=>value&&JSON.parse(JSON.stringify(value));
   const el=(tag,text,cls)=>{const item=document.createElement(tag);if(text!==undefined)item.textContent=text;if(cls)item.className=cls;return item;};
   const button=(text,label,click)=>{const item=el('button',text);item.type='button';item.title=label;item.setAttribute('aria-label',label);item.addEventListener('click',click);return item;};
-  function mount({timeline,api,toolbarHost,noticeHost,portableDeliveryText=()=>undefined,daimonName='Daimon',onTarget=()=>{},focusComposer=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
+  function mount({timeline,api,toolbarHost,noticeHost,hosted=false,portableDeliveryText=()=>undefined,daimonName='Daimon',onTarget=()=>{},focusComposer=()=>{},onReply=()=>{},audio=()=>({}),onAudio=()=>{},onReady=()=>{}}){
     if(!timeline?.parentNode)return;
     const shell=el('section',undefined,'session-workspace'),toolbar=el('div',undefined,'session-workspace-toolbar');
     shell.hidden=false;toolbar.hidden=true;shell.setAttribute('aria-label','Session workspace');
@@ -137,9 +137,11 @@
     }
     const followKey='interaction.followed-session.v1';
     function saved(){
+      if(hosted)return;
       try{const raw=window.localStorage?.getItem(followKey);if(!raw||raw.length>1024)return;const value=JSON.parse(raw),opaque=id=>id===null||typeof id==='string'&&/^[a-f0-9]{24}$/.test(id);if(value?.version===1&&value.binding===binding&&opaque(value.id)&&(!Object.hasOwn(value,'view')||opaque(value.view))&&(!Object.hasOwn(value,'all')||typeof value.all==='boolean'))return value;}catch{}
     }
     function remember(){
+      if(hosted)return;
       const id=pin?.id||null,view=expanded?.id||null;if(!binding||[id,view].some(v=>v!==null&&!/^[a-f0-9]{24}$/.test(v)))return;
       try{window.localStorage?.setItem(followKey,JSON.stringify({version:1,binding,id,view,all:showAll}));}catch{}
     }
@@ -150,7 +152,7 @@
     function changed(){remember();renderSelection();onTarget();}
     function renderSelection(){
       const current=selected();target.textContent=current&&!current.is_entry?`To ${current.title}`:'To the conversation';target.title=target.textContent;
-      back.hidden=!expanded;
+      back.hidden=hosted||!expanded;
       const backLabel=expanded?.is_entry?'Show all session updates':'Back to the conversation';
       back.title=backLabel;back.setAttribute('aria-label',backLabel);
       unpin.hidden=!pin;unpin.setAttribute('aria-pressed',String(!!pin));
@@ -159,7 +161,7 @@
       for(const [id,row] of rows){row.pin.setAttribute('aria-pressed',String(pin?.id===id));row.name.setAttribute('aria-current',String(expanded?.id===id));}
     }
     function sourceRow(source){
-      if(!allowed||!complete||!source)return;
+      if(hosted||!allowed||!complete||!source)return;
       const entry=['integrator_answer','integrator_progress','integrator_live'].includes(source.kind)||source.kind==='native_question'&&source.audio_track==='conversation';
       const target=source.target;
       if(!entry&&(!['worker_progress','worker_result','native_question'].includes(source.kind)||!Number.isSafeInteger(target?.chat_id)||!Number.isSafeInteger(target?.thread_id)))return;
@@ -243,15 +245,21 @@
       clearStatusFailure();epoch++;loading=false;binding=next;loadReviewed();pin=undefined;expanded=undefined;restoreChecked=false;showAll=false;syncScope();inventory.clear();rows.clear();list.replaceChildren();leave();
       allowed=false;complete=false;shell.hidden=false;toolbar.hidden=true;status.textContent='';retryStatus.hidden=true;onReady(false);onTarget();
     }
-    async function refresh(nextBinding){
+    let refreshFlight;
+    function refresh(nextBinding){
       if(binding!==nextBinding)resetBinding(nextBinding);
-      if(loading||!binding)return;
+      if(loading)return refreshFlight;
+      if(!binding)return;
+      refreshFlight=refreshCurrent();
+      return refreshFlight;
+    }
+    async function refreshCurrent(){
       loading=true;const owned=epoch;
       try{
         const value=await api('interaction/sessions');if(owned!==epoch)return;
         if(value.schema!=='daimon.session-workspace/v1'||!Array.isArray(value.sessions)||value.sessions.length>128)throw Error('Session workspace unavailable');
         clearStatusFailure();observedAt=Number.isFinite(value.observed_at)&&value.observed_at>0?value.observed_at:Date.now()/1000;
-        inventory=new Map(value.sessions.map(row=>[row.id,row.is_entry?{...row,title:typeof daimonName==='string'&&daimonName.trim()?daimonName.trim():'Daimon'}:row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=false;status.textContent='';retryStatus.hidden=true;
+        inventory=new Map(value.sessions.map(row=>[row.id,row.is_entry?{...row,title:typeof daimonName==='string'&&daimonName.trim()?daimonName.trim():'Daimon'}:row]));complete=value.truncated!==true;allowed=true;shell.hidden=false;toolbar.hidden=hosted;status.textContent='';retryStatus.hidden=true;
         // Never silently redirect a selected target after grant/binding loss.
         for(const selection of [pin,expanded].filter(value=>value&&!value.is_entry)){
           const row=inventory.get(selection.id);
@@ -270,6 +278,7 @@
         reviewVisibleResult();render();onReady(true);
         if(expanded&&!expanded.is_entry&&(activeHistory||!retryHistory.hidden&&Date.now()-lastHistoryAttempt>=5000))
           void history(activeHistory?'after':undefined);
+        return true;
       }catch(error){
         if(owned!==epoch)return;
         if(error.status===403||error.status===401){
@@ -277,9 +286,54 @@
         }else observeStatusFailure();
       }finally{if(owned===epoch)loading=false;}
     }
+    async function selectHostedTopic(room,nextBinding,maySelect=()=>true){
+      if(!hosted||!nextBinding||!maySelect())return null;
+      if(room===null){
+        pin=expanded=undefined;
+        leave();changed();
+        return {room:null};
+      }
+      if(typeof room!=='string'||!/^[a-f0-9]{64}$/.test(room)||!await refresh(nextBinding)||
+        !maySelect()||nextBinding!==binding||!allowed||!complete)return null;
+      const matches=[...inventory.values()].filter(row=>row.topic_ref===room&&!row.is_entry&&row.destination);
+      if(matches.length!==1)return null;
+      pin=undefined;
+      const row=matches[0];
+      open(row,{restore:true});
+      return {room};
+    }
+    async function hostedRoom(room,nextBinding,current){
+      if(!hosted||!resultId(room)||!nextBinding||!current()||!await refresh(nextBinding)||
+        !current()||nextBinding!==binding||!allowed||!complete)return null;
+      const matches=[...inventory.values()].filter(row=>row.topic_ref===room);
+      return matches.length===1?matches[0]:null;
+    }
+    async function readHostedResult(room,nextBinding,current){
+      const row=await hostedRoom(room,nextBinding,current);
+      if(!row||row.is_entry||row.result_available!==true)return null;
+      const revision=row.result_revision;
+      const portable=['claude','antigravity','goose'].includes(row.runtime?.harness);
+      if(!sessionId(row.id)||!portable&&!resultId(revision))return null;
+      const path=`interaction/sessions/${row.id}`,owned=epoch;
+      const authorized=()=>current()&&owned===epoch&&allowed&&nextBinding===binding&&
+        inventory.get(row.id)?.result_available===true&&inventory.get(row.id)?.result_revision===revision;
+      const page=await api(path);
+      if(!authorized()||page.schema!=='daimon.session-view/v1'||page.session!==row.id||!resultId(page.revision)||
+        !Array.isArray(page.items)||page.items.length>80)return null;
+      const item=[...page.items].reverse().find(entry=>entry.kind==='message'&&entry.role==='assistant'&&
+        (portable||entry.result_revision===revision));
+      if(!item||typeof item.text!=='string'||!Number.isSafeInteger(item.position))return null;
+      return {title:row.title,item,async part(offset){
+        if(!authorized())return null;
+        const value=await api(path+'?'+new URLSearchParams({revision:page.revision,event:item.position,text_offset:offset}));
+        const next=value.items?.[0];
+        return authorized()&&value.revision===page.revision&&value.session===row.id&&
+          next?.id===item.id&&next.offset===offset?next:null;
+      }};
+    }
     function revoke(){
       clearStatusFailure();retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
-      shell.hidden=false;rail.hidden=true;toolbar.hidden=!selected();
+      shell.hidden=false;rail.hidden=true;toolbar.hidden=hosted||!selected();
       status.textContent=selected()?'Session workspace access is unavailable. Return the input to the conversation, or restore access.':'';
       onReady(false);
     }
@@ -448,7 +502,7 @@
       if(row?.destination?.revision===current.destination?.revision &&
           row?.destination?.source===current.destination?.source)return row?.runtime;
     }
-    return {refresh,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    return {refresh,selectHostedTopic,hostedRoom,readHostedResult,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};

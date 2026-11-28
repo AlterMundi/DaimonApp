@@ -910,6 +910,7 @@ pub(super) async fn process_turn(
                 let requester_user_id = queued.request.from_user_id;
                 let session_key = session.key;
                 let history_owner = historical_context.as_ref().map(|_| session.clone());
+                let historical_context = historical_context.clone();
                 let voice_update = queued.update_id;
                 // A control may retain a Telegram update ID while starting a
                 // native goal/merge/Nexus prompt. That is not raw human input.
@@ -970,6 +971,23 @@ pub(super) async fn process_turn(
                                 shared.store.audit(Some(requester_user_id),"native_model_profile_observed",serde_json::json!({"session":session_key,"model":model,"provider":provider,"effort":effort}))?;
                                 *observed_native_profile.lock().expect("native profile mutex poisoned")=Some((thread_id,model,provider));
                                 Ok(CodexEventOutcome::None)
+                            }
+                            CodexEvent::ProjectSuccessor { previous, candidate } => {
+                                let authorized = if let (Some(id), Some(cfg)) = (
+                                    interaction.as_deref(), shared.config.interaction.as_ref(),
+                                ) {
+                                    let accepted = shared.store.advance_codex_successor(
+                                        cfg.entry(), requester_user_id, id, turn_id,
+                                        &previous, candidate.as_deref(),
+                                    )?;
+                                    if accepted && let Some(native) = candidate.as_deref() {
+                                        shared.store.interaction_select_native_return(id, requester_user_id, native)?;
+                                    }
+                                    accepted
+                                } else {
+                                    false
+                                };
+                                Ok(CodexEventOutcome::ProjectSuccessorAuthorized(authorized))
                             }
                             CodexEvent::ThreadStarted(thread_id) => {
                                 if conversation_native.as_deref().is_some_and(|native|native!=thread_id) {bail!("Conversation input returned another native binding; original retained");}
@@ -1389,6 +1407,27 @@ pub(super) async fn process_turn(
     steered_files
         .completed
         .store(run_result.is_ok(), std::sync::atomic::Ordering::Release);
+    if run_result.as_ref().err().is_some_and(|error| {
+        error.is::<crate::codex::MissingNativeRollout>()
+            && error.is::<crate::codex::NativeInputNotSubmitted>()
+    }) && let (Some(context), Some(id), Some(native), Some(config)) = (
+        historical_context.as_ref(),
+        queued.interaction.as_deref(),
+        session.codex_thread_id.as_deref(),
+        shared.config.interaction.as_ref(),
+    ) && let Ok(seed) = serde_json::from_str::<serde_json::Value>(context)
+        && let Some(project) = seed["projectCheckpoint"].as_str()
+        && let Err(error) = shared.store.retain_codex_project_refusal(
+            config.entry(),
+            queued.request.from_user_id,
+            id,
+            turn_id,
+            native,
+            project,
+        )
+    {
+        tracing::warn!(%error, "Codex project recovery refusal could not be correlated");
+    }
     if run_result
         .as_ref()
         .err()
@@ -1476,14 +1515,34 @@ pub(super) async fn process_turn(
     if (routed || !attached.is_empty() || shared.store.conversation_turn_return(turn_id)?)
         && !shared.store.conversation_turn_direct_return(turn_id)?
     {
-        shared.store.set_session_busy(session.key, false)?;
         let status = match &run_result {
             Ok(_) => "completed",
             Err(e) if e.to_string().contains("cancelled") => "cancelled",
             Err(_) => "failed",
         };
         let text = run_result.as_ref().ok().map(|s| s.assistant_text.as_str());
-        shared.store.record_turn_finished(turn_id, status, text)?;
+        let adopted = if status == "completed"
+            && let Some(id) = return_instruction
+        {
+            match shared.store.adopt_codex_project_successor(
+                queued.request.from_user_id,
+                id,
+                turn_id,
+                text,
+            ) {
+                Ok(adopted) => adopted,
+                Err(error) => {
+                    tracing::warn!(%error, "Completed Codex successor remains unselected");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !adopted {
+            shared.store.record_turn_finished(turn_id, status, text)?;
+        }
+        shared.store.set_session_busy(session.key, false)?;
         let declaration_exists =
             fs::symlink_metadata(turn_workspace.root.join(interactions::MANIFEST)).is_ok();
         let mut declaration_retained = declaration_exists;
@@ -1562,7 +1621,7 @@ pub(super) async fn process_turn(
                     "failed"
                 };
                 shared.store.set_session_busy(session.key, false)?;
-                let recovery_note = saved_thread_is_unavailable(&error).then(||
+                let recovery_note = error.is::<crate::codex::MissingNativeRollout>().then(||
                     "The saved native thread is unavailable. Its binding and your input are preserved. Recover the native context or explicitly clear this topic to start a new context.".to_string());
                 finish_failed_turn(&shared.store, turn_id, &sink, status, &error, recovery_note, capacity_failure.load(std::sync::atomic::Ordering::Acquire))
                     .await?;
@@ -1921,18 +1980,6 @@ pub(super) fn turn_completion_notification_text(usernames: &[String]) -> Option<
     Some(format!("Готово, {} fyi ✅", usernames.join(" ")))
 }
 
-pub(super) fn saved_thread_is_unavailable(error: &anyhow::Error) -> bool {
-    let pretty = format!("{error:#}").to_ascii_lowercase();
-    let display = error.to_string().to_ascii_lowercase();
-    let matches = |text: &str| {
-        text.contains("no rollout found for thread id")
-            || (text.contains("rollout")
-                && text.contains("thread id")
-                && text.contains("code -32600"))
-    };
-    matches(&pretty) || matches(&display)
-}
-
 struct LiveTurnSink {
     turn_id: Option<i64>,
     topic_projection: bool,
@@ -2082,6 +2129,7 @@ impl LiveTurnSink {
             CodexEvent::NativeMessageCompleted { .. }
             | CodexEvent::NativeMessageDraft { .. }
             | CodexEvent::NativeModelConfigured { .. }
+            | CodexEvent::ProjectSuccessor { .. }
             | CodexEvent::UserInputRequest { .. }
             | CodexEvent::DynamicToolRequest { .. }
             | CodexEvent::NativeInputRejected
@@ -2719,10 +2767,21 @@ fn codex_switch_context(
     else {
         return Ok(None);
     };
-    let checkpoint = shared
-        .store
-        .topic_folder_claim(session.key, human)?
-        .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim));
+    let verified = match super::routing::profile(shared) {
+        Ok(cfg) if cfg.human_id == human => shared
+            .store
+            .project_startup(session.key, cfg.entry(), human)
+            .context(),
+        _ => None,
+    };
+    let checkpoint = if verified.is_some() {
+        verified
+    } else {
+        shared
+            .store
+            .topic_folder_claim(session.key, human)?
+            .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim))
+    };
     if exchange.is_none() && checkpoint.is_none() {
         return Ok(None);
     }

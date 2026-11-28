@@ -873,7 +873,27 @@ pub(super) fn source_on(
     entry: SessionKey,
     id: &str,
 ) -> Result<Option<Value>> {
-    let (entry_session, entry_native) = entry_on(conn, human, entry)?;
+    source_with_project_lineage(conn, human, entry, id, None)
+}
+
+pub(super) fn project_source_on(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+    project: SessionKey,
+) -> Result<Option<Value>> {
+    source_with_project_lineage(conn, human, entry, id, Some(project))
+}
+
+fn source_with_project_lineage(
+    conn: &Connection,
+    human: i64,
+    entry: SessionKey,
+    id: &str,
+    project: Option<SessionKey>,
+) -> Result<Option<Value>> {
+    let (entry_session, mut entry_native) = entry_on(conn, human, entry)?;
     let mut source = if let Some(publication) = id.strip_prefix("matrix-publication:") {
         let Some(source) = super::matrix::publication::source_on(conn, human, entry, publication)?
         else {
@@ -927,6 +947,21 @@ pub(super) fn source_on(
             return Ok(None);
         }
         let request_ids = delivery.requests().to_vec();
+        // Preserve the exact cited revision without promoting the ancestor to
+        // the current routing target in the ordinary presentation reader.
+        let current_native = if project == Some(delivery.target)
+            && super::project_checkpoint::ancestor_session_on(
+                conn,
+                delivery.target,
+                human,
+                &result_native,
+            )?
+            .is_some()
+        {
+            Some(result_native.clone())
+        } else {
+            current_native
+        };
         json!({"id":format!("delivery:{id}"),"kind":"worker_result","text":delivery.body,
             "request_id":delivery.request_id,"request_ids":request_ids,"result_id":result_id,"target":delivery.target,"current":current,
             "correction_pending":pending,"completed":delivery.completed,"delivery_phase":phase,
@@ -937,13 +972,35 @@ pub(super) fn source_on(
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|n| *n > 0)
     {
+        let mut ancestor = false;
+        if let Some(project) = project {
+            let native: Option<String> = conn
+                .query_row(
+                    "SELECT m.native_thread FROM interaction_native_messages m
+                 JOIN turns t ON t.id=m.local_turn JOIN sessions s ON s.id=t.session_id
+                 WHERE m.rowid=?1 AND s.chat_id=?2 AND s.thread_id=?3
+                   AND t.execution_harness='codex' AND t.from_user_id=?4 AND s.creator_user_id=?4",
+                    params![row, project.chat_id, project.thread_id, human],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(native) = native
+                && super::project_checkpoint::ancestor_session_on(conn, project, human, &native)?
+                    .is_some()
+            {
+                ancestor = true;
+                if project == entry {
+                    entry_native = native;
+                }
+            }
+        }
         let found = conn.query_row(&format!(
             "SELECT m.text,m.native_turn,m.item_id,m.phase,m.observed_at,
              t.session_id=?2 AND m.native_thread=?4,s.chat_id,s.thread_id,
-             s.codex_thread_id IS m.native_thread AND s.force_fresh_thread=0,t.id
+             (?5 OR (s.codex_thread_id IS m.native_thread AND s.force_fresh_thread=0)),t.id
              FROM interaction_native_messages m JOIN turns t ON t.id=m.local_turn
              JOIN sessions s ON s.id=t.session_id WHERE m.rowid=?1 AND {NATIVE_VISIBILITY} AND NOT COALESCE(m.internal_handoff, ({ONLY_INTERNAL_HANDOFF}))"),
-             params![row,entry_session,human,entry_native],|r| {
+             params![row,entry_session,human,entry_native,ancestor],|r| {
                 let is_entry:bool=r.get(5)?;
                 let phase:Option<String>=r.get(3)?;
                 let phase=phase.as_deref().unwrap_or("final_answer");

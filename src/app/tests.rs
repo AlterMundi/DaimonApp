@@ -1464,13 +1464,6 @@ fn only_plain_text_messages_are_steer_candidates() {
 }
 
 #[test]
-fn detects_stale_codex_thread_errors() {
-    let error = anyhow::anyhow!("no rollout found for thread id 019abc | code -32600");
-
-    assert!(saved_thread_is_unavailable(&error));
-}
-
-#[test]
 fn formats_turn_completion_notification() {
     assert_eq!(turn_completion_notification_text(&[]), None);
     assert_eq!(
@@ -1493,21 +1486,6 @@ fn builds_rate_limit_retry_keyboard() {
         keyboard.inline_keyboard[0][0].callback_data.as_deref(),
         Some("cmd:/retry 42")
     );
-}
-
-#[test]
-fn detects_stale_codex_thread_errors_in_error_context() {
-    let error = anyhow::anyhow!("codex turn failed")
-        .context("no rollout found for thread id 019abc | code -32600");
-
-    assert!(saved_thread_is_unavailable(&error));
-}
-
-#[test]
-fn ignores_unrelated_invalid_request_errors() {
-    let error = anyhow::anyhow!("json-rpc request rejected with code -32600");
-
-    assert!(!saved_thread_is_unavailable(&error));
 }
 
 #[test]

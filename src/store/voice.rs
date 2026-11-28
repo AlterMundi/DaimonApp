@@ -72,12 +72,15 @@ impl Store {
         if !has_portable {
             conn.execute("ALTER TABLE interaction_voice_inputs ADD COLUMN portable_generation TEXT", [])?;
         }
-        conn.execute_batch("CREATE TRIGGER IF NOT EXISTS voice_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions BEGIN
+        let continuity = super::conversation_entry::CODEX_PROJECT_CONTINUATION;
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS voice_binding_retired;
+            CREATE TRIGGER voice_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
+            WHEN NOT ({continuity}) BEGIN
             UPDATE interaction_voice_inputs SET phase='retired' WHERE session_id=NEW.id AND phase IN ('preparing','committed') AND (native IS NOT NEW.codex_thread_id OR NEW.force_fresh_thread=1 OR human_id!=NEW.creator_user_id);
             END;
             CREATE TRIGGER IF NOT EXISTS voice_owner_revoked AFTER UPDATE OF allowed ON users WHEN NEW.allowed=0 BEGIN
             UPDATE interaction_voice_inputs SET phase='retired' WHERE human_id=NEW.tg_user_id AND phase IN ('preparing','committed');
-            END;")?;
+            END; COMMIT;"))?;
         conn.execute("UPDATE interaction_voice_inputs SET phase='uncertain' WHERE phase='preparing' AND instance_id!=?1",[&self.instance_id])?;
         Ok(())
     }

@@ -6,23 +6,35 @@ use serde_json::{Value, json};
 const MAX_VOICE_INITIALIZATION_RECEIPTS: usize = 64;
 const MAX_VOICE_INITIALIZATION_BYTES: usize = 64 * 1024;
 
+// The marker is inserted and sealed by the owning transaction. Ordinary
+// replacements, explicit clears and owner revocation retain their fences.
+pub(super) const CODEX_PROJECT_CONTINUATION: &str = "
+    OLD.creator_user_id=NEW.creator_user_id
+    AND OLD.force_fresh_thread=0 AND NEW.force_fresh_thread=0
+    AND EXISTS(SELECT 1 FROM codex_project_lineage p
+      JOIN conversation_entry_generations g ON g.session_id=p.session_id AND g.generation=p.generation
+      WHERE p.session_id=OLD.id AND p.previous_native=OLD.codex_thread_id
+        AND p.successor_native=NEW.codex_thread_id AND p.sealed=0)";
+
 impl Store {
     pub(super) fn init_conversation_entry(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS conversation_entry_generations(
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS conversation_entry_generations(
             session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
             generation TEXT NOT NULL);
             INSERT OR IGNORE INTO conversation_entry_generations(session_id,generation)
             SELECT id,lower(hex(randomblob(16))) FROM sessions;
             CREATE TRIGGER IF NOT EXISTS conversation_entry_created AFTER INSERT ON sessions BEGIN
             INSERT INTO conversation_entry_generations(session_id,generation) VALUES(NEW.id,lower(hex(randomblob(16)))); END;
-            CREATE TRIGGER IF NOT EXISTS conversation_entry_replaced AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
-            WHEN OLD.creator_user_id!=NEW.creator_user_id OR NEW.force_fresh_thread=1 OR
-                (OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id) BEGIN
+            DROP TRIGGER IF EXISTS conversation_entry_replaced;
+            CREATE TRIGGER conversation_entry_replaced AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
+            WHEN (OLD.creator_user_id!=NEW.creator_user_id OR NEW.force_fresh_thread=1 OR
+                (OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id))
+              AND NOT ({CODEX_PROJECT_CONTINUATION}) BEGIN
             UPDATE conversation_entry_generations SET generation=lower(hex(randomblob(16))) WHERE session_id=NEW.id; END;
             CREATE TRIGGER IF NOT EXISTS conversation_entry_grant_revoked AFTER UPDATE OF allowed ON users WHEN NEW.allowed=0 BEGIN
             UPDATE conversation_entry_generations SET generation=lower(hex(randomblob(16))) WHERE session_id IN
-                (SELECT id FROM sessions WHERE creator_user_id=NEW.tg_user_id); END;")?;
+                (SELECT id FROM sessions WHERE creator_user_id=NEW.tg_user_id); END; COMMIT;"))?;
         add_column_if_missing(
             &conn,
             "conversation_entry_generations",

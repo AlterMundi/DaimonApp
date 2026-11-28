@@ -935,6 +935,12 @@ fn agy_return_matches_on(
     )?)
 }
 
+#[derive(Default)]
+pub(crate) struct RoutedStartupEvidence<'a> {
+    pub history: Option<&'a Value>,
+    pub project: Option<(&'a ProjectStartup, SessionKey)>,
+}
+
 impl Store {
     pub(crate) fn routed_agy_return_matches(
         &self,
@@ -1384,7 +1390,7 @@ impl Store {
         body: &Value,
         prepared: &Value,
         paired_host_access: bool,
-        history_seed: Option<&Value>,
+        evidence: RoutedStartupEvidence<'_>,
     ) -> Result<bool> {
         let harness = input
             .target_execution
@@ -1458,6 +1464,12 @@ impl Store {
         {
             return Ok(false);
         }
+        if let Some((project, entry)) = evidence.project
+            && !project.current_on(&tx, entry, &current)?
+        {
+            return Ok(false);
+        }
+        let history_seed = evidence.history;
         if let Some(quote) = history_seed.filter(|seed| seed["source"].is_string()) {
             let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
             let resolved = if source.channel == "conversation" {

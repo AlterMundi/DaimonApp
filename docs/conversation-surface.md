@@ -51,7 +51,7 @@ Parent must compare actor with its own server-verified paired human, not a label
    this UI notice alone proves neither completion nor native execution.
 
 Bindings/authentication changes invalidate in-flight preparation. Parent cannot
-set draft, start microphone, auto-submit, select a session, replay or resume work.
+set draft, start microphone, auto-submit, replay or resume work.
 No background recorder, provider call or new login is created. Iframe reload is
 not safe while capture/upload/unknown submission is unresolved; normal existing
 recovery rules remain authoritative. Real device/hearing acceptance is separate.
@@ -130,3 +130,95 @@ locally and must not infer that the mic is active from the capability.
 No waveform, text, draft, device ID or capture status crosses the frame.
 Continuous engines and recorder fallback with no existing level source
 continue without this optional presentation.
+
+
+### Read-only topic discovery
+
+A compatible Holodeck child advertises `topicRooms` in `ready.features`.
+The already bound parent opts in with `connect.features.topicRooms`. For a
+visitor action it sends `topic-rooms-read` with a fresh request UUID and an
+optional `after` cursor or exact `room`, each an opaque logical topic
+reference. The child reads its own authenticated Session Workspace projection.
+It echoes the UUID in `topic-rooms-readback` with at most 12 room summaries
+and the next cursor, or a bounded unavailable result. Summaries contain only
+room reference, title, general designation and direct availability.
+
+Recheck the exact room before showing it. The frame keeps its configured
+origin, actor, visit, binding and channel checks. Neither message contains
+native references or conversation text. No input, draft or routing change is
+made by the projection. Older compatible Conversation hosts may ignore the
+optional feature.
+
+### Explicit topic audience
+
+A compatible frame and host opt in to `topicDirect` on the bound channel.
+A visitor can select the current room with `topic-direct-select` and a request
+UUID. The child reads and resolves the unique current owned Session Workspace
+destination before exposing its history and composer. Its readback echoes
+only the UUID and room, or reports unavailable. A null room restores general
+Conversation. A fresh document starts in general mode.
+
+Selection itself issues no original and carries no draft, destination
+revision, or conversation text across frames. The canonical composer freezes
+the selected destination when the visitor sends or records. Direct text
+drafts and unconfirmed original references are kept separately in the same
+tab, for up to 16 recent scopes under the existing seven-day retention.
+General Conversation continues to use its independent server draft.
+
+### Project references for a visited room
+
+The admitted Holodeck owner can request project references for one exact
+room through the paired bridge. The Gateway reuses the current workspace
+marker and the checkpoint catalogue's source checks. The receiving view
+gets up to eight repository links per page, with opaque project and
+repository IDs, a display label, and the exact Git commit. The cursor walks
+the retained catalogue in descending revision order and authorizes no reads
+by itself. Each page checks current source access. If the catalogue revision
+changed, the read returns the current first page and marks the restart.
+A project selection uses the project and one of its visible repository
+identities. Gateway rechecks that exact link against current evidence
+on each page of the detail view and filters all rows to the selected project. Repository labels can be
+cited in the original project link. Legacy links remain readable. Raw Git
+locators, workspace paths, source text and effect receipts stay in the owner.
+
+The conversation frame and the general room catalogue carry no project
+references. A room visit and the explicit project read are separate. The
+project read uses the current actor and room and does not open model work.
+
+The paired bridge's exact project read can include a `work` observation
+derived from Session Workspace. It carries only `execution` (unknown, idle,
+queued or working), `question` and `result` presence flags. A stale
+execution observation becomes unknown. The project read does not disclose
+question or result text, native identifiers, or result revisions. Select
+the current Conversation reader to inspect or respond to an original.
+
+### Open the current topic result
+
+A compatible frame advertises `topicResult`. The paired host sends
+`topic-result-open` with a request UUID and the visited room reference, using
+the existing actor, binding, visit and channel. The current Workspace reader
+resolves that room again, then reads its ordinary, owner-scoped Conversation
+page. For Codex the displayed item must match the registry's result revision.
+Portable harnesses use the latest final in the selected generation's retained
+exchange page. If that result is unavailable in the page, the reader declines
+rather than displaying a different result. Text continuations use the exact
+selected event and history revision.
+
+The frame opens the result in a read-only dialogue. Its reply carries only
+the correlated opening outcome. Neither result text nor history coordinates
+return to the host. The host cancels the request when leaving the room or
+closing Conversation. The composer, drafts and active recipient stay as they
+were. The result reader does not start a model or send a human original.
+
+### Open a pending topic question
+
+The optional `topicQuestion` feature uses `topic-question-open` with the
+same room reference and request correlation. Conversation resolves the
+owned room and selects only actionable, current questions addressed to
+its exact target in the existing canonical request list. It reuses the
+request reader and For You dialog. Native question text, IDs and revisions
+stay in the frame. Opening the question does not send an answer or change
+the active conversation recipient. The person's explicit response uses
+the existing request controls, exact revision and original receipt route.
+A question outside the canonical Conversation request audience remains
+with its owning session.

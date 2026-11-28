@@ -485,7 +485,11 @@ import_desktop_history=false
                             break
                     if len(rows) == 2:
                         if missing_binding and rows[1][1] == 'undetermined':
-                            break
+                            with lock:
+                                notified = any('The saved native thread is unavailable.' in text
+                                               for text in permanent.values())
+                            if notified:
+                                break
                         if not missing_binding and rows[0][1] == 'undetermined' and rows[1][1] in ('handled', 'undetermined', 'settled'):
                             break
                 except sqlite3.Error:
@@ -575,6 +579,8 @@ import_desktop_history=false
                 assert sessions == [('missing-native-context',)], sessions
                 assert threads == ['thread/resume'], threads
                 assert starts == [], starts
+                assert any('The saved native thread is unavailable.' in text
+                           for text in permanent.values()), permanent
             else:
                 assert rows[0][1] == 'undetermined', rows
                 assert rows[1][2] == rows[0][2] and rows[1][2] is not None, rows

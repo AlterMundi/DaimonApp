@@ -18,7 +18,66 @@ window.Conversation = (() => {
     element.title=date.toLocaleString(locale,{dateStyle:"full",timeStyle:"long",hour12:false});
   }
   function mount({api, headers, setCsrf, modeChanged, telegram, readOnly=false, standalone=false, onUnauthorized}) {
-    const hostSurface=window.ConversationSurface?.create();
+    let hostedTopic,hostedResult;
+    function closeHostedResult(){hostedResult?.close();hostedResult=undefined;}
+    async function openHostedResult(room,current){
+      const result=await workspace?.readHostedResult(room,binding,current);
+      if(!result||!current()||document.querySelector('dialog[open]'))return false;
+      const dialog=node('dialog',undefined,'conversation-decision-dialog');
+      const heading=node('h2',result.title),body=node('div',undefined,'reply-text');
+      dialog.setAttribute('aria-label',`Result from ${result.title}`);
+      const close=node('button','Close'),more=node('button','Continue reading');
+      const status=node('p');status.setAttribute('role','status');
+      close.onclick=()=>dialog.close();
+      let item=result.item,text=item.text;
+      const render=()=>{
+        if(window.ConversationMarkdown)window.ConversationMarkdown.render(body,text);
+        else body.textContent=text;
+        more.hidden=!item.more;
+      };
+      more.onclick=async()=>{
+        if(more.disabled)return;
+        more.disabled=true;
+        try{
+          const part=await result.part(item.next);
+          if(!part||!dialog.open)throw Error('Result changed');
+          item=part;text+=part.text;render();
+        }catch{if(dialog.open)status.textContent='This result changed or is no longer available.';}
+        finally{more.disabled=false;}
+      };
+      dialog.addEventListener('close',()=>{if(hostedResult===dialog)hostedResult=undefined;dialog.remove();},{once:true});
+      dialog.append(heading,close,body,more,status);
+      render();
+      document.body.append(dialog);hostedResult=dialog;dialog.showModal();close.focus();
+      return true;
+    }
+    const hostSurface=window.ConversationSurface?.create({
+      readTopics:readOnly?undefined:room=>api('interaction/sessions?'+new URLSearchParams({
+        projection:'holodeck',...(room?{room}:{})
+      })),
+      openResult:readOnly?undefined:openHostedResult,closeResult:closeHostedResult,
+      openQuestion:readOnly?undefined:async(room,current)=>{
+        const row=await workspace?.hostedRoom(room,binding,current);
+        if(!row||!current()||!pendingNavigation||document.querySelector('dialog[open]'))return false;
+        const match=/^(-?\d+):(\d+)$/.exec(row.audio_key||'');
+        if(!match)return false;
+        const target={chat_id:Number(match[1]),thread_id:Number(match[2])};
+        if(!Object.values(target).every(Number.isSafeInteger))return false;
+        const questions=await requestControls.questionIds(target,current);
+        return pendingNavigation.openSelected(questions,current);
+      },
+      closeQuestion:()=>pendingNavigation?.closeSelected(),
+      selectTopic:readOnly?undefined:async(room,current)=>{
+        const allowed=()=>current()&&!posting&&!captureBusy&&!transcriptPreview&&
+          !voiceMode?.active&&!microphone?.ownsSend?.()&&!attachedFiles?.hasFiles();
+        const result=await workspace?.selectHostedTopic?.(room,binding,allowed);
+        if(!result)return null;
+        hostedTopic=room||undefined;
+        voiceContext=undefined;
+        draftState?.setTopic(hostedTopic);
+        return result;
+      },
+    });
     const timing=readOnly?undefined:window.ConversationTiming?.mount();
     const liveUsage=window.PublicLiveUsage?.mount($('#conversation-live-usage'));
     let canFiles=false,filesConnected=true;
@@ -962,7 +1021,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,portableDeliveryText,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
+    const workspace=standalone&&!readOnly?window.SessionWorkspace?.mount({timeline,api,portableDeliveryText,hosted:!!hostSurface,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();syncRuntimeSummary();},
       focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
@@ -977,7 +1036,7 @@ window.Conversation = (() => {
     function inputReference(){
       if(replyFocus)return replyFocus.reference;
       const selection=workspace?.capture();
-      return selection?selection.reference:voiceContext;
+      return selection?selection.reference:hostSurface?undefined:voiceContext;
     }
     function syncWorkspaceAudio(){
       const row=workspace?.audioScope?.();
@@ -1358,7 +1417,7 @@ window.Conversation = (() => {
       inputBinding = result.binding;
       inputEntryBinding = Array.isArray(result.entry_binding)&&result.entry_binding.length===4?result.entry_binding:undefined;
       setCsrf(result.csrf);routingChoices=result.routing_choices||[];
-      if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding);
+      if(draftState && result.conversation_draft)draftState.bind(result.conversation_draft.owner,binding,hostedTopic);
       for (const value of result.items) inputCard(value, observation,value.native_binding_current===true?inputBinding:undefined);
       draftState?.observe(result.conversation_draft);
       if (direction === "after" || (remember && !inputNewest)) inputNewest = Math.max(inputNewest, result.newest || 0);
@@ -2099,7 +2158,7 @@ window.Conversation = (() => {
       const value = await api(`interaction?${new URLSearchParams({...cursor, direction})}`);
       if (binding && value.binding !== binding) {
         draftState?.bind();
-        workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
+        hostedTopic=undefined;workspace?.reset();clearVoiceQueue();stop(); cards.clear();clearProgress();clearText(); initialized = false; resetInputs(); requestControls.reset(); internalControls?.reset(); taskControls?.reset(); microphone?.reset(); visual?.reset();attachedFiles?.reset();
         newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
         $("#conversation-answers").replaceChildren(); $("#conversation-results").replaceChildren();
       }
@@ -2233,7 +2292,7 @@ window.Conversation = (() => {
       $("#conversation-refresh").disabled = true;
       try {
         const previousBinding=binding;
-        if(previousBinding)void workspace?.refresh(previousBinding);
+        if(previousBinding&&(!hostSurface||hostedTopic))void workspace?.refresh(previousBinding);
         if (!initialized) {
           newest = {delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0};
           await page({delivery:0,native:0,matrix:0,inbox:0,responses:0,publications:0}, "before");
@@ -2251,7 +2310,7 @@ window.Conversation = (() => {
         // Saved input receipts and transcripts have their own bounded reader.
         // Sound, questions and presentation must not hold their readback.
         saved ||= refreshSavedInputs();
-        if(binding!==previousBinding)void workspace?.refresh(binding);
+        if(binding!==previousBinding&&(!hostSurface||hostedTopic))void workspace?.refresh(binding);
         // Resolve current questions before starting newly observed speech. Input
         // history, Telegram and inspector reads do not gate useful playback.
         const questionsCurrent=readOnly || await requestControls.refresh();

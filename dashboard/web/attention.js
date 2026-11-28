@@ -23,7 +23,7 @@ window.AttentionCarousel = (() => {
     let hiddenDuplicates=new Set();
     if(stream){stream.className="for-you-items";stream.setAttribute("aria-label","Pending work, newest first");panel.prepend(stream);}
 
-    let items=[],selected,position=0,timer,returnFocus,hover=false,focused=false,drag,dragged=false;
+    let items=[],selected,position=0,timer,returnFocus,hover=false,focused=false,drag,dragged=false,selectionFilter;
     const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)");
     function schedule(){
       clearTimeout(timer);
@@ -46,7 +46,7 @@ window.AttentionCarousel = (() => {
     }
     function step(delta){if(!items.length)return;position=(position+delta+items.length)%items.length;render();}
     function selectItems(){
-      const values=getItems(),unique=new Map(),duplicates=new Set();
+      const values=getItems().filter(item=>!selectionFilter||selectionFilter.has(item.id)),unique=new Map(),duplicates=new Set();
       if(!localOnly)return {values,duplicates};
       for(const item of values){
         const preferred=unique.get(item.id);
@@ -77,9 +77,10 @@ window.AttentionCarousel = (() => {
     function close(restore=true){
       if(dialog.open){if(dialog.close)dialog.close();else dialog.removeAttribute("open");}
       const focus=returnFocus;returnFocus=undefined;
+      if(selectionFilter){selectionFilter=undefined;refresh();}
       if(restore&&(!focus||focus()===false))(localOnly?all:items.length?current:line).focus?.();schedule();
     }
-    async function open(item,restoreFocus){
+    async function open(item,restoreFocus,current=()=>true){
       clearTimeout(timer);
       if(!dialog.open){returnFocus=restoreFocus;if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
       closeButton.focus();
@@ -89,7 +90,7 @@ window.AttentionCarousel = (() => {
         const selected=selectItems().values.find(v=>v.id===item.id);
         if(!selected){refresh();scope.textContent="This request changed. Choose a current pending request.";return;}
         await selected.open();
-        if(!dialog.open)return;
+        if(!dialog.open||!current())return;
         selected.box.setAttribute("tabindex","-1");selected.box.focus();selected.box.scrollIntoView?.({block:"start"});
       }
     }
@@ -114,7 +115,17 @@ window.AttentionCarousel = (() => {
     // Existing card readers remain the writers. Observe their metadata changes,
     // without another network poller or a second pending store.
     new MutationObserver(refresh).observe(panel,{childList:true,subtree:true,characterData:true});
-    refresh();return {refresh,close,open:restore=>open(undefined,typeof restore==='function'?restore:undefined),get count(){return selectItems().values.length;}};
+    async function openSelected(ids,current){
+      const candidates=getItems().filter(item=>ids.includes(item.id));
+      if(dialog.open||!current()||!candidates.length)return false;
+      selectionFilter=new Set(candidates.map(item=>item.id));
+      refresh();
+      await open(candidates.length===1?candidates[0]:undefined,undefined,current);
+      return current()&&dialog.open;
+    }
+    refresh();return {refresh,close,openSelected,closeSelected:()=>{if(selectionFilter)close(false);},
+      open:restore=>open(undefined,typeof restore==='function'?restore:undefined),
+      get count(){const values=getItems();return localOnly?new Set(values.map(item=>item.id)).size:values.length;}};
   }
   return {mount};
 })();
