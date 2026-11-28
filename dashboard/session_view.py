@@ -312,9 +312,13 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     source = f"""{accepted} JOIN interaction_results r ON {final}
         LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
           AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
+        LEFT JOIN topic_publications selected ON p.id IS NOT NULL AND selected.kind='portable_report_request'
+          AND selected.source=p.source AND selected.session_id=p.session_id
+          AND selected.human_id=p.human_id AND selected.local_turn=p.local_turn
         LEFT JOIN {handoff_view} handoff ON p.id IS NOT NULL AND handoff.source=r.id
           AND handoff.session_id=p.session_id AND handoff.human_id=p.human_id AND handoff.local_turn=p.local_turn
-        WHERE {ownership} AND (p.id IS NOT NULL OR {human_original})"""
+        WHERE {ownership} AND ({human_original}
+          OR (p.id IS NOT NULL AND (selected.id IS NULL OR handoff.id IS NOT NULL)))"""
     scope = (session, human, harness, generation)
     # Keep outstanding originals separate from the append-only result cursor.
     # A final result can arrive out of order and still has its own position.

@@ -329,8 +329,17 @@ fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction
     }
     let human = child.human_id;
     let source = super::routing::source_on(conn, &parent.id, human)?;
+    paired_original_on(conn, parent, &source)
+}
+
+fn paired_original_on(
+    conn: &Connection,
+    parent: &Instruction,
+    source: &SourceInput,
+) -> Result<bool> {
     if source.channel == "conversation" {
-        let original = super::conversation_inputs::read_on(conn, &source.event_id, human)?;
+        let original =
+            super::conversation_inputs::read_on(conn, &source.event_id, parent.human_id)?;
         return Ok(original.paired_actor
             && original.tribu_source.is_none()
             && source.tribu_source.is_none()
@@ -338,9 +347,9 @@ fn paired_source_on(conn: &Connection, parent: &Instruction, child: &Instruction
     }
     if source.channel.starts_with("telegram:") {
         return Ok(super::routed_portable::telegram_original_epoch_for_parent(
-            conn, &source, parent,
+            conn, source, parent,
         )?
-        .is_some_and(|epoch| Some(epoch) == child.admission_epoch));
+        .is_some_and(|epoch| Some(epoch) == parent.admission_epoch));
     }
     Ok(false)
 }
@@ -699,15 +708,8 @@ impl Store {
             anyhow::ensure!(
                 route.is_some()
                     && caller.chat_id == target.chat_id
-                    && original.channel == "conversation"
-                    && original.tribu_source.is_none(),
+                    && paired_original_on(&tx, &p, &original)?,
                 "A selected topic report requires a paired local Claude request"
-            );
-            let original = super::conversation_inputs::read_on(&tx, &original.event_id, human)?;
-            anyhow::ensure!(
-                original.paired_actor
-                    && super::conversation_inputs::eligible_binding_on(&tx, &original).is_ok(),
-                "A selected topic report requires a current paired human original"
             );
         }
         let id = Uuid::new_v5(
@@ -1225,21 +1227,31 @@ mod tests {
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
         for paired in [false, true] {
-            check_portable_dependency(paired, false, false);
+            check_portable_dependency(paired, false, false, None);
         }
     }
 
     #[test]
     fn a_later_claude_turn_must_keep_the_original_native_scope_to_return() {
-        check_portable_dependency(false, true, false);
+        check_portable_dependency(false, true, false, None);
     }
 
     #[test]
     fn paired_claude_recovers_a_completed_canonical_dependency_once() {
-        check_portable_dependency(true, false, true);
+        check_portable_dependency(true, false, true, None);
     }
 
-    fn check_portable_dependency(paired: bool, later: bool, recover_onward: bool) {
+    #[test]
+    fn selected_report_accepts_an_exact_settled_telegram_parent() {
+        check_portable_dependency(true, false, false, Some(41));
+    }
+
+    fn check_portable_dependency(
+        paired: bool,
+        later: bool,
+        recover_onward: bool,
+        update: Option<i64>,
+    ) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
         let caller = setup(&store, 7);
@@ -1250,42 +1262,49 @@ mod tests {
                 &super::super::tests::defaults(),
             )
             .unwrap();
-        let event = Uuid::now_v7().to_string();
+        let event = update.map_or_else(|| Uuid::now_v7().to_string(), |id| id.to_string());
         let binding = store
             .interaction_presentation_list(100, caller.key, 0, 0)
             .unwrap()["binding"]
             .as_str()
             .unwrap()
             .to_owned();
-        store
-            .conversation_input_capture_files(
-                100,
-                caller.key,
-                &binding,
-                &event,
-                "Human task",
-                None,
-                None,
-                None,
-                vec![],
-                paired,
-            )
-            .unwrap();
+        if update.is_none() {
+            store
+                .conversation_input_capture_files(
+                    100,
+                    caller.key,
+                    &binding,
+                    &event,
+                    "Human task",
+                    None,
+                    None,
+                    None,
+                    vec![],
+                    paired,
+                )
+                .unwrap();
+        }
         let (instruction, _) = store
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
                     tribu_source: None,
                     transcription: None,
-                    channel: "conversation".into(),
+                    channel: if update.is_some() {
+                        "telegram:55"
+                    } else {
+                        "conversation"
+                    }
+                    .into(),
                     event_id: event.clone(),
-                    update_id: None,
+                    update_id: update,
                     human_id: 100,
                     target_sessions: vec![caller.id],
                     origin: ReturnRoute {
                         chat_id: 100,
                         thread_id: 7,
-                        message_id: None,
+                        message_id: update.map(|_| 10),
                     },
                     text: "Human task".into(),
                 },
@@ -1296,7 +1315,24 @@ mod tests {
         store
             .interaction_bind_epoch(&instruction.id, 100, "initial")
             .unwrap();
-        accept(&store, &caller, &instruction, "parent-turn");
+        let parent_local = accept(&store, &caller, &instruction, "parent-turn");
+        if let Some(update) = update {
+            let raw = json!({"update_id":update,"direct_human_text":true,"message":{
+                "date":0,"message_id":10,"message_thread_id":7,
+                "from":{"id":100,"is_bot":false,"first_name":"Human"},
+                "chat":{"id":100,"type":"supergroup"},"text":"Human task"
+            }});
+            store
+                .save_bot_state("telegram_identity", r#"{"id":55}"#)
+                .unwrap();
+            store
+                .save_bot_state(&format!("stop_input_epoch:{update}"), "initial")
+                .unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute("INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,turn_id,updated_at)
+                VALUES(?1,?2,'settled','fixture',?3,'2026-11-28')", params![update,raw.to_string(),parent_local+1]).unwrap();
+            conn.execute("INSERT OR IGNORE INTO original_ingress_order(channel,event_id) VALUES('telegram',?1)", [&event]).unwrap();
+        }
         let profile: crate::interaction::InteractionConfig = serde_json::from_value(json!({
             "human_id":100,"chat_id":100,"topic_id":7,
             "targets":[{"topic_id":8,"name":"Design","harness":"claude"}],
@@ -1325,6 +1361,18 @@ mod tests {
         assert!(send("oversized", &oversized, false).is_err());
         if !paired {
             assert!(send("companion", "Must stay private", true).is_err());
+        }
+        if let Some(update) = update {
+            assert!(send("wrong-turn", "Must stay private", true).is_err());
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE incoming_updates SET turn_id=?1 WHERE update_id=?2",
+                    params![parent_local, update],
+                )
+                .unwrap();
         }
         let (_, delivered, fresh) = send("context", "A scoped context handoff", paired).unwrap();
         let authorship = store
@@ -1557,15 +1605,24 @@ mod tests {
             assert_eq!(handoff.kind, "portable_report_request");
             assert_eq!(visible_handoffs(), 1);
             for (retired, expected) in [(1, 0), (0, 1)] {
-                store
-                    .conn
-                    .lock()
-                    .unwrap()
-                    .execute(
-                        "UPDATE conversation_inputs SET retired=?1 WHERE id=?2",
-                        params![retired, event],
-                    )
-                    .unwrap();
+                if update.is_some() {
+                    store
+                        .save_bot_state(
+                            "stop_admission_epoch:100",
+                            if retired == 1 { "later" } else { "initial" },
+                        )
+                        .unwrap();
+                } else {
+                    store
+                        .conn
+                        .lock()
+                        .unwrap()
+                        .execute(
+                            "UPDATE conversation_inputs SET retired=?1 WHERE id=?2",
+                            params![retired, event],
+                        )
+                        .unwrap();
+                }
                 assert_eq!(visible_handoffs(), expected);
             }
             assert!(handoff.body.starts_with("Handoff from #"));
@@ -1626,7 +1683,10 @@ mod tests {
                 )
                 .unwrap();
             let mut source = store.interaction_source(&instruction.id, 100).unwrap();
+            source.channel = "conversation".into();
             source.event_id = correction;
+            source.update_id = None;
+            source.origin.message_id = None;
             source.text = "New human correction".into();
             store
                 .interaction_admit(

@@ -1404,7 +1404,8 @@ authorize a second dependency. Gateway checks the retained parent independently
 of the helper's text.
 
 When a paired human explicitly requests a visible handoff in a selected Claude
-topic, `session_request` can set `report_to_topic`. The completed answer uses
+topic, `session_request` can set `report_to_topic` from an authenticated
+Conversation original or an exact accepted Telegram original. The completed answer uses
 the same working native history as paired direct turns in that topic. The
 topic's Conversation and Telegram views receive the selected request, labeled
 with its sending conversation, and its canonical result. Both are projected

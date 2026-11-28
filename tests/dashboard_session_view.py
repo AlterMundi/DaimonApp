@@ -243,7 +243,7 @@ class PortableHistory(unittest.TestCase):
                        ('Handoff from #Design\n\nInspect the rig.',))
             db.execute("INSERT INTO topic_publications VALUES(3,'portable_report_request',2,20,11,2,'Foreign handoff')")
             self.assertEqual([item['text'] for item in read_portable(db,20,10,'claude')['items']],
-                             ['Human 1','First','Private result','Human 5','Last'])
+                             ['Human 1','First','Human 5','Last'])
             db.execute("CREATE VIEW visible_portable_report_requests AS SELECT * FROM topic_publications WHERE id IN (2,3)")
             report=read_portable(db,20,10,'claude')
             self.assertEqual([(item['role'],item['text']) for item in report['items'][2:4]],
@@ -251,7 +251,8 @@ class PortableHistory(unittest.TestCase):
             self.assertNotIn('input_id',report['items'][2])
             db.execute('DROP VIEW visible_portable_report_requests')
             db.execute("CREATE VIEW visible_portable_report_requests AS SELECT * FROM topic_publications WHERE id=3")
-            self.assertNotIn('Inspect the rig.', ''.join(item['text'] for item in read_portable(db,20,10,'claude')['items']))
+            self.assertEqual([item['text'] for item in read_portable(db,20,10,'claude')['items']],
+                             ['Human 1','First','Human 5','Last'])
             exchange(6,'<daimon-result>{"requests":[],"covered":[]}</daimon-result>')
             empty=read_portable(db,20,10,'claude',after=end,revision=revision)
             self.assertEqual([v['text'] for v in empty['items']],['Human 6'])
