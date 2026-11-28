@@ -1986,6 +1986,185 @@ mod tests {
     }
 
     #[test]
+    fn claude_preserves_a_selected_native_answer_in_the_same_topic() {
+        use crate::store::conversation_routing::ConversationReply;
+        use crate::store::routed_portable::claude_quoted_seed_on;
+
+        let (_file, store, entry, worker, _, _) = setup();
+        let key = worker.key;
+        let entry_binding = store
+            .interaction_presentation_list(100, entry, 0, 0)
+            .unwrap()["binding"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let follow = Uuid::now_v7().to_string();
+        store
+            .conversation_input_capture(100, entry, &entry_binding, &follow, "Follow this work")
+            .unwrap();
+        let answer = "The selected Codex proposal is to keep the first layout.";
+        let local = store
+            .record_turn_started(
+                worker.id,
+                &TurnRequest {
+                    session_key: key,
+                    from_user_id: 100,
+                    prompt: "Review the layout".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_turn_native_thread(local, "worker-native")
+            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            super::super::conversation_inputs::select_return_on(
+                &conn,
+                100,
+                "worker-native",
+                &follow,
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO interaction_goal_controls
+                 VALUES ('native-goal',100,100,1,100,7,'acknowledged',?1,NULL,'fixture')",
+                [
+                    json!({"worker_execution":{"local":local,"native":"worker-native"}})
+                        .to_string(),
+                ],
+            )
+            .unwrap();
+        }
+        for (item, phase, text) in [
+            (
+                "native-design-progress",
+                "commentary",
+                "Checking the layouts.",
+            ),
+            ("native-design-proposal", "final_answer", answer),
+        ] {
+            store
+                .record_native_message(
+                    local,
+                    "worker-native",
+                    "codex-design",
+                    item,
+                    Some(phase),
+                    text,
+                )
+                .unwrap();
+        }
+        store
+            .record_turn_finished(local, "completed", Some(answer))
+            .unwrap();
+
+        let capture_reply = |item: &str, kind: &str| {
+            let reply = {
+                let conn = store.conn.lock().unwrap();
+                let row: i64 = conn
+                    .query_row(
+                        "SELECT rowid FROM interaction_native_messages WHERE item_id=?1",
+                        [item],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let id = format!("native:{row}");
+                let selected = source_on(&conn, 100, entry, &id).unwrap().unwrap();
+                assert_eq!(selected["kind"], kind);
+                ConversationReply {
+                    source: id,
+                    revision: selected["revision"].as_str().unwrap().into(),
+                    context_only: false,
+                }
+            };
+            let (input, _) = store
+                .conversation_input_capture_files(
+                    100,
+                    entry,
+                    &entry_binding,
+                    &Uuid::now_v7().to_string(),
+                    "Yes, keep that.",
+                    Some(reply.clone()),
+                    None,
+                    None,
+                    vec![],
+                    true,
+                )
+                .unwrap();
+            let input = store
+                .conversation_input_read(100, entry, &input.id)
+                .unwrap();
+            assert_eq!(input.focus.as_ref().map(|focus| focus.target), Some(key));
+            let source = SourceInput {
+                channel: "conversation".into(),
+                event_id: input.id.clone(),
+                update_id: None,
+                human_id: 100,
+                target_sessions: vec![worker.id],
+                origin: ReturnRoute {
+                    chat_id: entry.chat_id,
+                    thread_id: entry.thread_id,
+                    message_id: None,
+                },
+                text: "Yes, keep that.".into(),
+                telegram_files: vec![],
+                tribu_source: None,
+                transcription: None,
+            };
+            let (routed, _) = store
+                .interaction_admit(&source, key, RequestRelation::New)
+                .unwrap();
+            (input, reply, source, routed)
+        };
+
+        let (input, reply, source, routed) =
+            capture_reply("native-design-proposal", "worker_result");
+        let expected = json!({"source":reply.source,"revision":reply.revision,"assistant":answer});
+        assert!(store.routed_claude_preserves_quote(&source, key).unwrap());
+        assert_eq!(
+            store
+                .routed_claude_history_seed(&routed, local, &json!({}))
+                .unwrap(),
+            Some(expected.clone())
+        );
+        let (progress, _, source, routed) =
+            capture_reply("native-design-progress", "worker_progress");
+        assert!(progress.reply_text_sha256.is_none());
+        assert!(!store.routed_claude_preserves_quote(&source, key).unwrap());
+        assert!(
+            store
+                .routed_claude_history_seed(&routed, local, &json!({}))
+                .unwrap()
+                .is_none()
+        );
+
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            claude_quoted_seed_on(&conn, &input, &reply, key).unwrap(),
+            Some(expected)
+        );
+        assert!(
+            claude_quoted_seed_on(&conn, &input, &reply, entry)
+                .unwrap()
+                .is_none()
+        );
+        conn.execute(
+            "UPDATE turns SET execution_generation='retired-generation' WHERE id=?1",
+            [local],
+        )
+        .unwrap();
+        assert!(
+            claude_quoted_seed_on(&conn, &input, &reply, key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn claude_telegram_quote_uses_the_receipt_and_canonical_body() {
         use crate::store::routed_portable::{
             TelegramQuote, claude_telegram_quote_on, telegram_reply_message_on,

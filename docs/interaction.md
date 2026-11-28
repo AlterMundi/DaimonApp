@@ -1226,6 +1226,17 @@ a question refers to prior work missing from the resumed context. A no-match
 result describes the retained, searchable records. The tool starts no
 native session, joins no other topic and changes no selected binding.
 
+Ordinary paired input that names a versioned project or a numbered topic
+reference can also bring matching exchanges forward before the Claude turn.
+The existing topic and generation bounds apply. An exact reference can recover
+older text even when the same native session resumes with compacted context.
+
+When a paired human replies to a completed Codex worker answer, a Claude turn
+for that same topic can receive the exact answer after a harness change.
+Gateway verifies the captured text digest, topic and generation before
+submission. The attached text is historical context. The reply keeps its
+existing destination and current human request.
+
 The stable integrating controller exposes `create` for a clearly distinct task,
 after inspecting existing candidates. Its arguments select a retained original
 input, a single-token topic name, a reason and up to five enrolled observer

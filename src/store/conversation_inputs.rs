@@ -1559,7 +1559,7 @@ impl Store {
         let reply_text_sha256 = if paired_actor {
             reply
                 .as_ref()
-                .filter(|reply| reply.source.starts_with("delivery:"))
+                .filter(|reply| reply.portable_quote_candidate())
                 .map(|reply| super::presentation::source_on(&tx, human, entry, &reply.source))
                 .transpose()?
                 .flatten()

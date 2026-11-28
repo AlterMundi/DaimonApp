@@ -17,6 +17,10 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 impl ConversationReply {
+    pub(super) fn portable_quote_candidate(&self) -> bool {
+        self.source.starts_with("delivery:") || self.source.starts_with("native:")
+    }
+
     pub(super) fn validate_context(&self) -> Result<()> {
         let question = self
             .source
