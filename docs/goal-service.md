@@ -12,7 +12,9 @@ available for reconciliation. This path uses Claude's own evaluation loop.
 
 The pinned native interrupt fixture runs one actual Claude evaluation against a
 disposable loopback provider, interrupts the next iteration and reopens the
-same native session. A standalone `/goal` returns the same active condition
+same native session. Claude returned a successful terminal envelope with empty
+result text, along with the exact cancellation receipt for the queued correction.
+A standalone `/goal` returns the same active condition
 without any provider request, with status `not yet evaluated`. The next real
 input continues the work and invokes the evaluator again. This confirms
 condition persistence and a reset of the native evaluation baseline. An

@@ -383,9 +383,10 @@ test('Claude sends steer on the existing input stream and correlates the native 
 test('a completed root keeps the exact native cancellation of its queued steer', async () => {
   const steer = { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Queued correction.' };
   const accepted = { still_queued: [], cancelled: [steer.id] };
-  for (const [receipt, delay] of [
+  for (const [receipt, delay, text = 'Root completed.'] of [
     [accepted, 0],
     [accepted, 25],
+    [accepted, 25, ''],
     [{ still_queued: [], cancelled: [input.id] }, 0],
     [{ still_queued: [steer.id], cancelled: [] }, 0],
     [undefined, Infinity],
@@ -419,13 +420,13 @@ test('a completed root keeps the exact native cancellation of its queued steer',
           interrupt.abort();
           await Promise.resolve();
           yield { type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId,
-            user_message_uuids: [input.id], result: 'Root completed.' };
+            user_message_uuids: [input.id], result: text };
         },
         close() {},
       }),
     }));
-    assert.equal(outcome.phase, 'completed');
-    assert.equal(outcome.text, 'Root completed.');
+    assert.equal(outcome.phase, text ? 'completed' : 'interrupted');
+    assert.equal(outcome.text, text || undefined);
     assert.deepEqual(outcome.steerSubmitted, [steer.id]);
     assert.deepEqual(outcome.cancelled, receipt?.cancelled.includes(steer.id) ? [steer.id] : undefined);
   }
