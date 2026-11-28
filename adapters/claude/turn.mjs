@@ -106,7 +106,7 @@ async function connectedCatalog(native, expected, signal) {
  * be advertised separately when their native behavior has been qualified.
  */
 export async function runClaudeTurn({
-  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering,
+  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering, onInputAccepted,
 }) {
   if (typeof input?.text !== 'string' || (input.text.length === 0 && !input.attachments?.length)
       || Buffer.byteLength(input.text) > MAX_INPUT_BYTES
@@ -148,6 +148,7 @@ export async function runClaudeTurn({
   let reason = 'matrix_identity_unverified';
   let observedLimit, throttle;
   let observedWork = false;
+  let observedAcceptance = false;
   let rootOutcome;
   let steeringReady = false;
   let steerDeadline;
@@ -353,6 +354,14 @@ export async function runClaudeTurn({
           && event.type === 'assistant' && answered.includes(input.id)) {
         await steering.ready();
         steeringReady = true;
+      }
+      const rootEcho = !rootOutcome && event.parent_tool_use_id == null
+        && (event.type === 'assistant' || event.type === 'stream_event'
+            || (event.type === 'system' && event.subtype === 'status'))
+        && answered.includes(input.id);
+      if (!observedAcceptance && onInputAccepted && rootEcho) {
+        await onInputAccepted();
+        observedAcceptance = true;
       }
       if (event.type !== 'result') continue;
       const successful = event.subtype === 'success' && event.is_error === false

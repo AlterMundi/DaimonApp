@@ -326,8 +326,12 @@ profile. After the identity and catalog checks, the worker emits
 `prepare_submission` with the native session identity and current DMK
 authorization scope. Gateway records both and the exposure together in the
 existing journal before returning `submission_decision` with
-`committed: true`. Each `start` provides a fresh native UUID independent of the
-turn's correlation UUID. For a private Interaction conversation, Gateway can
+`committed: true`. When the worker advertises `inputAcceptance` and Gateway
+selects `observeAcceptance`, the worker emits one `input_accepted` frame
+only after the SDK echoes the exact original UUID in the selected native
+session. Gateway retains that evidence apart from the result. Older workers
+can complete through the existing result path. Each `start` provides a fresh
+native UUID independent of the turn's correlation UUID. For a private Interaction conversation, Gateway can
 also offer the previous native UUID and scope. It selects that candidate
 only when the last exposed turn in the same
 conversation and Matrix thread returned a signed reply that Interaction

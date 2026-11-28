@@ -67,6 +67,33 @@ test('submission is recorded before input and loss leaves the same request uncer
   }
 });
 
+test('native input acceptance uses the exact root UUID before the final result', async () => {
+  const status = { type: 'system', subtype: 'status', session_id: input.sessionId };
+  let receipts = 0;
+  const outcome = await runClaudeTurn(options({
+    beforeSubmit: () => true,
+    onInputAccepted() { receipts++; },
+    query: ({ prompt }) => ({
+      async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+      async mcpServerStatus() { return connected; },
+      async *[Symbol.asyncIterator]() {
+        for await (const _request of prompt) {}
+        yield { ...status, user_message_uuids: [input.sessionId] };
+        yield { ...status, type: 'assistant', parent_tool_use_id: 'nested', user_message_uuids: [input.id] };
+        assert.equal(receipts, 0);
+        yield { ...status, user_message_uuids: [input.id] };
+        assert.equal(receipts, 1);
+        yield { ...status, type: 'assistant', user_message_uuids: [input.id] };
+        assert.equal(receipts, 1);
+        yield { type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId, result: 'Done.' };
+      },
+      close() {},
+    }),
+  }));
+  assert.equal(outcome.phase, 'completed');
+  assert.equal(receipts, 1);
+});
+
 test('only an explicitly selected human goal uses the native command mode', async () => {
   for (const [nativeGoalCommand, supported] of [[false, true], [true, true], [true, false]]) {
     const observed = [];

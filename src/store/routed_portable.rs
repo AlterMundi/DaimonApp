@@ -1237,6 +1237,35 @@ impl Store {
             && current_on(&conn, &next, &self.instance_id)?)
     }
 
+    /// Record incorporation separately from result settlement. Preparation and
+    /// transport commitment alone supply no native acceptance evidence.
+    pub(crate) fn record_routed_input_acceptance(
+        &self,
+        input: &Instruction,
+        local: i64,
+        native: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = super::interaction::instruction_on(&tx, &input.id, input.human_id)?
+            .context("Routed input missing")?;
+        if current.phase != Phase::Submitting
+            || current.local_turn != Some(local)
+            || current.native_thread.as_deref() != Some(native)
+            || !current_on(&tx, &current, &self.instance_id)?
+        {
+            return Ok(false);
+        }
+        let changed = tx.execute(
+            "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_input_accepted',json('true'))
+             WHERE id=?1 AND instance_id=?2 AND phase='submitting'
+             AND EXISTS(SELECT 1 FROM turns WHERE id=?3 AND status='running' AND native_thread_id=?4)",
+            params![input.id, self.instance_id, local, native],
+        )?;
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
     pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
@@ -1373,9 +1402,12 @@ impl Store {
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
-                _ if outcome["phase"] == "not_submitted"
-                    || (limit.is_some()
-                        && crate::interaction::SubscriptionLimit::refused_before_work(outcome)) =>
+                _ if !current.native_input_accepted
+                    && (outcome["phase"] == "not_submitted"
+                        || (limit.is_some()
+                            && crate::interaction::SubscriptionLimit::refused_before_work(
+                                outcome,
+                            ))) =>
                 {
                     Phase::Rejected
                 }

@@ -643,6 +643,7 @@ async function main() {
     const pending = new Map();
     let nextCall = 0;
     let committed = false;
+    let observeAcceptance = false;
     let steeringSelected = false;
     let acceptingSteers = false;
     let steerClosed = false;
@@ -750,6 +751,11 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
+      async onInputAccepted() {
+        if (observeAcceptance) {
+          await writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
+        }
+      },
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
         historySeed: recoveredHistory,
         projectCheckpoint: !resume || recoveredHistory ? projectCheckpoint : undefined },
@@ -771,12 +777,14 @@ async function main() {
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
           nativeSessionId: sessionId, sessionScope: scope,
+          inputAcceptance: true,
           ...(workspace === undefined ? {} : { workspace }),
           ...(steering ? { steering: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;
+        observeAcceptance = decision?.observeAcceptance === true;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed',
-          ...(steeringSelected ? ['steering'] : [])])
+          ...(steeringSelected ? ['steering'] : []), ...(observeAcceptance ? ['observeAcceptance'] : [])])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;

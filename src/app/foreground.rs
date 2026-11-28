@@ -26,6 +26,13 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
     pub steering: Option<&'a mut WorkerSteering<'s>>,
+    pub acceptance: Option<WorkerAcceptance<'a>>,
+}
+
+pub(in crate::app) struct WorkerAcceptance<'a> {
+    store: &'a crate::store::Store,
+    input: &'a crate::interaction::Instruction,
+    local_turn: i64,
 }
 
 pub(in crate::app) struct WorkerSteering<'a> {
@@ -154,6 +161,7 @@ pub(in crate::app) async fn execute_worker(
         cancel,
         controller,
         mut steering,
+        acceptance,
     } = turn;
     anyhow::ensure!(
         !cancel.is_cancelled(),
@@ -250,6 +258,7 @@ pub(in crate::app) async fn execute_worker(
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
         let mut negotiated_steering = false;
+        let mut observe_acceptance = false;
         if frame["type"] == "prepare_submission" {
             let observed = frame.get("nativeSessionId");
             let selected = match engine {
@@ -301,6 +310,11 @@ pub(in crate::app) async fn execute_worker(
             }
             let mut decision = json!({"schema":schema,"type":"submission_decision",
                 "inputId":id,"sessionId":session,"committed":committed});
+            observe_acceptance =
+                committed && acceptance.is_some() && frame["inputAcceptance"] == true;
+            if observe_acceptance {
+                decision["observeAcceptance"] = json!(true);
+            }
             if committed
                 && engine == ForegroundEngine::Claude
                 && steering.is_some()
@@ -342,6 +356,30 @@ pub(in crate::app) async fn execute_worker(
                         }
                     }
                 }
+            }
+            if frame["type"] == "input_accepted" {
+                anyhow::ensure!(
+                    observe_acceptance && frame.as_object().is_some_and(|object| object.len() == 5),
+                    "Unexpected native input receipt"
+                );
+                let receipt = acceptance
+                    .as_ref()
+                    .context("No native receipt destination")?;
+                let native = native_session
+                    .as_deref()
+                    .context("No committed native session")?;
+                anyhow::ensure!(
+                    frame["nativeSessionId"].as_str() == Some(native)
+                        && receipt.store.record_routed_input_acceptance(
+                            receipt.input,
+                            receipt.local_turn,
+                            native
+                        )?,
+                    "Native input receipt differs from the committed turn"
+                );
+                observe_acceptance = false;
+                frame = Value::Null;
+                continue;
             }
             if frame["type"] == "steer_ready" {
                 anyhow::ensure!(
@@ -709,6 +747,7 @@ pub(super) async fn run_portable_turn(
                 body: body.clone(),
                 cancel: &cancel,
                 steering: None,
+                acceptance: None,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
                     .then_some(WorkerController {
                         app,
@@ -933,6 +972,9 @@ pub(super) async fn run_routed_portable(
                     cancel: &cancel,
                     controller,
                     steering: steering.as_mut(),
+                    acceptance: author.as_ref().is_some_and(|a| a["report_to_topic"] == true).then_some(WorkerAcceptance {
+                        store, input, local_turn: local,
+                    }),
                 },
                 |prepared| {
                     if cancel.is_cancelled()

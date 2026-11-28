@@ -1415,6 +1415,11 @@ freezes its destination and keeps its separate internal return.
 Gateway projects the canonical delivery identity and verifies both conversation
 generations. Connectors supply the native receipt and enforce their own packet
 limits. The current connector qualification for selected reports is Claude.
+Connectors that can prove early native incorporation may negotiate an
+`input_accepted` receipt. Gateway retains the exact evidence on the admitted
+instruction and keeps completion and publication separate. An incorporated
+input with an unobserved result must remain uncertain even if the worker
+subsequently reports a pre-submission refusal.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 

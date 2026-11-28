@@ -1444,6 +1444,24 @@ mod tests {
                 .expose_routed_portable(&delivered, local, &body, &prepared, paired, None)
                 .unwrap()
         );
+        if paired && !recover_onward {
+            assert!(
+                !store
+                    .record_routed_input_acceptance(&delivered, local, "another-session")
+                    .unwrap()
+            );
+            assert!(
+                store
+                    .record_routed_input_acceptance(&delivered, local, &native)
+                    .unwrap()
+            );
+            let observed = store
+                .interaction_instruction(&delivered.id, 100)
+                .unwrap()
+                .unwrap();
+            assert!(observed.native_input_accepted);
+            assert_eq!(observed.phase, P::Submitting);
+        }
         assert_eq!(
             store
                 .routed_portable_session_requests(
@@ -1599,6 +1617,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(deliveries[0].internal, Some(true));
+        assert_eq!(
+            store
+                .interaction_instruction(&delivered.id, 100)
+                .unwrap()
+                .unwrap()
+                .native_input_accepted,
+            paired
+        );
         let handoff = store.topic_publication_claim(target.key, 100).unwrap();
         assert_eq!(handoff.is_some(), paired);
         if let Some(handoff) = handoff {

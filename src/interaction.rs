@@ -939,6 +939,8 @@ pub struct Instruction {
     pub local_turn: Option<i64>,
     pub native_thread: Option<String>,
     pub native_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_input_accepted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
