@@ -413,8 +413,9 @@ The current MVP is a single **web conversation** for text and two-way voice, coo
 The canonical portable topic journal also feeds both surfaces. An original
 sent directly from Telegram to an owned portable topic is visible in its
 Conversation history and in the integrating Conversation once Gateway retains
-its routed input, while it can still be waiting for the harness. The original
-and the answer use independent read paths. A completed
+its routed input, while it can still be waiting for the harness. These views
+update the same message when native acceptance is observed, before a final
+answer is required. A completed
 paired-human exchange begun in Conversation is projected to the selected
 Telegram work topic. A completed exchange begun directly in that Telegram
 topic appears as an attributed result in the integrating Conversation and,

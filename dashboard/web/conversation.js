@@ -917,7 +917,17 @@ window.Conversation = (() => {
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramNewest=0,telegramLoaded=false,telegramReading=false;
-    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
+    const portableDeliveryText = phase => ({
+      queued:"Saved · waiting for the session",
+      submitting:"Sending to the session…",
+      steering:"Waiting for the session to pick up this message",
+      accepted:"Received by the session",
+      retained_unsent:"Saved · waiting to send",
+      uncertain:"Saved · delivery unconfirmed",
+      rejected:"Saved · the session did not receive this message",
+      cancelled:"Saved · sending cancelled",
+    })[phase];
+    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? portableDeliveryText(value.portable_phase) ?? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
       : value.subscription_limit ? subscriptionLimitText(value.subscription_limit)
       : value.routing?.subscription_limit ? routeText(value.routing)
       : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."
@@ -946,7 +956,7 @@ window.Conversation = (() => {
       $("#conversation-focus-label").textContent=`Reply to ${label}`;$("#conversation-focus").hidden=false;
       draft.focus?.();compose.scrollIntoView?.({block:"nearest"});
     }
-    const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
+    const workspace=standalone&&!readOnly&&!hostSurface?window.SessionWorkspace?.mount({timeline,api,portableDeliveryText,toolbarHost:$("#conversation-compose-bar"),noticeHost:$("#conversation-compose-notices .composer-notice-panel"),daimonName:$("#conversation-daimon")?.textContent,
       onTarget:()=>{clearFocus();syncTitleControls();syncWorkspaceAudio();syncRuntimeSummary();},
       focusComposer:()=>draft.focus?.({preventScroll:true}),onReply:selectFocus,
       audio:row=>{const key=workspaceAudioKey(row);return {muted:mutedSessions.has(key),solo:soloSessions.has(key),filtered:mutedSessions.size>0||soloSessions.size>0};},
@@ -1288,6 +1298,7 @@ window.Conversation = (() => {
       if(typeof value.preview==="string" && value.preview!==card.value.preview){
         card.originalText=undefined;card.originalOffset=undefined;card.autoRevision=undefined;
       }
+      if(card.value.portable_phase==="accepted")value={...value,portable_phase:"accepted"};
       card.value = {...card.value, ...value};
       messageTime(card.time,card.value.received_at);
       if(card.fileList)card.fileList.remove();

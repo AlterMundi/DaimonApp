@@ -1617,7 +1617,8 @@ timeout_seconds=5
             def state(update):
                 return journey.row(
                     "SELECT i.id,i.phase,json_extract(i.doc,'$.local_turn'),"
-                    "json_extract(i.doc,'$.native_turn') FROM interaction_sources s "
+                    "json_extract(i.doc,'$.native_turn'),json_extract(i.doc,'$.native_thread') "
+                    "FROM interaction_sources s "
                     "JOIN interaction_instructions i ON i.input_id=s.id WHERE s.event_id=?",
                     (str(update),),
                 )
@@ -1628,25 +1629,30 @@ timeout_seconds=5
             self.assertIsNone(provider.failure)
             self.assertTrue(started.exists(), (state(root), provider.calls, provider.exposures))
             followup = journey.admit(provider.steer_fixture["text"], topic=7)
+            from contextlib import closing
+            from dashboard.session_view import read_portable
+            session, = journey.row("SELECT id FROM sessions WHERE chat_id=100 AND thread_id=7")[0]
+            source_id = f"telegram:{followup}"
+
+            def assert_delivery(expected):
+                telegram = journey.read("input", "telegram-list", "0", "before")["result"]
+                matches = [row for row in telegram["items"] if row["id"] == source_id]
+                self.assertEqual([(row["preview"], row["portable_phase"]) for row in matches],
+                                 [(provider.steer_fixture["text"], expected)])
+                trace = journey.read("input", "trace", source_id)["result"]
+                self.assertEqual(trace["text"], provider.steer_fixture["text"])
+                with closing(sqlite3.connect(f"file:{journey.root / 'state.sqlite'}?mode=ro", uri=True)) as db:
+                    pending = read_portable(db, session, 100, "claude")["pending_items"]
+                self.assertEqual([(row["text"], row["portable_phase"]) for row in pending
+                                  if row.get("input_id") == source_id],
+                                 [(provider.steer_fixture["text"], expected)])
+                self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+
             conversation = str(uuid.uuid4())
             try:
                 journey.wait(lambda: provider.failure or (
                     state(followup) and state(followup)[0][1] == "steering"), seconds=6)
-                # Project the retained Telegram original while the shell tool is
-                # still running and before Claude has returned any final result.
-                telegram = journey.read("input", "telegram-list", "0", "before")["result"]
-                matches = [row for row in telegram["items"] if row["id"] == f"telegram:{followup}"]
-                self.assertEqual([row["preview"] for row in matches], [provider.steer_fixture["text"]])
-                trace = journey.read("input", "trace", f"telegram:{followup}")["result"]
-                self.assertEqual(trace["text"], provider.steer_fixture["text"])
-                from dashboard.session_view import read_portable
-                session, = journey.row("SELECT id FROM sessions WHERE chat_id=100 AND thread_id=7")[0]
-                from contextlib import closing
-                with closing(sqlite3.connect(f"file:{journey.root / 'state.sqlite'}?mode=ro", uri=True)) as db:
-                    pending = read_portable(db, session, 100, "claude")["pending_items"]
-                self.assertEqual([row["text"] for row in pending if row.get("input_id") == f"telegram:{followup}"],
-                                 [provider.steer_fixture["text"]])
-                self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+                assert_delivery("steering")
                 page = journey.read("presentation", "list", "0", "0")["result"]
                 original = {"binding": page["binding"], "id": conversation,
                             "text": "#Alpha " + provider.steer_fixture["conversation_text"]}
@@ -1656,6 +1662,7 @@ timeout_seconds=5
                 self.assertEqual(state(followup)[0][2], state(root)[0][2])
                 self.assertEqual(state(conversation)[0][2], state(root)[0][2])
                 provider.steer_fixture["parent"] = state(followup)[0][0]
+                provider.steer_fixture["assert_delivery"] = assert_delivery
             finally:
                 release.touch()
             journey.wait(lambda: provider.failure or journey.has(ANSWER, 7), seconds=25)
@@ -1664,6 +1671,9 @@ timeout_seconds=5
             self.assertEqual(original[1:], followup[1:])
             self.assertEqual(original[1:], state(conversation)[0][1:])
             self.assertEqual(original[1], "accepted")
+            self.assertEqual(original[4], journey.row(
+                "SELECT native_thread_id FROM turns WHERE id=?", (original[2],))[0][0])
+            self.assertTrue(original[4])
             self.assertEqual(provider.calls, [original[0]] * 4)
             self.assertEqual(journey.row("SELECT parent_instruction FROM interaction_session_requests"),
                              [(followup[0],)])
