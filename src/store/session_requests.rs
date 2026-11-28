@@ -1578,6 +1578,16 @@ mod tests {
                 .topic_publication_receipt(handoff.id, 0, Some(42), false)
                 .unwrap();
             store.topic_publication_finish(handoff.id).unwrap();
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE topic_publications SET phase='retired' WHERE id=?",
+                    [handoff.id],
+                )
+                .unwrap();
+            assert_eq!(visible_handoffs(), 1);
             let report = store
                 .topic_publication_claim(target.key, 100)
                 .unwrap()

@@ -555,7 +555,7 @@ impl Store {
              SELECT p.id,p.source,p.session_id,p.local_turn,p.human_id,p.body
              FROM topic_publications p JOIN turns t ON t.id=p.local_turn JOIN sessions s ON s.id=p.session_id
              JOIN users u ON u.tg_user_id=p.human_id
-             WHERE p.kind='portable_report_request' AND p.phase<>'retired'
+             WHERE p.kind='portable_report_request'
                AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id
                AND {PORTABLE_REPORT_SCOPE} AND {REPORT_REQUEST_CURRENT}"
         ))?;
