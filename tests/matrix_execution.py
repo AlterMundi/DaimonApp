@@ -1848,6 +1848,22 @@ class AuthenticatedWeHostTests(unittest.TestCase):
                 ("observation", b"o" * 32, ["runtime.status", "we.conversation.page"]),
             )
         }
+        # The selected SDK asks its egress controller for the signed private
+        # pair before resolving the sealed audience. The fixture transport below
+        # calls only the two in-process siblings and never publishes an echo.
+        private_pair = {author, body}
+
+        def private_sibling_addressee(sender, addressees):
+            if len(addressees) == 1 and {sender, addressees[0]} == private_pair:
+                return addressees[0]
+            return None
+
+        egress = SimpleNamespace(
+            private_sibling_addressee=private_sibling_addressee,
+            mixed_private_sibling_audience=lambda sender, addressees: (
+                len(addressees) > 1 and any({sender, recipient} == private_pair for recipient in addressees)
+            ),
+        )
         service = HostedWeave(
             sdk.ledger_b,
             sdk.signers["daimonmatrix"],
@@ -1856,7 +1872,7 @@ class AuthenticatedWeHostTests(unittest.TestCase):
             "dm:runtime:v1:" + "W" * 43,
             "gateway-we-test",
             scopes=ScopeResolver(sdk.ledger_b, clock=lambda: now + 10),
-            peer_context=SimpleNamespace(configured=peer, authority=sdk.authority,
+            peer_context=SimpleNamespace(configured=peer, egress=egress, authority=sdk.authority,
                                          local_origin=sdk.ledger_b.local_origin),
             we_lane=sdk.lane("daimonmatrix", at_ms=now + 10),
         )

@@ -630,7 +630,8 @@ timeout_seconds=5
                 {cap.capability_id: cap for cap in capabilities.values()}, lambda: now,
                 "dm:runtime:v1:" + "X" * 43, "interaction-author-test",
                 scopes=ScopeResolver(fixture.ledger_a, clock=lambda: now),
-                peer_context=SimpleNamespace(configured=peer, authority=fixture.authority,
+                peer_context=SimpleNamespace(configured=peer, egress=receiver.peer_context.egress,
+                                         authority=fixture.authority,
                                              local_origin=fixture.ledger_a.local_origin),
                 we_lane=fixture.lane("legion", at_ms=now),
             )
