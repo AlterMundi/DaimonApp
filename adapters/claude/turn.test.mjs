@@ -276,11 +276,13 @@ test('Claude sends steer on the existing input stream and correlates the native 
   const steer = { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Adjust the current work.' };
   for (const consumedInRoot of [true, false, null]) {
     const receipts = [];
+    const early = [];
     let ready = false;
     const steering = {
       messages: (async function* () { yield steer; })(),
       admit: async () => ready,
       ready: async () => { ready = true; },
+      accepted: async ids => early.push(...ids),
       close() {},
       result: async (ids, text) => { receipts.push([ids, text]); },
     };
@@ -302,6 +304,14 @@ test('Claude sends steer on the existing input stream and correlates the native 
             origin: { kind: 'human' }, client_composed: true, priority: 'next',
             message: { role: 'user', content: steer.text },
           });
+          if (consumedInRoot) {
+            const partial = {type: 'stream_event', session_id: input.sessionId,
+              event: {type: 'message_start'}, user_message_uuids: [input.id, steer.id]};
+            yield partial;
+            yield partial;
+            assert.deepEqual(early, [steer.id]);
+            assert.deepEqual(receipts, []);
+          }
           yield { ...result, result: 'Unrelated reply.',
             user_message_uuid: '66df791f-a4aa-4c7c-82c7-6878f545beb8' };
           yield {
@@ -318,6 +328,7 @@ test('Claude sends steer on the existing input stream and correlates the native 
     assert.deepEqual(outcome, {
       phase: 'completed', sessionId: input.sessionId, text: 'Root reply.', steerSubmitted: [steer.id],
     });
+    assert.deepEqual(early, consumedInRoot ? [steer.id] : []);
     assert.deepEqual(receipts, consumedInRoot === null
       ? [] : [[[steer.id], consumedInRoot ? null : 'Separate reply.']]);
   }

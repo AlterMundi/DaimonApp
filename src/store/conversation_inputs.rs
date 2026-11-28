@@ -466,12 +466,11 @@ fn projected_phase_on<'a>(
     )
 }
 
-/// Historical inspection never grants admission or refreshes a voice transcript.
 // A paired human's original in an owned portable topic can also be shown in
 // their integrating conversation. The admitted route fixes the actual source
 // and target. Raw Telegram traffic from unrelated topics stays scoped locally.
-const DIRECT_PORTABLE_TELEGRAM_ORIGINAL: &str = "EXISTS(
-    SELECT 1 FROM interaction_sources x
+const DIRECT_PORTABLE_TELEGRAM_PHASE: &str = "(
+    SELECT r.phase FROM interaction_sources x
     JOIN interaction_instructions r ON r.input_id=x.id
     JOIN sessions w ON w.id=r.session_id
     WHERE x.update_id=i.update_id AND x.human_id=?1 AND w.creator_user_id=?1
@@ -481,8 +480,10 @@ const DIRECT_PORTABLE_TELEGRAM_ORIGINAL: &str = "EXISTS(
       AND x.origin_message=json_extract(i.payload_json,'$.message.message_id')
       AND json_extract(r.doc,'$.target_execution.harness') IN ('claude','antigravity','goose')
       AND json_type(x.doc,'$.tribu_source') IS NOT 'object'
-      AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id))";
+      AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id)
+    LIMIT 1)";
 
+/// Historical inspection never grants admission or refreshes a voice transcript.
 fn trace_original_on(
     conn: &Connection,
     human: i64,
@@ -496,9 +497,9 @@ fn trace_original_on(
         if update_id < 0 || update_id.to_string() != value {
             bail!("Invalid Telegram input identity");
         }
-        let (raw, phase, portable): (String, String, bool) = conn.query_row(
+        let (raw, phase, portable_phase): (String, String, Option<String>) = conn.query_row(
             &format!(
-                "SELECT payload_json,status,{DIRECT_PORTABLE_TELEGRAM_ORIGINAL}
+                "SELECT payload_json,status,{DIRECT_PORTABLE_TELEGRAM_PHASE}
                       FROM incoming_updates i WHERE update_id=?3"
             ),
             params![human, entry.chat_id, update_id],
@@ -512,7 +513,8 @@ fn trace_original_on(
             .as_ref()
             .is_none_or(|u| u.id != human || u.is_bot)
             || message.chat.id != entry.chat_id
-            || (origin_thread != entry.thread_id && (!portable || message.text.is_none()))
+            || (origin_thread != entry.thread_id
+                && (portable_phase.is_none() || message.text.is_none()))
         {
             bail!("Telegram original is outside this owned entry");
         }
@@ -537,7 +539,7 @@ fn trace_original_on(
             )
         };
         return Ok(
-            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread}),
+            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread,"portable_phase":portable_phase}),
         );
     }
     let input = read_on(conn, id, human)?;
@@ -2162,7 +2164,7 @@ impl Store {
         let order = if before { "DESC" } else { "ASC" };
         let mut query=conn.prepare(&format!("SELECT i.update_id,g.id,g.captured_at FROM incoming_updates i LEFT JOIN original_ingress_order g ON g.channel='telegram' AND g.event_id=CAST(i.update_id AS TEXT) WHERE json_extract(i.payload_json,'$.message.from.id')=?1 AND json_extract(i.payload_json,'$.message.from.is_bot')=0 AND json_extract(i.payload_json,'$.message.chat.id')=?2 AND ((COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)=?3 AND
           (json_type(i.payload_json,'$.message.text')='text' OR json_type(i.payload_json,'$.message.voice')='object'))
-          OR (json_type(i.payload_json,'$.message.text')='text' AND {DIRECT_PORTABLE_TELEGRAM_ORIGINAL})) AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
+          OR (json_type(i.payload_json,'$.message.text')='text' AND {DIRECT_PORTABLE_TELEGRAM_PHASE} IS NOT NULL)) AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
         let rows = query
             .query_map(
                 params![
@@ -2188,7 +2190,7 @@ impl Store {
         for (update, capture, received_at) in rows.iter().take(8) {
             let id = format!("telegram:{update}");
             let original = trace_original_on(&conn, human, entry, &id)?;
-            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"retired":original["retired"]}));
+            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"portable_phase":original["portable_phase"],"retired":original["retired"]}));
         }
         Ok(
             json!({"schema":"telecodex.telegram-input-list/v1","entry_binding":[human,entry,session,native],"binding":super::presentation::entry_binding(&conn,human,entry,session)?,"items":items,"cursor":rows.iter().take(8).next_back().map(|r|r.0),"newest":rows.iter().take(8).map(|r|r.0).max().unwrap_or(0),"more":rows.len()>8,"read_only":true}),

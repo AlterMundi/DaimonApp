@@ -142,6 +142,18 @@ fn paired_host_access_on(conn: &Connection, input: &Instruction) -> Result<bool>
     }
 }
 
+pub(super) fn controller_parent_eligible_steer_on(
+    conn: &Connection,
+    input: &Instruction,
+    instance: &str,
+) -> Result<bool> {
+    Ok(
+        super::session_requests::author_on(conn, &input.input_id)?.is_none()
+            && paired_host_access_on(conn, input)?
+            && current_on(conn, input, instance)?,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn controller_parent_on(
     conn: &Connection,
@@ -1190,6 +1202,54 @@ impl Store {
             && current_on(&conn, &next, &self.instance_id)?)
     }
 
+    /// Retain incorporation observed on a native reply frame before the final
+    /// result, so ordinary coordination can use the correct human original.
+    pub(crate) fn acknowledge_claude_steer(
+        &self,
+        root: &Instruction,
+        local: i64,
+        ids: &[&str],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let active = super::interaction::instruction_on(&tx, &root.id, root.human_id)?
+            .context("Steer has no retained root")?;
+        let writer: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?1)",
+            [&self.instance_id],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            writer
+                && active.phase == Phase::Submitting
+                && active.local_turn == Some(local)
+                && active.native_thread.is_some(),
+            "Claude steering writer changed"
+        );
+        let anchor = format!("gateway:claude:{}", root.id);
+        for id in ids {
+            let next = super::interaction::instruction_on(&tx, id, root.human_id)?
+                .context("Claude steer input missing")?;
+            anyhow::ensure!(
+                next.phase == Phase::Steering
+                    && next.local_turn == Some(local)
+                    && next.native_thread == active.native_thread
+                    && next.target_execution == active.target_execution,
+                "Claude incorporation does not match the retained input"
+            );
+            super::interaction::transport_on(
+                &tx,
+                id,
+                root.human_id,
+                local,
+                Phase::Accepted,
+                Some(&anchor),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
@@ -1270,7 +1330,10 @@ impl Store {
                         let steered = super::interaction::instruction_on(&tx, id, input.human_id)?
                             .context("Claude steer input missing")?;
                         anyhow::ensure!(
-                            steered.phase == Phase::Steering
+                            (steered.phase == Phase::Steering
+                                || (steered.phase == Phase::Accepted
+                                    && steered.native_turn.as_deref()
+                                        == Some(result_anchor.as_str())))
                                 && steered.native_thread.as_deref() == Some(native)
                                 && steered.local_turn == Some(local),
                             "Claude steering receipt does not match the retained input"

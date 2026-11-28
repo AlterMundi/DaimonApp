@@ -319,7 +319,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
             [human, {'chat_id':chat, 'thread_id':topic}, session, generation],
             ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         pending = db.execute(f"""SELECT i.id,COALESCE(s.created_at,t.started_at),
-                substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
+                substr(json_extract(s.doc,'$.text'),1,1001),{original_id},i.phase
             FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
             LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
             WHERE i.session_id=?1 AND s.human_id=?2 AND {human_original}
@@ -333,12 +333,12 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                   AND s.update_id IS NOT NULL AND s.origin_message IS NOT NULL
                   AND json_type(s.doc,'$.tribu_source') IS NOT 'object'))
             ORDER BY i.sequence DESC LIMIT 8""", (*scope, dispatch_binding, chat, topic))
-        for instruction, started, text, input_id in reversed(pending.fetchall()):
+        for instruction, started, text, input_id, phase in reversed(pending.fetchall()):
             if isinstance(text, str) and text.strip():
                 if len(text)>1000:text=text[:1000]+'…'
                 item_id = hashlib.sha256(f'{identity}:pending:{instruction}'.encode()).hexdigest()[:32]
                 pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
-                                      'timestamp':started,'pending':True})
+                                      'timestamp':started,'pending':True,'portable_phase':phase})
                 if input_id:pending_items[-1]['input_id']=input_id
     ordered = after is not None
     bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)

@@ -35,8 +35,11 @@ commands and attributed handoffs retain their ordinary queued execution.
 The worker keeps the same native input stream open and sends an eligible input
 with its original UUID and Claude priority `next`. Claude reads it after the
 current tool calls, or in its next native turn if the current turn ends first.
-The completed result must echo the exact consumed UUIDs. Shared and separate
-replies retain their actual native result membership. Inputs known to have stayed
+A native status or reply frame that echoes the current original and a steered
+UUID records incorporation immediately. The paired human's new original can then parent a
+local session request within that running turn. The completed result still
+records the exact consumed UUIDs. Shared and separate replies retain their
+actual native result membership. Inputs known to have stayed
 outside the native stream can return to Gateway's queue. A write or execution with
 an unconfirmed outcome retains the original without replay. This path never
 requests an immediate interrupt.

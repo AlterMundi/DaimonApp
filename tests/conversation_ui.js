@@ -1620,13 +1620,16 @@ function boot(readOnly=false,standalone=false,options={}) {
   }
 
   const telegramChat=boot(false,true);
-  telegramChat.telegramOriginals.set('telegram:42',{id:'telegram:42',preview:'A human Telegram message',phase:'completed',sequence:42,capture_order:500,received_at:'2024-01-01T00:00:05.500Z',origin_kind:'telegram',read_only:true});
+  telegramChat.telegramOriginals.set('telegram:42',{id:'telegram:42',preview:'A human Telegram message',phase:'completed',portable_phase:'steering',sequence:42,capture_order:500,received_at:'2024-01-01T00:00:05.500Z',origin_kind:'telegram',read_only:true});
   await telegramChat.ui.refresh();
   const telegramLane=telegramChat.nodes.get('#conversation-timeline'),telegramBubble=telegramLane.children.find(card=>card.dataset.timelineKey==='input:telegram:42');
   assert(telegramBubble,'Standalone chat includes Telegram input without opening diagnostics');
   assert.equal(telegramBubble.children[0].textContent,'You');
   assert.equal(telegramBubble.dataset.timelineTime,String(Date.parse('2024-01-01T00:00:05.500Z')));
+  assert.match(telegramBubble.children[2].textContent,/Waiting for the session to pick up this message/);
+  telegramChat.telegramOriginals.get('telegram:42').portable_phase='accepted';
   const telegramCount=telegramLane.children.length;await telegramChat.ui.refresh();assert.equal(telegramLane.children.length,telegramCount,'Refresh does not duplicate Telegram originals');
+  assert.match(telegramBubble.children[2].textContent,/Received by the session/);
   assert(telegramChat.requests.filter(r=>r.telegram).every(r=>r.body===undefined),'Cross-surface observation never resubmits an original');telegramChat.ui.stop();
   const telegramDenied=boot(false,true,{telegramDenied:true});
   await telegramDenied.ui.refresh();
