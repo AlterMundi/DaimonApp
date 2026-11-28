@@ -48,6 +48,13 @@ model configuration, a withheld original and refusal of a missing session.
 AGY_TEST_AUTHENTICATED_BINARY=/absolute/agy node --test adapters/acp/antigravity-turn.test.mjs adapters/acp/gateway-worker.test.mjs
 ```
 
+For the joined image fixture, run
+`python3 tests/antigravity_images_io.py /absolute/telecodex /absolute/owner-gateway.toml`.
+Name the disposable executable or its symlink `telecodex` for the fixture's
+embedded Telegram loopback. The fixture uses the selected signed profile and
+real agy model, a disposable topic journal, and two synthetic PNGs. It verifies
+the Telegram reply reference, the Conversation result, and one native session.
+
 ## Goose
 
 `runGooseTurn` is the native ACP client for the Goose candidate in

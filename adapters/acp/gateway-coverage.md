@@ -197,7 +197,10 @@ process and recovered a synthetic marker from the earlier turn. Its live
 check also kept a denied admission and a missing session unsent. The server
 advertised image input. A real PNG reached the model as ACP image content.
 The Gateway image worker also passed the retained digest check and kept
-modified bytes unsent. Live paired surface acceptance is still open.
+modified bytes unsent. The joined test sent distinct images from Telegram
+and Conversation to the same native session and verified the Telegram
+reply reference. The model and signed reader were real; the surface clients
+and topic were disposable fixtures.
 An explicit Gateway foreground profile wires agy through the common ACP
 worker and keeps the SDK/local-provider protocol available for existing
 profiles. The worker qualification checks selected tool use, journal
