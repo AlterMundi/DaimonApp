@@ -68,10 +68,15 @@ async function runWorker(t, profile, text, beforeDecision, agy) {
   const { nativeSessionId, ...correlation } = first;
   assert.ok(nativeSessionId);
   assert.deepEqual(correlation, { ...same, type: 'prepare_submission',
-    ...(agy ? { workspace: agy.workspace } : {}) });
+    ...(agy ? { workspace: agy.workspace, inputAcceptance: true, workAcceptance: true } : {}) });
+  const committed = beforeDecision(nativeSessionId);
   await writeFrame(child.stdin, {
-    ...same, type: 'submission_decision', committed: beforeDecision(nativeSessionId),
+    ...same, type: 'submission_decision', committed,
+    ...(agy && committed ? { observeAcceptance: true, requireWork: true } : {}),
   });
+  if (agy && committed) {
+    assert.deepEqual((await messages.next()).value, { ...same, type: 'input_accepted', nativeSessionId });
+  }
   const settled = (await messages.next()).value;
   assert.deepEqual(settled, { ...same, type: 'outcome', outcome: settled.outcome });
   child.stdin.end();
