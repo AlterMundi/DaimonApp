@@ -26,6 +26,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
 
     def do_POST(self):
         quote_gate = None
+        held_request_cancelled = getattr(self.server, "held_request_cancelled", None)
         try:
             assert self.path.startswith("/v1/messages")
             length = int(self.headers["Content-Length"])
@@ -380,7 +381,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             self.send_fixture_message(data, f"{fixture_id}_{prior}", block, delta, reason)
         except Exception as error:
             if (isinstance(error, (BrokenPipeError, ConnectionResetError))
-                    and quote_gate and quote_gate[2].is_set()):
+                    and ((quote_gate and quote_gate[2].is_set())
+                         or (held_request_cancelled and held_request_cancelled.is_set()))):
                 # The selected CLI already acknowledged cancellation and may
                 # close its HTTP stream before this late answer is written.
                 return

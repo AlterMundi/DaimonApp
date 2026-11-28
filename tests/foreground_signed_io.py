@@ -1143,6 +1143,7 @@ timeout_seconds=5
         def _telegram_cancel(self, journey, provider):
             native_turns = journey.native_turns
             provider.exposed, provider.hold = Event(), Event()
+            provider.held_request_cancelled = Event()
             provider.original = "Keep this synthetic original if I interrupt the selected turn."
             provider.human_original = str(journey.sequence + 1)
             update = journey.admit(provider.original, topic=7)
@@ -1159,8 +1160,17 @@ timeout_seconds=5
                 self.assertTrue(provider.exposed.wait(8), provider.failure)
                 ident = state()[0][0]
                 self.assertEqual(state(), [(ident, "submitting", "running", 1)])
-                journey.command("/stop", "Stop signal sent.", topic=7)
-                journey.wait(lambda: state() == [(ident, "uncertain", "failed", 0)])
+                journey.command("/interrupt", "Stop signal sent.", topic=7)
+                stopped = [(ident, "cancelled", "failed", 0)]
+                journey.wait(lambda: state() == stopped)
+                confirmed, native = journey.row(
+                    "SELECT json_extract(doc,'$.native_interrupt_confirmed'),"
+                    "json_extract(doc,'$.native_thread') FROM interaction_instructions WHERE id=?",
+                    (ident,),
+                )[0]
+                self.assertEqual(confirmed, 1)
+                self.assertTrue(native)
+                provider.held_request_cancelled.set()
             finally:
                 provider.hold.set()
 
@@ -1174,9 +1184,32 @@ timeout_seconds=5
                 journey.updates.append(original)
             self.assertTrue(duplicate_polled.wait(5))
             journey.command("/status", "Claude Code", topic=7)
-            self.assertEqual(state(), [(ident, "uncertain", "failed", 0)])
+            self.assertEqual(state(), stopped)
             self.assertEqual(provider.exposures, [ident])
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+
+            del provider.hold
+            del provider.held_request_cancelled
+            provider.original = "Continue with this new synthetic original."
+            provider.quote_response = "The selected topic has resumed."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            followup = journey.admit(provider.original, topic=7)
+            journey.wait(lambda: any(
+                provider.quote_response in message["text"]
+                and payload.get("reply_parameters", {}).get("message_id") == followup
+                for message, payload in journey.messages
+            ))
+            self.assertIsNone(provider.failure)
+            self.assertEqual(journey.row(
+                "SELECT i.phase, t.status, t.native_thread_id "
+                "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(followup),),
+            ), [("accepted", "completed", native)])
+            self.assertEqual(state(), stopped)
+            self.assertEqual(len(provider.exposures), 2)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(1,)])
             self.assertEqual(journey.native_turns, native_turns)
 
         def _telegram_quota(self, journey, provider):
