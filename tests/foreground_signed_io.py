@@ -239,10 +239,13 @@ operator.main()
                     if expected := getattr(self.server, "returned_dependency", None):
                         ident, phase, native, scope, prompt = self.server.journey.row(
                             "SELECT i.id,i.phase,t.native_thread_id,t.execution_native_scope,t.prompt "
-                            "FROM interaction_session_requests r JOIN interaction_instructions i "
-                            "ON i.id=json_extract(r.doc,'$.return_instruction') "
+                            "FROM interaction_session_authors a JOIN interaction_instructions i ON i.input_id=a.input_id "
+                            "JOIN interaction_session_requests r ON r.id=json_extract(a.doc,'$.local_request') "
                             "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
-                            "WHERE r.phase='returned' AND t.status='running'"
+                            "WHERE t.status='running' AND json_extract(a.doc,'$.kind')='session_result' "
+                            "AND ((? AND r.phase='requested' AND json_extract(a.doc,'$.dependency_status')='progress') "
+                            "OR (NOT ? AND r.phase='returned' AND i.id=json_extract(r.doc,'$.return_instruction')))",
+                            (expected.get("progress", False), expected.get("progress", False)),
                         )[0]
                         assert phase == "submitting"
                         assert native == expected["native"], "Returned result started a different native session"
@@ -1877,9 +1880,24 @@ timeout_seconds=5
                 provider.human_original = str(journey.sequence + 1)
                 journey.admit(provider.original, topic=7)
             else:
+                provider.paired_human = False
+                progress = "The general conversation checked one requirement and left the rest open."
+                provider.returned_dependency = {**expected_return, "text": progress, "progress": True}
+                provider.original = progress
+                journey.answer_worker(1, progress, item="partial-dependency", finish=False, complete=False)
+                journey.wait(lambda: provider.failure or journey.row(
+                    "SELECT i.phase,t.status,r.phase,json_extract(r.doc,'$.return_instruction') "
+                    "FROM interaction_session_authors a JOIN interaction_instructions i ON i.input_id=a.input_id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                    "JOIN interaction_session_requests r ON r.id=json_extract(a.doc,'$.local_request') "
+                    "WHERE json_extract(a.doc,'$.dependency_status')='progress'"
+                ) == [("accepted", "completed", "requested", None)], seconds=30)
+                self.assertIsNone(provider.failure)
+                self.assertEqual(len(provider.calls), 3)
+                self.assertEqual(len(set(provider.calls)), 1)
+                provider.calls.clear()
                 provider.returned_dependency = expected_return
                 provider.original = result
-                provider.paired_human = False
                 journey.answer_worker(1, result)
             journey.wait(lambda: provider.failure or journey.row(
                 "SELECT i.phase,t.status FROM interaction_session_requests r "
