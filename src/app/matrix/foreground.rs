@@ -73,7 +73,7 @@ pub(super) async fn run_selected(
         return Ok(existing);
     }
     let config = cfg
-        .foreground(engine)
+        .matrix_foreground(engine)
         .context("Selected native foreground route is unavailable")?;
     let MatrixDestination::Body {
         being_ref,
@@ -90,7 +90,6 @@ pub(super) async fn run_selected(
         !app.shared.shutdown.is_cancelled(),
         "Gateway is shutting down"
     );
-    anyhow::ensure!(!config.agy_cli, "agy is configured for topic input only");
     let (observed, body) = authenticate_foreground_body(&config.transport, &source).await?;
     let mut host = json!({"source":source,"body":observed,"original":selected});
     let original: WeOriginal = serde_json::from_value(

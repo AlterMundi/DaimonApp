@@ -53,6 +53,8 @@ pub struct InteractionConfig {
     pub claude_foreground: Option<ForegroundConfig>,
     pub goose_foreground: Option<ForegroundConfig>,
     pub antigravity_foreground: Option<ForegroundConfig>,
+    /// Existing SDK worker for signed Matrix originals when a topic uses agy.
+    pub antigravity_matrix_foreground: Option<ForegroundConfig>,
     /// Owner-only durable visibility publication; never a model signing API.
     pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
@@ -488,6 +490,7 @@ impl InteractionConfig {
             &self.claude_foreground,
             &self.goose_foreground,
             &self.antigravity_foreground,
+            &self.antigravity_matrix_foreground,
         ]
         .into_iter()
         .flatten()
@@ -519,6 +522,18 @@ impl InteractionConfig {
                 .is_some_and(|foreground| foreground.agy_cli && !foreground.interaction_direct)
         {
             bail!("The agy CLI requires an explicitly selected Antigravity topic");
+        }
+        if let Some(matrix) = &self.antigravity_matrix_foreground {
+            if matrix.agy_cli
+                || matrix.interaction_direct
+                || matrix.interaction_origin.is_some()
+                || self
+                    .antigravity_foreground
+                    .as_ref()
+                    .is_some_and(|topic| topic.transport.source != matrix.transport.source)
+            {
+                bail!("The private Antigravity worker must use the same signed body");
+            }
         }
         if let Some(foreground) = &self.claude_foreground
             && let Some(origin) = &foreground.interaction_origin
@@ -624,6 +639,15 @@ impl InteractionConfig {
             ForegroundEngine::Goose => self.goose_foreground.as_ref(),
             ForegroundEngine::Antigravity => self.antigravity_foreground.as_ref(),
         }
+    }
+
+    pub(crate) fn matrix_foreground(&self, engine: ForegroundEngine) -> Option<&ForegroundConfig> {
+        if engine == ForegroundEngine::Antigravity
+            && let Some(matrix) = &self.antigravity_matrix_foreground
+        {
+            return Some(matrix);
+        }
+        self.foreground(engine).filter(|worker| !worker.agy_cli)
     }
 
     pub(crate) fn portable_route(
@@ -1121,6 +1145,7 @@ mod tests {
             claude_foreground: None,
             goose_foreground: None,
             antigravity_foreground: None,
+            antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![

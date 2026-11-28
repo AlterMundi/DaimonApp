@@ -26,6 +26,10 @@ one original.
 The worker accepts only paired text for this topic and uses the journaled
 native ID from the same topic generation, workspace and signed incarnation.
 There is no fallback to a fresh session after a failed native load.
+An owner that also has the Antigravity SDK worker can select it for private
+Matrix originals in `interaction.antigravity_matrix_foreground`. The two
+profiles must designate the same signed embodiment. This preserves the private
+route without making the SDK worker a fallback for a topic's agy session.
 
 The pilot approves one ACP permission request at a time for its configured
 Matrix status, skills and DMK read tools. No permanent approval is issued. Shipped
