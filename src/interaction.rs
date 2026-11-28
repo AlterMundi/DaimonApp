@@ -625,6 +625,11 @@ impl InteractionConfig {
         Some((engine, config))
     }
 
+    pub(crate) fn supports_visible_handoff(&self, key: SessionKey) -> bool {
+        self.portable_route(key)
+            .is_some_and(|(engine, _)| engine.attributed_handoff_text_limit().is_some())
+    }
+
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
         self.targets
             .iter()

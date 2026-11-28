@@ -142,7 +142,7 @@ pub(super) fn tool_call(
                     let targets=if selector=="general" {vec![cfg.entry()]} else {cfg.resolve(selector)};
                     if targets.len()!=1{ return Ok(json!({"kind":"clarification_required","selector":args.selector,"candidates":targets,"admitted":false})); }
                     if args.report_to_topic
-                        && !cfg.portable_route(targets[0]).is_some_and(|(engine,_)| engine.attributed_handoff_text_limit().is_some())
+                        && !cfg.supports_visible_handoff(targets[0])
                     {
                         return Ok(json!({"kind":"topic_report_destination_unsupported","admitted":false,
                             "detail":"The selected destination adapter cannot produce a visible handoff report yet. For a private session handoff, omit report_to_topic and reuse this same request_id."}));

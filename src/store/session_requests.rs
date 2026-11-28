@@ -1343,6 +1343,10 @@ mod tests {
                     "source":{"kind":"body","being_ref":"fixture","embodiment_id":"fixture"}}}
         }))
         .unwrap();
+        assert_eq!(
+            store.interaction_target_labels(&profile).unwrap()[0]["visible_handoff"],
+            true
+        );
         let send = |id, text, report_to_topic| {
             store.interaction_session_request_scoped(
                 caller.key,
@@ -1631,6 +1635,23 @@ mod tests {
                     assert_eq!(visible_handoffs(), visible);
                 }
                 let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE sessions SET force_fresh_thread=1 WHERE id=?",
+                    [caller.id],
+                )
+                .unwrap();
+                drop(conn);
+                assert_eq!(visible_handoffs(), 0);
+                let conn = store.conn.lock().unwrap();
+                conn.execute("UPDATE turns SET execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=?1) WHERE id=?2", params![caller.id,parent_local]).unwrap();
+                drop(conn);
+                assert_eq!(visible_handoffs(), 1);
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE sessions SET force_fresh_thread=0 WHERE id=?",
+                    [caller.id],
+                )
+                .unwrap();
                 conn.execute(
                     "UPDATE interaction_instructions SET phase='submitting' WHERE id=?",
                     [&instruction.id],

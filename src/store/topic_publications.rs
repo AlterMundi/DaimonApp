@@ -71,7 +71,7 @@ const PORTABLE_REPORT_SCOPE: &str = r#"(p.kind IN ('portable_report','portable_r
               AND src.channel='telegram:'||json_extract(bot.value,'$.id')
               AND captured.value=json_extract(call.doc,'$.epoch')
               AND captured.value=coalesce(current.value,'initial')
-              AND caller.force_fresh_thread=0 AND caller_turn.execution_generation=caller_generation.generation
+              AND caller_turn.execution_generation=caller_generation.generation
               AND caller_turn.native_thread_id=json_extract(call.doc,'$.caller_native')
               AND caller_turn.native_thread_id=json_extract(parent.doc,'$.native_thread')
               AND ((parent.phase='accepted' AND caller_turn.status IN ('running','completed'))
