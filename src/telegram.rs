@@ -1485,6 +1485,14 @@ pub struct Update {
 }
 
 impl Update {
+    pub(crate) fn from_journal(payload: &str, media_group_id: Option<String>) -> Result<Self> {
+        let mut input: Self = serde_json::from_str(payload)?;
+        if let Some(message) = input.message.as_mut() {
+            message.media_group_id = media_group_id;
+        }
+        Ok(input)
+    }
+
     fn from_poll(raw: serde_json::Value) -> Result<Self> {
         let human_origin = raw.get("message").is_some_and(|message| {
             [
@@ -1525,6 +1533,9 @@ impl Update {
 pub struct Message {
     pub message_id: i64,
     pub message_thread_id: Option<i64>,
+    /// Group identifier scoped to this chat; each member keeps its own update ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_group_id: Option<String>,
     pub from: Option<User>,
     pub chat: Chat,
     pub text: Option<String>,

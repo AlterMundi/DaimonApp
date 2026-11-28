@@ -788,6 +788,7 @@ mod tests {
                 .local_turn;
             let source = SourceInput {
                 telegram_files: vec![],
+                telegram_album_members: Vec::new(),
                 tribu_source: None,
                 transcription: None,
                 channel: "local-session".into(),

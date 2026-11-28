@@ -75,6 +75,21 @@ The Bot API path and local Bot API storage stay with TeleDaimon. Gateway
 retains the existing transfer limit and writes into its private temporary file.
 A verified complete transfer is required before publishing the local filename.
 
+Telegram supplies a chat-scoped media group identifier on each album member.
+The adapter preserves it on each original update, and Gateway keeps the members
+under their individual update IDs in the existing ingress journal. A separate
+nullable column retains the group while the original JSON stays readable by
+previous Gateway releases. An older adapter can omit the identifier on
+redelivery without rewriting the original.
+Conflicting known group identifiers for one update are rejected. Attachment-capable
+portable topics collect consecutive members from the same verified sender, chat,
+topic, and stop epoch within a short bounded window. Every member retains its
+original ID and caption. Gateway rechecks the topic generation and commits the
+aggregate instruction and the member dispatch states in one transaction.
+The native reply anchors to the first member. A member that arrives after
+aggregation is handled as its own original. A redelivery of a retained member
+cannot start another submission.
+
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Remove the Gateway's Telegram token
 setting and environment binding. Start Gateway on the same database and

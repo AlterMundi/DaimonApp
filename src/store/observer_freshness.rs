@@ -664,6 +664,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),

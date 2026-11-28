@@ -185,6 +185,8 @@ fn admit_selected_with_origin_on(
                 .is_some_and(|input| !input.files.is_empty())))
         || (!source.telegram_files.is_empty()
             && (source.update_id.is_none() || (!claude && !agy_images)))
+        || (!source.telegram_album_members.is_empty()
+            && (source.telegram_files.is_empty() || !source.channel.starts_with("telegram:")))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -960,9 +962,22 @@ impl Store {
         source: &crate::interaction::SourceInput,
         target: SessionKey,
         route: crate::interaction::ForegroundAdmission<'_>,
+        album_generation: Option<&str>,
     ) -> Result<(crate::interaction::Instruction, bool)> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        if let Some(generation) = album_generation {
+            anyhow::ensure!(
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions s
+                     JOIN conversation_entry_generations g ON g.session_id=s.id
+                     WHERE s.chat_id=?1 AND s.thread_id=?2 AND g.generation=?3)",
+                    params![target.chat_id, target.thread_id, generation],
+                    |row| row.get::<_, bool>(0),
+                )?,
+                "Topic generation changed during Telegram album collection"
+            );
+        }
         let result = admit_selected_on(
             &tx,
             source,
@@ -984,6 +999,16 @@ impl Store {
                 )? == 1,
                 "Portable topic no longer owns this Telegram dispatch"
             );
+            for member in &source.telegram_album_members {
+                anyhow::ensure!(
+                    tx.execute(
+                        "UPDATE incoming_updates SET status='handled',updated_at=?2
+                         WHERE update_id=?1 AND instance_id=?3 AND status='received' AND turn_id IS NULL",
+                        params![member, now_string(), self.instance_id],
+                    )? == 1,
+                    "Portable topic no longer owns an album member"
+                );
+            }
         }
         tx.commit()?;
         Ok(result)
@@ -1395,6 +1420,7 @@ mod tests {
     fn input(event: i64, targets: &[i64]) -> crate::interaction::SourceInput {
         crate::interaction::SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:test-bot".into(),

@@ -44,6 +44,156 @@ pub(super) fn telegram_original_epoch_for_parent(
     telegram_original_epoch_on(conn, source, parent.target, accepted_parent)
 }
 
+const MAX_TELEGRAM_ALBUM_MEMBERS: usize = crate::files::MAX_TELEGRAM_ALBUM_FILES;
+
+fn compatible_album_member(
+    update: &crate::telegram::Update,
+    anchor: &crate::telegram::Message,
+    human: i64,
+) -> bool {
+    update.direct_human_attachment
+        && update.message.as_ref().is_some_and(|message| {
+            message.chat.id == anchor.chat.id
+                && message.message_thread_id == anchor.message_thread_id
+                && message.media_group_id == anchor.media_group_id
+                && message
+                    .from
+                    .as_ref()
+                    .is_some_and(|sender| sender.id == human && !sender.is_bot)
+                && message.reply_to_message.as_ref().is_none_or(|reply| {
+                    anchor
+                        .reply_to_message
+                        .as_ref()
+                        .is_some_and(|first| first.message_id == reply.message_id)
+                })
+        })
+}
+
+pub(crate) fn album_text<'a>(captions: impl IntoIterator<Item = &'a str>) -> String {
+    captions
+        .into_iter()
+        .filter(|caption| !caption.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+impl Store {
+    pub(crate) fn telegram_album_generation(&self, session_id: i64) -> Result<String> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT generation FROM conversation_entry_generations WHERE session_id=?1",
+            [session_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn telegram_album_member_handled(&self, update: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM incoming_updates
+             WHERE update_id=?1 AND instance_id=?2 AND status='handled')",
+            params![update, self.instance_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn telegram_album_candidates(
+        &self,
+        anchor_id: i64,
+        anchor: &crate::telegram::Message,
+        human: i64,
+    ) -> Result<Vec<crate::telegram::Update>> {
+        if anchor.media_group_id.is_none() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut query = conn.prepare(
+            "SELECT i.payload_json, i.status, i.instance_id, e.value, i.media_group_id
+             FROM incoming_updates i
+             LEFT JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+             WHERE i.update_id>?1
+               AND COALESCE(json_extract(i.payload_json,'$.message.chat.id'),
+                            json_extract(i.payload_json,'$.callback_query.message.chat.id'))=?2
+               AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),
+                            json_extract(i.payload_json,'$.callback_query.message.message_thread_id'),0)=?3
+             ORDER BY i.update_id LIMIT ?4",
+        )?;
+        let epoch: String = conn.query_row(
+            "SELECT value FROM bot_state WHERE key='stop_input_epoch:'||?1",
+            [anchor_id],
+            |row| row.get(0),
+        )?;
+        let mut rows = query.query(params![
+            anchor_id,
+            anchor.chat.id,
+            anchor.message_thread_id.unwrap_or(0),
+            MAX_TELEGRAM_ALBUM_MEMBERS - 1,
+        ])?;
+        let mut members = Vec::new();
+        while let Some(row) = rows.next()? {
+            let update = crate::telegram::Update::from_journal(&row.get::<_, String>(0)?, row.get(4)?)?;
+            if row.get::<_, String>(1)? != "received"
+                || row.get::<_, String>(2)? != self.instance_id
+                || row.get::<_, Option<String>>(3)?.as_deref() != Some(epoch.as_str())
+                || !compatible_album_member(&update, anchor, human)
+            {
+                break;
+            }
+            members.push(update);
+        }
+        Ok(members)
+    }
+}
+
+fn telegram_album_matches_on(
+    conn: &Connection,
+    source: &SourceInput,
+    anchor_id: i64,
+    anchor: &crate::telegram::Message,
+    epoch: &str,
+) -> Result<bool> {
+    if source.telegram_album_members.is_empty() {
+        return Ok(anchor.attachment_caption() == source.text);
+    }
+    if anchor.media_group_id.is_none()
+        || source.telegram_album_members.len() >= MAX_TELEGRAM_ALBUM_MEMBERS
+        || source.telegram_files.len() <= source.telegram_album_members.len()
+    {
+        return Ok(false);
+    }
+    let mut previous = anchor_id;
+    let mut captions = vec![anchor.attachment_caption().to_owned()];
+    let mut query = conn.prepare(
+        "SELECT i.payload_json, e.value, i.media_group_id FROM incoming_updates i
+         JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+         WHERE i.update_id=?1 AND i.status IN ('received','handled')",
+    )?;
+    for id in &source.telegram_album_members {
+        if *id <= previous {
+            return Ok(false);
+        }
+        previous = *id;
+        let retained: Option<(String, String, Option<String>)> = query
+            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .optional()?;
+        let Some((raw, member_epoch, group)) = retained else {
+            return Ok(false);
+        };
+        let member = crate::telegram::Update::from_journal(&raw, group)?;
+        if member_epoch != epoch || !compatible_album_member(&member, anchor, source.human_id) {
+            return Ok(false);
+        }
+        captions.push(
+            member
+                .message
+                .expect("validated album member")
+                .attachment_caption()
+                .to_owned(),
+        );
+    }
+    Ok(album_text(captions.iter().map(String::as_str)) == source.text)
+}
+
 fn telegram_original_epoch_on(
     conn: &Connection,
     source: &SourceInput,
@@ -62,21 +212,21 @@ fn telegram_original_epoch_on(
     {
         return Ok(None);
     }
-    let retained: Option<(String, String, String, Option<i64>)> = conn
+    let retained: Option<(String, String, String, Option<i64>, Option<String>)> = conn
         .query_row(
-            "SELECT i.payload_json, e.value, i.status, i.turn_id FROM incoming_updates i
+            "SELECT i.payload_json, e.value, i.status, i.turn_id, i.media_group_id FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          JOIN bot_state b ON b.key='telegram_identity'
          WHERE i.update_id=?1
            AND ?2='telegram:'||json_extract(b.value,'$.id')",
             params![update, source.channel],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((raw, epoch, status, retained_turn)) = retained else {
+    let Some((raw, epoch, status, retained_turn, group)) = retained else {
         return Ok(None);
     };
-    let original: crate::telegram::Update = serde_json::from_str(&raw)?;
+    let original = crate::telegram::Update::from_journal(&raw, group)?;
     let matching_voice = if let Some(proof) = &source.transcription {
         source.origin.thread_id == target.thread_id
             && source.telegram_files.is_empty()
@@ -87,7 +237,16 @@ fn telegram_original_epoch_on(
     } else {
         false
     };
-    let matching = original.update_id == update
+    let matching_album = if !source.telegram_files.is_empty() {
+        match original.message.as_ref() {
+            Some(anchor) => telegram_album_matches_on(conn, source, update, anchor, &epoch)?,
+            None => false,
+        }
+    } else {
+        source.telegram_album_members.is_empty()
+    };
+    let matching = matching_album
+        && original.update_id == update
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
                 && message.chat.id == target.chat_id
@@ -106,7 +265,6 @@ fn telegram_original_epoch_on(
                     original.direct_human_attachment
                         && source.origin.thread_id == target.thread_id
                         && message.has_own_attachment()
-                        && message.attachment_caption() == source.text
                 }
         });
     if !matching {
@@ -1814,6 +1972,7 @@ mod tests {
             },
             text: "Coordinate the design.".into(),
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
         };

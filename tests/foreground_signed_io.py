@@ -613,6 +613,8 @@ timeout_seconds=5
                                 self._claude_topic_voice(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_ALBUM") == "1":
+                                self._telegram_album(journey, provider, adapter, teledaimon, adapter_config)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
@@ -2618,6 +2620,118 @@ timeout_seconds=5
                 self.assertEqual(source["telegram_files"][0]["sha256"], expected)
                 self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), data)
             self.assertEqual(len(set(provider.exposures)), len(cases))
+
+        def _telegram_album(self, journey, provider, adapter, teledaimon, adapter_config):
+            import base64
+            import hashlib
+
+            image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
+            images = {f"album-{index}.png": image + bytes([index]) for index in range(10)}
+            journey.media_files = images
+            delivered = {}
+
+            def observe_poll(batch):
+                for update in batch:
+                    delivered[update["update_id"]] = update
+
+            journey.before_poll_reply = observe_poll
+
+            def original(*, files, caption):
+                provider.original = caption
+                provider.attachment = {"caption": caption, "blocks": [
+                    ("image", "image/png", base64.b64encode(images[name]).decode())
+                    for name in files
+                ]}
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+
+            def admit(name, caption):
+                return journey.admit(topic=7, message_fields={
+                    "photo": [{"file_id": name, "width": 1, "height": 1}],
+                    "media_group_id": "shared-fixture-album",
+                    "caption": caption,
+                })
+
+            def wait_reply(update):
+                journey.wait(lambda: provider.failure or any(
+                    ANSWER in msg["text"] and envelope.get("reply_parameters", {}).get("message_id") == update
+                    for msg, envelope in journey.messages), seconds=25)
+                self.assertIsNone(provider.failure)
+                journey.idle()
+
+            names = list(images)[:-1]
+            captions = [f"Album caption {index}." for index in range(len(names))]
+            original(files=names, caption="\n\n".join(captions))
+            first, *members = [admit(name, caption) for name, caption in zip(names, captions)]
+            second = members[0]
+            wait_reply(first)
+            [(raw, native)] = journey.row(
+                "SELECT s.doc,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(first),),
+            )
+            source = json.loads(raw)
+            self.assertEqual(source["telegram_album_members"], members)
+            self.assertEqual([item["sha256"] for item in source["telegram_files"]], [
+                hashlib.sha256(images[name]).hexdigest()
+                for name in names
+            ])
+            self.assertEqual(journey.row(
+                "SELECT status FROM incoming_updates WHERE update_id BETWEEN ? AND ? ORDER BY update_id",
+                (first, members[-1])), [("handled",)] * len(names))
+            self.assertEqual(len(provider.exposures), 1)
+            # The mock Bot API returns one update per poll. An exact old
+            # member delivered again is deduplicated before native dispatch.
+            with journey.lock:
+                journey.updates.append(delivered[second])
+            original(files=["album-9.png"], caption="Late caption.")
+            late = admit("album-9.png", "Late caption.")
+            wait_reply(late)
+            self.assertEqual(journey.row(
+                "SELECT t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id IN (?,?)",
+                (str(second), str(late)),
+            ), [(native,)])
+            self.assertEqual(len(provider.exposures), 2)
+
+            if predecessor := os.environ.get("FOREGROUND_TEST_TELEGRAM_ALBUM_PREDECESSOR"):
+                # Roll back the Gateway on the same journal. Retain the newer
+                # adapter executable to exercise mixed-version redelivery.
+                adapter.send_signal(signal.SIGINT)
+                _, errors = adapter.communicate(timeout=10)
+                self.assertEqual(adapter.returncode, 0, errors)
+                journey.stop()
+                journey.binary = str(Path(predecessor).resolve())
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                successor = subprocess.Popen(
+                    [str(teledaimon), str(adapter_config)], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True,
+                )
+                try:
+                    with journey.lock:
+                        journey.updates.append(delivered[second])
+                    original(files=["album-9.png"], caption="Predecessor readback.")
+                    probe = journey.admit(topic=7, message_fields={
+                        "photo": [{"file_id": "album-9.png", "width": 1, "height": 1}],
+                        "caption": provider.original,
+                    })
+                    wait_reply(probe)
+                    self.assertEqual(len(provider.exposures), 3)
+                    self.assertEqual(journey.row(
+                        "SELECT status,media_group_id FROM incoming_updates WHERE update_id=?",
+                        (second,),
+                    ), [("handled", "shared-fixture-album")])
+                    self.assertEqual(journey.row(
+                        "SELECT count(*) FROM interaction_sources WHERE event_id=?", (str(second),),
+                    ), [(0,)])
+                finally:
+                    if successor.poll() is None:
+                        successor.send_signal(signal.SIGINT)
+                    _, errors = successor.communicate(timeout=10)
+                    self.assertEqual(successor.returncode, 0, errors)
 
         def _telegram_steer(self, journey, provider, profile):
             selected = json.loads(profile.read_text())

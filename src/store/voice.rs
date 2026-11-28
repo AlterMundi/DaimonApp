@@ -319,6 +319,7 @@ mod tests {
             origin: ReturnRoute { chat_id: 100, thread_id: 1, message_id: Some(20) },
             text: "A spoken direction.".into(),
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: Some(proof.clone()),
         };
@@ -640,6 +641,7 @@ mod tests {
             .unwrap();
         let mut input = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: Some(proof.clone()),
             channel: "telegram:fixture".into(),

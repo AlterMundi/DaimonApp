@@ -1687,6 +1687,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
@@ -2169,6 +2170,7 @@ mod tests {
                 },
                 text: "Yes, keep that.".into(),
                 telegram_files: vec![],
+                telegram_album_members: Vec::new(),
                 tribu_source: None,
                 transcription: None,
             };
@@ -2248,6 +2250,7 @@ mod tests {
         .unwrap();
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),
@@ -2501,6 +2504,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),

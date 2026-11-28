@@ -559,7 +559,7 @@ async function main() {
       || (first.resume !== null && !validResume(first.resume))
       || !Array.isArray(alternates) || alternates.length > 7 || !alternates.every(validResume)
       || (attachments !== undefined && (!fullAccess || nativeGoalCommand
-        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
+        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 10
         || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
           && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096
           && typeof file.name === 'string' && file.name.length <= 240

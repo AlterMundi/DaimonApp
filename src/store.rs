@@ -68,8 +68,7 @@ pub(crate) use matrix::publication::{
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routed_portable;
-pub(crate) use routed_portable::ClaudeContextUnavailable;
-pub(crate) use routed_portable::RoutedStartupEvidence;
+pub(crate) use routed_portable::{ClaudeContextUnavailable, RoutedStartupEvidence, album_text};
 mod routing;
 mod session_requests;
 mod workflows;
@@ -539,20 +538,41 @@ impl Store {
         &self,
         update: &crate::telegram::Update,
     ) -> Result<TelegramUpdateAdmission> {
-        let payload = serde_json::to_string(update)?;
-        if payload.len() > 1_048_576 {
+        // Keep the original JSON compatible with the predecessor Gateway.
+        // Album membership belongs only to the top-level original message.
+        let mut journal_update = update.clone();
+        let media_group_id = journal_update
+            .message
+            .as_mut()
+            .and_then(|message| message.media_group_id.take());
+        if let Some(message) = journal_update
+            .callback_query
+            .as_mut()
+            .and_then(|callback| callback.message.as_mut())
+        {
+            message.media_group_id = None;
+        }
+        let payload = serde_json::to_string(&journal_update)?;
+        if payload.len() + media_group_id.as_ref().map_or(0, String::len) > 1_048_576 {
             return Err(anyhow!("telegram update exceeds ingress journal bound"));
         }
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let existing: Option<String> = tx
+        let existing: Option<(String, Option<String>)> = tx
             .query_row(
-                "SELECT payload_json FROM incoming_updates WHERE update_id=?1",
+                "SELECT payload_json,media_group_id FROM incoming_updates WHERE update_id=?1",
                 params![update.update_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some(existing) = existing {
+        if let Some((existing, group)) = existing {
+            anyhow::ensure!(
+                group
+                    .as_ref()
+                    .zip(media_group_id.as_ref())
+                    .is_none_or(|(a, b)| a == b),
+                "telegram update ID media group conflict"
+            );
             if existing != payload {
                 // Upgrading the poller can attach an origin observation to
                 // a redelivered update. The original retained proof is immutable.
@@ -575,10 +595,10 @@ impl Store {
         let (creation_id, control) = creation::creation_scope_for_update(&tx, update)?;
         let retained = creation_id.is_some() && !control;
         tx.execute(
-            "INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at,topic_creation_id,topic_creation_control)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO incoming_updates(update_id,payload_json,status,instance_id,updated_at,topic_creation_id,topic_creation_control,media_group_id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![update.update_id, payload, if retained {"retained_creation"} else {"received"},
-                self.instance_id, now_string(), creation_id, control],
+                self.instance_id, now_string(), creation_id, control, media_group_id],
         )?;
         tx.execute(
             "INSERT INTO original_ingress_order(channel,event_id,captured_at) VALUES('telegram',?1,?2)",
@@ -1812,6 +1832,7 @@ impl Store {
         add_column_if_missing(&conn, "turns", "native_session_usage", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "incoming_updates", "topic_creation_id", "TEXT")?;
+        add_column_if_missing(&conn, "incoming_updates", "media_group_id", "TEXT")?;
         add_column_if_missing(
             &conn,
             "incoming_updates",
@@ -2316,6 +2337,102 @@ mod tests {
                 .unwrap(),
             vec![4]
         );
+    }
+
+    #[test]
+    fn telegram_album_members_retain_immutable_group_and_original_ids() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let member = |id, group: Option<&str>| {
+            let mut update = serde_json::to_value(input(id, 100, "Caption")).unwrap();
+            update["message"]["photo"] =
+                serde_json::json!([{ "file_id": format!("photo-{id}"), "width": 1, "height": 1 }]);
+            if let Some(group) = group {
+                update["message"]["media_group_id"] = serde_json::json!(group);
+            }
+            serde_json::from_value::<crate::telegram::Update>(update).unwrap()
+        };
+        // An old poller recorded the first member before it understood albums.
+        assert!(store.admit_update(&member(40, None)).unwrap());
+        assert!(!store.admit_update(&member(40, Some("album"))).unwrap());
+        for id in [41, 42] {
+            assert!(store.admit_update(&member(id, Some("album"))).unwrap());
+            assert!(!store.admit_update(&member(id, Some("album"))).unwrap());
+        }
+        // Rollback to an old poller does not modify retained album metadata.
+        assert!(!store.admit_update(&member(41, None)).unwrap());
+        assert!(store.admit_update(&member(41, Some("different"))).is_err());
+        assert_eq!(store.last_update_id().unwrap(), Some(42));
+        let conn = store.conn.lock().unwrap();
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM incoming_updates WHERE update_id=41",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // The old Gateway's deserialized duplicate produces these exact bytes.
+        assert_eq!(payload, serde_json::to_string(&member(41, None)).unwrap());
+        let saved = conn
+            .prepare("SELECT update_id,media_group_id FROM incoming_updates ORDER BY update_id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            saved,
+            vec![
+                (40, None),
+                (41, Some("album".into())),
+                (42, Some("album".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn quoted_or_callback_album_metadata_cannot_change_the_original_payload() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let mut quoted = serde_json::to_value(input(40, 100, "Reply")).unwrap();
+        quoted["message"]["reply_to_message"] = serde_json::json!({
+            "message_id": 30, "caption": "Photo", "media_group_id": "album",
+        });
+        let sender = quoted["message"]["from"].clone();
+        let mut callback_message = quoted["message"].clone();
+        callback_message["media_group_id"] = serde_json::json!("album");
+        let callback = serde_json::json!({
+            "update_id": 41,
+            "callback_query": {
+                "id": "callback", "from": sender, "message": callback_message, "data": "fixture",
+            },
+        });
+        for (id, raw) in [(40, quoted), (41, callback)] {
+            let input: crate::telegram::Update = serde_json::from_value(raw).unwrap();
+            assert!(store.admit_update(&input).unwrap());
+            let mut predecessor = input.clone();
+            if let Some(message) = predecessor
+                .callback_query
+                .as_mut()
+                .and_then(|callback| callback.message.as_mut())
+            {
+                message.media_group_id = None;
+            }
+            assert!(!store.admit_update(&predecessor).unwrap());
+            let saved: (String, Option<String>) = store
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT payload_json,media_group_id FROM incoming_updates WHERE update_id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(saved, (serde_json::to_string(&predecessor).unwrap(), None));
+        }
     }
 
     #[test]

@@ -1024,6 +1024,7 @@ mod tests {
         s.interaction_admit(
             &SourceInput {
                 telegram_files: vec![],
+                telegram_album_members: Vec::new(),
                 tribu_source: None,
                 transcription: None,
                 channel: "fixture".into(),
@@ -1329,6 +1330,7 @@ mod tests {
         s.set_session_codex_thread(entry, "entry-native").unwrap();
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "fixture".into(),

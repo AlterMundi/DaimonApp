@@ -1024,6 +1024,7 @@ impl Store {
         }
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
@@ -4420,6 +4421,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture-correction".into(),
