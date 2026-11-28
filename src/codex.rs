@@ -603,6 +603,9 @@ struct RpcError {
     #[serde(default)]
     data: Option<Value>,
 }
+fn method_unavailable(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RpcError>().and_then(|rpc| rpc.code) == Some(-32601)
+}
 fn idle_capacity_rejection(error: &RpcError) -> bool {
     error.code == Some(-32600)
         && error.data.as_ref().is_some_and(|data| {
@@ -819,6 +822,9 @@ impl CodexRunner {
     }
     /// Read only through an exact prior native boundary. Absence never authorizes replay.
     pub async fn workflow_return_history(&self, native: &str, physical: &str) -> Result<Value> {
+        if let Some((mut turns, _)) = self.scoped_recovery_history(native, physical, None).await? {
+            return turns.pop().context("Exact native recovery turn missing");
+        }
         tokio::time::timeout(Duration::from_secs(8), async {
             let mut process=AppServerProcess::spawn(&self.binary,self.shared_app_server).await?;
             let result=async {
@@ -893,6 +899,113 @@ impl CodexRunner {
             }.await;
             process.shutdown().await?;result
         }).await.context("Native lifecycle observation timed out")?
+    }
+
+    /// Inspect lifecycle pages without transporting unrelated command output.
+    /// Read items only after finding the exact retained physical boundary.
+    /// A missing RPC capability selects the legacy reader.
+    pub async fn scoped_recovery_history(
+        &self,
+        native: &str,
+        anchor: &str,
+        stop_before: Option<&str>,
+    ) -> Result<Option<(Vec<Value>, bool)>> {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut process = AppServerProcess::spawn(&self.binary, self.shared_app_server).await?;
+            let result = async {
+                let mut cursor = None::<String>;
+                let mut seen = HashSet::new();
+                let mut turns = Vec::new();
+                let mut boundary_seen = false;
+                let mut anchor_seen = false;
+                process.initialize().await?;
+                for _ in 0..6 {
+                    let id = process.send_request("thread/turns/list", json!({
+                        "threadId":native,"limit":100,"sortDirection":"desc","itemsView":"notLoaded","cursor":cursor
+                    })).await?;
+                    let page = match process.await_response(id).await {
+                        Ok(page) => page,
+                        Err(error) if method_unavailable(&error) => return Ok(None),
+                        Err(error) => return Err(error),
+                    };
+                    for turn in page["data"].as_array().context("Native recovery lifecycle page missing")? {
+                        let physical = turn["id"].as_str().context("Native recovery identity missing")?;
+                        let status = turn["status"].as_str().context("Native recovery status missing")?;
+                        anyhow::ensure!(matches!(status,"inProgress" | "completed" | "failed" | "interrupted"),"Native recovery status invalid");
+                        if stop_before == Some(physical) {
+                            boundary_seen = true;
+                        }
+                        if physical == anchor {
+                            turns.push((physical.to_owned(),status.to_owned(),turn.get("error").cloned()));
+                            anchor_seen = true;
+                            break;
+                        }
+                        if boundary_seen {
+                            turns.push((physical.to_owned(),status.to_owned(),turn.get("error").cloned()));
+                        }
+                    }
+                    if anchor_seen {
+                        break;
+                    }
+                    cursor = page["nextCursor"].as_str().map(str::to_owned);
+                    if cursor.is_none() || !seen.insert(cursor.clone()) {
+                        break;
+                    }
+                }
+                anyhow::ensure!(anchor_seen, "Retained native recovery boundary unavailable in bounded lifecycle history");
+                turns.reverse();
+
+                let mut output = Vec::new();
+                let mut pages = 0;
+                let mut bytes = 0;
+                for (physical, status, error) in turns {
+                    let mut items = Vec::new();
+                    if stop_before != Some(physical.as_str()) && !(stop_before.is_none() && status == "inProgress") {
+                        let mut cursor = None::<String>;
+                        let mut seen = HashSet::new();
+                        loop {
+                            pages += 1;
+                            anyhow::ensure!(pages <= 32,"Native recovery item page limit reached");
+                            let id = process.send_request("thread/items/list", json!({
+                                "threadId":native,"turnId":physical,"limit":20,"sortDirection":"asc","cursor":cursor
+                            })).await?;
+                            let page = match process.await_response(id).await {
+                                Ok(page) => page,
+                                Err(error) if method_unavailable(&error) => return Ok(None),
+                                Err(error) => return Err(error),
+                            };
+                            bytes += serde_json::to_vec(&page)?.len();
+                            anyhow::ensure!(bytes <= 8 * 1024 * 1024,"Selected native recovery items exceed byte limit");
+                            for entry in page["data"].as_array().context("Native recovery item page missing")? {
+                                anyhow::ensure!(entry["turnId"] == physical,"Native recovery item belongs to another turn");
+                                let item = entry["item"].as_object().context("Native recovery item malformed")?;
+                                if matches!(item.get("type").and_then(Value::as_str),Some("userMessage" | "agentMessage")) {
+                                    items.push(entry["item"].clone());
+                                }
+                            }
+                            cursor = page["nextCursor"].as_str().map(str::to_owned);
+                            if cursor.is_none() {
+                                break;
+                            }
+                            anyhow::ensure!(seen.insert(cursor.clone()),"Native recovery item cursor repeated");
+                        }
+                    }
+                    output.push(json!({"id":physical,"status":status,"items":items,"error":error}));
+                }
+                let goal_active = if stop_before.is_some() {
+                    let id = process.send_request("thread/goal/get",json!({"threadId":native})).await?;
+                    match process.await_response(id).await {
+                        Ok(value) => goals::parse_goal(&value,native)?.is_some_and(|goal|goal.status=="active"),
+                        Err(_) => true,
+                    }
+                } else {
+                    false
+                };
+                Ok(Some((output,goal_active)))
+            }.await;
+            process.shutdown().await?;
+            result
+        }).await.context("Scoped native recovery observation timed out")?
     }
 
     pub async fn recovery_history(

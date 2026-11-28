@@ -85,6 +85,8 @@ class Goals(Journey):
                 elif method=='thread/turns/list':
                     existing=self.holding.get(p['threadId'])
                     send({'id':ident,'result':{'data':[{'id':existing,'status':'inProgress'}] if existing else []}})
+                elif method=='thread/items/list':
+                    send({'id':ident,'error':{'code':-32601,'message':'item paging unavailable'}})
                 elif method=='thread/goal/get':
                     if self.mode=='unsupported':send({'id':ident,'error':{'code':-32601,'message':'goals unavailable'}});continue
                     if self.mode=='delayed_snapshot':

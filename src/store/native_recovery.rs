@@ -116,7 +116,11 @@ impl Store {
     pub fn native_collection_next(&self) -> Result<Option<NativeCollection>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let row=tx.query_row("SELECT n.local_turn,t.from_user_id,s.chat_id,s.thread_id,t.native_thread_id,n.anchor,(SELECT NULLIF(later.first_turn,'') FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),n.client_id,(SELECT later.client_id FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),(SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.phase='open' AND t.native_thread_id IS NOT NULL AND t.execution_harness='codex' AND (
+        let row=tx.query_row("SELECT n.local_turn,t.from_user_id,s.chat_id,s.thread_id,t.native_thread_id,n.anchor,(SELECT NULLIF(later.first_turn,'') FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),n.client_id,(SELECT later.client_id FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1),(SELECT later.local_turn FROM native_collections later JOIN turns lt ON lt.id=later.local_turn WHERE lt.session_id=t.session_id AND lt.execution_harness=t.execution_harness AND later.local_turn>n.local_turn AND later.phase!='rejected' ORDER BY later.local_turn LIMIT 1) FROM native_collections n JOIN turns t ON t.id=n.local_turn JOIN sessions s ON s.id=t.session_id JOIN users u ON u.tg_user_id=t.from_user_id WHERE n.phase='open' AND (t.status NOT IN ('completed','failed','cancelled','interrupted') OR n.anchor!='' OR n.client_id IS NOT NULL) AND (
+        n.detail!='Native observation temporarily unavailable; retained output recovery pending'
+        OR t.status NOT IN ('completed','failed','cancelled','interrupted')
+        OR julianday(n.checked_at)<=julianday('now','-15 minutes')
+        ) AND t.native_thread_id IS NOT NULL AND t.execution_harness='codex' AND (
         t.execution_generation IS NULL OR t.execution_generation=(SELECT generation FROM conversation_entry_generations WHERE session_id=t.session_id)) AND s.creator_user_id=t.from_user_id AND u.allowed=1 AND s.codex_thread_id=t.native_thread_id AND s.force_fresh_thread=0 ORDER BY n.checked_at,n.local_turn LIMIT 1",[],|r|Ok(NativeCollection{local:r.get(0)?,human:r.get(1)?,key:SessionKey::new(r.get(2)?,Some(r.get(3)?)),native:r.get(4)?,anchor:r.get(5)?,stop_before:r.get(6)?,client_id:r.get(7)?,stop_client:r.get(8)?,next_local:r.get(9)?})).optional()?;
         if let Some(r) = &row {
             tx.execute(
@@ -159,7 +163,7 @@ impl Store {
     }
 
     pub fn native_collection_failed(&self, local: i64) -> Result<()> {
-        self.conn.lock().expect("store mutex poisoned").execute("UPDATE native_collections SET detail='Native observation unavailable; retained output recovery pending' WHERE local_turn=?",[local])?;
+        self.conn.lock().expect("store mutex poisoned").execute("UPDATE native_collections SET detail='Native observation temporarily unavailable; retained output recovery pending' WHERE local_turn=? AND phase='open'",[local])?;
         Ok(())
     }
 
@@ -466,6 +470,30 @@ mod tests {
             0
         );
     }
+    #[test]
+    fn failed_terminal_observation_yields_without_retiring_receipts() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let (local, _) = start(&store);
+        store.record_turn_finished(local, "failed", None).unwrap();
+        assert_eq!(
+            store.native_collection_next().unwrap().unwrap().local,
+            local
+        );
+        store.native_collection_failed(local).unwrap();
+        assert!(store.native_collection_next().unwrap().is_none());
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE native_collections SET checked_at=datetime('now','-16 minutes') WHERE local_turn=?",
+                [local],
+            ).unwrap();
+        }
+        let reread = store.native_collection_next().unwrap().unwrap();
+        assert_eq!(reread.local, local);
+        assert_eq!(reread.anchor, "first");
+    }
+
     #[test]
     fn explicit_session_removal_retires_delivery_without_erasing_original_receipts() {
         let file = tempfile::NamedTempFile::new().unwrap();

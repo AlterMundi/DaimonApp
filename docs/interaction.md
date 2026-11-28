@@ -1877,6 +1877,16 @@ Original deadline, generation, binding, supersession and Stop/maintenance fences
 continue to govern observation; retirement retains the ACK and uncertainty. Turning
 off new native returns does not erase a previously accepted finite observation.
 
+For retained Codex output with exact native boundaries, the Gateway first
+reads bounded turn metadata and then pages the canonical items for the
+selected turns. A successor is a stop boundary and its output is left to
+its own collector. This avoids loading large unrelated tool output to find
+an older turn. Older readers without item paging use the existing bounded
+history route. A collection without a physical turn or client correlation
+keeps its receipts and waits for evidence. Failed reads of terminal
+collections are spaced by at least fifteen minutes. No recovery read
+resubmits an input or starts native work.
+
 ACK is not incorporation, a useful provider answer, reporting or hearing. An active
 human turn has no native per-input causal attribution for its assistant output;
 its ordinary publication lifetime remains governed by that human turn. For an idle
