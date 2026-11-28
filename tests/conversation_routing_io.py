@@ -86,13 +86,16 @@ topic_id=8
     def instructions(self, topic):
         return self.row('SELECT i.id,i.phase,i.doc FROM interaction_instructions i JOIN sessions s ON s.id=i.session_id WHERE s.thread_id=? AND NOT EXISTS(SELECT 1 FROM interaction_direct_parents p WHERE p.instruction=i.id) ORDER BY i.sequence', (topic,))
 
-    def answer_worker(self, topic, text, *, item=None, finish=True, phase="final_answer"):
+    def answer_worker(self, topic, text, *, item=None, finish=True, phase="final_answer", complete=True):
         native = self.row('SELECT codex_thread_id FROM sessions WHERE thread_id=?', (topic,))[0][0]
         # A durable queued instruction precedes the simulated peer's native ACK.
         self.wait(lambda: native in self.workers)
         rows = self.instructions(topic)
         requests = sorted({request for _, _, doc in rows for request in json.loads(doc)['requests']})
-        claim = {'requests': requests, 'covered': [row[0] for row in rows], 'completed': requests}
+        covered = [row[0] for row in rows]
+        claim = {'requests': requests, 'covered': covered, 'completed': requests if complete else []}
+        if not complete:
+            claim['deferred'] = covered
         self.broadcast(native, 'item/completed', {'turnId': self.workers[native], 'item': {
             'id': item or 'canonical-answer-'+str(topic), 'type': 'agentMessage', 'phase': phase,
             'text': text+'\n<daimon-result>'+json.dumps(claim)+'</daimon-result>'}})

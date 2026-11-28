@@ -173,7 +173,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             returned_dependency = getattr(self.server, "returned_dependency", None)
             recover_dependency = getattr(self.server, "recover_dependency", None)
             if returned_dependency:
-                fixture_id = "returned"
+                fixture_id = "returned-progress" if returned_dependency.get("progress") else "returned"
                 steps = [
                     (CONTROLLER, {"operation": "inputs", "arguments": {}}, '"eligible_coordination_parent":false'),
                     (CONTROLLER, {"operation": "session_request", "arguments": {
