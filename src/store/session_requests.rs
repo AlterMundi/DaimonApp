@@ -1229,23 +1229,28 @@ mod tests {
     #[test]
     fn attributed_dependency_can_target_a_portable_topic_without_telegram() {
         for paired in [false, true] {
-            check_portable_dependency(paired, false, false, None);
+            check_portable_dependency(paired, false, false, None, false);
         }
     }
 
     #[test]
     fn a_later_claude_turn_must_keep_the_original_native_scope_to_return() {
-        check_portable_dependency(false, true, false, None);
+        check_portable_dependency(false, true, false, None, false);
     }
 
     #[test]
     fn paired_claude_recovers_a_completed_canonical_dependency_once() {
-        check_portable_dependency(true, false, true, None);
+        check_portable_dependency(true, false, true, None, false);
     }
 
     #[test]
     fn selected_report_accepts_an_exact_settled_telegram_parent() {
-        check_portable_dependency(true, false, false, Some(41));
+        check_portable_dependency(true, false, false, Some(41), false);
+    }
+
+    #[test]
+    fn a_known_unsent_early_report_uses_the_completion_format_after_cooldown() {
+        check_portable_dependency(true, false, false, None, true);
     }
 
     fn check_portable_dependency(
@@ -1253,6 +1258,7 @@ mod tests {
         later: bool,
         recover_onward: bool,
         update: Option<i64>,
+        cooldown: bool,
     ) {
         let file = tempfile::NamedTempFile::new().unwrap();
         let store = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
@@ -1523,8 +1529,10 @@ mod tests {
                 .save_bot_state("stop_admission_epoch:100", "initial")
                 .unwrap();
             assert_eq!(visible_early(), 1);
-            if early_sent {
+            if early_sent || cooldown {
                 assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
+            }
+            if early_sent {
                 store
                     .topic_publication_receipt(handoff.id, 0, Some(42), false)
                     .unwrap();
@@ -1806,6 +1814,9 @@ mod tests {
             }
             if !early_sent {
                 if let Some(early) = early_claim {
+                    if cooldown {
+                        store.topic_publication_retry(early, 0).unwrap();
+                    }
                     assert!(!store.topic_publication_reserve(early, 0).unwrap());
                 }
                 let handoff = store

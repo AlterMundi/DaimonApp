@@ -979,9 +979,29 @@ impl Store {
         if changed != 1 {
             return Err(anyhow!("Topic retry lease changed"));
         }
+        // A cooldown proves this attempt was not sent. If the answer settled
+        // during the attempt, switch back to its compatible request row only
+        // when there is no acknowledged or uncertain prefix.
+        let fallback = tx.execute(
+            "UPDATE topic_publications AS final SET phase='ready'
+             WHERE final.kind='portable_report_request' AND final.phase='not_selected'
+               AND EXISTS (SELECT 1 FROM topic_publications early
+                 JOIN interaction_deliveries d ON d.request_id=early.source
+                   AND d.result_id=final.source AND d.human_id=final.human_id
+                 WHERE early.id=?1 AND early.kind='portable_handoff_input'
+                   AND early.local_turn=final.local_turn AND early.session_id=final.session_id
+                   AND early.human_id=final.human_id)
+               AND NOT EXISTS(SELECT 1 FROM topic_publication_parts part
+                 WHERE part.publication=?1 AND part.phase<>'ready')",
+            [id],
+        )?;
         tx.execute(
-            "UPDATE topic_publications SET phase='ready' WHERE id=?1 AND instance_id=?2",
-            params![id, &self.instance_id],
+            "UPDATE topic_publications SET phase=?3 WHERE id=?1 AND instance_id=?2",
+            params![
+                id,
+                &self.instance_id,
+                if fallback == 1 { "retired" } else { "ready" }
+            ],
         )?;
         tx.commit()?;
         Ok(())
