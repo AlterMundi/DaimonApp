@@ -195,22 +195,23 @@ class PortableHistory(unittest.TestCase):
         with closing(sqlite3.connect(':memory:')) as db:
             db.executescript("""
                 CREATE TABLE conversation_entry_generations(session_id, generation);
-                CREATE TABLE sessions(id, creator_user_id);
+                CREATE TABLE sessions(id, creator_user_id, chat_id, thread_id);
                 CREATE TABLE users(tg_user_id, allowed);
                 CREATE TABLE interaction_instructions(sequence, input_id, doc, session_id, phase,id);
-                CREATE TABLE interaction_sources(id, human_id, doc,channel,event_id);
+                CREATE TABLE interaction_sources(id, human_id, doc, channel, event_id,
+                    update_id, origin_chat, origin_thread, origin_message, created_at);
                 CREATE TABLE interaction_session_authors(input_id);
                 CREATE TABLE interaction_results(id,local_turn,native_thread,native_turn,item_id,body);
                 CREATE TABLE topic_publications(id,kind,source,session_id,human_id,local_turn);
                 CREATE TABLE turns(id, session_id, from_user_id, execution_harness,
                   execution_generation, status, assistant_text, started_at, completed_at, native_thread_id);
                 INSERT INTO users VALUES(10,1);
-                INSERT INTO sessions VALUES(20,10);
+                INSERT INTO sessions VALUES(20,10,100,7);
                 INSERT INTO conversation_entry_generations VALUES(20,'generation');
                 INSERT INTO interaction_session_authors VALUES(2);
             """)
             def exchange(sequence, answer, generation='generation', status='completed'):
-                db.execute("INSERT INTO interaction_sources VALUES(?,10,?,'conversation',?)",
+                db.execute("INSERT INTO interaction_sources(id,human_id,doc,channel,event_id) VALUES(?,10,?,'conversation',?)",
                            (sequence,json.dumps({'text':f'Human {sequence}'}),f'input{sequence}'))
                 db.execute("INSERT INTO interaction_instructions VALUES(?,?,?,20,'accepted',?)",
                            (sequence,sequence,json.dumps({'local_turn':sequence,'native_turn':f'turn{sequence}'}),f'instruction{sequence}'))
@@ -231,6 +232,25 @@ class PortableHistory(unittest.TestCase):
                              ['Human 1','First','Human 5','Last'])
             self.assertEqual([item['text'] for item in page['pending_items']], ['Human 7'])
             self.assertEqual(page['pending_items'][0]['input_id'],'input7')
+            # This revision is Gateway's digest of the selected conversation binding.
+            binding = hashlib.sha256(b'[10,{"chat_id":100,"thread_id":7},20,"generation"]').hexdigest()
+            for sequence, phase, target, origin, internal in (
+                    (20,'queued',binding,7,False), (21,'steering',binding,7,False),
+                    (22,'queued','old-revision',7,False), (23,'queued',binding,8,False),
+                    (24,'queued',binding,7,True)):
+                doc = {'text': f'Telegram {sequence}'}
+                if internal:
+                    doc['tribu_source'] = {}
+                db.execute("INSERT INTO interaction_sources VALUES(?,10,?,'telegram:fixture',?,?,100,?,12,'captured')",
+                           (sequence,json.dumps(doc),str(sequence),sequence,origin))
+                db.execute('INSERT INTO interaction_instructions VALUES(?,?,?,20,?,?)',
+                           (sequence,sequence,json.dumps({'target_execution':{'harness':'claude','revision':target}}),
+                            phase,f'instruction{sequence}'))
+            before_reply = read_portable(db,20,10,'claude')
+            self.assertEqual([(row['input_id'],row['text']) for row in before_reply['pending_items']],
+                             [('input7','Human 7'),('telegram:20','Telegram 20'),('telegram:21','Telegram 21')])
+            self.assertEqual(before_reply['after'],page['after'])
+            db.execute('DELETE FROM interaction_instructions WHERE sequence>=20')
             end=page['after']
             revision=page['revision']
             self.assertEqual(read_portable(db,20,10,'claude',after=end,revision=revision)['items'],[])

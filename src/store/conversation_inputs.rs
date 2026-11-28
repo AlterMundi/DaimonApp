@@ -467,6 +467,22 @@ fn projected_phase_on<'a>(
 }
 
 /// Historical inspection never grants admission or refreshes a voice transcript.
+// A paired human's original in an owned portable topic can also be shown in
+// their integrating conversation. The admitted route fixes the actual source
+// and target. Raw Telegram traffic from unrelated topics stays scoped locally.
+const DIRECT_PORTABLE_TELEGRAM_ORIGINAL: &str = "EXISTS(
+    SELECT 1 FROM interaction_sources x
+    JOIN interaction_instructions r ON r.input_id=x.id
+    JOIN sessions w ON w.id=r.session_id
+    WHERE x.update_id=i.update_id AND x.human_id=?1 AND w.creator_user_id=?1
+      AND x.channel LIKE 'telegram:%' AND x.origin_chat=?2 AND w.chat_id=x.origin_chat
+      AND w.thread_id=x.origin_thread AND x.origin_message IS NOT NULL
+      AND x.origin_thread=COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)
+      AND x.origin_message=json_extract(i.payload_json,'$.message.message_id')
+      AND json_extract(r.doc,'$.target_execution.harness') IN ('claude','antigravity','goose')
+      AND json_type(x.doc,'$.tribu_source') IS NOT 'object'
+      AND NOT EXISTS(SELECT 1 FROM interaction_session_authors a WHERE a.input_id=x.id))";
+
 fn trace_original_on(
     conn: &Connection,
     human: i64,
@@ -480,19 +496,23 @@ fn trace_original_on(
         if update_id < 0 || update_id.to_string() != value {
             bail!("Invalid Telegram input identity");
         }
-        let (raw, phase): (String, String) = conn.query_row(
-            "SELECT payload_json,status FROM incoming_updates WHERE update_id=?1",
-            [update_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        let (raw, phase, portable): (String, String, bool) = conn.query_row(
+            &format!(
+                "SELECT payload_json,status,{DIRECT_PORTABLE_TELEGRAM_ORIGINAL}
+                      FROM incoming_updates i WHERE update_id=?3"
+            ),
+            params![human, entry.chat_id, update_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let update: crate::telegram::Update = serde_json::from_str(&raw)?;
         let message = update.message.context("No original message")?;
+        let origin_thread = message.message_thread_id.unwrap_or(0);
         if message
             .from
             .as_ref()
             .is_none_or(|u| u.id != human || u.is_bot)
             || message.chat.id != entry.chat_id
-            || message.message_thread_id.unwrap_or(0) != entry.thread_id
+            || (origin_thread != entry.thread_id && (!portable || message.text.is_none()))
         {
             bail!("Telegram original is outside this owned entry");
         }
@@ -517,7 +537,7 @@ fn trace_original_on(
             )
         };
         return Ok(
-            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id}),
+            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread}),
         );
     }
     let input = read_on(conn, id, human)?;
@@ -1991,7 +2011,9 @@ impl Store {
                     original["channel_kind"].as_str(),
                     original["update_id"].as_i64(),
                     entry.chat_id,
-                    entry.thread_id
+                    original["origin_thread"]
+                        .as_i64()
+                        .unwrap_or(entry.thread_id)
                 ],
                 |row| {
                     Ok((
@@ -2103,7 +2125,7 @@ impl Store {
                 .portable_reply(&conn)?
                 .context("No retained native result")?
         } else {
-            let raw:String=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id WHERE i.id=?1 AND o.event_id=?2 AND o.human_id=?3 AND ((?4='conversation' AND o.channel='conversation') OR (?4='telegram' AND o.channel LIKE 'telegram:%' AND o.update_id=?5 AND o.origin_chat=?6 AND o.origin_thread=?7))",params![source,original["source_event"].as_str(),human,original["channel_kind"].as_str(),original["update_id"].as_i64(),entry.chat_id,entry.thread_id],|r|r.get(0))?;
+            let raw:String=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources o ON o.id=i.input_id WHERE i.id=?1 AND o.event_id=?2 AND o.human_id=?3 AND ((?4='conversation' AND o.channel='conversation') OR (?4='telegram' AND o.channel LIKE 'telegram:%' AND o.update_id=?5 AND o.origin_chat=?6 AND o.origin_thread=?7))",params![source,original["source_event"].as_str(),human,original["channel_kind"].as_str(),original["update_id"].as_i64(),entry.chat_id,original["origin_thread"].as_i64().unwrap_or(entry.thread_id)],|r|r.get(0))?;
             let instruction: Instruction = serde_json::from_str(&raw)?;
             if instruction.human_id != human {
                 bail!("Trace instruction owner changed");
@@ -2138,7 +2160,9 @@ impl Store {
         let (session, native) = super::presentation::entry_on(&conn, human, entry)?;
         let comparison = if before { "<" } else { ">" };
         let order = if before { "DESC" } else { "ASC" };
-        let mut query=conn.prepare(&format!("SELECT i.update_id,g.id,g.captured_at FROM incoming_updates i LEFT JOIN original_ingress_order g ON g.channel='telegram' AND g.event_id=CAST(i.update_id AS TEXT) WHERE json_extract(i.payload_json,'$.message.from.id')=?1 AND json_extract(i.payload_json,'$.message.from.is_bot')=0 AND json_extract(i.payload_json,'$.message.chat.id')=?2 AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)=?3 AND (json_type(i.payload_json,'$.message.text')='text' OR json_type(i.payload_json,'$.message.voice')='object') AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
+        let mut query=conn.prepare(&format!("SELECT i.update_id,g.id,g.captured_at FROM incoming_updates i LEFT JOIN original_ingress_order g ON g.channel='telegram' AND g.event_id=CAST(i.update_id AS TEXT) WHERE json_extract(i.payload_json,'$.message.from.id')=?1 AND json_extract(i.payload_json,'$.message.from.is_bot')=0 AND json_extract(i.payload_json,'$.message.chat.id')=?2 AND ((COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)=?3 AND
+          (json_type(i.payload_json,'$.message.text')='text' OR json_type(i.payload_json,'$.message.voice')='object'))
+          OR (json_type(i.payload_json,'$.message.text')='text' AND {DIRECT_PORTABLE_TELEGRAM_ORIGINAL})) AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
         let rows = query
             .query_map(
                 params![
