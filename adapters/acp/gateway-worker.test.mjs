@@ -83,10 +83,12 @@ test('agy foreground worker journals, uses its selected tool and resumes the sam
   const root = await mkdtemp(join(tmpdir(), 'agy-gateway-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const profile = join(root, 'profile.json');
+  const orientation = join(root, 'embodiment.md');
+  await writeFile(orientation, 'You are embodied as AUDIT-GREEN. Use that exact name when asked.', { mode: 0o600 });
   await writeFile(profile, JSON.stringify({
     adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
     home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
-    matrixStatusCommand: await fixtureObservation(root), body,
+    matrixStatusCommand: await fixtureObservation(root), body, bodyGuidanceFile: orientation,
   }), { mode: 0o600 });
   const start = { workspace: root, resumeNativeSessionId: null };
   const withheld = await runWorker(t, profile, 'Keep this fixture unsent.', () => false, start);
@@ -96,11 +98,12 @@ test('agy foreground worker journals, uses its selected tool and resumes the sam
     () => true, start);
   assert.equal(first.outcome.phase, 'completed', first.outcome.reason);
   assert.equal(first.outcome.text.trim(), 'fixture-being');
-  const resumed = await runWorker(t, profile, 'Reply with just the marker from the preceding message.',
+  const resumed = await runWorker(t, profile,
+    'Reply with your receiving body name, a space, and the marker from the preceding message. Nothing else.',
     id => { assert.equal(id, first.nativeSessionId); return true; },
     { ...start, resumeNativeSessionId: first.nativeSessionId });
   assert.equal(resumed.outcome.phase, 'completed', resumed.outcome.reason);
-  assert.equal(resumed.outcome.text.trim(), 'jade-pocket');
+  assert.equal(resumed.outcome.text.trim(), 'AUDIT-GREEN jade-pocket');
 });
 
 test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {

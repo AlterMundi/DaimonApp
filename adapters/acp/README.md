@@ -13,8 +13,10 @@ The Gateway route uses the configured Antigravity foreground with
 `interaction_direct = true` and `agy_cli = true`, an explicitly Antigravity
 target, and the common ACP worker. Its owner profile names the absolute
 `binary`, paired account `home`, canonical topic `cwd`, `model`, `effort`,
-`matrixStatusCommand`, and signed `body`, with `adapter: "agy"`. Optional
-`selectedMemory` limits memory to a named record revision for one original.
+`matrixStatusCommand`, and signed `body`, with `adapter: "agy"`. Set
+`bodyGuidanceFile` to the owner-private portable orientation for the selected
+embodiment. It is sent in a separate content block on new and resumed turns.
+Optional `selectedMemory` limits memory to a named record revision for one original.
 The worker accepts only paired text for this topic and uses the journaled
 native ID from the same topic generation, workspace and signed incarnation.
 There is no fallback to a fresh session after a failed native load.

@@ -153,6 +153,10 @@ async function main(path) {
     if (agy && (!absolute(profile.home) || typeof profile.effort !== 'string' || !profile.effort)) {
       throw new Error('Invalid Antigravity owner profile');
     }
+    if (agy && Object.hasOwn(profile, 'bodyGuidanceFile')) {
+      fields.push('bodyGuidanceFile');
+      if (!absolute(profile.bodyGuidanceFile)) throw new Error('Invalid Antigravity guidance path');
+    }
     if (profile && Object.hasOwn(profile, 'selectedMemory')) fields.push('selectedMemory');
     if (profile && Object.hasOwn(profile, 'providerPort')) fields.push('providerPort');
     if (!closed(profile, fields) || !validBinding(profile)
@@ -183,12 +187,20 @@ async function main(path) {
     const env = agy ? { HOME: profile.home, PATH: '/usr/bin:/bin' } : await gooseEnvironment(profile);
     const selectedMemory = profile.selectedMemory?.inputId === first.inputId ? profile.selectedMemory : undefined;
     const binding = { body: profile.body, matrixStatusCommand: profile.matrixStatusCommand, selectedMemory };
+    let instructions;
+    if (agy && profile.bodyGuidanceFile) {
+      const document = new TextDecoder('utf-8', { fatal: true })
+        .decode(await privateBytes(profile.bodyGuidanceFile, 6 * 1024)).trim();
+      if (!document || document.includes('\0')) throw new Error('Invalid Antigravity receiving guidance');
+      instructions = '[Receiving body instructions from your signed Gateway profile]\n' + document
+        + '\nThe following content block is the current original.';
+    }
     let providerUnavailable = false;
     const run = agy ? runAntigravityTurn : runGooseTurn;
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
-        nativeSessionId: first.resumeNativeSessionId ?? undefined,
+        nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions,
         allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : [])],
       } : {}),
       mcpServers: [{ name: 'matrix', command: process.execPath,
