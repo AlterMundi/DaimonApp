@@ -615,6 +615,8 @@ timeout_seconds=5
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_ALBUM") == "1":
                                 self._telegram_album(journey, provider, adapter, teledaimon, adapter_config)
+                            elif os.environ.get("FOREGROUND_TEST_TELEGRAM_GOAL_CONTROLS") == "1":
+                                self._telegram_goal_controls(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
                                 self._telegram_quota(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_CANCEL") == "1":
@@ -1928,9 +1930,11 @@ timeout_seconds=5
                     self.assertEqual((phase, status), ("uncertain", "failed"))
                     self.assertGreater(evaluations, 1)
                     for control in ("/goal pause", "/goal resume"):
-                        _, phase, status, _ = command_result(control, submitted=False)
-                        self.assertIn(phase, ("rejected", "retained_unsent"))
-                        self.assertEqual(status, "failed")
+                        original, phase, status, _ = command_result(control, submitted=False)
+                        self.assertEqual((phase, status), ("retained_unsent", "failed"))
+                        route = browser.status(original)["routing"]
+                        self.assertEqual(route["phase"], "retained_unsent")
+                        self.assertIs(route["goal_control_unavailable"], True)
                     _, phase, status, answer = command_result("/goal")
                     self.assertEqual((phase, status), ("accepted", "completed"))
                     self.assertIn(condition, answer)
@@ -1966,6 +1970,23 @@ timeout_seconds=5
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?", (blocked,)),
                              [(0,)])
             self.assertEqual(provider.calls, calls)
+
+        def _telegram_goal_controls(self, journey, provider):
+            notice = "Claude Code cannot pause or resume a goal."
+            for command in ("/goal pause", "/goal resume"):
+                message = journey.admit(command, topic=7)
+                journey.wait(lambda: any(
+                    notice in response["text"]
+                    and payload.get("reply_parameters", {}).get("message_id") == message
+                    for response, payload in journey.messages
+                ), seconds=20)
+                self.assertEqual(journey.row(
+                    "SELECT i.phase,json_extract(i.doc,'$.goal_control_unavailable'),t.native_thread_id "
+                    "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (str(message),),
+                ), [("retained_unsent", 1, None)])
+            self.assertEqual(provider.exposures, [])
 
         def _exact_claude_quote(self, journey, provider, worker_profile, *, web=False):
             import hashlib

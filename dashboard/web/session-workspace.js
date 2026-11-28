@@ -364,7 +364,7 @@
     }
     function appendItem(item,prepend=false){
       const found=[...entries.children].find(box=>box.dataset.event===item.id);
-      const delivery=portableDeliveryText(item.portable_phase);
+      const delivery=portableDeliveryText(item.portable_phase,item.native_tool_declined);
       if(found){
         const status=found.children[2];
         if(delivery&&status?.className==='reply-status'&&status.textContent!==delivery)status.textContent=delivery;

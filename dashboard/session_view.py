@@ -337,7 +337,8 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
             AND json_extract(i.doc,'$.native_thread')=t.native_thread_id"""
         pending = db.execute(f"""SELECT i.id,COALESCE(s.created_at,t.started_at),
                 substr(json_extract(s.doc,'$.text'),1,1001),{original_id},
-                CASE WHEN {native_receipt} AND {running_here} THEN 'accepted' ELSE i.phase END
+                CASE WHEN {native_receipt} AND {running_here} THEN 'accepted' ELSE i.phase END,
+                coalesce(json_extract(i.doc,'$.native_tool_declined'),0)
             FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
             LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
             WHERE i.session_id=?1 AND s.human_id=?2 AND {human_original}
@@ -346,17 +347,23 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                 OR (i.phase IN ('queued','submitting','steering','retained_unsent','uncertain')
                   AND json_extract(i.doc,'$.target_execution.harness')=?3
                   AND json_extract(i.doc,'$.target_execution.revision')=?5
-                  AND s.origin_chat=?6 AND s.origin_thread=?7 AND s.channel LIKE 'telegram:%'
-                  AND s.update_id IS NOT NULL AND s.origin_message IS NOT NULL
-                  AND json_type(s.doc,'$.tribu_source') IS NOT 'object'))
+                  AND ((s.origin_chat=?6 AND s.origin_thread=?7 AND s.channel LIKE 'telegram:%'
+                    AND s.update_id IS NOT NULL AND s.origin_message IS NOT NULL
+                    AND json_type(s.doc,'$.tribu_source') IS NOT 'object')
+                    OR (s.channel='conversation' AND i.phase='uncertain'
+                      AND json_extract(i.doc,'$.native_tool_declined')=1
+                      AND t.status='failed' AND t.session_id=i.session_id
+                      AND t.from_user_id=s.human_id AND t.execution_harness=?3
+                      AND t.execution_generation=?4))))
             ORDER BY i.sequence DESC LIMIT 8""", (*scope, dispatch_binding, chat, topic))
-        for instruction, started, text, input_id, phase in reversed(pending.fetchall()):
+        for instruction, started, text, input_id, phase, tool_declined in reversed(pending.fetchall()):
             if isinstance(text, str) and text.strip():
                 if len(text)>1000:text=text[:1000]+'…'
                 item_id = hashlib.sha256(f'{identity}:pending:{instruction}'.encode()).hexdigest()[:32]
                 pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
                                       'timestamp':started,'pending':True,'portable_phase':phase})
                 if input_id:pending_items[-1]['input_id']=input_id
+                if tool_declined:pending_items[-1]['native_tool_declined']=True
         has_early_view = db.execute("""SELECT 1 FROM sqlite_schema
             WHERE type='view' AND name='visible_portable_handoff_inputs'""").fetchone()
         if has_early_view:

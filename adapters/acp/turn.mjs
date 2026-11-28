@@ -34,6 +34,14 @@ export async function runAcpTurn({
   let interruptSent = false;
   let nativeSessionId;
   let exposed = false;
+  let inputAccepted = false;
+  let rejectedTool = false;
+  async function acceptInput() {
+    if (!interruptSent && !inputAccepted && onInputAccepted) {
+      await onInputAccepted(nativeSessionId);
+      inputAccepted = true;
+    }
+  }
   let reason = unavailable;
   try {
     stop.throwIfAborted();
@@ -86,8 +94,13 @@ export async function runAcpTurn({
         if (typeof value.method === 'string') {
           if ('id' in value) {
             if (value.method === 'session/request_permission' && (selectPermission || interruptSent)) {
-              const optionId = exposed && !interruptSent && value.params?.sessionId === nativeSessionId
-                ? await selectPermission(value.params) : undefined;
+              const activePrompt = exposed && !interruptSent && value.params?.sessionId === nativeSessionId;
+              const optionId = activePrompt ? await selectPermission(value.params) : undefined;
+              if (activePrompt && optionId && !interruptSent) {
+                await acceptInput();
+                rejectedTool ||= Array.isArray(value.params.options) && value.params.options.some(
+                  option => option?.optionId === optionId && option.kind === 'reject_once');
+              }
               await send({ id: value.id, result: { outcome: optionId && !interruptSent
                 ? { outcome: 'selected', optionId } : { outcome: 'cancelled' } } });
             } else {
@@ -134,7 +147,6 @@ export async function runAcpTurn({
     exposed = true;
     reason = 'native_result_unconfirmed';
 
-    let inputAccepted = false;
     let answer = '';
     let answerBytes = 0;
     const terminal = await request('session/prompt', {
@@ -151,10 +163,7 @@ export async function runAcpTurn({
       if (typeof chunk !== 'string') throw new Error('Invalid response text');
       answerBytes += Buffer.byteLength(chunk);
       if (answerBytes > MAX_TEXT) throw new Error('ACP response exceeds bound');
-      if (!interruptSent && !inputAccepted && chunk.trim() && onInputAccepted) {
-        await onInputAccepted(nativeSessionId);
-        inputAccepted = true;
-      }
+      if (chunk.trim()) await acceptInput();
       answer += chunk;
     }, () => {
       if (interruptSignal) interruptListener = addAbortListener(interruptSignal, requestInterrupt);
@@ -167,12 +176,16 @@ export async function runAcpTurn({
       && visible.includes('<function=')
       && !visible.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
     if (terminal?.stopReason !== 'end_turn' || !visible || rawToolCall) {
-      return { phase: 'uncertain', reason, sessionId: nativeSessionId };
+      return { phase: 'uncertain',
+        reason: rejectedTool && !interruptSent ? 'native_tool_declined_without_reply' : reason,
+        sessionId: nativeSessionId };
     }
     return { phase: 'completed', sessionId: nativeSessionId, text: answer };
   } catch {
     return exposed
-      ? { phase: 'uncertain', reason, sessionId: nativeSessionId }
+      ? { phase: 'uncertain',
+        reason: rejectedTool && !interruptSent && !stop.aborted ? 'native_tool_declined_without_reply' : reason,
+        sessionId: nativeSessionId }
       : { phase: 'not_submitted', reason };
   } finally {
     interruptListener?.[Symbol.dispose]();

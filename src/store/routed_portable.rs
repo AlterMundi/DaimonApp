@@ -1890,6 +1890,21 @@ impl Store {
                 _ => Phase::Uncertain,
             };
             super::interaction::transport_on(&tx, &input.id, input.human_id, local, phase, None)?;
+            if phase == Phase::Uncertain
+                && outcome["phase"] == "uncertain"
+                && outcome["reason"] == "native_tool_declined_without_reply"
+                && current.native_input_accepted
+                && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+                && current
+                    .target_execution
+                    .as_ref()
+                    .is_some_and(|binding| binding.harness == Harness::Antigravity)
+            {
+                tx.execute(
+                    "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_tool_declined',json('true')) WHERE id=?1",
+                    [&input.id],
+                )?;
+            }
             if let Some(limit) = limit {
                 tx.execute(
                     "UPDATE interaction_instructions
@@ -1922,6 +1937,21 @@ impl Store {
         } else if current.context_unavailable {
             tx.execute(
                 "UPDATE interaction_instructions SET doc=json_remove(doc,'$.context_unavailable') WHERE id=?1",
+                [&input.id],
+            )?;
+        }
+        let goal_control_unavailable = current.phase == Phase::Queued
+            && outcome["phase"] == "not_submitted"
+            && outcome["reason"] == "claude_goal_control_unavailable"
+            && current.target_execution.as_ref().is_some_and(|target| target.harness == Harness::Claude);
+        if goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.goal_control_unavailable',json('true')) WHERE id=?1",
+                [&input.id],
+            )?;
+        } else if current.goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_remove(doc,'$.goal_control_unavailable') WHERE id=?1",
                 [&input.id],
             )?;
         }

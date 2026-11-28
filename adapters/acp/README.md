@@ -125,6 +125,16 @@ real DMK reader, a signed same-thread reply observed by the sender and
 restart without resubmission. It uses a disposable Matrix authority,
 synthetic memory and a loopback model responder.
 
+## Declined tools in an Antigravity topic
+
+The sandboxed Antigravity pilot can ask for native tools outside the provided
+catalog. A request for a tool in the current prompt is input acceptance, even
+when the tool is declined before any assistant text. If the turn then closes
+without a reply, Gateway retains the original and the uncertain work outcome.
+The Telegram reply and Conversation status explain the missing reply without
+claiming completion or resubmitting the original. A tool denial does not widen
+the topic's workspace access.
+
 ## Qwen Code candidate
 
 `runQwenTurn` uses the shared ACP transport with the owner-selected Qwen Code
