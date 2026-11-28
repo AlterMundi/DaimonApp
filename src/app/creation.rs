@@ -1,12 +1,15 @@
 //! Create one justified destination through the existing topic/session adapter.
 use super::*;
-use crate::{files::workspace_marker_matches, interaction::InputReference};
+use crate::{
+    files::workspace_marker_matches,
+    interaction::{EmptyTopicProfile, ForegroundEngine, InputReference},
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub(super) fn schema() -> Value {
-    json!({"type":"object","properties":{"input_ref":{"oneOf":[{"type":"integer","minimum":0},{"type":"string","format":"uuid"}]},"name":{"type":"string","description":"Human-selected topic title, including spaces (1-64 UTF-8 bytes, no surrounding whitespace, controls or markup). Multiword titles route through the returned stable tID selector; stable tID titles are reserved"},"reason":{"type":"string","description":"Why this original input is a distinct task; uncertainty or a busy worker is not a reason"},"context_selectors":{"type":"array","items":{"type":"string"},"maxItems":5}},"required":["input_ref","name","reason","context_selectors"],"additionalProperties":false})
+    json!({"type":"object","properties":{"input_ref":{"oneOf":[{"type":"integer","minimum":0},{"type":"string","format":"uuid"}]},"name":{"type":"string","description":"Human-selected topic title, including spaces (1-64 UTF-8 bytes, no surrounding whitespace, controls or markup). Multiword titles route through the returned stable tID selector; stable tID titles are reserved"},"reason":{"type":"string","description":"Why this original input is a distinct task; uncertainty or a busy worker is not a reason"},"empty_profile":{"type":"object","properties":{"harness":{"const":"antigravity"},"model":{"type":"string"},"effort":{"type":"string"}},"required":["harness","model","effort"],"additionalProperties":false},"context_selectors":{"type":"array","items":{"type":"string"},"maxItems":5}},"required":["input_ref","name","reason","context_selectors"],"additionalProperties":false})
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,6 +19,7 @@ struct Create {
     name: String,
     reason: String,
     context_selectors: Vec<String>,
+    empty_profile: Option<EmptyTopicProfile>,
 }
 
 /// Only fixed, non-sensitive pre-admission diagnostics cross the tool boundary.
@@ -33,6 +37,50 @@ pub(super) fn rejection(error: &anyhow::Error) -> Option<Value> {
         "kind":"creation_rejected","code":e.0,"stage":"before_intent",
         "message":e.1,"effect":"This call made no creation intent or topic mutation. Inspect creation_status for this original before correcting arguments; a prior or concurrent call may still exist."
     }))
+}
+
+fn empty_workspace(
+    cfg: &crate::interaction::InteractionConfig,
+    selected: &EmptyTopicProfile,
+) -> Result<PathBuf> {
+    let unavailable = || {
+        PreflightRejection(
+            "empty_profile_unavailable",
+            "Select the exact model and effort of the owner-configured Antigravity direct worker.",
+        )
+    };
+    let config = cfg
+        .foreground(ForegroundEngine::Antigravity)
+        .filter(|worker| {
+            worker.agy_cli
+                && worker.interaction_direct
+                && selected.harness == ForegroundEngine::Antigravity.harness()
+        })
+        .ok_or_else(unavailable)?;
+    let path = config
+        .worker_command
+        .windows(2)
+        .find(|args| args[0] == "--profile" && Path::new(&args[1]).is_absolute())
+        .map(|args| &args[1])
+        .ok_or_else(unavailable)?;
+    let profile: Value = serde_json::from_slice(
+        &super::execution_status::profile_bytes(path).ok_or_else(unavailable)?,
+    )
+    .map_err(|_| unavailable())?;
+    anyhow::ensure!(
+        profile["adapter"] == "agy"
+            && profile["model"].as_str() == Some(&selected.model)
+            && profile["effort"].as_str() == Some(&selected.effort)
+            && !selected.model.trim().is_empty()
+            && selected.model.len() <= 128
+            && !selected.effort.trim().is_empty()
+            && selected.effort.len() <= 32,
+        unavailable()
+    );
+    let cwd = Path::new(profile["cwd"].as_str().ok_or_else(unavailable)?);
+    let actual = App::validate_independent_topic_workspace(cwd).map_err(|_| unavailable())?;
+    anyhow::ensure!(cwd == actual, unavailable());
+    Ok(actual)
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -147,6 +195,13 @@ async fn create_selected(
     interview: bool,
 ) -> Result<Value> {
     let args: Create = serde_json::from_value(args)?;
+    if args.empty_profile.is_some() && (interview || !args.context_selectors.is_empty()) {
+        return Err(PreflightRejection(
+            "empty_profile_context",
+            "An empty topic cannot import context or be an interview.",
+        )
+        .into());
+    }
     if interview && args.context_selectors.is_empty() {
         bail!("An interview requires at least one selected observer source");
     }
@@ -237,7 +292,10 @@ async fn create_selected(
             "An independent interview from explicitly selected bounded historical evidence, not an exact native fork or the source's live state. Busy sources continue independently. Later corrections are not silently imported; select a new context explicitly. This does not publish content, transfer pending tasks/tools/goals or authorize source execution."
         );
     }
-    if let Some(retained) =
+    if let Some(selection) = &args.empty_profile {
+        context["empty_profile"] = serde_json::to_value(selection)?;
+        context["empty_workspace"] = json!(empty_workspace(&cfg, selection)?);
+    } else if let Some(retained) =
         shared
             .store
             .interaction_find_creation_for_input(key, human, args.input_ref.clone())?
@@ -340,6 +398,19 @@ async fn execute_claimed(
             })
             .transpose()
     };
+    let empty: Option<EmptyTopicProfile> =
+        serde_json::from_value(intent["context"]["empty_profile"].clone())?;
+    let empty_cwd = empty
+        .as_ref()
+        .map(|selection| {
+            let cwd = empty_workspace(&super::routing::profile(shared)?, selection)?;
+            anyhow::ensure!(
+                intent["context"]["empty_workspace"] == json!(cwd),
+                "Selected empty topic workspace changed"
+            );
+            Ok::<_, anyhow::Error>(cwd)
+        })
+        .transpose()?;
     let root = retained_workspace("topic_workspace_root")?;
     let workspace = retained_workspace("independent_workspace")?;
     let topic = if operation["phase"] == "prepared" && !shared.config.telegram.enabled {
@@ -389,6 +460,10 @@ async fn execute_claimed(
     if let Some(workspace) = folder.clone().or(workspace) {
         app.apply_independent_topic_workspace(&mut template, workspace);
     }
+    if let Some(cwd) = empty_cwd {
+        app.apply_independent_topic_workspace(&mut template, cwd);
+        template.session_prompt = None;
+    }
     if intent["context"]["purpose"] == "interview" {
         template.session_prompt = Some(format!(
             "{}\n\nThis is an independent interview about the explicitly selected observer finding. The pinned original source window (or explicitly marked excerpts) and derived observer card are attributed context, not your firsthand experience or live source state. Respect any additional interview excerpt bounds; the full captured source remains retained separately. Explain what the supplied evidence supports, preserve uncertainty and ask for missing context. Source work, tools and goals are not transferred. Do not continue or modify the source task, publish its content or claim an exact native fork. Later source changes remain separate unless explicitly selected.",
@@ -396,6 +471,21 @@ async fn execute_claimed(
         ));
     }
     app.initialize_topic_session_with_folder(target, human, &template, folder.as_deref(), None)?;
+    if let Some(empty) = empty {
+        let binding = shared
+            .store
+            .interaction_empty_creation_finish(id, human, &empty)?;
+        anyhow::ensure!(
+            super::routing::profile(shared)?
+                .portable_route(target)
+                .is_some_and(|(engine, _)| engine.harness() == empty.harness),
+            "Empty topic execution binding unavailable"
+        );
+        telegram_ingress::release_created_topic(app, target)?;
+        return Ok(json!({"kind":"created_empty_destination",
+            "operation":shared.store.interaction_creation(id,human)?,
+            "selector":format!("t{topic}"),"binding":binding}));
+    }
     let instruction = shared.store.interaction_creation_finish(
         id,
         human,

@@ -10,7 +10,7 @@ pub(super) struct ClaudeRuntimeCache {
     observation: Option<([u8; 32], Instant, Value)>,
 }
 
-fn profile_bytes(path: &str) -> Option<Vec<u8>> {
+pub(super) fn profile_bytes(path: &str) -> Option<Vec<u8>> {
     let mut file = std::fs::File::open(path).ok()?.take(65537);
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;

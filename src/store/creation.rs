@@ -1,7 +1,8 @@
 //! Retained creation intents and enrollment in the existing interaction registry.
 use super::*;
 use crate::interaction::{
-    InputReference, InteractionConfig, RequestRelation, ReturnRoute, SourceInput, Target,
+    EmptyTopicProfile, InputReference, InteractionConfig, RequestRelation, ReturnRoute,
+    SourceInput, Target,
 };
 use anyhow::bail;
 use serde_json::{Value, json};
@@ -32,7 +33,8 @@ pub(super) fn creation_scope_for_update(
         "SELECT id FROM interaction_creations
          WHERE topic=?1 AND COALESCE(json_extract(doc,'$.target_chat'),entry_chat)=?2
            AND (phase IN ('topic_known','retained_topic') OR (phase='ready' AND topic_release_ready=0))
-           AND json_extract(doc,'$.context.topic_workspace_root') IS NOT NULL",
+           AND (json_extract(doc,'$.context.topic_workspace_root') IS NOT NULL
+                OR json_extract(doc,'$.context.empty_profile') IS NOT NULL)",
         params![topic, message.chat.id], |r| r.get(0),
     ).optional()?;
     let control = id.is_some()
@@ -84,17 +86,35 @@ impl Store {
     pub fn interaction_profile(&self, base: &InteractionConfig) -> Result<InteractionConfig> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut cfg = base.clone();
-        let mut q=conn.prepare("SELECT e.target_topic,e.name FROM interaction_enrollments e JOIN sessions s ON s.id=e.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE e.human_id=?1 AND e.entry_chat=?2 AND e.entry_topic=?3 AND s.creator_user_id=?1 AND u.allowed=1 AND s.chat_id=e.entry_chat AND s.thread_id=e.target_topic ORDER BY e.target_topic")?;
+        let mut q=conn.prepare("SELECT e.target_topic,e.name,json_extract(c.doc,'$.context.empty_profile.harness') FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id JOIN sessions s ON s.id=e.session_id JOIN users u ON u.tg_user_id=s.creator_user_id WHERE e.human_id=?1 AND e.entry_chat=?2 AND e.entry_topic=?3 AND s.creator_user_id=?1 AND u.allowed=1 AND s.chat_id=e.entry_chat AND s.thread_id=e.target_topic ORDER BY e.target_topic")?;
         let rows = q.query_map(params![base.human_id, base.chat_id, base.topic_id], |r| {
             Ok(Target {
                 topic_id: r.get(0)?,
                 name: r.get(1)?,
-                harness: None,
+                harness: r
+                    .get::<_, Option<String>>(2)?
+                    .map(|value| serde_json::from_value(json!(value)))
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            2,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
             })
         })?;
         for target in rows {
             let target = target?;
-            if !cfg.targets.iter().any(|t| t.topic_id == target.topic_id) {
+            if let Some(current) = cfg
+                .targets
+                .iter_mut()
+                .find(|t| t.topic_id == target.topic_id)
+            {
+                if target.harness.is_some() {
+                    current.harness = target.harness;
+                }
+            } else {
                 cfg.targets.push(target);
             }
         }
@@ -815,6 +835,85 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn empty_topic_profile(
+        &self,
+        key: SessionKey,
+        human: i64,
+    ) -> Result<Option<EmptyTopicProfile>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let raw:Option<String>=conn.query_row(
+            "SELECT json_extract(c.doc,'$.context.empty_profile') FROM interaction_enrollments e
+             JOIN interaction_creations c ON c.id=e.creation_id
+             JOIN sessions s ON s.id=e.session_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND e.human_id=?3",
+            params![key.chat_id,key.thread_id,human], |r| r.get::<_,Option<String>>(0),
+        ).optional()?.flatten();
+        raw.map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Commit the selection and open ingress together, without a native admission.
+    pub(crate) fn interaction_empty_creation_finish(
+        &self,
+        id: &str,
+        human: i64,
+        selected: &EmptyTopicProfile,
+    ) -> Result<Value> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let operation = creation_on(&tx, id, human)?;
+        eligible(&tx, &operation)?;
+        let d = &operation["intent"];
+        anyhow::ensure!(
+            operation["phase"] == "topic_known"
+                && d["context"]["empty_profile"] == serde_json::to_value(selected)?,
+            "Confirmed empty topic selection changed"
+        );
+        let entry: SessionKey = serde_json::from_value(d["entry"].clone())?;
+        let topic = operation["topic"].as_i64().context("Missing topic")?;
+        let session: i64 = tx.query_row(
+            "SELECT s.id FROM sessions s
+            WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3
+            AND s.codex_thread_id IS NULL AND s.force_fresh_thread=1 AND s.cwd=?4
+            AND NOT EXISTS(SELECT 1 FROM turns t WHERE t.session_id=s.id)
+            AND NOT EXISTS(SELECT 1 FROM interaction_instructions i WHERE i.session_id=s.id)",
+            params![
+                entry.chat_id,
+                topic,
+                human,
+                d["context"]["empty_workspace"].as_str()
+            ],
+            |row| row.get(0),
+        )?;
+        let name = d["name"].as_str().context("Missing retained topic name")?;
+        let selector = if name.contains(' ') {
+            format!("t{topic}")
+        } else {
+            name.to_owned()
+        };
+        tx.execute("INSERT INTO interaction_enrollments(human_id,entry_chat,entry_topic,target_topic,session_id,name,creation_id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",params![human,entry.chat_id,entry.thread_id,topic,session,selector,id])?;
+        anyhow::ensure!(
+            tx.execute(
+                "UPDATE interaction_creations SET phase='ready',
+            topic_session_id=?2,topic_release_ready=1 WHERE id=?1 AND instance_id=?3",
+                params![id, session, self.instance_id]
+            )? == 1,
+            "Empty topic creation owner changed"
+        );
+        let revision = super::presentation::entry_binding(
+            &tx,
+            human,
+            SessionKey::new(entry.chat_id, Some(topic)),
+            session,
+        )?;
+        tx.commit()?;
+        Ok(
+            json!({"revision":revision,"conversation_id":session,"native_session":null,
+            "harness":selected.harness,"model":selected.model,"effort":selected.effort}),
+        )
+    }
+
     /// Enroll the actual owned destination and admit its original input atomically.
     pub fn interaction_creation_finish(
         &self,
@@ -830,6 +929,10 @@ impl Store {
             return Err(anyhow!("Creation has no confirmed topic"));
         }
         let d = &operation["intent"];
+        anyhow::ensure!(
+            d["context"]["empty_profile"].is_null(),
+            "Empty topic cannot admit its creation original"
+        );
         let entry: SessionKey = serde_json::from_value(d["entry"].clone())?;
         let topic = operation["topic"].as_i64().context("Missing topic")?;
         let session:i64=tx.query_row("SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3 AND codex_thread_id IS NULL AND force_fresh_thread=1",params![entry.chat_id,topic,human],|r|r.get(0))?;
@@ -916,6 +1019,9 @@ impl Store {
         let doc:Option<String>=conn.query_row("SELECT c.doc FROM interaction_enrollments e JOIN interaction_creations c ON c.id=e.creation_id JOIN sessions s ON s.id=e.session_id WHERE e.human_id=?1 AND s.creator_user_id=?1 AND s.chat_id=?2 AND s.thread_id=?3",params![human,key.chat_id,key.thread_id],|r|r.get(0)).optional()?;
         doc.map(|d| {
             let mut context = serde_json::from_str::<Value>(&d)?["context"].clone();
+            if context["empty_profile"].is_object() {
+                return Ok(Value::Null);
+            }
             if let Some(object) = context.as_object_mut() {
                 object.remove("independent_workspace");
                 object.remove("topic_workspace_root");
@@ -923,6 +1029,7 @@ impl Store {
             Ok(context)
         })
         .transpose()
+        .map(|value| value.filter(|context| !context.is_null()))
     }
 }
 

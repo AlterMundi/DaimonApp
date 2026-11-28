@@ -13,6 +13,11 @@ pub(super) async fn process_turn(
     registration: Option<String>,
     prepared_worker_lease: Option<super::attention::WorkerLease>,
 ) -> Result<()> {
+    let profiled = app
+        .shared
+        .store
+        .empty_topic_profile(queued.request.session_key, queued.request.from_user_id)?
+        .is_some();
     let conversation = queued
         .conversation_input
         .as_deref()
@@ -28,6 +33,7 @@ pub(super) async fn process_turn(
         .as_ref()
         .filter(|input| input.portable.is_some())
     {
+        anyhow::ensure!(!profiled, "This topic uses its retained routed worker");
         return super::foreground::run_portable_turn(&app, &queued.request, input, cancel_slot)
             .await;
     }
@@ -100,6 +106,7 @@ pub(super) async fn process_turn(
             .await;
         }
     }
+    anyhow::ensure!(!profiled, "This topic uses its retained routed worker");
     if shared
         .store
         .stop_admission_epoch(queued.request.session_key)?

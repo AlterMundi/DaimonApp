@@ -152,6 +152,15 @@ pub struct Target {
     pub(crate) harness: Option<crate::execution::Harness>,
 }
 
+/// Select the matching configuration of an installed owner worker.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmptyTopicProfile {
+    pub harness: crate::execution::Harness,
+    pub model: String,
+    pub effort: String,
+}
+
 /// Explicit owner setup for technical sends; never a model-selected command.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -530,14 +539,23 @@ impl InteractionConfig {
         {
             bail!("The agy CLI requires an explicitly selected Antigravity topic");
         }
-        if [&self.claude_foreground, &self.antigravity_foreground, &self.antigravity_matrix_foreground]
-            .into_iter()
-            .flatten()
-            .any(|foreground| foreground.goose_topic_store_id.is_some())
+        if [
+            &self.claude_foreground,
+            &self.antigravity_foreground,
+            &self.antigravity_matrix_foreground,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|foreground| foreground.goose_topic_store_id.is_some())
             || self.goose_foreground.as_ref().is_some_and(|foreground| {
-                foreground.goose_topic_store_id.as_deref().is_some_and(|id|
-                    !foreground.interaction_direct
-                        || !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id))
+                foreground
+                    .goose_topic_store_id
+                    .as_deref()
+                    .is_some_and(|id| {
+                        !foreground.interaction_direct
+                            || !uuid::Uuid::parse_str(id)
+                                .is_ok_and(|parsed| parsed.to_string() == id)
+                    })
             })
         {
             bail!("Goose ACP continuity requires an explicitly selected Goose topic");

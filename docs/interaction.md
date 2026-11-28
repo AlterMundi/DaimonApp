@@ -18,6 +18,20 @@ intent. A reserved intent binds its exact relay and rechecks it before
 submission and enrollment. If a topic outcome is uncertain, inspect the
 existing intent and keep the existing recovery rules.
 
+### Create an empty topic with a selected worker
+
+When `create.empty_profile` advertises `owner-selected-antigravity/v1`,
+submit the exact human original, title and reason, an empty
+`context_selectors` list, and `empty_profile` with `harness`, `model` and
+`effort`. The model and effort must match the installed Antigravity direct
+worker. Gateway verifies the owned workspace and enrolls the selection
+before releasing input. The creation request is retained for attribution
+and never sent to the new topic. A successful response identifies an empty
+logical binding without a native session. Subsequent work still needs its
+own input. The worker validates the retained model and effort before
+opening the native session. Existing creation and uncertain receipt recovery
+continue through the same operator controls.
+
 ## DaimonGateway and TeleDaimon boundary
 
 DaimonGateway owns the authenticated owner socket, canonical originals,

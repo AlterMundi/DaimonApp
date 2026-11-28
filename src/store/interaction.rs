@@ -225,6 +225,12 @@ fn admit_selected_with_origin_on(
         let reserved:Option<(String,Option<i64>,i64,String)>=tx.query_row("SELECT phase,topic,entry_chat,doc FROM interaction_creations WHERE human_id=?1 AND input_update=?2",params![source.human_id,reference],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         if let Some((phase, topic, chat, raw)) = reserved {
             let intent: serde_json::Value = serde_json::from_str(&raw)?;
+            anyhow::ensure!(
+                intent["context"]["empty_profile"].is_null()
+                    || topic != Some(target.thread_id)
+                    || chat != target.chat_id,
+                "Empty topic creation original cannot become its first input"
+            );
             if let Some(prior) = intent.get("prior_dispatch") {
                 use sha2::{Digest, Sha256};
                 if prior["source_sha256"]

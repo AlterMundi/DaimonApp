@@ -27,6 +27,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub session_instructions: Option<&'a str>,
     pub workspace: Option<&'a std::path::Path>,
     pub topic_id: Option<i64>,
+    pub selected_profile: Option<&'a crate::interaction::EmptyTopicProfile>,
     pub output_directory: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
@@ -154,7 +155,9 @@ pub(in crate::app) async fn execute_worker(
     let schema = match engine {
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
-        ForegroundEngine::Antigravity if turn.acp_topic.is_some() => "daimon-gateway.antigravity-turn/v2",
+        ForegroundEngine::Antigravity if turn.acp_topic.is_some() => {
+            "daimon-gateway.antigravity-turn/v2"
+        }
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
@@ -169,6 +172,7 @@ pub(in crate::app) async fn execute_worker(
         session_instructions,
         workspace,
         topic_id,
+        selected_profile,
         output_directory,
         history_seed,
         project_checkpoint,
@@ -183,7 +187,9 @@ pub(in crate::app) async fn execute_worker(
         mut steering,
         acceptance,
     } = turn;
-    let agy = acp_topic.as_ref().filter(|_| engine == ForegroundEngine::Antigravity);
+    let agy = acp_topic
+        .as_ref()
+        .filter(|_| engine == ForegroundEngine::Antigravity);
     anyhow::ensure!(
         !cancel.is_cancelled(),
         "Native worker cancelled before preparation"
@@ -293,6 +299,13 @@ pub(in crate::app) async fn execute_worker(
                 start["storeId"] = json!(store_id);
             }
         }
+        if let Some(profile) = selected_profile {
+            anyhow::ensure!(
+                agy.is_some() && engine.harness() == profile.harness,
+                "Topic worker selection changed"
+            );
+            start["selectedProfile"] = json!({"model":profile.model,"effort":profile.effort});
+        }
         if agy.is_some() {
             if controller.is_some() {
                 start["controller"] = json!(true);
@@ -336,7 +349,9 @@ pub(in crate::app) async fn execute_worker(
                     .context("Goose preparation omitted its native session")?,
                 ForegroundEngine::Antigravity if agy.is_some() => observed
                     .and_then(Value::as_str)
-                    .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+                    .filter(|id| {
+                        uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id)
+                    })
                     .context("agy preparation omitted its native session")?,
                 ForegroundEngine::Antigravity
                     if observed.and_then(Value::as_str) == Some(session) =>
@@ -363,7 +378,9 @@ pub(in crate::app) async fn execute_worker(
             }
             if let Some(topic) = &acp_topic {
                 anyhow::ensure!(
-                    topic.native_session_id.is_none_or(|expected| expected == selected)
+                    topic
+                        .native_session_id
+                        .is_none_or(|expected| expected == selected)
                         && frame["workspace"].as_str() == Some(topic.workspace)
                         && frame["storeId"].as_str() == topic.store_id,
                     "ACP preparation changed the selected session, workspace or store"
@@ -417,7 +434,8 @@ pub(in crate::app) async fn execute_worker(
         let mut next_call = 1;
         let mut steer_ready = false;
         let mut interrupt_sent = false;
-        let interrupt_command = json!({"schema":schema,"type":"interrupt","inputId":id,"sessionId":session});
+        let interrupt_command =
+            json!({"schema":schema,"type":"interrupt","inputId":id,"sessionId":session});
         let mut steer_results = Vec::new();
         loop {
             if frame.is_null() {
@@ -931,6 +949,7 @@ pub(super) async fn run_portable_turn(
                 session_instructions: None,
                 workspace: None,
                 topic_id: None,
+                selected_profile: None,
                 output_directory: None,
                 history_seed: None,
                 project_checkpoint: None,
@@ -1042,6 +1061,7 @@ pub(super) async fn run_routed_portable(
         .get_session(request.session_key)?
         .filter(|session| session.id == input.target_session)
         .context("Selected topic session changed")?;
+    let selected_profile = store.empty_topic_profile(input.target, input.human_id)?;
     let (local, routed_host_access) = store.begin_routed_portable(input, request)?;
     let author = store.interaction_author(&input.id, input.human_id)?;
     let human_authored = author.is_none();
@@ -1219,6 +1239,7 @@ pub(super) async fn run_routed_portable(
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),
                     output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),
+                    selected_profile: selected_profile.as_ref(),
                     history_seed: history_seed.as_ref(),
                     project_checkpoint: project_checkpoint.as_deref(),
                     project_checkpoint_required: verified_checkpoint.as_ref().is_some_and(crate::store::ProjectStartup::is_selected),
@@ -1343,7 +1364,8 @@ pub(super) async fn run_routed_portable(
     if input.origin.message_id.is_some()
         && let Some(instruction) = store.interaction_instruction(&input.id, input.human_id)?
     {
-        if human_authored && instruction.context_unavailable
+        if human_authored
+            && instruction.context_unavailable
             && instruction.phase == crate::interaction::TransportPhase::RetainedUnsent
         {
             super::routing::notice_context_unavailable(
