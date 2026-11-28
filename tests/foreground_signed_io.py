@@ -177,6 +177,7 @@ operator.main()
                 initial_database = database.read_bytes()
             journey = CanonicalRouting(gateway) if mixed or inverse else Inputs(gateway)
             self.addCleanup(journey.close)
+            harness_switch = telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_HARNESS_SWITCH") == "1"
             visible_handoff = os.environ.get("FOREGROUND_TEST_VISIBLE_HANDOFF") if telegram_topic else None
             if visible_handoff not in {"1", "entry"}:
                 visible_handoff = None
@@ -192,11 +193,11 @@ operator.main()
                         db.execute("UPDATE sessions SET session_prompt=? WHERE thread_id=7",
                                    ("Keep the selected design instructions.",))
                 targets = journey.target_config
-                if inverse:
+                if inverse and not harness_switch:
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
-            if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+            if harness_switch or (telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1"):
                 folder_root = journey.root / "conversation-folders"
                 folder_root.mkdir(mode=0o700)
                 journey.config.write_text(journey.config.read_text().replace(
@@ -538,6 +539,9 @@ timeout_seconds=5
                 try:
                     journey.start()
                     journey.wait_control_socket(journey.socket)
+                    if harness_switch:
+                        self._claude_harness_switch(journey, provider)
+                        return
                     if adapter_recovery:
                         self._claude_adapter_recovery(journey, provider, adapter_config)
                         return
@@ -1628,6 +1632,112 @@ timeout_seconds=5
                         self.assertEqual(len(provider.calls), 6)
                     finally:
                         del provider.topic_history_lookup
+
+        def _claude_harness_switch(self, journey, provider):
+            from conversation_cold_entry_http_io import Browser
+
+            codex_target = 'name="Alpha"\ntopic_id=7'
+            claude_target = 'name="Alpha"\nharness="claude"\ntopic_id=7'
+            session, codex, cwd = journey.row(
+                "SELECT id,codex_thread_id,cwd FROM sessions WHERE thread_id=7")[0]
+            generation, = journey.row(
+                "SELECT generation FROM conversation_entry_generations WHERE session_id=?", (session,))[0]
+            adopted = journey.read("topics", "workspace", "adopt", "7", str(session))["result"]
+            self.assertTrue(adopted["folder_ready"])
+            checkpoint = Path(adopted["conversation_folder"]) / "CONTINUITY.md"
+            checkpoint.touch(mode=0o600, exist_ok=False)
+            checkpoint.write_text("The selected fixture workspace contains the approved clasp.")
+
+            def browser():
+                web = Browser(journey)
+                self.addCleanup(web.provider.close)
+                self.addCleanup(web.client.close)
+                return web
+
+            def switch(before, after):
+                journey.idle()
+                journey.stop()
+                config = journey.config.read_text()
+                self.assertEqual(config.count(before), 1)
+                journey.config.write_text(config.replace(before, after, 1))
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                self.assertEqual(journey.row(
+                    "SELECT id,codex_thread_id,cwd FROM sessions WHERE thread_id=7"), [(session, codex, cwd)])
+                self.assertEqual(journey.row(
+                    "SELECT generation FROM conversation_entry_generations WHERE session_id=?", (session,)),
+                    [(generation,)])
+                return browser()
+
+            def destination(web):
+                return next(row["destination"] for row in web.get("/api/interaction/sessions")["sessions"]
+                            if row["audio_key"] == "100:7")
+
+            def reply(web, answer):
+                return next(({"source": row["id"], "revision": row["revision"]}
+                             for row in web.get("/api/interaction")["items"]
+                             if row["kind"] == "worker_result" and row["preview"] == answer), None)
+
+            def selection(web, answer):
+                journey.wait(lambda: provider.failure or reply(web, answer), seconds=25)
+                self.assertIsNone(provider.failure)
+                return reply(web, answer)
+
+            web = browser()
+            previous = "The clasp selected in Codex is copper."
+            codex_input, _ = web.text("Which clasp did we choose?", reply=destination(web))
+            journey.answer_worker(7, previous, item="codex-before-claude")
+            reference = selection(web, previous)
+
+            web = switch(codex_target, claude_target)
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.original = "Sí, seguí con esa propuesta."
+            provider.quote_response = "Claude confirmed the copper clasp for the fixture."
+            provider.expected_quote = {**reference, "assistant": previous}
+            provider.human_original = str(uuid.uuid4())
+            claude_input, _ = web.text(provider.original, reply=reference, original_id=provider.human_original)
+            selection(web, provider.quote_response)
+
+            web = switch(claude_target, codex_target)
+            next_original = "Continue this work in the selected topic."
+            previous_packets = len(journey.worker_packets[codex])
+            successor, _ = web.text(next_original, reply=destination(web))
+            journey.wait(lambda: len(journey.worker_packets[codex]) == previous_packets + 1)
+            packet = journey.worker_packets[codex][-1]
+            self.assertEqual(packet["threadId"], codex)
+            encoded = json.dumps(packet, ensure_ascii=False)
+            self.assertIn(provider.quote_response, encoded)
+            self.assertIn(checkpoint.read_text(), encoded)
+            self.assertIn(next_original, encoded)
+            final = "Codex resumed with the selected checkpoint."
+            journey.answer_worker(7, final, item="codex-after-claude")
+            selection(web, final)
+
+            web = switch(codex_target, claude_target)
+            provider.expected_native_context = provider.quote_response
+            provider.expected_quote = None
+            provider.original = "Resume the design in the original Claude session."
+            provider.quote_response = "Claude resumed the same design session."
+            provider.human_original = str(uuid.uuid4())
+            resumed, _ = web.text(provider.original, reply=destination(web), original_id=provider.human_original)
+            selection(web, provider.quote_response)
+
+            turns = journey.row(
+                "SELECT s.event_id,t.execution_harness,t.native_thread_id,t.status "
+                "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                "WHERE t.session_id=? AND s.event_id IN (?,?,?,?) ORDER BY t.id",
+                (session, codex_input, claude_input, successor, resumed))
+            self.assertEqual([row[:2] for row in turns], [
+                (codex_input, "codex"), (claude_input, "claude"), (successor, "codex"), (resumed, "claude"),
+            ])
+            self.assertEqual([row[3] for row in turns], ["completed"] * 4)
+            self.assertEqual((turns[0][2], turns[2][2]), (codex, codex))
+            self.assertNotEqual(turns[1][2], codex)
+            self.assertEqual(turns[1][2], turns[3][2])
+            self.assertEqual(len(provider.exposures), 2)
+            self.assertEqual(len(set(provider.exposures)), 2)
 
         def _conversation_attachments(self, journey, provider):
             import base64

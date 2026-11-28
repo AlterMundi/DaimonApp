@@ -269,6 +269,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     delta = {"type": "text_delta", "text": self.server.quote_response}
                     reason = "end_turn"
             elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
+                if prior_answer := getattr(self.server, "expected_native_context", None):
+                    assert any(prior_answer in json.dumps(message["content"], ensure_ascii=False)
+                               for message in messages if message["role"] == "assistant")
                 if expected := getattr(self.server, "expected_quote", None):
                     # Only the current exchange's context may resolve this
                     # short approval. Earlier messages include other proposals.

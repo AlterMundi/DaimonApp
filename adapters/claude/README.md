@@ -520,6 +520,13 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   starts the named TeleDaimon process, verifies one projection of the
   known-unsent result, and checks that a separate lost acknowledgement is
   retained without replay across adapter restart.
+- `FOREGROUND_TEST_CLAUDE_HARNESS_SWITCH=1` with the Telegram-topic setup
+  uses Conversation to switch one owned topic from Codex to Claude, back to
+  Codex and then back to Claude. It asserts both original native sessions,
+  the topic generation and working directory, the exact quoted Codex answer
+  on Claude, and the retained Claude exchange plus project checkpoint on
+  Codex. The real Claude SDK uses a loopback provider and Codex has a
+  synthetic App Server peer.
 - `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
   selected Claude session through the paired Conversation composer, with no
   additional provider call and a retained refusal for an unpaired companion.
