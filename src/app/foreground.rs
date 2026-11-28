@@ -890,6 +890,7 @@ pub(super) async fn run_routed_portable(
                 active: super::ActiveTurnSteerHandle {
                     harness: Harness::Claude,
                     turn_id: local,
+                    attributed_root: false,
                     physical_turn: Default::default(),
                     sender,
                     attachments: Default::default(),

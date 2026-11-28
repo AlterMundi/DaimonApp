@@ -1400,6 +1400,11 @@ helper coverage stays internal and cannot reserve a completed return. Internal-o
 executions also do not inherit an older native progress return binding. Legacy
 records use retained session authorship/coverage without erasing any delivery or
 uncertain-send receipt. Later corrections keep their existing freshness semantics.
+When an independently admitted paired human input arrives during a private
+native turn, Gateway retains it on the existing topic queue for its own native
+turn. It uses the same logical topic and native session. The private result may
+still return to its caller. A later human input cannot widen the already
+selected audience, and recovery never resubmits an earlier accepted original.
 
 An attributed local request to Claude can use the destination's paired host
 tools when its exact retained parent came from the authenticated paired human.

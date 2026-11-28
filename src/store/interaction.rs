@@ -842,6 +842,18 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn native_turn_private(&self, local: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND ({}))",
+                super::presentation::ONLY_INTERNAL_HANDOFF
+            ),
+            [local],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Keep an attributed-only execution private once native output starts.
     /// A later human steer cannot grant access to its cumulative drafts.
     pub fn freeze_private_handoff(&self, local: i64, thread: &str) -> Result<()> {

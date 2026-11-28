@@ -1492,6 +1492,14 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
     }
     let claude = active.harness == crate::execution::Harness::Claude;
     let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
+    let attributed = app
+        .shared
+        .store
+        .interaction_author(&i.id, i.human_id)?
+        .is_some();
+    let needs_human_turn = !attributed
+        && source.tribu_source.is_none()
+        && active.requires_human_turn(&app.shared.store)?;
     let needs_fresh_claude = claude
         && (source.tribu_source.is_some()
             || !source.telegram_files.is_empty()
@@ -1500,11 +1508,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 .shared
                 .store
                 .routed_claude_preserves_quote(&source, i.target)?
-            || app
-                .shared
-                .store
-                .interaction_author(&i.id, i.human_id)?
-                .is_some()
+            || attributed
             || app
                 .shared
                 .store
@@ -1517,7 +1521,8 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 .is_empty());
     // Inputs that need separate context preparation use the existing run queue.
     // A physical turn change must not steer them as plain text.
-    if needs_fresh_claude
+    if needs_human_turn
+        || needs_fresh_claude
         || app
             .shared
             .store
@@ -1615,6 +1620,10 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
                         }
                         let original = shared.store.interaction_source(&input_id, human)?;
+                        if !attributed && original.tribu_source.is_none() {
+                            anyhow::ensure!(!shared.store.native_turn_private(active_local)?,
+                                "The human input requires its own turn");
+                        }
                         if let Some(external) = &original.tribu_source {
                             super::tribu::validate_integrated_source(&shared, external).await?;
                         }
