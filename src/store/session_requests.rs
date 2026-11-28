@@ -197,7 +197,7 @@ pub(super) fn session_input_allowed_on(conn: &Connection, id: &str, human: i64) 
     }
     for id in [&request.parent_instruction, &request.target_instruction] {
         let execution = instruction_on(conn, id, human)?;
-        if execution.target_execution.is_some() && !current_bound_turn_on(conn, &execution)? {
+        if execution.target_execution.is_some() && !current_return_parent_on(conn, &execution)? {
             return Ok(false);
         }
     }
@@ -221,6 +221,48 @@ fn current_bound_turn_on(conn: &Connection, instruction: &Instruction) -> Result
     )? && super::interaction::target_execution_allowed_on(conn, instruction)?)
 }
 
+// A disconnected collector can fail locally after observing both the exact
+// original and its final native item. These receipts authorize returning
+// existing evidence only. They do not reopen the original for new work.
+fn current_return_parent_on(conn: &Connection, instruction: &Instruction) -> Result<bool> {
+    if current_bound_turn_on(conn, instruction)? {
+        return Ok(true);
+    }
+    if instruction.phase != crate::interaction::TransportPhase::Accepted {
+        return Ok(false);
+    }
+    let retained = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_direct_parents direct
+            JOIN interaction_instructions i ON i.id=direct.instruction
+            JOIN interaction_sources x ON x.id=i.input_id AND x.channel LIKE 'telegram:%'
+            JOIN incoming_updates u ON u.update_id=x.update_id AND u.turn_id=?2
+            JOIN native_input_receipts r ON r.update_id=u.update_id
+            JOIN turns t ON t.id=u.turn_id AND t.session_id=i.session_id
+            JOIN sessions s ON s.id=t.session_id AND s.codex_thread_id=t.native_thread_id
+            JOIN conversation_entry_generations g ON g.session_id=s.id
+            JOIN users h ON h.tg_user_id=s.creator_user_id
+            JOIN interaction_native_messages m ON m.local_turn=t.id
+               AND m.native_thread=r.native_thread AND m.native_turn=r.native_turn
+               AND m.phase='final_answer' AND length(trim(m.text))>0
+            WHERE i.id=?1 AND i.phase='accepted' AND u.status='undetermined'
+              AND r.native_thread=?3 AND r.native_turn=?4 AND t.native_thread_id=r.native_thread
+              AND t.execution_harness='codex' AND t.status='failed'
+              AND t.execution_generation=g.generation AND s.force_fresh_thread=0
+              AND s.creator_user_id=?5 AND t.from_user_id=?5 AND x.human_id=?5 AND h.allowed=1
+              AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals w
+                              WHERE w.parent_instruction=i.id))",
+        params![
+            instruction.id,
+            instruction.local_turn,
+            instruction.native_thread,
+            instruction.native_turn,
+            instruction.human_id
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(retained && super::interaction::target_execution_allowed_on(conn, instruction)?)
+}
+
 pub(super) fn controller_parent_eligible_on(
     conn: &Connection,
     human: i64,
@@ -242,6 +284,15 @@ fn coordination_root_on(
     human: i64,
     parent: &Instruction,
 ) -> Result<Option<Instruction>> {
+    coordination_root_with(conn, human, parent, current_bound_turn_on)
+}
+
+fn coordination_root_with(
+    conn: &Connection,
+    human: i64,
+    parent: &Instruction,
+    root_allowed: fn(&Connection, &Instruction) -> Result<bool>,
+) -> Result<Option<Instruction>> {
     let Some(author) = author_on(conn, &parent.input_id)? else {
         return Ok(Some(parent.clone()));
     };
@@ -262,7 +313,7 @@ fn coordination_root_on(
     let root = instruction_on(conn, &root, human)?;
     Ok((author_on(conn, &root.input_id)?.is_none()
         && root.admission_epoch == parent.admission_epoch
-        && current_bound_turn_on(conn, &root)?
+        && root_allowed(conn, &root)?
         && current_bound_turn_on(conn, parent)?)
     .then_some(root))
 }
@@ -1060,12 +1111,12 @@ impl Store {
                 .target_execution
                 .as_ref()
                 .is_some_and(|binding| binding.harness.is_portable());
-        if !viable
+        if (!viable && !current_return_parent_on(&tx, &parent)?)
             || (parent.phase != crate::interaction::TransportPhase::Accepted && !exposes_portable)
         {
             return Ok(None);
         }
-        if coordination_root_on(&tx, human, &parent)?.is_none() {
+        if coordination_root_with(&tx, human, &parent, current_return_parent_on)?.is_none() {
             return Ok(None);
         }
         let helper = instruction_on(&tx, &call.target_instruction, human)?;
@@ -2332,6 +2383,141 @@ mod tests {
         assert!(s.interaction_session_return(&d.id, 100).unwrap().is_none());
         assert!(send("new-after-retire").is_err());
     }
+    #[test]
+    fn onward_result_survives_loss_of_the_original_collector() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let s = Store::open(file.path(), &[100], &super::super::tests::defaults()).unwrap();
+        let a = setup(&s, 7);
+        let b = setup(&s, 8);
+        let c = setup(&s, 9);
+        let original: crate::telegram::Update = serde_json::from_value(json!({
+            "update_id": 10, "direct_human_text": true,
+            "message": {"message_id":10, "message_thread_id":7,
+                "from":{"id":100,"is_bot":false,"first_name":"Human"},
+                "chat":{"id":100,"type":"private"}, "text":"Coordinate the current task."}
+        }))
+        .unwrap();
+        s.admit_update(&original).unwrap();
+        let local = s
+            .record_turn_started(
+                a.id,
+                &TurnRequest {
+                    session_key: a.key,
+                    from_user_id: 100,
+                    prompt: "Coordinate the current task.".into(),
+                    runtime_instructions: None,
+                    attachments: vec![],
+                    review_mode: None,
+                    override_search_mode: None,
+                },
+            )
+            .unwrap();
+        s.record_turn_native_thread(local, "native-7").unwrap();
+        s.begin_update(10).unwrap();
+        s.begin_update_steer(10, local).unwrap();
+        s.native_direct_input_receipt(a.key, 100, local, "paired-turn", "telegram:100:100:10", 55)
+            .unwrap();
+        s.accept_update_steer(10).unwrap();
+        let parent_id: String = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT instruction FROM interaction_direct_parents",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let open = tokio_util::sync::CancellationToken::new();
+        let (_, hop, _) = s
+            .interaction_session_request(
+                a.key,
+                100,
+                "native-7",
+                "paired-turn",
+                &parent_id,
+                "first-hop",
+                b.key,
+                "Coordinate the task.",
+                &open,
+            )
+            .unwrap();
+        accept(&s, &b, &hop, "first-hop-turn");
+        let (call, helper, _) = s
+            .interaction_session_request(
+                b.key,
+                100,
+                "native-8",
+                "first-hop-turn",
+                &hop.id,
+                "onward-hop",
+                c.key,
+                "Check the result.",
+                &open,
+            )
+            .unwrap();
+        let delivery = result(&s, &c, &helper);
+        s.record_turn_finished(local, "failed", None).unwrap();
+        s.finish_update_turn(10, false).unwrap();
+        s.record_native_message(
+            local,
+            "native-7",
+            "other-turn",
+            "unrelated-final",
+            Some("final_answer"),
+            "Different native turn.",
+        )
+        .unwrap();
+        assert!(
+            s.interaction_session_return(&delivery.id, 100)
+                .unwrap()
+                .is_none()
+        );
+        s.record_native_message(
+            local,
+            "native-7",
+            "paired-turn",
+            "paired-final",
+            Some("final_answer"),
+            "The accepted original reached a final answer.",
+        )
+        .unwrap();
+        let returned = s
+            .interaction_session_return(&delivery.id, 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(returned.target, b.key);
+        assert_eq!(
+            s.interaction_session_selected(b.key, 100, "native-8", &call.id)
+                .unwrap()
+                .phase,
+            "returned"
+        );
+        assert!(
+            s.interaction_session_input_allowed(&returned.id, 100)
+                .unwrap()
+        );
+        assert!(
+            s.interaction_session_return(&delivery.id, 100)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.interaction_session_request(
+                b.key,
+                100,
+                "native-8",
+                "first-hop-turn",
+                &hop.id,
+                "new-hop",
+                c.key,
+                "Do new work.",
+                &open,
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn completed_canonical_dependency_recovers_after_restart_without_replaying_helper() {
         let file = tempfile::NamedTempFile::new().unwrap();

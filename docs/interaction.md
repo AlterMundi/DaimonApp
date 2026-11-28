@@ -1405,6 +1405,12 @@ native turn, Gateway retains it on the existing topic queue for its own native
 turn. It uses the same logical topic and native session. The private result may
 still return to its caller. A later human input cannot widen the already
 selected audience, and recovery never resubmits an earlier accepted original.
+If a Codex collector failed locally after the direct Telegram input and its
+final native item were retained, the matching native receipts can still
+qualify an already admitted dependency result for return. Gateway checks the
+same physical turn, topic generation, owner and current binding. A receipt
+from another execution cannot satisfy that check. The scope is the retained
+result, and the failed collector cannot authorize a new handoff.
 
 An attributed local request to Claude can use the destination's paired host
 tools when its exact retained parent came from the authenticated paired human.
