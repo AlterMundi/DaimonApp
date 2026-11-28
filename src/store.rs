@@ -563,6 +563,19 @@ impl Store {
                         .context("Invalid Telegram update")?
                         .remove(field);
                 }
+                // During a rolling upgrade one side may omit album metadata.
+                // Keep the original intact and reject differing known group IDs.
+                const ALBUM: &str = "/message/media_group_id";
+                if previous.pointer(ALBUM).is_none() || incoming.pointer(ALBUM).is_none() {
+                    for update in [&mut previous, &mut incoming] {
+                        if let Some(message) = update
+                            .get_mut("message")
+                            .and_then(|value| value.as_object_mut())
+                        {
+                            message.remove("media_group_id");
+                        }
+                    }
+                }
                 anyhow::ensure!(previous == incoming, "telegram update ID content conflict");
             }
             return Ok(TelegramUpdateAdmission::Duplicate);
@@ -2299,6 +2312,53 @@ mod tests {
                 .uncertain_update_ids(200, SessionKey::new(100, Some(7)))
                 .unwrap(),
             vec![4]
+        );
+    }
+
+    #[test]
+    fn telegram_album_members_retain_immutable_group_and_original_ids() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let member = |id, group: Option<&str>| {
+            let mut update = serde_json::to_value(input(id, 100, "Caption")).unwrap();
+            update["message"]["photo"] =
+                serde_json::json!([{ "file_id": format!("photo-{id}"), "width": 1, "height": 1 }]);
+            if let Some(group) = group {
+                update["message"]["media_group_id"] = serde_json::json!(group);
+            }
+            serde_json::from_value::<crate::telegram::Update>(update).unwrap()
+        };
+        // An old poller recorded the first member before it understood albums.
+        assert!(store.admit_update(&member(40, None)).unwrap());
+        assert!(!store.admit_update(&member(40, Some("album"))).unwrap());
+        for id in [41, 42] {
+            assert!(store.admit_update(&member(id, Some("album"))).unwrap());
+            assert!(!store.admit_update(&member(id, Some("album"))).unwrap());
+        }
+        // Rollback to an old poller does not modify retained album metadata.
+        assert!(!store.admit_update(&member(41, None)).unwrap());
+        assert!(store.admit_update(&member(41, Some("different"))).is_err());
+        assert_eq!(store.last_update_id().unwrap(), Some(42));
+        let conn = store.conn.lock().unwrap();
+        let saved = conn
+            .prepare(
+                "SELECT update_id,json_extract(payload_json,'$.message.media_group_id')
+                       FROM incoming_updates ORDER BY update_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            saved,
+            vec![
+                (40, None),
+                (41, Some("album".into())),
+                (42, Some("album".into()))
+            ]
         );
     }
 

@@ -60,6 +60,18 @@ The Bot API path and local Bot API storage stay with TeleDaimon. Gateway
 retains the existing transfer limit and writes into its private temporary file.
 A verified complete transfer is required before publishing the local filename.
 
+Telegram supplies a chat-scoped media group identifier on each album member.
+The adapter preserves it on each original update, and Gateway keeps the members
+under their individual update IDs in the existing ingress journal. An older
+adapter can omit the identifier on redelivery without rewriting the original.
+Conflicting known group identifiers for one update are rejected. Dispatch still
+handles each member separately. Album dispatch needs to collect the retained
+members across polls, with one bounded wait and one native original tied back to
+the member receipts. Poll boundaries alone do not identify complete albums.
+Scope the group to its verified sender, chat, and topic. Keep each member's
+caption, reply, and stop epoch. A member that arrives after native admission
+must remain accounted for without replaying the earlier submission.
+
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Remove the Gateway's Telegram token
 setting and environment binding. Start Gateway on the same database and
