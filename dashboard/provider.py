@@ -1273,7 +1273,8 @@ class Provider:
                 raise ProviderUnavailable('Live recovery cannot select a file recognizer')
         return {'current':current,'command':completed,'media':directory/metadata['id'],'timeout':timeout}
 
-    def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None, defer_foreground=False):
+    def conversation_voice_submit(self, metadata, data, *, foreground_dialogue=None,
+                                  defer_foreground=False, paired=False):
         import re
         if not isinstance(metadata,dict) or not {'binding','id','audio_sha256','mime'} <= set(metadata) or set(metadata)-{'binding','id','audio_sha256','mime','reply','visual','playback','capture_questions','files','capture_stop','transcription_profile','avatar_interrupt'}:
             raise ValueError('Select one original voice recording')
@@ -1353,7 +1354,14 @@ class Provider:
                 archive_pending = True
         # The controller reserves original order/authority before asynchronous ASR.
         # A retry names the same clip and only inspects existing capture state.
-        value = self.decorate_input(self.presentation('input voice submit '+json.dumps(metadata)))
+        prefix = 'input voice submit '
+        if paired is True:
+            capabilities = capabilities or self.presentation('input voice capabilities')
+            if capabilities.get('binding') != metadata['binding']:
+                raise ProviderUnavailable('Original conversation binding changed')
+            if capabilities.get('voice_paired_actor') == 'v1':
+                prefix = 'input voice submit-human '
+        value = self.decorate_input(self.presentation(prefix + json.dumps(metadata)))
         self.retire_voice_capture(value)
         if archive_pending:
             value['media_retention'] = {'state':'pending', 'original_retained':True,

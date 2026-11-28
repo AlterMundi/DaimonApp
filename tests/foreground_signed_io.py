@@ -1974,6 +1974,43 @@ timeout_seconds=5
             self.assertEqual(source["transcription"]["audio_sha256"], provider.topic_voice_digest)
             self.assertEqual(source["transcription"]["telegram_file_id"], "topic-voice.wav")
             self.assertEqual(len(set(provider.exposures)), 2)
+            journey.idle()
+
+            from conversation_cold_entry_http_io import Browser
+            browser = Browser(journey)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            provider.topic_voice_digest = None
+            provider.paired_human = False
+            provider.routed_paired_human = 100
+            provider.human_original = capture = str(uuid.uuid4())
+            provider.followup_answer = "The same Claude topic answered the Conversation voice input."
+            clip = audio(frequency=610)
+            digest = hashlib.sha256(clip).hexdigest()
+            provider.conversation_voice_digest = digest
+            headers = {**browser.headers, "content-type": "audio/wav",
+                       "x-input-id": capture, "x-input-binding": browser.binding,
+                       "x-audio-sha256": digest, "x-reply-source": destination["source"],
+                       "x-reply-revision": destination["revision"]}
+            response = browser.client.post("/api/interaction/voice", content=clip, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            journey.wait(lambda: provider.failure or any(
+                provider.followup_answer in item.get("preview", "")
+                for item in browser.get("/api/interaction")["items"]), seconds=25)
+            self.assertIsNone(provider.failure)
+            source, native = journey.row(
+                "SELECT s.doc,t.native_thread_id FROM interaction_sources s "
+                "JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') "
+                "WHERE s.event_id=? AND i.phase='accepted' AND t.status='completed'",
+                (capture,),
+            )[0]
+            self.assertEqual(native, provider.previous_session)
+            self.assertEqual(json.loads(source)["transcription"]["audio_sha256"], digest)
+            self.assertEqual(len(set(provider.exposures)), 3)
 
         def _claude_output_artifacts(self, journey, provider, profile):
             from email import policy
