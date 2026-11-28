@@ -95,10 +95,11 @@ def run(binary):
         accepted = shadow(7, "accept", apply)
         assert accepted["status"] == "accepted", accepted
         assert accepted["checkpoint"]["delta"] == delta
-        checkout.rename(folder / "moved")
-        retry = shadow(7, "repeat", {**apply, "checkout": "moved"})
+        (folder / "archive").mkdir()
+        checkout.rename(folder / "archive/moved")
+        retry = shadow(7, "repeat", {**apply, "checkout": "archive/moved"})
         assert retry == {**accepted, "status": "retained"}, retry
-        read = shadow(7, "read", {"action": "read", "workspace": workspace, "checkout": "moved"})
+        read = shadow(7, "read", {"action": "read", "workspace": workspace, "checkout": "archive/moved"})
         assert read == accepted["checkpoint"], read
         assert journey.row("SELECT count(*) FROM interaction_instructions") == queried_before
         assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(1,)]
@@ -109,8 +110,8 @@ def run(binary):
         assert all(item["id"] != result["id"] or not item["current"] for item in corrected)
         assert shadow(7, "still-owned", {"action": "workspace"})["workspace"] == workspace
         corrected_count = journey.row("SELECT count(*) FROM interaction_instructions")
-        shadow(7, "revoked-read", {"action": "read", "workspace": workspace, "checkout": "moved"}, ok=False)
-        shadow(7, "revoked-repeat", {**apply, "checkout": "moved"}, ok=False)
+        shadow(7, "revoked-read", {"action": "read", "workspace": workspace, "checkout": "archive/moved"}, ok=False)
+        shadow(7, "revoked-repeat", {**apply, "checkout": "archive/moved"}, ok=False)
         assert journey.row("SELECT count(*) FROM interaction_instructions") == corrected_count
         assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(1,)]
         print("PASS owned Gateway controller verified canonical conversation evidence and one durable Git revision; checkout move, exact repeat and source correction caused no duplicate dispatch or extra model call.")

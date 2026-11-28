@@ -219,6 +219,30 @@ fn cites_project(text: &str, link: &ProjectLink) -> bool {
         .any(|raw| serde_json::from_str::<ProjectLink>(raw).is_ok_and(|cited| cited == *link))
 }
 
+fn stable_git_origin(origin: &str) -> bool {
+    if Path::new(origin).is_absolute() {
+        return true;
+    }
+    if origin.contains("://") {
+        return reqwest::Url::parse(origin).is_ok_and(|url| {
+            matches!(url.scheme(), "file" | "git" | "ssh" | "http" | "https")
+                && url.password().is_none()
+                && (!matches!(url.scheme(), "http" | "https") || url.username().is_empty())
+                && url.query().is_none()
+                && url.fragment().is_none()
+        });
+    }
+    // In Git's scp-like spelling only a colon before any slash selects a host.
+    origin.split_once(':').is_some_and(|(host, repository)| {
+        !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"@._-".contains(&b))
+            && !repository.is_empty()
+            && !repository.starts_with(':')
+    })
+}
+
 fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLink) -> Result<()> {
     anyhow::ensure!(
         crate::files::workspace_marker_matches(folder, claim)?,
@@ -285,6 +309,10 @@ fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLi
         );
         ("daimon.project-id", local)
     } else {
+        anyhow::ensure!(
+            stable_git_origin(locator),
+            "Git origin must be stable across checkout moves"
+        );
         ("remote.origin.url", locator)
     };
     let actual = inspect(&["config", "--local", "--get-all", key])?;
@@ -719,6 +747,13 @@ mod tests {
         let same_commit = workspace.path().join("copy");
         git(workspace.path(), &["clone", locator, "copy"]);
         assert_eq!(git(&same_commit, &["rev-parse", "HEAD"]), delta.link.commit);
+        let mut relative = delta.link.clone();
+        relative.locator = "git:../origin.git".into();
+        git(
+            &same_commit,
+            &["remote", "set-url", "origin", "../origin.git"],
+        );
+        assert!(verify_checkout(workspace.path(), &claim, Path::new("copy"), &relative).is_err());
         git(
             &same_commit,
             &["remote", "set-url", "origin", "/fixture/other.git"],
@@ -784,15 +819,16 @@ mod tests {
             invocation: &invocation,
             closed: &closed,
         };
-        let moved = workspace.path().join("moved");
+        let moved = workspace.path().join("subdir/moved");
+        std::fs::create_dir(moved.parent().unwrap()).unwrap();
         std::fs::rename(checkout, &moved).unwrap();
         assert!(matches!(
-            store.apply_project_delta(&scope, delta.clone(), Path::new("moved")).unwrap(),
+            store.apply_project_delta(&scope, delta.clone(), Path::new("subdir/moved")).unwrap(),
             ProjectDeltaOutcome::Retained { checkpoint } if checkpoint.revision == 1
         ));
         assert_eq!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("moved"))
+                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
                 .unwrap()
                 .unwrap()
                 .delta,
@@ -807,7 +843,7 @@ mod tests {
                         ..scope
                     },
                     &claim,
-                    Path::new("moved")
+                    Path::new("subdir/moved")
                 )
                 .is_err()
         );
@@ -824,18 +860,18 @@ mod tests {
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
         assert!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("moved"))
+                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
                 .is_err()
         );
         assert!(
             store
-                .apply_project_delta(&scope, delta.clone(), Path::new("moved"))
+                .apply_project_delta(&scope, delta.clone(), Path::new("subdir/moved"))
                 .is_err()
         );
         store.upsert_user(100, UserRole::Admin, false).unwrap();
         assert!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("moved"))
+                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
                 .is_err()
         );
     }

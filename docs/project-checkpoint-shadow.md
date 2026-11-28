@@ -16,7 +16,9 @@ operations do not inject context, start a turn, or dispatch an effect.
 The link takes a project UUID, a stable private `git:` locator and a full
 lowercase Git commit ID. The caller resolves it to an available checkout
 within the claimed workspace. The locator matches the checkout's unique
-`remote.origin.url` after the `git:` prefix. For an unshared repository
+`remote.origin.url` after the `git:` prefix. Use an absolute local origin
+or a remote address without credentials. Relative filesystem origins can
+change meaning when a checkout moves. For an unshared repository
 with no remote configuration, select `git:local:<project UUID>` and keep
 that UUID in the checkout's local `daimon.project-id` Git configuration.
 Gateway checks the existing workspace marker, repository identity and full
