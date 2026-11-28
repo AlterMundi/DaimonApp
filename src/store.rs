@@ -68,6 +68,7 @@ pub(crate) use matrix::publication::{
 pub(crate) use matrix::response::Command as MatrixResponseCommand;
 pub use matrix::{MatrixAuthor, MatrixReadPage, MatrixReturn, MatrixSubmission};
 mod routed_portable;
+pub(crate) use routed_portable::RoutedStartupEvidence;
 mod routing;
 mod session_requests;
 mod workflows;
@@ -110,7 +111,7 @@ mod nexus;
 mod observer;
 mod observer_cards;
 mod project_checkpoint;
-pub(crate) use project_checkpoint::ProjectShadowCommand;
+pub(crate) use project_checkpoint::{ProjectShadowCommand, ProjectStartup};
 mod observer_freshness;
 mod presentation;
 pub use observer::SessionObservation;

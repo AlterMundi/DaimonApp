@@ -10,17 +10,20 @@ operations do not inject context, start a turn, or dispatch an effect.
 | Action | Arguments and return |
 | --- | --- |
 | `workspace` | No additional arguments. Returns the current claim or null if there is no permanent workspace. |
-| `read` | Exact `workspace` claim and workspace-relative `checkout`. Returns the latest verified shadow checkpoint or null if none exists. |
+| `projects` | Exact `workspace` claim and optional `before` cursor. Lists each authorized project/repository's latest shadow link. Use `nextBefore` for the next page. |
+| `read` | Exact `workspace` claim and workspace-relative `checkout`. Select `project` and `repository` for an exact link. Returns its latest verified revision or null if absent. An unfiltered read selects the most recently changed link. |
 | `apply` | Workspace-relative `checkout` and a `delta` with a stable `operation` UUID, `expected_revision`, `workspace`, `link` and `sources`. Returns `accepted`, `retained`, or `conflict` with the observed revision. |
 
-The link takes a project UUID, a stable private `git:` locator and a full
-lowercase Git commit ID. The caller resolves it to an available checkout
+The link takes distinct project and repository UUIDs, a stable private `git:`
+locator and a full lowercase Git commit ID. Links accepted before a separate
+repository UUID was supplied use the project UUID as their repository ID.
+Updating one repository leaves the other links in the topic available. The caller resolves it to an available checkout
 within the claimed workspace. The locator matches the checkout's unique
 `remote.origin.url` after the `git:` prefix. Use an absolute local origin
 or a remote address without credentials. Relative filesystem origins can
 change meaning when a checkout moves. For an unshared repository
-with no remote configuration, select `git:local:<project UUID>` and keep
-that UUID in the checkout's local `daimon.project-id` Git configuration.
+with no remote configuration, select `git:local:<repository UUID>` and keep
+that ID in the checkout's local `daimon.project-id` Git configuration.
 Gateway checks the existing workspace marker, repository identity and full
 commit object. It neither fetches nor modifies the checkout. A checkout can
 move within the same workspace.
@@ -30,7 +33,7 @@ Use one to eight exact sources. An `observer` source carries `native`,
 A `conversation` source carries `source` and `revision` from the canonical
 general-conversation reader. For a worker, the retained presentation source
 must address that topic. At least one source must cite the exact proposed link
-in an original line of the form `Project link: {"project":"…","locator":"…","commit":"…"}`.
+in an original line of the form `Project link: {"project":"…","repository":"…","locator":"…","commit":"…"}`.
 Observer uses only its cited support entries for this comparison. The owning
 readers decide source access again
 during apply, read and exact repeat. The current execution and workspace claim
@@ -54,6 +57,40 @@ cited source, its read and exact repeat fail while the workspace remains
 accessible. The fixture verifies one retained revision and zero duplicate
 dispatches. It uses no model or external network.
 
-The shadow operations do not select the checkpoint for native startup.
-Live worker surfaces and cold recovery in both harness directions, including
-unresolved effect receipts, still need separate receiving evidence.
+## Selected cold recovery
+
+The shadow read and apply actions leave startup unchanged. After qualifying
+a set of links, call `select_recovery` with the current `workspace`, entries
+in `projects` containing `project`, `repository`, `revision` and a workspace-
+relative `checkout`, and selected routed instruction UUIDs from the topic
+in `effects`. The checkout selection is stored separately from immutable
+repository revisions. A newer commit for a selected repository requires a
+current selection. Revisions to other repositories do not invalidate it.
+Select what fits the startup context and use the paged catalog to find the
+rest. The startup byte bound does not limit how many links a topic retains.
+
+The existing paired-human Codex and Claude startup routes read this selection
+from the same Gateway store. They check the current workspace claim, exact
+Git object and retained citation before including project data. A stale
+selection supplies an unavailable notice without the old content. Native
+startup treats the checkpoint as historical data. This does not grant
+permission to dispatch earlier instructions.
+
+For each selected routed instruction the reader checks the owning Gateway
+journal. A matching result must be canonically correlated to the original, report
+coverage, and remain current after corrections. Gateway checks the existing
+delivery and result journal, including results published from later turns.
+The view carries the native turn's terminal completion and the canonical
+request outcome separately from transport acceptance. Without it, recovery retains the same
+original ID with `unresolved` and the observed transport phase. A transport
+acceptance is not a result, and a retained result is not proof of an external
+effect described in its text. The reader never runs an effect or changes its
+receipt.
+
+The signed loopback test uses the existing
+`FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP` and
+`FOREGROUND_TEST_TELEGRAM_CODEX_ROUNDTRIP` profile with
+`FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP=1`. It checks the selected
+revision and both receipt outcomes in actual Claude provider input and
+Codex historical context. Its provider and Codex peer are fixtures. Live
+adoption remains separate.

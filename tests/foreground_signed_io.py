@@ -812,6 +812,45 @@ timeout_seconds=5
                 "reply": "Initial goal turn delivered.",
             }
             web_roundtrip = os.environ.get("FOREGROUND_TEST_CODEX_WEB_ROUNDTRIP") == "1"
+            verified_roundtrip = os.environ.get("FOREGROUND_TEST_VERIFIED_PROJECT_ROUNDTRIP") == "1"
+            if verified_roundtrip:
+                from project_checkpoint_shadow_io import select_project
+
+                self.assertTrue(web_roundtrip)
+                journey.idle()
+                journey.stop()
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                config = journey.config.read_text().replace(
+                    "[interaction]\n",
+                    "[interaction]\ntopic_workspace_root="
+                    + json.dumps(str(folder_root)) + "\n",
+                    1,
+                )
+                selected_harness = 'name="Alpha"\nharness="claude"'
+                self.assertIn(selected_harness, config)
+                journey.config.write_text(config.replace(selected_harness, 'name="Alpha"', 1))
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                journey.routing = True
+                repositories, effects, _, _, _, _, _ = select_project(journey)
+                provider.expected_verified_checkpoint = {
+                    "kind": "gateway_project_recovery", "status": "verified",
+                    "repositories": repositories, "effectReceipts": effects,
+                }
+                journey.broadcast(codex, "turn/completed", {
+                    "turn": {"id": journey.workers[codex], "status": "completed"},
+                })
+                journey.finish(journey.web_thread, journey.web_turn)
+                journey.idle()
+                journey.stop()
+                journey.config.write_text(config)
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                provider.expected_codex_handoff["original"] = "Record the selected revision."
+                provider.expected_codex_handoff["reply"] = "Staged the selected repo."
+                # The selector must retain its references, never admit any original again.
+                retained_before_switch = journey.instructions(7)
 
             def selected_browser():
                 from conversation_cold_entry_http_io import Browser
@@ -832,12 +871,17 @@ timeout_seconds=5
                 provider.human_original = str(uuid.uuid4())
                 update, _ = browser.text(provider.original, reply=destination,
                                          original_id=provider.human_original)
-                journey.wait(lambda: provider.failure or journey.row(
-                    "SELECT i.phase,t.status FROM interaction_instructions i "
-                    "JOIN interaction_sources s ON s.id=i.input_id "
-                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
-                    (update,),
-                ) == [("accepted", "completed")], seconds=30)
+                def attempt():
+                    return journey.row(
+                        "SELECT i.phase,t.status,t.native_thread_id FROM interaction_instructions i "
+                        "JOIN interaction_sources s ON s.id=i.input_id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                        (update,),
+                    )
+                journey.wait(lambda: provider.failure or (attempt() and attempt()[0][1] != "running"),
+                             seconds=30)
+                if not provider.failure:
+                    self.assertEqual(attempt()[0][:2], ("accepted", "completed"), browser.status(update))
                 self.assertIsNone(provider.failure)
                 journey.wait(lambda: any(
                     ANSWER in item.get("preview", "")
@@ -867,10 +911,11 @@ timeout_seconds=5
             config = journey.config.read_text()
             selected = 'name="Alpha"\nharness="claude"'
             self.assertIn(selected, config)
-            folder_root = journey.root / "conversation-folders"
-            folder_root.mkdir(mode=0o700)
-            config = config.replace("[interaction]\n",
-                "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
+            if not verified_roundtrip:
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                config = config.replace("[interaction]\n",
+                    "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1)
             journey.config.write_text(config.replace(selected, 'name="Alpha"', 1))
             journey.start()
             journey.wait_control_socket(journey.socket)
@@ -931,7 +976,16 @@ timeout_seconds=5
             self.assertEqual(seed["ownedExchanges"]["human"], claude_prompt)
             self.assertIn(ANSWER, seed["ownedExchanges"]["assistant"])
             self.assertEqual(seed["ownedExchanges"]["nativeThread"], provider.codex_handoff_native)
-            self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
+            if verified_roundtrip:
+                recovered = json.loads(seed["projectCheckpoint"])
+                for key, expected in provider.expected_verified_checkpoint.items():
+                    self.assertEqual(recovered[key], expected)
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(journey.row("SELECT revision FROM project_checkpoint_deltas"), [(1,), (2,), (3,)])
+                originals = [effect["original"] for effect in recovered["effectReceipts"]]
+                self.assertEqual(len(set(originals)), 2)
+            else:
+                self.assertEqual(seed["projectCheckpoint"], "Synthetic design checkpoint at revision two.")
             later = native_start("Continue normally in Codex.")
             self.assertFalse(any(key.startswith("gateway.history.") for key in later))
             self.assertEqual(provider.calls, calls_before_switch)

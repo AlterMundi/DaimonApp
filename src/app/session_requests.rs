@@ -23,11 +23,16 @@ struct SendArgs {
 
 fn project_shadow_capability() -> Value {
     json!({"arguments": {
-        "action":"workspace, read or apply",
-        "workspace":"read: exact current workspace claim",
+        "action":"workspace, projects, read, apply or select_recovery",
+        "workspace":"read, projects, select_recovery: exact current workspace claim",
         "checkout":"read/apply: local checkout path relative to the topic workspace",
-        "delta":"apply: operation UUID, expected_revision, workspace, link and typed sources"
-    }, "description":"Read or stage a durable shadow link from this owned topic to an exact Git commit and its retained sources. Does not change live context, Git, or dispatch work."})
+        "delta":"apply: operation UUID, expected_revision, workspace, link and typed sources",
+        "projects":"select_recovery: selected [{project, repository, revision, checkout}] for cold startup",
+        "project":"read: optional project UUID",
+        "repository":"read: optional repository UUID",
+        "before":"projects: optional cursor returned as nextBefore",
+        "effects":"select_recovery: up to eight original instruction UUIDs owned by this topic"
+    }, "description":"Read or stage a durable shadow link from this owned topic to an exact Git commit and its retained sources. Only select_recovery opts the exact revision into the next cold startup. No Git changes or dispatch."})
 }
 
 pub(super) fn tool_call(

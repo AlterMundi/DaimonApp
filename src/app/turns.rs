@@ -2709,10 +2709,21 @@ fn codex_switch_context(
     else {
         return Ok(None);
     };
-    let checkpoint = shared
-        .store
-        .topic_folder_claim(session.key, human)?
-        .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim));
+    let verified = match super::routing::profile(shared) {
+        Ok(cfg) if cfg.human_id == human => shared
+            .store
+            .project_startup(session.key, cfg.entry(), human)
+            .context(),
+        _ => None,
+    };
+    let checkpoint = if verified.is_some() {
+        verified
+    } else {
+        shared
+            .store
+            .topic_folder_claim(session.key, human)?
+            .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim))
+    };
     if exchange.is_none() && checkpoint.is_none() {
         return Ok(None);
     }

@@ -2,12 +2,23 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+mod recovery;
+pub(crate) use recovery::ProjectStartup;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectLink {
     pub project: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<Uuid>,
     pub locator: String,
     pub commit: String,
+}
+
+impl ProjectLink {
+    fn repository_id(&self) -> Uuid {
+        self.repository.unwrap_or(self.project)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +67,7 @@ impl ProjectDelta {
             self.expected_revision >= 0
                 && !self.operation.is_nil()
                 && !self.link.project.is_nil()
+                && !self.link.repository_id().is_nil()
                 && self.link.locator.starts_with("git:")
                 && self.link.locator.len() > 4
                 && self.link.locator.len() <= 1024
@@ -82,10 +94,21 @@ pub(crate) enum ProjectShadowCommand {
     Read {
         workspace: String,
         checkout: PathBuf,
+        project: Option<Uuid>,
+        repository: Option<Uuid>,
+    },
+    Projects {
+        workspace: String,
+        before: Option<i64>,
     },
     Apply {
         delta: ProjectDelta,
         checkout: PathBuf,
+    },
+    SelectRecovery {
+        workspace: String,
+        projects: Vec<recovery::CheckoutSelection>,
+        effects: Vec<Uuid>,
     },
 }
 
@@ -304,7 +327,7 @@ fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLi
         .context("Missing Git locator")?;
     let (key, expected) = if let Some(local) = locator.strip_prefix("local:") {
         anyhow::ensure!(
-            Uuid::parse_str(local).ok() == Some(link.project),
+            Uuid::parse_str(local).ok() == Some(link.repository_id()),
             "Local repository identity differs"
         );
         ("daimon.project-id", local)
@@ -327,6 +350,48 @@ fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLi
     Ok(())
 }
 
+#[derive(Clone, Copy, Default)]
+struct LinkSelector {
+    project: Option<Uuid>,
+    repository: Option<Uuid>,
+}
+
+fn checkpoint_on(
+    conn: &Connection,
+    key: SessionKey,
+    entry: SessionKey,
+    human: i64,
+    session: i64,
+    workspace: &str,
+    selector: LinkSelector,
+) -> Result<Option<ProjectCheckpoint>> {
+    let raw: Option<String> = conn.query_row(
+        "SELECT doc FROM project_checkpoint_deltas WHERE session_id=?1
+         AND (?2 IS NULL OR json_extract(doc,'$.delta.link.project')=?2)
+         AND (?3 IS NULL OR COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project'))=?3)
+         ORDER BY revision DESC LIMIT 1",
+        params![session, selector.project.map(|project| project.to_string()), selector.repository.map(|id|id.to_string())], |row| row.get(0),
+    ).optional()?;
+    let checkpoint = raw
+        .map(|raw| serde_json::from_str::<ProjectCheckpoint>(&raw))
+        .transpose()?;
+    if let Some(checkpoint) = &checkpoint {
+        anyhow::ensure!(
+            checkpoint.author == human && checkpoint.delta.workspace == workspace,
+            "Checkpoint belongs to a prior topic binding"
+        );
+        check_sources(
+            conn,
+            key,
+            entry,
+            human,
+            &checkpoint.delta.sources,
+            &checkpoint.delta.link,
+        )?;
+    }
+    Ok(checkpoint)
+}
+
 impl Store {
     pub(super) fn init_project_checkpoints(&self) -> Result<()> {
         self.conn
@@ -339,7 +404,10 @@ impl Store {
                 operation TEXT NOT NULL,
                 doc TEXT NOT NULL,
                 PRIMARY KEY(session_id,revision),
-                UNIQUE(session_id,operation));",
+                UNIQUE(session_id,operation));
+                CREATE TABLE IF NOT EXISTS project_checkpoint_recovery(
+                session_id INTEGER PRIMARY KEY,
+                doc TEXT NOT NULL);",
             )?;
         Ok(())
     }
@@ -378,13 +446,91 @@ impl Store {
             ProjectShadowCommand::Read {
                 workspace,
                 checkout,
-            } => Ok(serde_json::to_value(
-                self.project_checkpoint(&scope, &workspace, &checkout)?,
-            )?),
+                project,
+                repository,
+            } => Ok(serde_json::to_value(self.project_checkpoint(
+                &scope,
+                &workspace,
+                &checkout,
+                LinkSelector {
+                    project,
+                    repository,
+                },
+            )?)?),
+            ProjectShadowCommand::Projects { workspace, before } => {
+                self.workspace_projects(&scope, &workspace, before)
+            }
             ProjectShadowCommand::Apply { delta, checkout } => Ok(serde_json::to_value(
                 self.apply_project_delta(&scope, delta, &checkout)?,
             )?),
+            ProjectShadowCommand::SelectRecovery {
+                workspace,
+                projects,
+                effects,
+            } => self.select_project_recovery(
+                &scope,
+                recovery::Selection {
+                    workspace,
+                    projects,
+                    effects,
+                },
+            ),
         }
+    }
+
+    fn workspace_projects(
+        &self,
+        scope: &CheckpointScope,
+        workspace: &str,
+        before: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        scope.authorize(&conn, &self.instance_id)?;
+        let (session, folder) = workspace_on(&conn, scope.key, scope.human, workspace)?;
+        anyhow::ensure!(
+            crate::files::workspace_marker_matches(&folder, workspace)?,
+            "Topic workspace ownership marker unavailable"
+        );
+        let revision: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(revision),0) FROM project_checkpoint_deltas WHERE session_id=?1",
+            [session],
+            |row| row.get(0),
+        )?;
+        let mut query = conn.prepare(
+            "SELECT project,repository,tip FROM (
+                 SELECT json_extract(doc,'$.delta.link.project') AS project,
+                        COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project')) AS repository,
+                        MAX(revision) AS tip
+                 FROM project_checkpoint_deltas WHERE session_id=?1 AND json_extract(doc,'$.delta.workspace')=?2
+                 GROUP BY project,repository)
+             WHERE (?3 IS NULL OR tip<?3) ORDER BY tip DESC LIMIT 9",
+        )?;
+        let mut rows = query.query(params![session, workspace, before])?;
+        let mut links = Vec::new();
+        let mut last = None;
+        for _ in 0..8 {
+            let Some(row) = rows.next()? else {
+                break;
+            };
+            last = Some(row.get::<_, i64>(2)?);
+            let selector = LinkSelector {
+                project: Some(Uuid::parse_str(&row.get::<_, String>(0)?)?),
+                repository: Some(Uuid::parse_str(&row.get::<_, String>(1)?)?),
+            };
+            if let Ok(Some(checkpoint)) = checkpoint_on(
+                &conn,
+                scope.key,
+                scope.entry,
+                scope.human,
+                session,
+                workspace,
+                selector,
+            ) {
+                links.push(serde_json::json!({"revision":checkpoint.revision,"link":checkpoint.delta.link}));
+            }
+        }
+        let next = if rows.next()?.is_some() { last } else { None };
+        Ok(serde_json::json!({"revision":revision,"links":links,"nextBefore":next}))
     }
 
     fn project_checkpoint(
@@ -392,6 +538,7 @@ impl Store {
         scope: &CheckpointScope,
         workspace: &str,
         checkout: &Path,
+        selector: LinkSelector,
     ) -> Result<Option<ProjectCheckpoint>> {
         let inspect = || -> Result<(PathBuf, Option<ProjectCheckpoint>)> {
             let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -401,27 +548,7 @@ impl Store {
                 key, entry, human, ..
             } = *scope;
             let (session, folder) = workspace_on(&tx, key, human, workspace)?;
-            let raw: Option<String> = tx.query_row(
-                "SELECT doc FROM project_checkpoint_deltas WHERE session_id=?1 ORDER BY revision DESC LIMIT 1",
-                [session], |row| row.get(0),
-            ).optional()?;
-            let checkpoint = raw
-                .map(|raw| serde_json::from_str::<ProjectCheckpoint>(&raw))
-                .transpose()?;
-            if let Some(checkpoint) = &checkpoint {
-                anyhow::ensure!(
-                    checkpoint.author == human && checkpoint.delta.workspace == workspace,
-                    "Checkpoint belongs to a prior topic binding"
-                );
-                check_sources(
-                    &tx,
-                    key,
-                    entry,
-                    human,
-                    &checkpoint.delta.sources,
-                    &checkpoint.delta.link,
-                )?;
-            }
+            let checkpoint = checkpoint_on(&tx, key, entry, human, session, workspace, selector)?;
             tx.commit()?;
             Ok((folder, checkpoint))
         };
@@ -505,10 +632,11 @@ impl Store {
         if delta.expected_revision != revision || retained.is_some() {
             return Ok(ProjectDeltaOutcome::Conflict { revision });
         }
-        anyhow::ensure!(revision < 4096, "Topic checkpoint history capacity reached");
         verification?;
         let checkpoint = ProjectCheckpoint {
-            revision: revision + 1,
+            revision: revision
+                .checked_add(1)
+                .context("Topic checkpoint revision exhausted")?,
             author: human,
             local_turn: scope.invocation.local_turn,
             delta,
@@ -572,6 +700,7 @@ mod tests {
             .unwrap();
         let link = ProjectLink {
             project: Uuid::now_v7(),
+            repository: None,
             locator: "git:/fixture/story.git".into(),
             commit: "1".repeat(40),
         };
@@ -640,6 +769,7 @@ mod tests {
         git(remote.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
         let link = ProjectLink {
             project: Uuid::now_v7(),
+            repository: None,
             locator: format!("git:{locator}"),
             commit,
         };
@@ -765,7 +895,7 @@ mod tests {
         );
         assert!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("story"))
+                .project_checkpoint(&scope, &claim, Path::new("story"), LinkSelector::default())
                 .unwrap()
                 .is_none()
         );
@@ -828,7 +958,12 @@ mod tests {
         ));
         assert_eq!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
+                .project_checkpoint(
+                    &scope,
+                    &claim,
+                    Path::new("subdir/moved"),
+                    LinkSelector::default()
+                )
                 .unwrap()
                 .unwrap()
                 .delta,
@@ -843,7 +978,8 @@ mod tests {
                         ..scope
                     },
                     &claim,
-                    Path::new("subdir/moved")
+                    Path::new("subdir/moved"),
+                    LinkSelector::default(),
                 )
                 .is_err()
         );
@@ -860,7 +996,12 @@ mod tests {
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
         assert!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
+                .project_checkpoint(
+                    &scope,
+                    &claim,
+                    Path::new("subdir/moved"),
+                    LinkSelector::default()
+                )
                 .is_err()
         );
         assert!(
@@ -871,7 +1012,12 @@ mod tests {
         store.upsert_user(100, UserRole::Admin, false).unwrap();
         assert!(
             store
-                .project_checkpoint(&scope, &claim, Path::new("subdir/moved"))
+                .project_checkpoint(
+                    &scope,
+                    &claim,
+                    Path::new("subdir/moved"),
+                    LinkSelector::default()
+                )
                 .is_err()
         );
     }
