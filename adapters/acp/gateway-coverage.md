@@ -134,13 +134,23 @@ advertised image input.
 An explicit Gateway foreground profile wires agy through the common ACP
 worker and keeps the SDK/local-provider protocol available for existing
 profiles. The worker qualification checks selected tool use, journal
-refusal, and same-session continuation. A pilot topic still requires a
-receiving rollout and an observed exchange on its enrolled surfaces.
+refusal, and same-session continuation. The ITACA topic has a recorded live
+Antigravity response. A disposable Gateway exchange across Telegram and
+Conversation reused the same native session. The signed body profile also
+identifies the receiving being in a fresh process and on resume.
+
+The real agy test reads an installed fixture skill, searches DMK and reads
+the selected original. The staged ITACA binding separately verifies the
+installed catalog and the existing owner-selected DMK pool through the signed
+body. Complete coordinator access, tools needed by some skills, durable memory
+writes, interruption and broader receiving equivalence are still open.
 
 Muse Code 1.4.25 answered the `muse serve` MSP handshake with its echo
 provider. The exported stable schema includes native start, resume, steer
-and interrupt. Test MSP with durable sessions and the selected subscription
-before adopting it. Its exact-turn steering and stable command IDs are
+and interrupt. A disposable echo-provider session accepted and completed a
+native turn. The same MSP path on the installed Meta account reported
+`not logged in` at its first turn. Verify the subscription sign-in, native
+resume and stable command behavior before adopting it. Its exact-turn steering and stable command IDs are
 useful candidates for the existing Gateway acceptance contract. ACP v1
 for Muse is a separate experimental route.
 [MSP wire guide](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) ·
