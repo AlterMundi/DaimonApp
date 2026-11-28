@@ -1,6 +1,7 @@
 //! Read-only cold-start projection of one explicitly selected shadow revision.
 use super::*;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Selection {
@@ -235,7 +236,6 @@ impl Store {
         context: &str,
     ) -> Result<()> {
         use crate::interaction::{CodexRecoveryRefusal, TransportPhase};
-        use sha2::{Digest, Sha256};
 
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -405,6 +405,48 @@ impl ProjectStartup {
         self.witness
             .as_ref()
             .is_some_and(|selected| verified_context(selected).len() <= 8 * 1024)
+    }
+
+    pub(in crate::store) fn successor_reservation_on(
+        &self,
+        conn: &Connection,
+        entry: SessionKey,
+        original: &crate::interaction::Instruction,
+    ) -> Result<Option<crate::interaction::CodexSuccessorReservation>> {
+        use crate::interaction::{CodexSuccessorReservation, TransportPhase};
+        let Some(refusal) = original.codex_recovery_refusal.as_ref() else {
+            return Ok(None);
+        };
+        if original.phase != TransportPhase::RetainedUnsent
+            || original.local_turn != Some(refusal.local_turn)
+            || original.native_turn.is_some()
+            || !self.is_verified()
+            || !self.current_on(conn, entry, original)?
+        {
+            return Ok(None);
+        }
+        let context = self.context().context("Verified checkpoint unavailable")?;
+        let digest = format!("{:x}", Sha256::digest(context.as_bytes()));
+        if digest != refusal.checkpoint_sha256 {
+            return Ok(None);
+        }
+        let binding = execution::binding_on(conn, original.target, original.human_id)?;
+        if !binding.is_some_and(|binding| {
+            binding.execution.native_session.as_deref() == Some(&refusal.previous_native)
+        }) {
+            return Ok(None);
+        }
+        if let Some(retained) = original.codex_successor_reservation.as_ref()
+            && retained.previous_native == refusal.previous_native
+            && retained.checkpoint_sha256 == digest
+        {
+            return Ok(Some(retained.clone()));
+        }
+        Ok(Some(CodexSuccessorReservation {
+            id: Uuid::now_v7(),
+            previous_native: refusal.previous_native.clone(),
+            checkpoint_sha256: digest,
+        }))
     }
 
     pub(in crate::store) fn current_on(

@@ -929,11 +929,20 @@ pub struct Instruction {
     pub native_turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) codex_recovery_refusal: Option<CodexRecoveryRefusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_successor_reservation: Option<CodexSuccessorReservation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CodexRecoveryRefusal {
     pub local_turn: i64,
+    pub previous_native: String,
+    pub checkpoint_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexSuccessorReservation {
+    pub id: uuid::Uuid,
     pub previous_native: String,
     pub checkpoint_sha256: String,
 }

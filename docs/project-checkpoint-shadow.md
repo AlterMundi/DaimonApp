@@ -131,6 +131,16 @@ route. Reading this status does not reserve a successor or authorize another
 submission. The fixture restarts Gateway and verifies the same receipt,
 generation and preserved native binding, with no fresh thread or turn.
 
+On the existing authenticated paired-human retry, Gateway can reserve the
+successor against that same instruction. It verifies the checkout outside the
+owner transaction and rechecks the current source, native binding and checkpoint
+digest in the requeue transaction. Identical retries reuse one reservation and
+one audit entry. The route status includes `codex_successor_reservation` when
+the saved thread is still missing. On an ordinary accepted resume the pending
+reservation is cleared from the route. Existing checkpoint-free retries keep
+their normal behavior. A reservation has no successor native ID or inference
+receipt. The current implementation still checks the saved thread on retry.
+
 The ordinary native replacement changes the conversation generation and
 retires queued inputs tied to the old binding. Cold continuation needs a
 different binding transition in that same writer. Preserve the logical

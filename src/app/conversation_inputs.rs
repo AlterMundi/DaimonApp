@@ -127,6 +127,9 @@ fn decorate_recovery(
             });
             if i.codex_recovery_refusal.is_some() {
                 route["codex_recovery"] = json!("missing_native_history");
+                if let Some(reservation) = i.codex_successor_reservation {
+                    route["codex_successor_reservation"] = json!(reservation.id);
+                }
             }
             route
         })

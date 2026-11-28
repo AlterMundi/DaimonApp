@@ -1039,6 +1039,51 @@ timeout_seconds=5
                 self.assertEqual(journey.row(audit_query)[0][0].count(recovery["instruction"]), 1)
                 self.assertEqual(len(journey.row(audit_query)), 1)
                 self.assertEqual(journey.row(generation_query, (session,)), generation)
+
+                reservation_audit = (
+                    "SELECT details_json FROM audit_log WHERE action='codex_project_successor_reserved'"
+                )
+
+                def retry(count):
+                    saved = restored_browser.status(original)
+                    response = restored_browser.client.post(
+                        f"/api/interaction/inputs/{original}/retry",
+                        headers=restored_browser.headers,
+                        json={"binding": saved["binding"], "instruction": recovery["instruction"]},
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+                    journey.wait(lambda: len(journey.row(audit_query)) == count and retained_unsent())
+                    journey.idle()
+                    return restored_browser.status(original)["recoveries"][0]
+
+                reserved = retry(2)
+                reservation_id = reserved["codex_successor_reservation"]
+                self.assertEqual(str(uuid.UUID(reservation_id)), reservation_id)
+                self.assertEqual(retry(3), reserved)
+                notes = [json.loads(row[0]) for row in journey.row(reservation_audit)]
+                self.assertEqual(notes, [{
+                    "original": original,
+                    "instruction": recovery["instruction"],
+                    "reservation": {
+                        "id": reservation_id,
+                        "previous_native": codex,
+                        "checkpoint_sha256": refusal["checkpoint_sha256"],
+                    },
+                }])
+                self.assertEqual(rejected_resumes, [codex] * 3)
+                self.assertFalse([
+                    rpc["method"] for rpc in journey.rpc[offset:]
+                    if rpc.get("method") in ("thread/start", "turn/start", "turn/steer")
+                ])
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
+                journey.stop()
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                restarted, _ = selected_browser()
+                self.assertEqual(restarted.status(original)["recoveries"], [reserved])
+                self.assertEqual(len(journey.row(reservation_audit)), 1)
+                self.assertEqual(rejected_resumes, [codex] * 3)
                 return
 
             def native_start(original):
