@@ -37,7 +37,9 @@ pub(super) async fn snapshot(app: &App) -> HashMap<SessionKey, CancellationToken
         .collect()
 }
 
-pub(super) async fn handle(app: &App, message: &Message, human: i64) -> Result<bool> {
+pub(super) async fn handle(
+    app: &App, message: &Message, human: i64, direct_attachment: bool,
+) -> Result<bool> {
     let Some(config) = app.shared.config.voice.clone() else {
         return Ok(false);
     };
@@ -45,11 +47,13 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64) -> Result<b
         return Ok(false);
     };
     let key = SessionKey::new(message.chat.id, message.message_thread_id);
-    if !profile.telegram_ingress
-        || key != profile.entry()
-        || human != profile.human_id
-        || message.voice.is_none()
-    {
+    let portable_topic = routing::portable_topic(&app.shared, key).is_some();
+    let selected = if portable_topic {
+        direct_attachment
+    } else {
+        profile.telegram_ingress && key == profile.entry()
+    };
+    if !selected || human != profile.human_id || message.voice.is_none() {
         return Ok(false);
     }
     let update = HUMAN_UPDATE_ID
@@ -77,7 +81,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64) -> Result<b
     };
     let interruption_targets = snapshot(app).await;
     app.ensure_session(key, human)?;
-    app.shared.store.voice_begin(update, key, human)?;
+    app.shared.store.voice_begin(update, key, human, portable_topic)?;
     let app = app.clone();
     let message = message.clone();
     tokio::spawn(async move {
@@ -99,6 +103,9 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64) -> Result<b
                 }
             });
             routing::notice(app.shared.clone(),origin(&message),format!("Automatic voice transcript:\n{}",text.chars().take(1800).collect::<String>()));
+            if portable_topic {
+                return routing::admit_portable_voice(&app, &message, update, key, &text, proof).await;
+            }
             if routing::handle(&app,&message,human,&text).await? {return Ok(());}
             // Voice bypasses the general slash-command dispatcher. Routing/status
             // and scoped controls above retain their existing trusted path; other

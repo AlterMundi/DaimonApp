@@ -227,6 +227,15 @@ operator.main()
                     journey.config.read_text()
                     + "\n[interaction.artifact_store]\ndirectory=" + json.dumps(str(retained)) + "\n"
                 )
+            topic_voice = telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_TOPIC_VOICE") == "1"
+            if topic_voice:
+                recognizer = journey.root / "topic-asr.py"
+                recognizer.write_text(
+                    'import json\nprint(json.dumps({"text":"Read the synthetic voice note.","final":True}))\n'
+                )
+                journey.config.write_text(journey.config.read_text() +
+                    '\n[voice]\ntranscriber_label="synthetic topic ASR"\ntranscription_command='
+                    + json.dumps(["/usr/bin/python3", str(recognizer)]) + "\n")
             if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 if telegram_topic:
                     adapter_config = journey.root / "telegram-adapter.toml"
@@ -291,7 +300,11 @@ operator.main()
                         else:
                             assert self.server.original in prompt
                         if telegram_topic and not getattr(self.server, "routed_paired_human", None):
-                            if not getattr(self.server, "attachment", None):
+                            if digest := getattr(self.server, "topic_voice_digest", None):
+                                assert prompt.startswith("[Machine transcription of the human's clip]")
+                                assert f"Audio SHA-256: {digest}" in prompt
+                                assert "Spoken slash commands are ordinary speech." in prompt
+                            elif not getattr(self.server, "attachment", None):
                                 assert prompt == getattr(self.server, "goal_command", self.server.original)
                         else:
                             assert '"original_human_author":100' in prompt
@@ -594,6 +607,8 @@ timeout_seconds=5
                                 self._exact_claude_quote(journey, provider, profile)
                             elif output_artifacts:
                                 self._claude_output_artifacts(journey, provider, profile)
+                            elif topic_voice:
+                                self._claude_topic_voice(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -1909,6 +1924,56 @@ timeout_seconds=5
             journey.idle()
             self.assertEqual(provider.calls, calls)
             self.assertEqual(len(set(provider.exposures)), expected)
+
+        def _claude_topic_voice(self, journey, provider):
+            import hashlib
+            from conversation_voice_http_io import audio
+
+            provider.original = "Prepare the design context before the voice input."
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            first = journey.admit(provider.original, topic=7)
+            journey.wait(lambda: provider.failure or any(
+                ANSWER in message["text"] and payload.get("reply_parameters", {}).get("message_id") == first
+                for message, payload in journey.messages), seconds=25)
+            self.assertIsNone(provider.failure)
+            journey.idle()
+            provider.previous_original = provider.original
+            provider.previous_session = journey.row(
+                "SELECT native_thread_id FROM turns WHERE execution_harness='claude' "
+                "AND status='completed' ORDER BY id DESC LIMIT 1"
+            )[0][0]
+            provider.original = "Read the synthetic voice note."
+            provider.followup_answer = "The same native session got the voice transcript."
+            clip = audio()
+            provider.topic_voice_digest = hashlib.sha256(clip).hexdigest()
+            journey.media_files = {"topic-voice.wav": clip}
+            with journey.lock:
+                provider.human_original = str(journey.sequence + 1)
+            update = journey.admit(topic=7, message_fields={
+                "voice": {"file_id": "topic-voice.wav", "mime_type": "audio/wav"}
+            })
+            journey.wait(lambda: provider.failure or any(
+                provider.followup_answer in message["text"]
+                and payload.get("reply_parameters", {}).get("message_id") == update
+                for message, payload in journey.messages), seconds=25)
+            self.assertIsNone(provider.failure)
+            rows = journey.row(
+                "SELECT s.doc,i.phase,t.execution_harness,t.native_thread_id,v.phase "
+                "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                "JOIN interaction_voice_inputs v ON v.update_id=s.update_id "
+                "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                (str(update),),
+            )
+            self.assertEqual(len(rows), 1)
+            source, phase, harness, native, transcript_phase = rows[0]
+            self.assertEqual((phase, harness, native, transcript_phase),
+                             ("accepted", "claude", provider.previous_session, "committed"))
+            source = json.loads(source)
+            self.assertEqual(source["text"], provider.original)
+            self.assertEqual(source["transcription"]["audio_sha256"], provider.topic_voice_digest)
+            self.assertEqual(source["transcription"]["telegram_file_id"], "topic-voice.wav")
+            self.assertEqual(len(set(provider.exposures)), 2)
 
         def _claude_output_artifacts(self, journey, provider, profile):
             from email import policy
