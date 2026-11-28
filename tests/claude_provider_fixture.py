@@ -148,12 +148,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert provenance["original_human_author"] == routed_human, provenance
             attachment = getattr(self.server, "attachment", None)
             if attachment:
-                assert any(
-                    block.get("type") == "image" and block["source"]["data"] == attachment["base64"]
-                    and block["source"]["media_type"] == "image/png"
-                    for msg in data["messages"] if isinstance(msg["content"], list)
-                    for block in msg["content"]
-                )
+                content = data["messages"][-1]["content"]
+                observed = [
+                    (block["type"], block["source"]["media_type"], block["source"]["data"])
+                    for block in content if block.get("type") in {"image", "document"}
+                ]
+                assert observed == attachment["blocks"], [(kind, mime) for kind, mime, _ in observed]
             submission = self.admitted()
             assert submission["native_session_id"]
             codex_handoff = getattr(self.server, "expected_codex_handoff", None)
