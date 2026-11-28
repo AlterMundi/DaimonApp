@@ -9,6 +9,7 @@ pub(crate) enum Harness {
     Antigravity,
     Goose,
     Qwen,
+    #[serde(rename = "minimax")]
     MiniMax,
 }
 

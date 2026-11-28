@@ -2043,6 +2043,8 @@ mod tests {
 
     #[test]
     fn bounded_acp_continuation_keeps_the_harness_topic_generation_and_signed_body() {
+        assert_eq!(serde_json::to_value(Harness::MiniMax).unwrap(), "minimax");
+        assert_eq!(serde_json::from_value::<Harness>(json!("minimax")).unwrap(), Harness::MiniMax);
         let file = tempfile::NamedTempFile::new().unwrap();
         let defaults = super::super::tests::defaults();
         let store = Store::open(file.path(), &[100], &defaults).unwrap();
