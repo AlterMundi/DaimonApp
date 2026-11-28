@@ -627,10 +627,12 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   before exposure.
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for direct Telegram photos and PDF documents
   with exact retained bytes and a reply anchored to each original.
-- `FOREGROUND_TEST_TELEGRAM_ALBUM=1` for two album members delivered in separate
-  Telegram polls. The real CLI sends both original images and captions in a
+- `FOREGROUND_TEST_TELEGRAM_ALBUM=1` for nine album members delivered in separate
+  Telegram polls. The real CLI sends the original images and captions in a
   single provider request. Exact redelivery has no second effect, and a late
-  member starts a distinct turn in the same native session.
+  member starts a distinct turn in the same native session. Set
+  `FOREGROUND_TEST_TELEGRAM_ALBUM_PREDECESSOR` to the previous named Gateway
+  executable to qualify redelivery on the retained journal after a rollback.
 
   Supported images and PDFs share a 4 MiB budget for inline native content. Larger
   or unsupported files remain in the original attachment manifest for local reads

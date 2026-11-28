@@ -1485,6 +1485,14 @@ pub struct Update {
 }
 
 impl Update {
+    pub(crate) fn from_journal(payload: &str, media_group_id: Option<String>) -> Result<Self> {
+        let mut input: Self = serde_json::from_str(payload)?;
+        if let Some(message) = input.message.as_mut() {
+            message.media_group_id = media_group_id;
+        }
+        Ok(input)
+    }
+
     fn from_poll(raw: serde_json::Value) -> Result<Self> {
         let human_origin = raw.get("message").is_some_and(|message| {
             [
