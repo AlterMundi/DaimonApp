@@ -1933,6 +1933,21 @@ impl Store {
                 [&input.id],
             )?;
         }
+        let goal_control_unavailable = current.phase == Phase::Queued
+            && outcome["phase"] == "not_submitted"
+            && outcome["reason"] == "claude_goal_control_unavailable"
+            && current.target_execution.as_ref().is_some_and(|target| target.harness == Harness::Claude);
+        if goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.goal_control_unavailable',json('true')) WHERE id=?1",
+                [&input.id],
+            )?;
+        } else if current.goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_remove(doc,'$.goal_control_unavailable') WHERE id=?1",
+                [&input.id],
+            )?;
+        }
         if current.phase == Phase::Submitting {
             super::retain_claude_session_usage_on(&tx, local, outcome)?;
         }

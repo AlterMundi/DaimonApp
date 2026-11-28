@@ -485,11 +485,16 @@ pub(super) fn notice(shared: Arc<AppShared>, origin: ReturnRoute, text: String) 
     notice_when(shared, origin, text, None);
 }
 
+enum NoticeFailure {
+    Context(i64),
+    GoalControl(i64),
+}
+
 struct ExpectedNotice {
     instruction: String,
     human: i64,
     phase: P,
-    context_failure_turn: Option<i64>,
+    failure: Option<NoticeFailure>,
 }
 
 pub(super) fn notice_context_unavailable(
@@ -508,7 +513,25 @@ pub(super) fn notice_context_unavailable(
             instruction: id,
             human,
             phase: P::RetainedUnsent,
-            context_failure_turn: Some(local_turn),
+            failure: Some(NoticeFailure::Context(local_turn)),
+        }),
+    );
+}
+
+pub(super) fn notice_goal_control_unavailable(
+    shared: Arc<AppShared>,
+    input: &Instruction,
+    local_turn: i64,
+) {
+    notice_when(
+        shared,
+        input.origin.clone(),
+        "Claude Code cannot pause or resume a goal. The goal was not changed. Use /goal to check its status.".into(),
+        Some(ExpectedNotice {
+            instruction: input.id.clone(),
+            human: input.human_id,
+            phase: P::RetainedUnsent,
+            failure: Some(NoticeFailure::GoalControl(local_turn)),
         }),
     );
 }
@@ -560,9 +583,15 @@ fn notice_when(
                             .interaction_instruction(&expected.instruction, expected.human)?
                             .is_some_and(|i| {
                                 i.phase == expected.phase
-                                    && expected.context_failure_turn.is_none_or(|turn| {
-                                        i.context_unavailable && i.local_turn == Some(turn)
-                                    })
+                                    && match expected.failure {
+                                        Some(NoticeFailure::Context(turn)) => {
+                                            i.context_unavailable && i.local_turn == Some(turn)
+                                        }
+                                        Some(NoticeFailure::GoalControl(turn)) => {
+                                            i.goal_control_unavailable && i.local_turn == Some(turn)
+                                        }
+                                        None => true,
+                                    }
                             })
                     {
                         return Ok(None);
@@ -1551,7 +1580,7 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
                     instruction: waiting.id,
                     human: waiting.human_id,
                     phase: P::Queued,
-                    context_failure_turn: None,
+                    failure: None,
                 }),
             );
         });
