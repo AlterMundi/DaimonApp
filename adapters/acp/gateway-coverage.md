@@ -38,7 +38,7 @@ remain part of the inventory.
 | Goose | Native `goose acp` in the Rust pilot. | Preserve recipes, extension management, session inspection, configured models and the native scheduler controls. Goose also offers a scheduler-enabled ACP mode. Check the existing contract before introducing a native connector. Native schedule execution belongs to Goose when explicitly selected. [Goose ACP](https://github.com/aaif-goose/goose/blob/main/documentation/docs/gdk/acp/index.md) · [Goose CLI](https://github.com/aaif-goose/goose/blob/main/documentation/docs/guides/goose-cli-commands.md) |
 | Qwen Code | Native `qwen --acp` tested in isolation. | Compare the direct CLI/SDK for structured output, tool discovery and plan controls. Evaluate `qwen serve` where HTTP event and workspace lifecycles help. Its agent execution itself goes through Qwen's ACP bridge, so the daemon alone does not close an ACP adapter gap. Preserve the selected Singapore Token Plan route. [Qwen architecture](https://qwenlm.github.io/qwen-code-docs/en/developers/architecture/) · [TypeScript SDK](https://qwenlm.github.io/qwen-code-docs/en/developers/sdk-typescript/) |
 | MiniMax Code | ACP fixture and exact native resume are recorded. Subscription-backed pilot remains open. | The CLI and SDK offer `mcode exec` for direct stream and resume comparison. Inventory terminal tools and skills separately from desktop-only features. Verify the selected payer and explain extra observed provider calls before adoption. [MiniMax Code source and connectors](https://github.com/MiniMax-AI/minimax-code) |
-| Muse Code | Native MSP is the first candidate; Muse ACP remains experimental. | Preserve stable command IDs, resume/replay, steering and interruption, approvals, model selection, native goals and lifecycle events. The local echo test proves a prompt round trip. The selected Meta login remains unverified on ITACA. [MSP](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) · [Muse ACP](https://meta-models.github.io/muse-code-sdk/1.4/guides/editors-acp/) |
+| Muse Code | Native MSP is the first candidate; Muse ACP remains experimental. | Preserve stable command IDs, resume/replay, steering and interruption, approvals, model selection, native goals and lifecycle events. The local echo test proves a prompt round trip. ITACA follows official Canary. The selected account has an earlier completed interactive turn, while real MSP inference and topic binding remain unverified. [MSP](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) · [Muse ACP](https://meta-models.github.io/muse-code-sdk/1.4/guides/editors-acp/) |
 
 ## Selecting a harness for a new topic
 
@@ -232,10 +232,13 @@ Muse Code 1.4.25 answered the `muse serve` MSP handshake with its echo
 provider. The exported stable schema includes native start, resume, steer
 and interrupt. The [MSP foreground candidate](../muse/README.md) passed
 exact session resume across processes, journal denial and missing-session
-refusal on the installed echo provider. The selected Meta browser account
-is visible locally, while its headless model catalog reports no visible
-models and the first MSP model turn reports `not logged in`. A real
-subscription-backed turn and Gateway topic binding remain open. Its exact-turn steering and stable command IDs are
+refusal on the installed echo provider. ITACA now selects the official
+Canary channel. Stable and Canary both returned an empty visible model
+catalog with the selected credential. A clean Canary configuration reproduced
+the failure, and the explicit model probe was refused by Meta. A prior
+interactive reply is retained, with no model ID in its export. A real
+subscription-backed MSP turn and Gateway topic binding remain open.
+Its exact-turn steering and stable command IDs are
 useful candidates for the existing Gateway acceptance contract. ACP v1
 for Muse is a separate experimental route.
 [MSP wire guide](https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-wire/) ·

@@ -16,9 +16,14 @@ denied original and a missing session cause no provider submission.
 MUSE_TEST_BINARY=/absolute/muse node --test adapters/muse/turn.test.mjs
 ```
 
-The selected Meta account requires a separate real-provider qualification.
-The local account reports browser login, while the headless model catalog
-has no visible models and the first MSP model turn reports a credential
-failure. Resolve the selected subscription without substituting API billing.
+The ITACA pilot follows the official `muse-canary` channel and retains
+`muse-stable` for comparison. The same selected subscription credential
+reports an active subscription locally. Stable 1.4.25 and Canary 1.4.26
+returned an empty visible model catalog. Canary reproduced this with fresh
+configuration and data directories using the existing credential, and a
+single explicit model probe was refused by the provider. One earlier
+completed interactive turn had no model identifier in the native export.
+Keep authentication and history while testing config isolation. Qualify a
+real MSP turn against the selected subscription before wiring the topic.
 Gateway topic binding, effective tools, steering and interruption remain
 open. See the [capability inventory](../acp/gateway-coverage.md).
