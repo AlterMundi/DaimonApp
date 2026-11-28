@@ -142,7 +142,7 @@ export async function runClaudeTurn({
 
   // These are Gateway goal controls. The native Claude command would treat
   // them as goal conditions and may replace the current objective.
-  if (input.nativeGoalCommand && /^\/goal\s+(pause|resume)$/.test(input.text.trimEnd())) {
+  if (input.nativeGoalCommand && /^\/goal\s+(pause|resume)$/i.test(input.text.trimEnd())) {
     return { phase: 'not_submitted', reason: 'claude_goal_control_unavailable' };
   }
 

@@ -159,7 +159,7 @@ test('only an explicitly selected human goal uses the native command mode', asyn
 });
 
 test('portable pause and resume cannot replace a Claude goal condition', async () => {
-  for (const text of ['/goal pause', '/goal resume', '/goal  resume ']) {
+  for (const text of ['/goal pause', '/goal resume', '/goal  resume ', '/goal Pause', '/goal  RESUME ']) {
     const outcome = await runClaudeTurn(options({
       input: { ...input, text, nativeGoalCommand: true },
       beforeSubmit: () => assert.fail('A goal control must not commit native input'),

@@ -317,10 +317,14 @@ the worker and waiting-message state from the canonical journal.
 
 In a paired Claude Telegram topic, an explicitly typed `/goal` is sent to the
 selected native session through the existing turn journal. A condition uses
-Claude's native goal loop and `/goal clear` is Claude's native clear. Forwarded
-messages and session-authored context cannot invoke native commands. The worker
-first checks that its selected SDK session advertises the command. Gateway does
-not publish a Codex goal snapshot or apply an old Codex intent for a topic
+Claude's native goal loop and `/goal clear` clears that session's goal.
+Gateway recognizes Claude's clear aliases without regard to letter case, so
+they can still address the selected writer after a previous uncertain result.
+The adapter refuses `/goal pause` and `/goal resume` in any letter case,
+since Claude Code would treat these as new conditions.
+Forwarded messages and session-authored context cannot invoke native commands.
+The worker first checks that its selected SDK session advertises the command.
+Gateway does not publish a Codex goal snapshot or apply an old Codex intent for a topic
 currently assigned to Claude. The shared goal controller still needs a
 portable goal binding for inspection and delegated mutations from other
 conversations.
