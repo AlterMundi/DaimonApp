@@ -316,10 +316,6 @@ def one_slot_deferred_return(binary):
         j.wait(lambda:j.instructions(7) and j.instructions(7)[0][1]=='accepted')
         _,admitted=j.request()
         assert j.instructions(8)[0][1]=='queued' and 'native-topic-8' not in j.runs
-        # Keep the internal handoff queued beyond the human preparation notice.
-        threading.Event().wait(10.5)
-        assert j.instructions(8)[0][1]=='queued'
-        assert not j.has('native submission has not started', 1)
         j.defer(7)
         j.wait(lambda:j.instructions(8)[0][1]=='accepted')
         j.wait(lambda:j.row("SELECT t.status FROM turns t JOIN sessions s ON s.id=t.session_id WHERE s.thread_id=7 ORDER BY t.id DESC LIMIT 1")==[('completed',)])
@@ -373,6 +369,29 @@ def deferred_logical_completion(binary):
         j.internal_delivery('Internal completed dependency for unfinished human work.')
         print('PASS a genuinely unfinished human task can complete once after an internal return, covering original and returned instructions across physical executions')
     finally:j.close()
+
+
+def local_preparation_wait_stays_private(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare(max_active_workers=2)
+        j.admit('#Alpha Work here and ask Beta about the selected detail.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        j.block_binding = True
+        _, admitted = j.request()
+        j.wait(j.binding_held.is_set)
+        assert j.instructions(8)[0][1] == 'queued'
+        assert admitted['instruction']['origin']['message_id'] is not None
+        # Allow the 10 s notice and Telegram's outbound pacing to elapse.
+        threading.Event().wait(15)
+        assert j.instructions(8)[0][1] == 'queued'
+        assert not j.has('native submission has not started', 1)
+        j.release_binding.set()
+        j.wait(lambda: j.instructions(8)[0][1] == 'accepted')
+        print('PASS internal handoff preparation stays out of the human Telegram topic')
+    finally:
+        j.release_binding.set()
+        j.close()
 
 
 def later_helper_completion(binary):
@@ -493,6 +512,7 @@ if __name__=='__main__':
     private_draft_does_not_become_public(binary)
     direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
+    local_preparation_wait_stays_private(binary)
     deferred_logical_completion(binary)
     later_helper_completion(binary)
     completed_group_not_renarrated(binary)
