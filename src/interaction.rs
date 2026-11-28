@@ -186,6 +186,9 @@ pub struct ForegroundConfig {
     pub worker_command: Vec<String>,
     #[serde(default)]
     pub interaction_direct: bool,
+    /// Use the signed-in agy CLI worker for the selected Antigravity topic.
+    #[serde(default)]
+    pub agy_cli: bool,
     /// Owner-fixed sending body and command for explicitly selected Interaction text.
     pub interaction_origin: Option<MatrixTransportConfig>,
 }
@@ -499,6 +502,17 @@ impl InteractionConfig {
             {
                 bail!("Invalid explicit native foreground configuration");
             }
+        }
+        if [&self.claude_foreground, &self.goose_foreground]
+            .into_iter()
+            .flatten()
+            .any(|foreground| foreground.agy_cli)
+            || self
+                .antigravity_foreground
+                .as_ref()
+                .is_some_and(|foreground| foreground.agy_cli && !foreground.interaction_direct)
+        {
+            bail!("The agy CLI requires an explicitly selected Antigravity topic");
         }
         if let Some(foreground) = &self.claude_foreground
             && let Some(origin) = &foreground.interaction_origin

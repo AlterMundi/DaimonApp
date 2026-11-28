@@ -9,10 +9,16 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub(super) struct AgyTurn<'a> {
+    workspace: &'a str,
+    native_session_id: Option<&'a str>,
+}
+
 pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub id: &'a str,
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
+    pub(super) agy: Option<AgyTurn<'a>>,
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
@@ -143,12 +149,14 @@ pub(in crate::app) async fn execute_worker(
     let schema = match engine {
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
+        ForegroundEngine::Antigravity if turn.agy.is_some() => "daimon-gateway.antigravity-turn/v2",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
         id,
         session,
         resume,
+        agy,
         human_original,
         native_goal_command,
         routed_human,
@@ -257,6 +265,10 @@ pub(in crate::app) async fn execute_worker(
                 "Claude recovery requires context that fits the worker input"
             );
         }
+        if let Some(agy) = &agy {
+            start["workspace"] = json!(agy.workspace);
+            start["resumeNativeSessionId"] = json!(agy.native_session_id);
+        }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
@@ -283,6 +295,22 @@ pub(in crate::app) async fn execute_worker(
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
                     .context("Goose preparation omitted its native session")?,
+                ForegroundEngine::Antigravity if agy.is_some() => {
+                    let agy = agy.as_ref().expect("selected agy adapter");
+                    let native = observed
+                        .and_then(Value::as_str)
+                        .filter(|id| {
+                            uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id)
+                        })
+                        .context("agy preparation omitted its native session")?;
+                    anyhow::ensure!(
+                        agy.native_session_id
+                            .is_none_or(|expected| expected == native)
+                            && frame["workspace"].as_str() == Some(agy.workspace),
+                        "agy preparation changed the selected session or workspace"
+                    );
+                    native
+                }
                 ForegroundEngine::Antigravity
                     if observed.and_then(Value::as_str) == Some(session) =>
                 {
@@ -305,6 +333,10 @@ pub(in crate::app) async fn execute_worker(
                 if let Some(path) = requested {
                     prepared["workspace"] = json!(path);
                 }
+            }
+            if let Some(agy) = &agy {
+                prepared["adapter"] = json!("agy");
+                prepared["workspace"] = json!(agy.workspace);
             }
             let committed = commit(prepared)?;
             if committed {
@@ -748,6 +780,7 @@ pub(super) async fn run_portable_turn(
                 id: &input.id,
                 session: &input.id,
                 resume: resume.as_slice(),
+                agy: None,
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && crate::interaction::native_claude_goal(&input.text),
@@ -938,6 +971,19 @@ pub(super) async fn run_routed_portable(
         } else {
             Vec::new()
         };
+        let agy_workspace = if config.agy_cli {
+            anyhow::ensure!(routed_host_access && human_authored,
+                "agy requires an authenticated human original in the selected workspace");
+            let path = session.cwd.to_str().context("Invalid Antigravity workspace")?;
+            anyhow::ensure!(session.cwd.is_absolute() && path.len() <= 4096,
+                "Invalid Antigravity workspace");
+            Some(path)
+        } else {
+            None
+        };
+        let agy_resume = agy_workspace
+            .map(|workspace| store.routed_agy_session(local, &body, workspace))
+            .transpose()?.flatten();
         let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
@@ -973,6 +1019,10 @@ pub(super) async fn run_routed_portable(
                     id: &input.id,
                     session: &attempt,
                     resume: if missing_resume.is_some() { &[] } else { &resume },
+                    agy: agy_workspace.map(|workspace| AgyTurn {
+                        workspace,
+                        native_session_id: agy_resume.as_deref(),
+                    }),
                     human_original,
                     native_goal_command,
                     routed_human: !human_original,

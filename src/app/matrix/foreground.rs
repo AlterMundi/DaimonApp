@@ -90,6 +90,7 @@ pub(super) async fn run_selected(
         !app.shared.shutdown.is_cancelled(),
         "Gateway is shutting down"
     );
+    anyhow::ensure!(!config.agy_cli, "agy is configured for topic input only");
     let (observed, body) = authenticate_foreground_body(&config.transport, &source).await?;
     let mut host = json!({"source":source,"body":observed,"original":selected});
     let original: WeOriginal = serde_json::from_value(
@@ -132,6 +133,7 @@ pub(super) async fn run_selected(
             id: &id,
             session: &attempt.session_id,
             resume: attempt.resume.as_slice(),
+            agy: None,
             human_original: attempt.human_original,
             native_goal_command: false,
             routed_human: false,

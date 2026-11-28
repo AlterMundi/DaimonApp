@@ -1,4 +1,4 @@
-# Goose ACP foreground turn
+# ACP foreground workers
 
 See [Gateway ACP coverage and stack parity](gateway-coverage.md) for the
 native and ACP operation inventory across harnesses.
@@ -9,15 +9,27 @@ native and ACP operation inventory across harnesses.
 the selected process environment. It reads back the requested model and
 reasoning effort before provider submission. A continuation requires the
 exact prior ACP session ID. Failed session loads stay unsent.
-Gateway still needs to connect this client to the paired topic worker, with
-the authenticated Matrix and DMK tools selected by the receiving profile.
+The Gateway route uses the configured Antigravity foreground with
+`interaction_direct = true` and `agy_cli = true`, an explicitly Antigravity
+target, and the common ACP worker. Its owner profile names the absolute
+`binary`, paired account `home`, canonical topic `cwd`, `model`, `effort`,
+`matrixStatusCommand`, and signed `body`, with `adapter: "agy"`. Optional
+`selectedMemory` limits memory to a named record revision for one original.
+The worker accepts only paired text for this topic and uses the journaled
+native ID from the same topic generation, workspace and signed incarnation.
+There is no fallback to a fresh session after a failed native load.
+
+The pilot selects only the worker's Matrix status and optional DMK read
+tools for ACP permission requests. No permanent approval is issued. Shipped
+default customizations are disabled for this pilot. Wider tool parity,
+attachments and native steering are separate receiving checks.
 
 The opt-in live check uses the operator's signed-in Antigravity account and
 two synthetic turns. It checks exact reload in a new process, the requested
 model configuration, a withheld original and refusal of a missing session.
 
 ```sh
-AGY_TEST_AUTHENTICATED_BINARY=/absolute/agy node --test adapters/acp/antigravity-turn.test.mjs
+AGY_TEST_AUTHENTICATED_BINARY=/absolute/agy node --test adapters/acp/antigravity-turn.test.mjs adapters/acp/gateway-worker.test.mjs
 ```
 
 ## Goose

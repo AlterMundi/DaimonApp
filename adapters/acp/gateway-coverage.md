@@ -131,8 +131,11 @@ account. The common ACP client then reopened the exact native ID in a fresh
 process and recovered a synthetic marker from the earlier turn. Its live
 check also kept a denied admission and a missing session unsent. The server
 advertised image input.
-The production Antigravity Gateway worker still uses the SDK/local-provider
-route. A real CLI reply does not yet qualify its topic binding.
+An explicit Gateway foreground profile wires agy through the common ACP
+worker and keeps the SDK/local-provider protocol available for existing
+profiles. The worker qualification checks selected tool use, journal
+refusal, and same-session continuation. A pilot topic still requires a
+receiving rollout and an observed exchange on its enrolled surfaces.
 
 Muse Code 1.4.25 answered the `muse serve` MSP handshake with its echo
 provider. The exported stable schema includes native start, resume, steer
