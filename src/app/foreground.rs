@@ -969,7 +969,7 @@ pub(super) async fn run_routed_portable(
             missing_resume = Some((scope.to_owned(), outcome));
         }
     }.await.unwrap_or(Value::Null);
-    let deliveries = store.finish_routed_portable(input, local, &outcome)?;
+    let deliveries = store.finish_routed_portable(input, local, &outcome, Some(cfg.entry()))?;
     if let Some(steering) = steering {
         steering.resolve(&outcome)?;
     }

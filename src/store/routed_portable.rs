@@ -286,12 +286,18 @@ pub(super) fn claude_telegram_quote_on(
               AND json_extract(d.doc,'$.origin.chat_id')=?3
               AND json_extract(d.doc,'$.origin.thread_id')=?4
             UNION
-            SELECT p.source AS id, p.body=r.body AS answer FROM topic_publications p
+            SELECT p.source AS id, (CASE WHEN p.kind='portable_report' THEN p.body=r.body
+               ELSE p.phase='sent' AND substr(p.body,-length(r.body))=r.body
+                 AND EXISTS(SELECT 1 FROM interaction_public_deliveries d
+                     WHERE d.result_id=r.id AND d.human_id=p.human_id)
+               END) AS answer FROM topic_publications p
             JOIN topic_publication_parts x ON x.publication=p.id
             JOIN interaction_results r ON r.id=p.source AND r.local_turn=p.local_turn
-            JOIN turns t ON t.id=r.local_turn AND t.session_id=p.session_id
+            JOIN turns t ON t.id=r.local_turn AND (
+                t.session_id=p.session_id OR p.kind='portable_entry_exchange')
             JOIN sessions sender ON sender.id=p.session_id
-            WHERE x.message_id=?1 AND x.phase='sent' AND p.kind='portable_report'
+            WHERE x.message_id=?1 AND x.phase='sent'
+              AND p.kind IN ('portable_report','portable_topic_exchange','portable_entry_exchange')
               AND p.human_id=?2 AND sender.chat_id=?3 AND sender.thread_id=?4
               AND sender.creator_user_id=?2
          )
@@ -1052,6 +1058,7 @@ impl Store {
         input: &Instruction,
         local: i64,
         outcome: &Value,
+        projection_entry: Option<SessionKey>,
     ) -> Result<Vec<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1083,6 +1090,7 @@ impl Store {
         .then(|| crate::interaction::SubscriptionLimit::from_worker(outcome))
         .flatten();
         let mut deliveries = Vec::new();
+        let mut exchange_inputs = Vec::new();
         if let Some(text) = reply {
             let native = current
                 .native_thread
@@ -1157,6 +1165,7 @@ impl Store {
                 true,
                 true,
             )?;
+            exchange_inputs.push(current.clone());
             for (selected, result_anchor, reply) in followups {
                 deliveries.extend(super::routing::result_on(
                     &tx,
@@ -1171,6 +1180,11 @@ impl Store {
                     true,
                     true,
                 )?);
+                if let Some(steered) =
+                    super::interaction::instruction_on(&tx, selected, input.human_id)?
+                {
+                    exchange_inputs.push(steered);
+                }
             }
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
@@ -1213,6 +1227,11 @@ impl Store {
             [input.target_session],
         )?;
         super::topic_publications::portable_report_on(&tx, input, local, &deliveries)?;
+        if let Some(entry) = projection_entry {
+            for original in exchange_inputs {
+                super::topic_publications::portable_exchange_on(&tx, &original, local, entry)?;
+            }
+        }
         tx.commit()?;
         Ok(deliveries)
     }

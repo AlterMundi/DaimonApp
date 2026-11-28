@@ -410,6 +410,17 @@ The current MVP is a single **web conversation** for text and two-way voice, coo
 
 `interaction.telegram_ingress` defaults to false. The optional Telegram adapter applies only to the explicitly configured integrating entry. Even when enabled, ordinary work topics, replies and literal selectors bypass routing. Enable it only for a human-selected integrating entry, never as a test/deployment convenience. With telegram_ingress and telegram_entry_projection selected, that one topic is another surface of the same conversation: committed app text/voice transcripts, integrator output, captured-scope worker progress and canonical results are projected without creating new input. Telegram originals remain their own messages and are not echoed again. Other work topics retain ordinary direct input. Existing per-source Telegram receipts and uncertainty prevent automatic replay; enabling the option does not backfill old messages.
 
+The canonical portable topic journal also feeds both surfaces. A completed
+paired-human exchange begun in Conversation is projected to the selected
+Telegram work topic. A completed exchange begun directly in that Telegram
+topic appears as an attributed result in the integrating Conversation and,
+when enabled, as an update in its Telegram topic. These copies derive from
+one accepted original and one result, with separate Telegram receipts so
+only answer receipts can select the canonical reply. They do not dispatch work, change the
+original return binding or publish private coordination. Each Telegram
+projection uses the existing publication receipts, including uncertainty
+handling. Previously completed exchanges are not automatically replayed.
+
 Independent `interaction.telegram_projection` enables attributed work-topic
 copies without changing ingress. It shares canonical event/destination identity
 with direct answers and retains uncertain delivery without replay; see
