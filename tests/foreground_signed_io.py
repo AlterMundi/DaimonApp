@@ -928,6 +928,10 @@ timeout_seconds=5
             repeat = caller_call("route-visible-reuse", "session_request", request)
             self.assertFalse(repeat["new_admission"])
             self.assertEqual(repeat["instruction"]["id"], first["instruction"]["id"])
+            if entry:
+                # The general conversation can finish its request turn while
+                # the retained dependency waits to enter the same thread.
+                journey.finish(caller_native, caller_turn)
             journey.wait(lambda: journey.row("""
                 SELECT c.phase,i.phase,json_extract(i.doc,'$.native_thread')
                 FROM interaction_session_requests c JOIN interaction_instructions i
@@ -936,7 +940,8 @@ timeout_seconds=5
             self.assertEqual(sum(ANSWER in json.dumps(packet["input"])
                                  for packet in journey.worker_packets[caller_native]), 1)
             journey.finish(beta, journey.workers[beta])
-            journey.finish(journey.web_thread, journey.web_turn)
+            if not entry:
+                journey.finish(journey.web_thread, journey.web_turn)
 
         def _telegram_codex_handoff(self, journey, provider):
             codex = journey.row("SELECT codex_thread_id FROM sessions WHERE thread_id=7")[0][0]
