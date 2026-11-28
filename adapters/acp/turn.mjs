@@ -12,6 +12,21 @@ export function validateSessionId(value) {
   return value;
 }
 
+export async function loadAcpSession(request, initialized, { cwd, mcpServers, sessionId }) {
+  validateSessionId(sessionId);
+  if (initialized.agentCapabilities?.loadSession !== true) {
+    throw new Error('ACP session load unavailable');
+  }
+  const loaded = await request('session/load', { cwd, mcpServers, sessionId }, update => {
+    if (update?.sessionId !== sessionId) throw new Error('ACP history came from another session');
+  });
+  if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)
+      || ('sessionId' in loaded && loaded.sessionId !== sessionId)) {
+    throw new Error('ACP session load did not confirm the selected session');
+  }
+  return loaded;
+}
+
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
   unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions, images = [],

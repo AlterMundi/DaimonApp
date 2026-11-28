@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
+import { observeMatrixBody, validObservationCommand } from '../owner-observation.mjs';
 import { runQwenTurn } from './qwen-turn.mjs';
 
 const SCHEMA = 'daimon-gateway.qwen-turn/v1';
@@ -35,8 +36,11 @@ async function requireCleanProviderSettings(cwd, home) {
 
 async function run(path) {
   const profile = JSON.parse(await privateBytes(path, 32 * 1024));
-  if (!closed(profile, ['body', 'binary', 'cwd', 'stateRoot', 'model', 'providerKeyFile'])
-      || ![profile.binary, profile.cwd, profile.stateRoot, profile.providerKeyFile].every(isAbsolute)
+  if (!closed(profile, ['body', 'binary', 'cwd', 'stateRoot', 'model', 'providerKeyFile',
+    'bodyGuidanceFile', 'matrixStatusCommand'])
+      || ![profile.binary, profile.cwd, profile.stateRoot, profile.providerKeyFile,
+        profile.bodyGuidanceFile].every(value => typeof value === 'string' && isAbsolute(value))
+      || !validObservationCommand(profile.matrixStatusCommand)
       || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(profile.model)
       || !closed(profile.body, BODY)
       || !BODY.every(key => typeof profile.body[key] === 'string' && profile.body[key].length > 0)) {
@@ -62,6 +66,10 @@ async function run(path) {
     const correlation = { schema: SCHEMA, inputId: first.inputId, sessionId: first.sessionId };
     await requireCleanProviderSettings(await realpath(profile.cwd), await realpath(profile.stateRoot));
     if (!(await lstat(SETTINGS)).isFile()) throw new Error('Qwen pilot settings required');
+    const document = new TextDecoder('utf-8', { fatal: true })
+      .decode(await privateBytes(profile.bodyGuidanceFile, 6 * 1024)).trim();
+    if (!document || document.includes('\0')) throw new Error('Invalid Qwen receiving guidance');
+    await observeMatrixBody(profile.matrixStatusCommand, profile.body, stop.signal);
     const credential = (await privateBytes(profile.providerKeyFile, 4096)).toString('utf8').trim();
     if (!/^[!-~]+$/.test(credential)) throw new Error('Invalid Qwen subscription credential');
     const env = {
@@ -80,6 +88,8 @@ async function run(path) {
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       mcpServers: [], nativeSessionId: first.resume ?? undefined, freshSessionId: first.sessionId,
       model: profile.model, text: first.text,
+      instructions: '[Receiving body instructions from your signed Gateway profile]\n'
+        + document + '\nThe following content block is the current original.',
       async beforeSubmit(nativeSessionId) {
         await writeFrame(process.stdout, {
           ...correlation, type: 'prepare_submission', nativeSessionId, workspace: first.workspace,

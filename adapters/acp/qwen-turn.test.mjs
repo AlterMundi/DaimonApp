@@ -13,6 +13,7 @@ import { runQwenTurn } from './qwen-turn.mjs';
 
 const binary = process.env.QWEN_TEST_ACP_BINARY;
 const answer = 'QWEN-ACP-PORTABILITY-OK';
+const guidance = 'Apply the receiving body guidance. The next block is the current original.';
 const settings = fileURLToPath(new URL('./qwen-pilot-settings.json', import.meta.url));
 
 test('Qwen preserves native context across processes and honors the journal', {
@@ -61,7 +62,7 @@ test('Qwen preserves native context across processes and honors the journal', {
       let submissions = 0;
       const result = await runQwenTurn({
         binary, cwd, env, mcpServers: [], nativeSessionId: expected, freshSessionId: randomUUID(),
-        model: 'fixture', text,
+        model: 'fixture', text, instructions: guidance,
         beforeSubmit(id) {
           submissions++;
           if (expected) assert.equal(id, expected);
@@ -86,6 +87,7 @@ test('Qwen preserves native context across processes and honors the journal', {
     assert.equal(second.result.phase, 'completed', JSON.stringify(second.result));
     assert.equal(second.result.sessionId, first.result.sessionId);
     assert.equal(requests.length, 2);
+    assert.ok(JSON.stringify(requests[1].messages.at(-1).content).includes(guidance));
     assert.match(JSON.stringify(requests[1].messages), /First ACP portability turn/);
     assert.match(JSON.stringify(requests[1].messages), /Second ACP portability turn/);
     const cancelled = await runQwenTurn({
@@ -151,7 +153,7 @@ createInterface({ input: process.stdin }).on('line', line => {
 });
 
 
-test('Qwen Gateway worker refuses a workspace provider override before starting the CLI', {
+test('Qwen checks the workspace provider and signed body before starting the CLI', {
   timeout: 5_000,
 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'qwen-gateway-route-'));
@@ -162,14 +164,26 @@ test('Qwen Gateway worker refuses a workspace provider override before starting 
     const marker = join(home, 'cli-started');
     const providerKeyFile = join(home, 'key');
     const profile = join(home, 'profile.json');
+    const bodyGuidanceFile = join(home, 'guidance');
+    const status = join(home, 'status.json');
+    const observer = join(home, 'body-status.cjs');
     const body = { beingRef: 'fixture', embodimentId: 'body', incarnationId: 'inc', manifestHash: 'hash' };
     await mkdir(config, { recursive: true });
     await writeFile(binary, `#!/usr/bin/env node
 require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');
 `, { mode: 0o700 });
     await writeFile(providerKeyFile, 'synthetic', { mode: 0o600 });
+    await writeFile(bodyGuidanceFile, guidance, { mode: 0o600 });
+    await writeFile(observer, "process.stdout.write(require('node:fs').readFileSync(process.argv[2]));");
+    const observation = {
+      schema: 'dm.runtime.status/v1', integrity: 'ok', being_ref: body.beingRef,
+      manifest_hash: body.manifestHash,
+      local_origin: { embodiment_id: body.embodimentId, incarnation_id: body.incarnationId },
+    };
+    await writeFile(status, JSON.stringify(observation));
     await writeFile(profile, JSON.stringify({ binary, cwd, stateRoot: home, model: 'fixture',
-      body, providerKeyFile }), { mode: 0o600 });
+      body, providerKeyFile, bodyGuidanceFile,
+      matrixStatusCommand: [process.execPath, observer, status] }), { mode: 0o600 });
     const worker = fileURLToPath(new URL('./qwen-gateway-worker.mjs', import.meta.url));
     async function run() {
       const child = spawn(process.execPath, [worker, '--profile', profile], {
@@ -188,6 +202,10 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');
     await run();
     await assert.rejects(access(marker), { code: 'ENOENT' });
     await rm(override);
+    await writeFile(status, JSON.stringify({ ...observation, manifest_hash: 'different' }));
+    await run();
+    await assert.rejects(access(marker), { code: 'ENOENT' });
+    await writeFile(status, JSON.stringify(observation));
     await run();
     await access(marker);
   } finally {

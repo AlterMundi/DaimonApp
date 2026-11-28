@@ -1,8 +1,8 @@
-import { runAcpTurn, validateSessionId } from './turn.mjs';
+import { loadAcpSession, runAcpTurn, validateSessionId } from './turn.mjs';
 
 /** Run a turn using an owner-selected Qwen profile and an exact topic binding. */
 export async function runQwenTurn({
-  binary, cwd, env, mcpServers, nativeSessionId, freshSessionId, model, text, beforeSubmit, signal,
+  binary, cwd, env, mcpServers, nativeSessionId, freshSessionId, model, text, instructions, beforeSubmit, signal,
 }) {
   const args = ['--acp', '--no-telemetry'];
   if (model) args.push('--bare', '--auth-type', 'openai', '--model', model);
@@ -16,7 +16,7 @@ export async function runQwenTurn({
     }
   }
   return runAcpTurn({
-    binary, args, cwd, env, text, beforeSubmit, signal,
+    binary, args, cwd, env, text, instructions, beforeSubmit, signal,
     unavailable: 'qwen_unavailable',
     openFailure: 'qwen_session_unconfirmed',
     allowLargeCommandList: true,
@@ -26,20 +26,8 @@ export async function runQwenTurn({
         throw new Error('Qualified Qwen Code ACP required');
       }
       if (nativeSessionId !== undefined) {
-        const sessionId = validateSessionId(nativeSessionId);
-        if (initialized.agentCapabilities?.loadSession !== true) {
-          throw new Error('Qwen Code ACP session load unavailable');
-        }
-        // A failed load must never create a fresh session for this original.
-        const loaded = await request('session/load', { cwd, mcpServers, sessionId }, update => {
-          if (update?.sessionId !== sessionId) {
-            throw new Error('Qwen Code history came from a different session');
-          }
-        });
-        if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)
-            || ('sessionId' in loaded && loaded.sessionId !== sessionId)) {
-          throw new Error('Qwen Code session load did not confirm the selected session');
-        }
+        const sessionId = nativeSessionId;
+        const loaded = await loadAcpSession(request, initialized, { cwd, mcpServers, sessionId });
         verifyModel(loaded);
         return sessionId;
       }

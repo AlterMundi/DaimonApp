@@ -4,7 +4,7 @@ import { createConnection } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mjs';
+import { observeMatrixBody, readDmkObservation, validObservationCommand } from '../owner-observation.mjs';
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 import { CONTROLLER, callController, controllerBridge, controllerCallKey, controllerError } from './controller-bridge.mjs';
 import { runAntigravityTurn } from './antigravity-turn.mjs';
@@ -22,15 +22,9 @@ const SKILL = 'shared_skill';
 const RECALL = 'dmk_recall';
 const BINDING = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
 
-function validCommand(command) {
-  return Array.isArray(command) && command.length > 0 && command.length <= 16
-    && command.every(arg => typeof arg === 'string' && arg.length <= 4096)
-    && isAbsolute(command[0]);
-}
-
 function validMemory(value) {
   return closed(value, ['command', 'inputId', 'pool', 'recordUid', 'revision', 'bodyRef'])
-    && validCommand(value.command)
+    && validObservationCommand(value.command)
     && typeof value.inputId === 'string' && UUID.test(value.inputId)
     && typeof value.pool === 'string' && /^[a-z][a-z0-9_-]{0,39}$/.test(value.pool)
     && typeof value.recordUid === 'string' && UUID.test(value.recordUid)
@@ -42,25 +36,15 @@ function validBinding(profile) {
   return closed(profile.body, BINDING)
     && BINDING.every(key => typeof profile.body[key] === 'string'
       && profile.body[key].length > 0 && profile.body[key].length <= 240)
-    && validCommand(profile.matrixStatusCommand)
+    && validObservationCommand(profile.matrixStatusCommand)
     && (profile.sharedSkillsDirectory === undefined || (typeof profile.sharedSkillsDirectory === 'string'
       && isAbsolute(profile.sharedSkillsDirectory)))
     && (profile.selectedMemory === undefined || validMemory(profile.selectedMemory))
     && (profile.sharedMemory === undefined || validSharedMemory(profile.sharedMemory));
 }
 
-async function observe(profile, signal) {
-  const body = profile.body;
-  const observed = await inspectMatrixStatus(profile.matrixStatusCommand, {
-    being_ref: body.beingRef, embodiment_id: body.embodimentId,
-  }, signal, { PATH: '/usr/bin:/bin' });
-  if (observed?.schema !== 'dm.runtime.status/v1' || observed.integrity !== 'ok'
-      || observed.being_ref !== body.beingRef || observed.manifest_hash !== body.manifestHash
-      || observed.local_origin?.embodiment_id !== body.embodimentId
-      || observed.local_origin?.incarnation_id !== body.incarnationId) {
-    throw new Error('Matrix body differs from owner selection');
-  }
-  return body;
+function observe(profile, signal) {
+  return observeMatrixBody(profile.matrixStatusCommand, profile.body, signal);
 }
 
 async function readSelectedMemory(binding, signal) {
