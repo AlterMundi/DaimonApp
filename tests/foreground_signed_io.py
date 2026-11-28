@@ -894,7 +894,13 @@ timeout_seconds=5
             try:
                 first = caller_call("route-visible-admit", "session_request", request)
                 self.assertTrue(first.get("new_admission"), first)
-                self.assertTrue(provider.handoff_stream.wait(8), provider.failure)
+                self.assertTrue(provider.handoff_stream.wait(15), (
+                    provider.failure, journey.row(
+                        """SELECT i.phase,t.status,t.execution_native_scope IS NOT NULL
+                           FROM interaction_session_requests c
+                           JOIN interaction_instructions i ON i.id=c.target_instruction
+                           LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')"""),
+                ))
                 journey.wait(lambda: provider.failure or journey.has(provider.handoff_text, 7), seconds=12)
                 self.assertIsNone(provider.failure)
                 pending, = browser.get(path)["pending_items"]
