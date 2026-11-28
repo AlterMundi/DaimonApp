@@ -1872,41 +1872,58 @@ timeout_seconds=5
                                for row in browser.get("/api/interaction/sessions")["sessions"]
                                if row["audio_key"] == "100:7")
             image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
-            reference = {"file_id": str(uuid.uuid4()), "name": "fixture-image.png", "mime": "image/png",
-                         "size": len(image), "sha256": hashlib.sha256(image).hexdigest()}
-            response = browser.client.post("/api/interaction/files", content=image, headers={
-                **browser.headers, "content-type": "application/octet-stream",
-                "x-file-reference": quote(json.dumps(reference), safe=""),
-            })
-            self.assertEqual(response.status_code, 200, response.text)
+            pdf = b"%PDF-1.4\noriginal document fixture\n%%EOF"
+
+            def upload(name, mime, data):
+                reference = {"file_id": str(uuid.uuid4()), "name": name, "mime": mime,
+                             "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                response = browser.client.post("/api/interaction/files", content=data, headers={
+                    **browser.headers, "content-type": "application/octet-stream",
+                    "x-file-reference": quote(json.dumps(reference), safe=""),
+                })
+                self.assertEqual(response.status_code, 200, response.text)
+                return reference
+
+            image_ref = upload("fixture-image.png", "image/png", image)
+            pdf_ref = upload("fixture-document.pdf", "application/pdf", pdf)
             provider.paired_human = False
             provider.routed_paired_human = 100
-            provider.attachment = {"base64": base64.b64encode(image).decode()}
+            provider.attachment = {"blocks": [
+                ("image", "image/png", base64.b64encode(image).decode()),
+                ("document", "application/pdf", base64.b64encode(pdf).decode()),
+            ]}
 
             def state(original):
                 return journey.row(
-                    "SELECT i.phase,t.status FROM interaction_instructions i "
+                    "SELECT i.phase,t.status,t.native_thread_id FROM interaction_instructions i "
                     "JOIN interaction_sources s ON s.id=i.input_id "
                     "LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
                     (original,),
                 )
 
-            for caption in ("Inspect the retained original photo.", ""):
+            native_sessions = set()
+            for caption in ("Compare both retained originals.", ""):
                 provider.original = caption
                 provider.human_original = str(uuid.uuid4())
                 ident, _ = browser.text(caption, reply=destination,
-                                        original_id=provider.human_original, files=[reference])
-                journey.wait(lambda: provider.failure or state(ident) in (
-                    [("accepted", "completed")], [("retained_unsent", "failed")],
+                                        original_id=provider.human_original, files=[image_ref, pdf_ref])
+                journey.wait(lambda: provider.failure or any(
+                    status in {"completed", "failed"} for _, status, _ in state(ident)
                 ), seconds=25)
                 self.assertIsNone(provider.failure)
-                self.assertEqual(state(ident), [("accepted", "completed")])
-                saved = browser.client.get(f"/api/interaction/inputs/{ident}/files/0", headers=browser.headers)
-                self.assertEqual(saved.status_code, 200)
-                self.assertEqual(saved.content, image)
+                [(phase, status, native)] = state(ident)
+                self.assertEqual((phase, status), ("accepted", "completed"))
+                self.assertTrue(native)
+                native_sessions.add(native)
+                for index, data in enumerate((image, pdf)):
+                    saved = browser.client.get(f"/api/interaction/inputs/{ident}/files/{index}",
+                                               headers=browser.headers)
+                    self.assertEqual(saved.status_code, 200)
+                    self.assertEqual(saved.content, data)
                 journey.idle()
             expected = len(set(provider.exposures))
             self.assertEqual(expected, 2)
+            self.assertEqual(len(native_sessions), 1)
             journey.wait(lambda: sum(
                 ANSWER in item.get("preview", "") for item in browser.get("/api/interaction")["items"]
             ) == expected, seconds=20)
@@ -1917,10 +1934,10 @@ timeout_seconds=5
             response = browser.client.post("/api/interaction/inputs", json={
                 "id": blocked, "binding": browser.binding, "reply": destination,
                 "text": "Companion attachment may not enter the paired Claude session.",
-                "files": [reference],
+                "files": [image_ref, pdf_ref],
             }, headers=browser.device_headers)
             self.assertEqual(response.status_code, 200, response.text)
-            journey.wait(lambda: state(blocked) == [("retained_unsent", "failed")], seconds=20)
+            journey.wait(lambda: [row[:2] for row in state(blocked)] == [("retained_unsent", "failed")], seconds=20)
             journey.idle()
             self.assertEqual(provider.calls, calls)
             self.assertEqual(len(set(provider.exposures)), expected)
@@ -2084,7 +2101,8 @@ timeout_seconds=5
             import hashlib
 
             image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
-            journey.media_files = {"fixture-image.png": image}
+            pdf = b"%PDF-1.4\noriginal document fixture\n%%EOF"
+            journey.media_files = {"fixture-image.png": image, "fixture-document.pdf": pdf}
             photo = {"photo": [{"file_id": "fixture-image.png", "width": 1, "height": 1}]}
             forwarded = journey.admit(topic=7, message_fields={
                 **photo, "forward_origin": {"type": "hidden_user", "date": 1740000000, "sender_user_name": "Fixture"},
@@ -2092,12 +2110,20 @@ timeout_seconds=5
             journey.wait(lambda: journey.has("Forwarded messages aren't supported here.", 7))
             self.assertEqual(journey.row("SELECT count(*) FROM interaction_sources WHERE event_id=?",
                                          (str(forwarded),)), [(0,)])
-            for caption in ("  Please inspect this photo.  ", "", "/inspect@otherbot once you see the photo"):
+            document = {"document": {"file_id": "fixture-document.pdf", "file_name": "fixture-document.pdf",
+                                     "mime_type": "application/pdf", "file_size": len(pdf)}}
+            cases = [
+                (caption, photo, "image", "image/png", image)
+                for caption in ("  Please inspect this photo.  ", "", "/inspect@otherbot once you see the photo")
+            ] + [("Inspect the original PDF.", document, "document", "application/pdf", pdf)]
+            for caption, fields, kind, mime, data in cases:
                 provider.original = caption or "Gateway attached these files"
-                provider.attachment = {"caption": caption, "base64": base64.b64encode(image).decode()}
+                provider.attachment = {"caption": caption, "blocks": [
+                    (kind, mime, base64.b64encode(data).decode()),
+                ]}
                 with journey.lock:
                     provider.human_original = str(journey.sequence + 1)
-                update = journey.admit(topic=7, message_fields={**photo, **({"caption": caption} if caption else {})})
+                update = journey.admit(topic=7, message_fields={**fields, **({"caption": caption} if caption else {})})
                 journey.wait(lambda: provider.failure or any(
                     ANSWER in message["text"] and payload.get("reply_parameters", {}).get("message_id") == update
                     for message, payload in journey.messages), seconds=25)
@@ -2109,10 +2135,10 @@ timeout_seconds=5
                 self.assertEqual(phase, "accepted")
                 source = json.loads(source)
                 self.assertEqual(source["text"], caption)
-                expected = hashlib.sha256(image).hexdigest()
+                expected = hashlib.sha256(data).hexdigest()
                 self.assertEqual(source["telegram_files"][0]["sha256"], expected)
-                self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), image)
-            self.assertEqual(len(set(provider.exposures)), 3)
+                self.assertEqual((journey.root / "state.sqlite.files" / expected).read_bytes(), data)
+            self.assertEqual(len(set(provider.exposures)), len(cases))
 
         def _telegram_steer(self, journey, provider, profile):
             selected = json.loads(profile.read_text())
