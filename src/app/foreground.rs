@@ -1,4 +1,5 @@
 //! Native worker protocol shared by the Gateway's foreground entrypoints.
+use super::AppShared;
 use crate::store::{ClaudeContinuation, valid_claude_scope};
 use crate::{
     execution::{Harness, ToolInvocation},
@@ -6,6 +7,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub id: &'a str,

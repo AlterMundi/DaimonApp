@@ -214,8 +214,8 @@ pub(super) fn accepted_handoff_projection_on(
     conn: &Connection,
     input: &crate::interaction::Instruction,
     local: i64,
-) -> Result<bool> {
-    let inserted = conn.execute(
+) -> Result<()> {
+    conn.execute(
         "INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
          SELECT ?1,i.session_id,call.human_id,'portable_handoff_input',i.id,'Handoff from #'||
            coalesce(nullif(trim(caller.session_title),''),'t'||caller.thread_id)||char(10)||char(10)||
@@ -230,7 +230,7 @@ pub(super) fn accepted_handoff_projection_on(
            AND length(trim(json_extract(source.doc,'$.text')))>0",
         params![local, input.id, input.human_id],
     )?;
-    Ok(inserted == 1)
+    Ok(())
 }
 
 pub(super) fn completed_handoff_projection_on(
@@ -259,6 +259,15 @@ pub(super) fn completed_handoff_projection_on(
     {
         return Ok(());
     }
+    // Fence the early lease if no part reached Telegram. The completion
+    // format can then drain it, including after a rollback.
+    conn.execute(
+        "UPDATE topic_publications SET phase='retired'
+         WHERE kind='portable_handoff_input' AND source=?2 AND local_turn=?1 AND human_id=?3
+           AND NOT EXISTS (SELECT 1 FROM topic_publication_parts part
+             WHERE part.publication=topic_publications.id AND part.phase<>'ready')",
+        params![local, input.id, input.human_id],
+    )?;
     conn.execute(
         "WITH projection(position,kind) AS (VALUES (0,'portable_report_request'),(1,'portable_report'))
          INSERT OR IGNORE INTO topic_publications(local_turn,session_id,human_id,kind,source,body,phase,instance_id)
@@ -267,6 +276,7 @@ pub(super) fn completed_handoff_projection_on(
              coalesce(nullif(trim(caller.session_title),''),'t'||caller.thread_id)||char(10)||char(10)||
              json_extract(source.doc,'$.text') ELSE r.body END,
            CASE WHEN projection.position=0 AND EXISTS(SELECT 1 FROM topic_publications early
+             JOIN topic_publication_parts part ON part.publication=early.id AND part.phase<>'ready'
              WHERE early.kind='portable_handoff_input' AND early.source=i.id AND early.local_turn=?1)
              THEN 'not_selected' ELSE 'ready' END,''
          FROM projection CROSS JOIN interaction_session_requests call
@@ -628,6 +638,7 @@ impl Store {
                AND json_extract(i.doc,'$.local_turn')=t.id
                AND json_extract(i.doc,'$.native_thread')=t.native_thread_id
              JOIN interaction_session_requests call ON call.target_instruction=i.id AND call.human_id=p.human_id
+             LEFT JOIN bot_state epoch ON epoch.key='stop_admission_epoch:'||p.human_id
              JOIN interaction_instructions parent ON parent.id=call.parent_instruction
              JOIN interaction_sources src ON src.id=parent.input_id AND src.human_id=call.human_id
              JOIN original_ingress_order original ON original.event_id=src.event_id
@@ -635,11 +646,13 @@ impl Store {
              WHERE p.kind='portable_handoff_input' AND t.session_id=s.id
                AND u.allowed=1 AND s.creator_user_id=p.human_id AND t.from_user_id=p.human_id
                AND i.phase IN ('submitting','accepted','uncertain')
+               AND t.status IN ('running','completed','failed')
+               AND NOT EXISTS(SELECT 1 FROM bot_state stop WHERE stop.key='stopped_turn:'||t.id)
                AND json_extract(i.doc,'$.native_input_accepted')=1
+               AND json_extract(call.doc,'$.epoch')=coalesce(epoch.value,'initial')
                AND json_extract(call.doc,'$.report_to_topic')=1 AND call.phase IN ('requested','returned')
                AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals w WHERE w.parent_instruction=parent.id)
-               AND {REPORT_PARENT_SCOPE} AND {report_parent_current}",
-            report_parent_current = REPORT_PARENT_CURRENT.replace("root.", "src."),
+               AND {REPORT_PARENT_SCOPE} AND {REPORT_PARENT_CURRENT}",
         );
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;

@@ -1458,6 +1458,8 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(visible_early(), 0);
+        let early_sent = early_handoff && update.is_some();
+        let mut early_claim = None;
         if early_handoff {
             assert!(
                 !store
@@ -1512,11 +1514,23 @@ mod tests {
                     [&instruction.id],
                 )
                 .unwrap();
-            assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
             store
-                .topic_publication_receipt(handoff.id, 0, Some(42), false)
+                .save_bot_state("stop_admission_epoch:100", "later")
                 .unwrap();
-            store.topic_publication_finish(handoff.id).unwrap();
+            assert_eq!(visible_early(), 0);
+            assert!(!store.topic_publication_reserve(handoff.id, 0).unwrap());
+            store
+                .save_bot_state("stop_admission_epoch:100", "initial")
+                .unwrap();
+            assert_eq!(visible_early(), 1);
+            if early_sent {
+                assert!(store.topic_publication_reserve(handoff.id, 0).unwrap());
+                store
+                    .topic_publication_receipt(handoff.id, 0, Some(42), false)
+                    .unwrap();
+                store.topic_publication_finish(handoff.id).unwrap();
+            }
+            early_claim = Some(handoff.id);
         }
         assert_eq!(
             store
@@ -1790,7 +1804,10 @@ mod tests {
                 }
                 assert_eq!(visible_handoffs(), expected);
             }
-            if !early_handoff {
+            if !early_sent {
+                if let Some(early) = early_claim {
+                    assert!(!store.topic_publication_reserve(early, 0).unwrap());
+                }
                 let handoff = store
                     .topic_publication_claim(target.key, 100)
                     .unwrap()
