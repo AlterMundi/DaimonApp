@@ -120,8 +120,8 @@ def select_project(journey, *, paginate=False):
         {"revision": row["revision"], "link": row["link"]} for row in list(reversed(repositories))[:8]
     ], visible
 
-    def room_page(cursor=None):
-        target = {"chat_id": 100, "thread_id": 7, **({"cursor": cursor} if cursor else {})}
+    def room_page(cursor=None, **selection):
+        target = {"chat_id": 100, "thread_id": 7, **selection, **({"cursor": cursor} if cursor else {})}
         room = journey.read("input", "topic-projects", json.dumps(target))["result"]
         assert room["schema"] == "daimon.topic-projects/v1"
         return room
@@ -133,6 +133,9 @@ def select_project(journey, *, paginate=False):
         for item in [row["link"] for row in reversed(repositories)]
     ]
     assert room["repositories"] == projected[:8] and not room["restarted"], room
+    detail = room_page(project=story, repository=story)
+    assert detail["project"] == story and detail["next"] is None, detail
+    assert detail["repositories"] == [row for row in projected if row["project"] == story], detail
     if paginate:
         second = room_page(room["next"])
         assert second["repositories"] == projected[8:] and second["next"] is None, second

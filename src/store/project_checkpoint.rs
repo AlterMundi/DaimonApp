@@ -414,7 +414,7 @@ fn catalog_on(
     human: i64,
     session: i64,
     workspace: &str,
-    before: Option<i64>,
+    page: (Option<i64>, Option<Uuid>),
 ) -> Result<(Vec<ProjectCheckpoint>, Option<i64>)> {
     let mut query = conn.prepare(
         "SELECT project,repository,tip FROM (
@@ -422,10 +422,16 @@ fn catalog_on(
                     COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project')) AS repository,
                     MAX(revision) AS tip
              FROM project_checkpoint_deltas WHERE session_id=?1 AND json_extract(doc,'$.delta.workspace')=?2
+             AND (?4 IS NULL OR json_extract(doc,'$.delta.link.project')=?4)
              GROUP BY project,repository)
          WHERE (?3 IS NULL OR tip<?3) ORDER BY tip DESC LIMIT 9",
     )?;
-    let mut rows = query.query(params![session, workspace, before])?;
+    let mut rows = query.query(params![
+        session,
+        workspace,
+        page.0,
+        page.1.map(|id| id.to_string())
+    ])?;
     let mut links = Vec::new();
     let mut last = None;
     for _ in 0..8 {
@@ -554,7 +560,7 @@ impl Store {
             scope.human,
             session,
             workspace,
-            before,
+            (before, None),
         )?;
         let links = links.into_iter().map(|checkpoint| {
             serde_json::json!({"revision":checkpoint.revision,"link":checkpoint.delta.link})
@@ -568,6 +574,7 @@ impl Store {
         entry: SessionKey,
         key: SessionKey,
         cursor: Option<&str>,
+        selected: Option<(Uuid, Uuid)>,
     ) -> Result<serde_json::Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (entry_session, native) = presentation::entry_on(&conn, human, entry)?;
@@ -591,13 +598,39 @@ impl Store {
         let restarted = page.is_some_and(|(previous, _)| previous != revision);
         let before = page.filter(|_| !restarted).map(|(_, before)| before);
         let (links, next) = match (folder, claim) {
-            (None, None) => (Vec::new(), None),
+            (None, None) if selected.is_none() => (Vec::new(), None),
             (Some(folder), Some(claim)) => {
                 anyhow::ensure!(
                     crate::files::workspace_marker_matches(Path::new(&folder), &claim)?,
                     "Topic workspace ownership marker unavailable"
                 );
-                catalog_on(&conn, key, entry, human, session, &claim, before)?
+                if let Some((project, repository)) = selected {
+                    anyhow::ensure!(
+                        checkpoint_on(
+                            &conn,
+                            key,
+                            entry,
+                            human,
+                            session,
+                            &claim,
+                            LinkSelector {
+                                project: Some(project),
+                                repository: Some(repository)
+                            }
+                        )?
+                        .is_some(),
+                        "Current project selection unavailable"
+                    );
+                }
+                catalog_on(
+                    &conn,
+                    key,
+                    entry,
+                    human,
+                    session,
+                    &claim,
+                    (before, selected.map(|pair| pair.0)),
+                )?
             }
             _ => anyhow::bail!("Current owned topic workspace unavailable"),
         };
@@ -633,6 +666,7 @@ impl Store {
             "schema":"daimon.topic-projects/v1",
             "entry_binding":[human,entry,entry_session,native],
             "target":key,"repositories":repositories,"next":next,"restarted":restarted,
+            "project":selected.map(|pair| pair.0),
         }))
     }
 
@@ -1076,7 +1110,7 @@ mod tests {
         );
         assert_eq!(git(&moved, &["diff", "--cached"]), staged);
         let projected = store
-            .topic_project_projection(100, entry, topic, None)
+            .topic_project_projection(100, entry, topic, None, None)
             .unwrap();
         assert_eq!(
             projected["repositories"][0]["project"],
@@ -1085,9 +1119,21 @@ mod tests {
         assert_eq!(projected["repositories"][0]["commit"], delta.link.commit);
         assert!(projected["repositories"][0].get("locator").is_none());
         assert_eq!(projected["repositories"][0]["label"], "Story");
+        let project = delta.link.project;
         assert!(
             store
-                .topic_project_projection(101, entry, topic, None)
+                .topic_project_projection(100, entry, topic, None, Some((project, Uuid::now_v7())))
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .topic_project_projection(100, entry, topic, None, Some((project, project)))
+                .unwrap()["repositories"],
+            projected["repositories"]
+        );
+        assert!(
+            store
+                .topic_project_projection(101, entry, topic, None, None)
                 .is_err()
         );
         assert!(
@@ -1114,9 +1160,14 @@ mod tests {
             )
             .unwrap();
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
+        assert!(
+            store
+                .topic_project_projection(100, entry, topic, None, Some((project, project)))
+                .is_err()
+        );
         assert_eq!(
             store
-                .topic_project_projection(100, entry, topic, None)
+                .topic_project_projection(100, entry, topic, None, None)
                 .unwrap()["repositories"],
             serde_json::json!([])
         );

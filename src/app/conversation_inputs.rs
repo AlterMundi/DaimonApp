@@ -393,13 +393,21 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
             #[serde(flatten)]
             target: SessionKey,
             cursor: Option<String>,
+            project: Option<Uuid>,
+            repository: Option<Uuid>,
         }
         let page: ProjectPage = serde_json::from_str(target)?;
+        let selected = match (page.project, page.repository) {
+            (None, None) => None,
+            (Some(project), Some(repository)) => Some((project, repository)),
+            _ => bail!("Select a project and its linked repository"),
+        };
         return app.shared.store.topic_project_projection(
             human,
             cfg.entry(),
             page.target,
             page.cursor.as_deref(),
+            selected,
         );
     }
     if let Some(body) = args.strip_prefix("foreground context ") {

@@ -174,7 +174,10 @@ gets up to eight repository links per page, with opaque project and
 repository IDs, a display label, and the exact Git commit. The cursor walks
 the retained catalogue in descending revision order and authorizes no reads
 by itself. Each page checks current source access. If the catalogue revision
-changed, the read returns the current first page and marks the restart. Repository labels can be
+changed, the read returns the current first page and marks the restart.
+A project selection uses the project and one of its visible repository
+identities. Gateway rechecks that exact link against current evidence
+on each page of the detail view and filters all rows to the selected project. Repository labels can be
 cited in the original project link. Legacy links remain readable. Raw Git
 locators, workspace paths, source text and effect receipts stay in the owner.
 
