@@ -302,12 +302,16 @@
       open(row,{restore:true});
       return {room};
     }
-    async function readHostedResult(room,nextBinding,current){
+    async function hostedRoom(room,nextBinding,current){
       if(!hosted||!resultId(room)||!nextBinding||!current()||!await refresh(nextBinding)||
         !current()||nextBinding!==binding||!allowed||!complete)return null;
-      const matches=[...inventory.values()].filter(row=>row.topic_ref===room&&!row.is_entry&&row.result_available===true);
-      if(matches.length!==1)return null;
-      const row=matches[0],revision=row.result_revision;
+      const matches=[...inventory.values()].filter(row=>row.topic_ref===room);
+      return matches.length===1?matches[0]:null;
+    }
+    async function readHostedResult(room,nextBinding,current){
+      const row=await hostedRoom(room,nextBinding,current);
+      if(!row||row.is_entry||row.result_available!==true)return null;
+      const revision=row.result_revision;
       const portable=['claude','antigravity','goose'].includes(row.runtime?.harness);
       if(!sessionId(row.id)||!portable&&!resultId(revision))return null;
       const path=`interaction/sessions/${row.id}`,owned=epoch;
@@ -492,7 +496,7 @@
       if(row?.destination?.revision===current.destination?.revision &&
           row?.destination?.source===current.destination?.source)return row?.runtime;
     }
-    return {refresh,selectHostedTopic,readHostedResult,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    return {refresh,selectHostedTopic,hostedRoom,readHostedResult,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};

@@ -316,7 +316,22 @@ window.RequestControls = (() => {
       } finally {if (owned === generation) {reading = false; more.disabled = false;}}
     }
     more.addEventListener("click", () => refresh(cursor));
-    return {attentionItems:()=>[...cards.values()].filter(c=>["pending","answering","unknown"].includes(c.meta?.state)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
+    async function questionIds(target,current) {
+      if(!current() || !await refresh() || !current())return [];
+      const binding=getBinding();
+      for(;;){
+        const matches=[...cards.values()].filter(card=>{
+          const meta=card.meta;
+          return !card.closed&&!card.pending&&!card.unavailable&&meta?.kind==="question"&&
+            meta.state==="pending"&&meta.actionable&&meta.binding===binding&&
+            meta.target?.chat_id===target.chat_id&&meta.target?.thread_id===target.thread_id;
+        }).map(card=>`request:${card.id}`);
+        if(matches.length||more.hidden||cards.size>=maxCards)return matches;
+        const before=cursor;
+        if(!await refresh(before)||!current()||getBinding()!==binding||cursor<=before)return [];
+      }
+    }
+    return {questionIds,attentionItems:()=>[...cards.values()].filter(c=>["pending","answering","unknown"].includes(c.meta?.state)&&!c.closed).map(c=>({id:`request:${c.id}`,created_at:c.meta.created_at,label:c.meta.label,title:c.meta.title,box:c.box,open:()=>readRequest(c,true,true)})),refresh,reset,captureQuestions:()=>Object.fromEntries([...cards.values()].filter(card=>!card.unavailable).map(card=>card.meta).filter(value=>audioSource(value) && value.binding===getBinding() && /^[a-f0-9]{32}$/.test(value.id) && /^[a-f0-9]{64}$/.test(value.capture_version)).slice(0,32).map(value=>[value.id,value.capture_version])),audioSources:()=>[...cards.values()].filter(c=>!c.unavailable).map(c=>audioSource(c.meta)).filter(Boolean)};
   }
   return {mount};
 })();

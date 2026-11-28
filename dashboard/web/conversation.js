@@ -56,6 +56,17 @@ window.Conversation = (() => {
         projection:'holodeck',...(room?{room}:{})
       })),
       openResult:readOnly?undefined:openHostedResult,closeResult:closeHostedResult,
+      openQuestion:readOnly?undefined:async(room,current)=>{
+        const row=await workspace?.hostedRoom(room,binding,current);
+        if(!row||!current()||!pendingNavigation||document.querySelector('dialog[open]'))return false;
+        const match=/^(-?\d+):(\d+)$/.exec(row.audio_key||'');
+        if(!match)return false;
+        const target={chat_id:Number(match[1]),thread_id:Number(match[2])};
+        if(!Object.values(target).every(Number.isSafeInteger))return false;
+        const questions=await requestControls.questionIds(target,current);
+        return pendingNavigation.openSelected(questions,current);
+      },
+      closeQuestion:()=>pendingNavigation?.closeSelected(),
       selectTopic:readOnly?undefined:async(room,current)=>{
         const allowed=()=>current()&&!posting&&!captureBusy&&!transcriptPreview&&
           !voiceMode?.active&&!microphone?.ownsSend?.()&&!attachedFiles?.hasFiles();

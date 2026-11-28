@@ -209,3 +209,16 @@ the correlated opening outcome. Neither result text nor history coordinates
 return to the host. The host cancels the request when leaving the room or
 closing Conversation. The composer, drafts and active recipient stay as they
 were. The result reader does not start a model or send a human original.
+
+### Open a pending topic question
+
+The optional `topicQuestion` feature uses `topic-question-open` with the
+same room reference and request correlation. Conversation resolves the
+owned room and selects only actionable, current questions addressed to
+its exact target in the existing canonical request list. It reuses the
+request reader and For You dialog. Native question text, IDs and revisions
+stay in the frame. Opening the question does not send an answer or change
+the active conversation recipient. The person's explicit response uses
+the existing request controls, exact revision and original receipt route.
+A question outside the canonical Conversation request audience remains
+with its owning session.
