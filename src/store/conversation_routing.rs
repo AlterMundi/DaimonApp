@@ -91,6 +91,8 @@ pub struct ConversationRouting {
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_limit: Option<crate::interaction::SubscriptionLimit>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_unavailable: bool,
 }
 pub enum ConversationRouteAction {
     Worker(Box<crate::interaction::Instruction>, bool),
@@ -767,6 +769,7 @@ impl Store {
             input.phase = "interruption".into();
             input.routing = Some(ConversationRouting {
                 subscription_limit: None,
+                context_unavailable: false,
                 target,
                 label,
                 session: target_session,
@@ -822,6 +825,7 @@ impl Store {
         input.phase = "routed".into();
         input.routing = Some(ConversationRouting {
             subscription_limit: None,
+            context_unavailable: false,
             target,
             label,
             session: target_session,

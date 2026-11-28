@@ -439,6 +439,7 @@ fn admit_selected_with_origin_on(
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
         subscription_limit: None,
+        context_unavailable: false,
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,
@@ -774,6 +775,7 @@ pub(super) fn recover_on(
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
     instruction.native_turn = None;
+    instruction.context_unavailable = false;
     instruction.admission_epoch = epoch;
     conn.execute(
         "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",

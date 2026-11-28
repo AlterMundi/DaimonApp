@@ -1526,6 +1526,30 @@ timeout_seconds=5
             question = "What's your proposal for the clasp?"
             first = send(question, proposal, destination)
             older, native, selection = finish(first, question, proposal, destination)
+            if not browser and os.environ.get("FOREGROUND_TEST_CLAUDE_TEXTLESS_TELEGRAM_REPLY") == "1":
+                # Force a fresh native scope while keeping the topic and
+                # its approved historical exchange bound to the same body.
+                provider.session_instructions = "Keep the updated design instructions."
+                with sqlite3.connect(journey.root / "state.sqlite") as db:
+                    db.execute("UPDATE sessions SET session_prompt=? WHERE thread_id=7",
+                               (provider.session_instructions,))
+                original = "Sí, mandale."
+                answer = "I recovered the copper clasp proposal."
+                provider.original = original
+                provider.quote_response = answer
+                provider.expected_recent_exchange = (question, proposal)
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+                pending = str(journey.admit(original, topic=7, message_fields={
+                    "reply_to_message": {
+                        "message_id": 999999,
+                        "from": {"id": 123, "is_bot": True, "first_name": "Fixture"},
+                    },
+                }))
+                _, replacement, _ = finish(pending, original, answer, destination)
+                self.assertNotEqual(replacement, native)
+                self.assertEqual(len(provider.calls), 2)
+                return
             arrived, release, cancelled = Event(), Event(), Event()
             provider.quote_answer_gate = (arrived, release, cancelled)
             newer_original = "Propose a finish for the stand."
@@ -1533,6 +1557,7 @@ timeout_seconds=5
             current = send(newer_original, newer_answer, destination)
             approval = "Sí, adelante."
             approval_answer = "I'll proceed with the copper clasp."
+            unavailable_quote = os.environ.get("FOREGROUND_TEST_CLAUDE_UNAVAILABLE_QUOTE") == "1"
             interrupt = os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE_INTERRUPT" if browser else
                                        "FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE_INTERRUPT") == "1"
             try:
@@ -1548,6 +1573,22 @@ timeout_seconds=5
 
                 journey.wait(queued, seconds=10)
                 self.assertEqual(len(provider.calls), 2)
+                if unavailable_quote:
+                    # Keep the selected receipt while making its answer
+                    # ineligible for recovery before queued dispatch.
+                    with sqlite3.connect(journey.root / "state.sqlite") as db:
+                        if browser:
+                            self.assertTrue(older["source"].startswith("delivery:"))
+                            changed = db.execute(
+                                "UPDATE interaction_deliveries SET doc=json_set(doc,'$.body',?) WHERE id=?",
+                                ("x" * (13 * 1024), older["source"].removeprefix("delivery:")),
+                            )
+                        else:
+                            changed = db.execute(
+                                "UPDATE interaction_results SET body=? WHERE body=?",
+                                ("x" * (13 * 1024), proposal),
+                            )
+                        self.assertEqual(changed.rowcount, 1)
                 provider.expected_quote = {**selection, "assistant": proposal}
                 provider.quote_answer_gate = None
                 if interrupt:
@@ -1579,6 +1620,28 @@ timeout_seconds=5
             if not interrupt:
                 _, later_native, _ = finish(current, newer_original, newer_answer, destination)
                 self.assertEqual(later_native, native)
+            if unavailable_quote:
+                def retained():
+                    return journey.row(
+                        "SELECT i.phase,json_extract(i.doc,'$.context_unavailable'),t.native_thread_id "
+                        "FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id "
+                        "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                        (pending,),
+                    ) == [("retained_unsent", 1, None)]
+
+                journey.wait(retained, seconds=15)
+                if browser:
+                    _, replay = browser.text(approval, reply=older, original_id=pending)
+                    self.assertIs(replay["new_input"], False)
+                    self.assertIs(replay["routing"]["context_unavailable"], True)
+                else:
+                    journey.wait(lambda: any(
+                        "Claude Code could not recover the earlier context" in message["text"]
+                        and payload.get("reply_parameters", {}).get("message_id") == int(pending)
+                        for message, payload in journey.messages
+                    ), seconds=15)
+                self.assertEqual(len(provider.calls), 2)
+                return
             _, reply_native, _ = finish(pending, approval, approval_answer, older)
             self.assertEqual(len(provider.calls), 3)
             if interrupt:
