@@ -1104,8 +1104,7 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
     ) && i
         .target_execution
         .as_ref()
-        .and_then(|binding| crate::interaction::ForegroundEngine::for_harness(binding.harness))
-        .is_some_and(|engine| engine.attributed_handoff_text_limit().is_some())
+        .is_some_and(|binding| binding.harness.is_portable())
     {
         return crate::interaction::portable_handoff_packet(
             i,

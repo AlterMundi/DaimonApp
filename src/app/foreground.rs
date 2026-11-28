@@ -1013,8 +1013,8 @@ pub(super) async fn run_routed_portable(
             Vec::new()
         };
         let agy_workspace = if config.agy_cli {
-            anyhow::ensure!(routed_host_access && human_authored,
-                "agy requires an authenticated human original in the selected workspace");
+            anyhow::ensure!(routed_host_access && paired_work,
+                "agy requires a paired original or attributed handoff in the selected workspace");
             let path = session.cwd.to_str().context("Invalid Antigravity workspace")?;
             anyhow::ensure!(session.cwd.is_absolute() && path.len() <= 4096,
                 "Invalid Antigravity workspace");

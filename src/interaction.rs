@@ -232,9 +232,10 @@ impl ForegroundEngine {
         self.harness().name()
     }
 
-    pub(crate) const fn attributed_handoff_text_limit(self) -> Option<usize> {
+    pub(crate) const fn attributed_handoff_text_limit(self, agy_cli: bool) -> Option<usize> {
         match self {
             Self::Claude => Some(8192),
+            Self::Antigravity if agy_cli => Some(8192),
             Self::Goose | Self::Antigravity => None,
         }
     }
@@ -674,8 +675,11 @@ impl InteractionConfig {
     }
 
     pub(crate) fn supports_visible_handoff(&self, key: SessionKey) -> bool {
-        self.portable_route(key)
-            .is_some_and(|(engine, _)| engine.attributed_handoff_text_limit().is_some())
+        self.portable_route(key).is_some_and(|(engine, config)| {
+            engine
+                .attributed_handoff_text_limit(config.agy_cli)
+                .is_some()
+        })
     }
 
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
