@@ -483,13 +483,19 @@ async function main() {
     const multipleExchanges = closed(historySeed, ['exchanges']) && Array.isArray(historySeed.exchanges)
       && historySeed.exchanges.length >= 2 && historySeed.exchanges.length <= 3
       && historySeed.exchanges.every(validExchange);
+    const referencedExchanges = closed(historySeed, ['exchanges', 'matchedReference'])
+      && Array.isArray(historySeed.exchanges) && historySeed.exchanges.length >= 1
+      && historySeed.exchanges.length <= 3 && historySeed.exchanges.every(validExchange)
+      && typeof historySeed.matchedReference === 'string' && !!historySeed.matchedReference.trim()
+      && Buffer.byteLength(historySeed.matchedReference) <= 256;
     const singleExchange = validExchange(historySeed);
     const fromCodex = closed(historySeed, ['turn', 'human', 'assistant', 'harness'])
       && historySeed.harness === 'codex';
     const exactQuote = closed(historySeed, ['source', 'revision', 'assistant'])
       && typeof historySeed.source === 'string'
-      && ['delivery:', 'telegram-result:'].some(prefix =>
-        historySeed.source.startsWith(prefix) && UUID.test(historySeed.source.slice(prefix.length)))
+      && (/^native:[1-9][0-9]{0,18}$/.test(historySeed.source)
+        || ['delivery:', 'telegram-result:'].some(prefix =>
+          historySeed.source.startsWith(prefix) && UUID.test(historySeed.source.slice(prefix.length))))
       && typeof historySeed.revision === 'string' && /^[a-f0-9]{64}$/.test(historySeed.revision)
       && typeof historySeed.assistant === 'string' && !!historySeed.assistant.trim();
     const attachments = first?.attachments;
@@ -513,7 +519,8 @@ async function main() {
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
       || (historySeed !== undefined && (!fullAccess
-        || (!exactQuote && !singleExchange && !multipleExchanges && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
+        || (!exactQuote && !singleExchange && !multipleExchanges && !referencedExchanges
+          && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
           || !Number.isSafeInteger(historySeed.turn) || historySeed.turn < 1
           || ![historySeed.human, historySeed.assistant].every(text => typeof text === 'string' && text.trim())))
         || Buffer.byteLength(JSON.stringify(historySeed)) > 12 * 1024))
@@ -726,11 +733,13 @@ async function main() {
         }, { alwaysLoad: true });
       controller = createSdkMcpServer({ name: 'gateway', tools: [controllerTool] });
     }
-    // Resume the exact compatible native session, and provide only the owned
-    // historical quotations that are recorded in a different native session.
+    // Resume the exact session. A question about a named reference can need
+    // that exact context again after the SDK compacts the resumed session.
     let recoveredHistory;
     if (!nativeGoalCommand) {
-      if (multipleExchanges) {
+      if (referencedExchanges) {
+        recoveredHistory = historySeed;
+      } else if (multipleExchanges) {
         const missing = historySeed.exchanges.filter(exchange => !resume
           || exchange.harness !== 'claude' || exchange.nativeThread !== nativeSessionId);
         if (missing.length) recoveredHistory = { exchanges: missing };

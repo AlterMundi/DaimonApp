@@ -202,7 +202,7 @@ pub(super) fn claude_quoted_seed_on(
     reference: &super::conversation_routing::ConversationReply,
     target: SessionKey,
 ) -> Result<Option<Value>> {
-    if !reference.source.starts_with("delivery:") {
+    if !reference.portable_quote_candidate() {
         return Ok(None);
     }
     let Some(source) =
@@ -223,6 +223,18 @@ pub(super) fn claude_quoted_seed_on(
         None => !reference.context_only && source["revision"] == reference.revision,
     };
     if !same_original || source["kind"] != "worker_result" || source["target"] != json!(target) {
+        return Ok(None);
+    }
+    if reference.source.starts_with("native:")
+        && (source["native_binding_current"] != true
+            || !conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM turns t
+                 JOIN conversation_entry_generations g ON g.session_id=t.session_id
+                 WHERE t.id=?1 AND t.status='completed' AND t.execution_generation=g.generation)",
+                [source["local_turn"].as_i64()],
+                |row| row.get::<_, bool>(0),
+            )?)
+    {
         return Ok(None);
     }
     let seed = json!({
@@ -347,6 +359,60 @@ fn claude_history_seed_on(conn: &Connection, local: i64, body: &Value) -> Result
     owned_history_seed_on(conn, local, body, false, None)
 }
 
+fn numbered_history_references(text: &str) -> impl Iterator<Item = &str> {
+    static REFERENCE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:\p{L}[\p{L}\p{N}_-]{2,40}[ \t]+v[0-9]{1,6}(?:\.[0-9]{1,4}){0,2}|\p{L}[\p{L}_-]{2,32}[ \t]+\p{L}[\p{L}_-]{2,32}[ \t]+[0-9]{1,5})\b",
+        )
+        .expect("valid numbered topic history reference")
+    });
+    REFERENCE
+        .find_iter(text)
+        .filter(move |matched| {
+            matched.len() <= 256
+                && !text[matched.end()..]
+                    .strip_prefix('.')
+                    .and_then(|tail| tail.as_bytes().first())
+                    .is_some_and(u8::is_ascii_digit)
+        })
+        .map(|matched| matched.as_str())
+}
+
+fn claude_history_for_input_on(
+    conn: &Connection,
+    local: i64,
+    body: &Value,
+    text: &str,
+) -> Result<Option<Value>> {
+    let mut references = numbered_history_references(text);
+    if let Some(reference) = references.next()
+        && references.all(|other| other.eq_ignore_ascii_case(reference))
+    {
+        let found = owned_history_seed_on(conn, local, body, false, Some(reference))?
+            .context("Owned history unavailable")?;
+        let exchanges = found["exchanges"]
+            .as_array()
+            .context("Invalid topic history")?;
+        let mut compatible: Vec<_> = exchanges
+            .iter()
+            .filter(|exchange| {
+                exchange["harness"] != "claude"
+                    || exchange["nativeThread"]
+                        .as_str()
+                        .is_some_and(|id| Uuid::parse_str(id).is_ok_and(|u| u.to_string() == id))
+            })
+            .collect();
+        compatible.sort_by_key(|exchange| exchange["turn"].as_i64());
+        if !compatible.is_empty() {
+            let seed = json!({"exchanges":compatible,"matchedReference":reference});
+            if serde_json::to_vec(&seed)?.len() <= 12 * 1024 {
+                return Ok(Some(seed));
+            }
+        }
+    }
+    claude_history_seed_on(conn, local, body)
+}
+
 fn owned_history_seed_on(
     conn: &Connection,
     local: i64,
@@ -354,6 +420,9 @@ fn owned_history_seed_on(
     include_only_claude: bool,
     search: Option<&str>,
 ) -> Result<Option<Value>> {
+    let exact_reference = search
+        .filter(|text| numbered_history_references(text).next() == Some(*text))
+        .map(str::to_lowercase);
     let mut query = conn.prepare(
         "WITH search_window AS (
             SELECT p.id FROM turns current
@@ -445,7 +514,7 @@ fn owned_history_seed_on(
             FROM (SELECT * FROM routed UNION ALL SELECT * FROM direct)
             WHERE human IS NOT NULL AND native_thread IS NOT NULL
               AND (?4 IS NULL OR (length(CAST(human AS BLOB))+length(CAST(assistant AS BLOB))<12288
-                AND (instr(lower(human),lower(?4))>0 OR instr(lower(assistant),lower(?4))>0)))
+                AND (?5 OR instr(lower(human),lower(?4))>0 OR instr(lower(assistant),lower(?4))>0)))
          )
          SELECT id,human,assistant,harness,native_thread FROM ranked
          WHERE position=1 OR ?4 IS NOT NULL
@@ -456,7 +525,8 @@ fn owned_history_seed_on(
         local,
         body.to_string(),
         include_only_claude,
-        search
+        search,
+        exact_reference.is_some()
     ])?;
     let mut exchanges = Vec::new();
     while let Some(row) = rows.next()? {
@@ -466,6 +536,13 @@ fn owned_history_seed_on(
         let harness: String = row.get(3)?;
         let native_thread: String = row.get(4)?;
         if human.trim().is_empty() || assistant.trim().is_empty() {
+            continue;
+        }
+        if exact_reference.as_ref().is_some_and(|reference| {
+            !numbered_history_references(&human)
+                .chain(numbered_history_references(&assistant))
+                .any(|candidate| candidate.to_lowercase() == *reference)
+        }) {
             continue;
         }
         let exchange = json!({"turn":turn,"human":human,"assistant":assistant,
@@ -674,8 +751,9 @@ impl Store {
         Ok(original.paired_actor
             && !original.retired
             && original.reply.as_ref().is_some_and(|reference| {
-                reference.source.starts_with("delivery:")
-                    && (!reference.context_only || original.reply_text_sha256.is_some())
+                reference.portable_quote_candidate()
+                    && (original.reply_text_sha256.is_some()
+                        || (!reference.context_only && reference.source.starts_with("delivery:")))
             }))
     }
 
@@ -824,14 +902,24 @@ impl Store {
             [request.local_turn],
             |r| r.get(0),
         )?;
-        owned_history_seed_on(
-            &conn,
-            request.local_turn,
-            &serde_json::from_str(&body)?,
-            false,
-            Some(search),
-        )?
-        .context("Owned history unavailable")
+        let body = serde_json::from_str(&body)?;
+        let found = owned_history_seed_on(&conn, request.local_turn, &body, false, Some(search))?
+            .context("Owned history unavailable")?;
+        if found["exchanges"].as_array().is_some_and(Vec::is_empty)
+            && let Some(reference) = numbered_history_references(search)
+                .next()
+                .filter(|value| *value != search)
+        {
+            return owned_history_seed_on(
+                &conn,
+                request.local_turn,
+                &body,
+                false,
+                Some(reference),
+            )?
+            .context("Owned history unavailable");
+        }
+        Ok(found)
     }
 
     /// Recover an exact quoted result, or the last completed paired exchange
@@ -856,10 +944,11 @@ impl Store {
                 .filter(|reference| !reference.source.starts_with("session:"))
             {
                 let quote = claude_quoted_seed_on(&conn, &original, reference, input.target)?;
+                let exact_quote_selected = reference.source.starts_with("delivery:")
+                    || (reference.source.starts_with("native:")
+                        && original.reply_text_sha256.is_some());
                 anyhow::ensure!(
-                    !reference.source.starts_with("delivery:")
-                        || reference.context_only
-                        || quote.is_some(),
+                    !exact_quote_selected || reference.context_only || quote.is_some(),
                     "The selected conversation reply is unavailable; original retained without submission"
                 );
                 return Ok(quote);
@@ -882,7 +971,7 @@ impl Store {
         if !implicit {
             return Ok(None);
         }
-        claude_history_seed_on(&conn, local, body)
+        claude_history_for_input_on(&conn, local, body, &input.text)
     }
 
     pub(crate) fn expose_routed_portable(
@@ -971,7 +1060,8 @@ impl Store {
         {
             if harness != Harness::Claude
                 || !paired_host_access
-                || claude_history_seed_on(&tx, local, body)?.as_ref() != Some(seed)
+                || claude_history_for_input_on(&tx, local, body, &current.text)?.as_ref()
+                    != Some(seed)
             {
                 return Ok(false);
             }
@@ -1402,6 +1492,47 @@ mod tests {
             assert_eq!(found["exchanges"].as_array().unwrap().len(), 1);
             assert_eq!(found["exchanges"][0]["turn"], prior);
             assert_eq!(found["exchanges"][0]["human"], "Review the layout.");
+            conn.execute_batch("SAVEPOINT numbered_reference").unwrap();
+            let native = Uuid::new_v4().to_string();
+            conn.execute(
+                "UPDATE turns SET native_thread_id=?1 WHERE id IN (?2,?3)",
+                params![native, prior, latest],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE interaction_results SET native_thread=?1,body='The Explorador v29 has two clips.' WHERE id='result'",
+                [&native],
+            ).unwrap();
+            let question =
+                "Contame qué clips dejamos listos en el Explorador v29 y qué quedó pendiente.";
+            assert_eq!(
+                numbered_history_references(question).next(),
+                Some("Explorador v29")
+            );
+            assert!(
+                numbered_history_references("Explorador v29.12345")
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                numbered_history_references("Explorador v29.1.2.3")
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                numbered_history_references(&format!("Explorador{}v29", " ".repeat(256)))
+                    .next()
+                    .is_none()
+            );
+            conn.execute("UPDATE interaction_results SET native_thread=?1,body='Explorador v290 has a different set of clips.' WHERE id='later-result'", [&native]).unwrap();
+            assert_eq!(
+                claude_history_for_input_on(&conn, researching, &body, question).unwrap(),
+                Some(json!({"matchedReference":"Explorador v29","exchanges":[{
+                    "turn":prior,"human":"Review the layout.",
+                    "assistant":"The Explorador v29 has two clips.","harness":"claude","nativeThread":native}]}))
+            );
+            conn.execute_batch("ROLLBACK TO numbered_reference; RELEASE numbered_reference")
+                .unwrap();
             conn.execute(
                 "INSERT INTO interaction_sources(id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
                  VALUES('steered-original',100,'telegram:100','steered-original',100,7,?1,'2026-11-27')",

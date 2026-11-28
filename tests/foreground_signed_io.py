@@ -1247,6 +1247,7 @@ timeout_seconds=5
             import hashlib
 
             browser, destination = None, None
+            numbered_history = web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_NUMBERED_HISTORY") == "1"
             if web_profile:
                 from conversation_cold_entry_http_io import Browser
 
@@ -1305,10 +1306,11 @@ timeout_seconds=5
                 }
                 return item["message_id"], native, selection
 
-            proposal = "Use the copper clasp on the selected design."
+            proposal = ("Fixture v29 keeps the heroic idle and landing clips."
+                        if numbered_history else "Use the copper clasp on the selected design.")
             question = "What's your proposal for the clasp?"
-            older, native, selection = finish(send(question, proposal, destination),
-                                              question, proposal, destination)
+            first = send(question, proposal, destination)
+            older, native, selection = finish(first, question, proposal, destination)
             arrived, release, cancelled = Event(), Event(), Event()
             provider.quote_answer_gate = (arrived, release, cancelled)
             newer_original = "Propose a finish for the stand."
@@ -1365,21 +1367,35 @@ timeout_seconds=5
             else:
                 self.assertEqual(reply_native, native)
 
-            if web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
-                fixture_home = Path(json.loads(web_profile.read_text())["home"])
-                transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
-                self.assertEqual(len(transcripts), 1)
-                transcript = transcripts[0]
-                transcript.rename(fixture_home / "retained-predecessor.jsonl")
-                current = next(row for row in browser.get("/api/interaction")["items"]
-                               if row["id"] == older["source"])
-                recovered_quote = {"source": current["id"], "revision": current["revision"]}
-                provider.expected_quote = {**recovered_quote, "assistant": proposal}
-                original = "Sí, retomá esa propuesta."
+            missing_resume = os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1"
+            if web_profile and (numbered_history or missing_resume):
+                if missing_resume:
+                    fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                    transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
+                    self.assertEqual(len(transcripts), 1)
+                    transcripts[0].rename(fixture_home / "retained-predecessor.jsonl")
+                if numbered_history:
+                    first_turn, = journey.row(
+                        "SELECT json_extract(i.doc,'$.local_turn') FROM interaction_instructions i "
+                        "JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?", (first,)
+                    )[0]
+                    provider.expected_quote = {
+                        "matchedReference": "Fixture v29",
+                        "exchanges": [{"turn": first_turn, "human": question, "assistant": proposal,
+                                       "harness": "claude", "nativeThread": native}],
+                    }
+                    recovered_quote = destination
+                    original = "Contame qué clips dejamos listos en Fixture v29 y qué quedó pendiente."
+                else:
+                    current = next(row for row in browser.get("/api/interaction")["items"]
+                                   if row["id"] == older["source"])
+                    recovered_quote = {"source": current["id"], "revision": current["revision"]}
+                    provider.expected_quote = {**recovered_quote, "assistant": proposal}
+                    original = "Sí, retomá esa propuesta."
                 answer = "I recovered the copper clasp proposal."
                 _, replacement, _ = finish(send(original, answer, recovered_quote),
                                            original, answer, recovered_quote)
-                self.assertNotEqual(replacement, native)
+                self.assertEqual(replacement == native, not missing_resume)
                 self.assertEqual(len(provider.calls), 4)
 
         def _conversation_attachments(self, journey, provider):
