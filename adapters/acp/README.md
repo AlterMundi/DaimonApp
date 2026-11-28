@@ -124,10 +124,12 @@ worker group can end before that ACP request. Both paths retain the original
 and its provider uncertainty. The caller owns the worker group and the
 journal's original and return uniqueness.
 
-Goose keeps cancelled text in the native transcript. Loading an existing
-session is outside this entry point, which admits a new original into a fresh
-session only. Gateway status or recovery must never call this entry point to
-replay an uncertain original.
+Goose keeps cancelled text in its native transcript. The ACP client can load
+an explicitly selected existing native session in a new process and rechecks
+the exact tool catalog before journal admission. A missing or mismatched
+session leaves the original unsent. Gateway has yet to select a Goose native
+session for continuation through this entry point. Status and recovery
+must preserve uncertain originals.
 
 ## Selecting Goose in Gateway
 
