@@ -1603,7 +1603,8 @@ impl App {
                             }
                             let runtime =
                                 execution_status::portable_runtime(&self.shared, profile, engine)
-                                    .await;
+                                    .await
+                                    .for_topic(Some(session.id));
                             if let Some(model) = runtime["model"].as_str() {
                                 text.push_str(&format!("\nModel: {model}"));
                                 if let Some(effort) = runtime["effort"].as_str() {

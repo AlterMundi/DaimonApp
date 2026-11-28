@@ -43,7 +43,7 @@ test('agy reopens the exact sandboxed session using the selected account', {
   }
 });
 
-test('agy reports a declined native tool without converting uncertainty into a reply', async t => {
+test('agy distinguishes a declined tool from an unrestricted native tool', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'agy-declined-tool-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const server = join(cwd, 'agent.cjs');
@@ -52,6 +52,8 @@ test('agy reports a declined native tool without converting uncertainty into a r
 const assert = require('node:assert/strict');
 const readline = require('node:readline');
 const sessionId = ${JSON.stringify(sessionId)};
+const expected = process.env.FIXTURE_SELECTION;
+assert.equal(process.argv.includes('--sandbox'), process.env.FIXTURE_SANDBOX === 'true');
 const send = message => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 let original;
 readline.createInterface({ input: process.stdin }).on('line', line => {
@@ -66,24 +68,42 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } else if (method === 'session/prompt') {
     original = id;
     send({ id: 100, method: 'session/request_permission', params: {
-      sessionId, toolCall: { name: 'run_command' },
+      sessionId, toolCall: { name: process.env.FIXTURE_TOOL },
       options: [{ optionId: 'allow', kind: 'allow_once' }, { optionId: 'reject', kind: 'reject_once' }],
     } });
   } else if (id === 100) {
-    assert.deepEqual(result, { outcome: { outcome: 'selected', optionId: 'reject' } });
-    send({ id: original, error: { code: -32603, message: 'Fixture closed after a refused tool' } });
+    assert.deepEqual(result, { outcome: { outcome: 'selected', optionId: expected } });
+    if (expected === 'reject') {
+      send({ id: original, error: { code: -32603, message: 'Fixture closed after a refused tool' } });
+    } else {
+      send({ method: 'session/update', params: { sessionId,
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Done' } },
+      } });
+      send({ id: original, result: { stopReason: 'end_turn' } });
+    }
   }
 });
 `, { mode: 0o700 });
 
-  const receipts = [];
-  const outcome = await runAntigravityTurn({
-    binary: server, cwd, env: process.env, model: 'gemini-4-neon', effort: 'medium',
-    text: 'A synthetic prompt with a tool request.',
-    beforeSubmit: async id => { receipts.push(['submitted', id]); return true; },
-    onInputAccepted: async id => { receipts.push(['accepted', id]); },
-    signal: AbortSignal.timeout(5000),
-  });
-  assert.deepEqual(receipts, [['submitted', sessionId], ['accepted', sessionId]]);
-  assert.deepEqual(outcome, { phase: 'uncertain', reason: 'native_tool_declined_without_reply', sessionId });
+  const scenarios = [
+    { nativeTools: undefined, tool: 'run_command', selected: 'reject' },
+    { nativeTools: 'unrestricted', tool: 'run_command', selected: 'allow' },
+    { nativeTools: 'unrestricted', tool: 'mcp_matrix_unselected', selected: 'reject' },
+  ];
+  for (const { nativeTools, tool, selected } of scenarios) {
+    const receipts = [];
+    const outcome = await runAntigravityTurn({
+      binary: server, cwd, model: 'gemini-4-neon', effort: 'medium', nativeTools,
+      env: { ...process.env, FIXTURE_SELECTION: selected, FIXTURE_TOOL: tool,
+        FIXTURE_SANDBOX: String(nativeTools !== 'unrestricted') },
+      text: 'A synthetic prompt with a tool request.',
+      beforeSubmit: async id => { receipts.push(['submitted', id]); return true; },
+      onInputAccepted: async id => { receipts.push(['accepted', id]); },
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.deepEqual(receipts, [['submitted', sessionId], ['accepted', sessionId]]);
+    assert.deepEqual(outcome, selected === 'allow'
+      ? { phase: 'completed', sessionId, text: 'Done' }
+      : { phase: 'uncertain', reason: 'native_tool_declined_without_reply', sessionId });
+  }
 });

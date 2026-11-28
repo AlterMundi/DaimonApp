@@ -606,3 +606,14 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   the previous exchange, checkpoint and current input at the Codex boundary.
 
 All Matrix identities, user input and provider output are synthetic.
+
+### Selecting a model for one owned topic
+
+The private worker profile can set `topicModels` to up to eight exact
+`{ topicId, model, effort }` entries. Select this release with the
+`--topic-models-v1` worker argument. Gateway supplies the verified local
+conversation ID as a string on new turns. The account, permissions, native
+resume scope and profile defaults remain the same. Originals without a
+Gateway topic ID use the normal profile. Remove an entry to restore its
+default on the next turn. The owner can pass the local topic ID after
+`--observe-runtime PROFILE` to read back the resolved Claude Code model.

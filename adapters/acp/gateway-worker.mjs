@@ -218,6 +218,12 @@ async function main(path) {
     if (agy && (!absolute(profile.home) || typeof profile.effort !== 'string' || !profile.effort)) {
       throw new Error('Invalid Antigravity owner profile');
     }
+    if (agy && Object.hasOwn(profile, 'nativeTools')) {
+      fields.push('nativeTools');
+      if (!['sandboxed', 'unrestricted'].includes(profile.nativeTools)) {
+        throw new Error('Invalid Antigravity native tool selection');
+      }
+    }
     if (agy && Object.hasOwn(profile, 'bodyGuidanceFile')) {
       fields.push('bodyGuidanceFile');
       if (!absolute(profile.bodyGuidanceFile)) throw new Error('Invalid Antigravity guidance path');
@@ -313,7 +319,7 @@ async function main(path) {
       nativeSessionId: first.resumeNativeSessionId ?? undefined,
       interruptSignal: topic ? interrupt.signal : undefined,
       ...(agy ? { model: profile.model, effort: profile.effort,
-        instructions, images,
+        instructions, images, nativeTools: profile.nativeTools,
         onInputAccepted: accept,
         async onToolPermission(nativeSessionId, toolCall) {
           if (toolCall.name !== 'mcp_matrix_' + CONTROLLER) return true;

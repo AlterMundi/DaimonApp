@@ -139,6 +139,7 @@ pub(super) async fn run_selected(
             routed_host_access: false,
             session_instructions: None,
             workspace: None,
+            topic_id: None,
             output_directory: None,
             history_seed: None,
             project_checkpoint: None,

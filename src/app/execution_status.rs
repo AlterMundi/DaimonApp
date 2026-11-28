@@ -23,6 +23,53 @@ fn safe_label(value: &Value) -> Option<&str> {
     })
 }
 
+pub(super) struct PortableRuntime {
+    status: Value,
+    topic_models: Vec<(i64, String, String)>,
+}
+
+impl PortableRuntime {
+    pub(super) fn for_topic(&self, topic_id: Option<i64>) -> Value {
+        let mut status = self.status.clone();
+        if let Some((_, model, effort)) = self
+            .topic_models
+            .iter()
+            .find(|(id, ..)| Some(*id) == topic_id)
+        {
+            status["model"] = json!(model);
+            status["effort"] = json!(effort);
+        }
+        status
+    }
+
+    fn read_topic_models(&mut self, profile: &Value) {
+        let Some(rows) = profile["topicModels"]
+            .as_array()
+            .filter(|rows| rows.len() <= 8)
+        else {
+            return;
+        };
+        for row in rows {
+            let Some(id) = row["topicId"]
+                .as_str()
+                .and_then(|id| id.parse::<i64>().ok())
+                .filter(|id| *id > 0)
+            else {
+                continue;
+            };
+            let (Some(model), Some(effort)) =
+                (safe_label(&row["model"]), safe_label(&row["effort"]))
+            else {
+                continue;
+            };
+            if matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+                self.topic_models
+                    .push((id, model.to_owned(), effort.to_owned()));
+            }
+        }
+    }
+}
+
 async fn observe_claude(
     shared: &AppShared,
     command: &[String],
@@ -79,8 +126,11 @@ pub(super) async fn portable_runtime(
     shared: &AppShared,
     config: &InteractionConfig,
     engine: ForegroundEngine,
-) -> Value {
-    let mut runtime = json!({"harness":engine.name(),"model":null,"effort":null});
+) -> PortableRuntime {
+    let mut runtime = PortableRuntime {
+        status: json!({"harness":engine.name(),"model":null,"effort":null}),
+        topic_models: Vec::new(),
+    };
     let Some(selected) = config
         .foreground(engine)
         .filter(|profile| profile.interaction_direct)
@@ -102,16 +152,25 @@ pub(super) async fn portable_runtime(
     };
     for field in ["model", "effort"] {
         if let Some(value) = safe_label(&profile[field]) {
-            runtime[field] = json!(value);
+            runtime.status[field] = json!(value);
         }
     }
-    if engine != ForegroundEngine::Claude || profile["subscriptionEmail"].as_str().is_none() {
+    if engine != ForegroundEngine::Claude {
+        return runtime;
+    }
+    if command
+        .last()
+        .is_some_and(|argument| argument == "--topic-models-v1")
+    {
+        runtime.read_topic_models(&profile);
+    }
+    if profile["subscriptionEmail"].as_str().is_none() {
         return runtime;
     }
     let observed = observe_claude(shared, command, index, fingerprint(command, &bytes)).await;
     if let Some(model) = safe_label(&observed["model"]).filter(|model| model.starts_with("claude-"))
     {
-        runtime["model"] = json!(model);
+        runtime.status["model"] = json!(model);
     }
     for window in ["weekly", "session"] {
         if let (Some(available), Some(resets_at)) = (
@@ -122,8 +181,8 @@ pub(super) async fn portable_runtime(
                 .as_i64()
                 .filter(|time| *time > Utc::now().timestamp()),
         ) {
-            runtime[format!("{window}_available_percent")] = json!(available);
-            runtime[format!("{window}_resets_at")] = json!(resets_at);
+            runtime.status[format!("{window}_available_percent")] = json!(available);
+            runtime.status[format!("{window}_resets_at")] = json!(resets_at);
         }
     }
     runtime
@@ -148,12 +207,17 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
         }
     }
     let codex = &app.shared.config.codex;
-    let apply = |key, runtime: &mut Value| {
+    let apply = |key, runtime: &mut Value| -> Result<()> {
         if let Some((engine, _)) = config.portable_route(key)
             && let Some((_, current)) = profiles.iter().find(|(candidate, _)| *candidate == engine)
         {
-            *runtime = current.clone();
-            return;
+            let topic_id = app
+                .shared
+                .store
+                .execution_binding(key, human)?
+                .map(|binding| binding.conversation_id);
+            *runtime = current.for_topic(topic_id);
+            return Ok(());
         }
         if !runtime.is_object() {
             *runtime = json!({"harness":"codex"});
@@ -171,8 +235,9 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
         {
             runtime["quota_source"] = json!("codex");
         }
+        Ok(())
     };
-    apply(config.entry(), &mut view["entry_runtime"]);
+    apply(config.entry(), &mut view["entry_runtime"])?;
     if let Some(items) = view["items"].as_array_mut() {
         for item in items {
             let key = item["audio_key"].as_str().and_then(|raw| {
@@ -183,7 +248,7 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
                 ))
             });
             if let Some(key) = key {
-                apply(key, &mut item["runtime"]);
+                apply(key, &mut item["runtime"])?;
             }
         }
     }
@@ -211,10 +276,34 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
         };
         portable_status.insert(
             format!("{}:{}", key.chat_id, key.thread_id),
-            json!({"session":binding.conversation_id,"runtime":runtime,"execution":execution,
+            json!({"session":binding.conversation_id,"runtime":runtime.for_topic(Some(binding.conversation_id)),"execution":execution,
                 "observed_at":Utc::now().timestamp_millis() as f64 / 1000.0}),
         );
     }
     view["portable_status"] = Value::Object(portable_status);
     Ok(view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_bound_topic_displays_its_configured_claude_model() {
+        let mut runtime = PortableRuntime {
+            status: json!({"model":"claude-opus-5-5","effort":"medium","weekly_available_percent":50}),
+            topic_models: Vec::new(),
+        };
+        runtime.read_topic_models(&json!({"topicModels":[
+            {"topicId":"17","model":"claude-fable-5-2","effort":"high"}
+        ]}));
+        assert_eq!(
+            runtime.for_topic(Some(17)),
+            json!({
+                "model":"claude-fable-5-2","effort":"high","weekly_available_percent":50
+            })
+        );
+        assert_eq!(runtime.for_topic(Some(18)), runtime.status);
+        assert_eq!(runtime.for_topic(None), runtime.status);
+    }
 }

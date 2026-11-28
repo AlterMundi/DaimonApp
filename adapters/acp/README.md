@@ -127,6 +127,12 @@ synthetic memory and a loopback model responder.
 
 ## Declined tools in an Antigravity topic
 
+Antigravity defaults to sandboxed tools. An owner-selected topic profile can set
+`nativeTools: "unrestricted"` to start its own agy process without `--sandbox`
+and approve native tool requests without interaction. The topic retains its
+signed body and workspace selection. Other profiles keep their default.
+The Gateway controller remains subject to its existing tool grant and receipt.
+
 The sandboxed Antigravity pilot can ask for native tools outside the provided
 catalog. A request for a tool in the current prompt is input acceptance, even
 when the tool is declined before any assistant text. If the turn then closes

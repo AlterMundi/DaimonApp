@@ -8,15 +8,19 @@ function readSelection(state, category) {
   return options[0];
 }
 
-/** Use the paired, sandboxed agy account for one journaled native turn. */
+/** Use the paired agy account for one journaled native turn. */
 export async function runAntigravityTurn({
-  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, interruptSignal, allowedTools = [], instructions, images, onInputAccepted, onToolPermission,
+  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, interruptSignal, allowedTools = [], instructions, images, onInputAccepted, onToolPermission, nativeTools = "sandboxed",
 }) {
   if (typeof model !== 'string' || !model || typeof effort !== 'string' || !effort) {
     throw new TypeError('Select the Antigravity model and reasoning effort');
   }
+  if (!['sandboxed', 'unrestricted'].includes(nativeTools)) throw new TypeError('Invalid Antigravity native tool selection');
+  const unrestricted = nativeTools === 'unrestricted';
+  const args = ['acp', ...(unrestricted ? [] : ['--sandbox']),
+    '--disable-telemetry', '--include-default-customizations=false'];
   return runAcpTurn({
-    binary, args: ['acp', '--sandbox', '--disable-telemetry', '--include-default-customizations=false'], cwd, env, text, beforeSubmit, signal, interruptSignal, instructions, images, onInputAccepted,
+    binary, args, cwd, env, text, beforeSubmit, signal, interruptSignal, instructions, images, onInputAccepted,
     unavailable: 'antigravity_cli_unavailable',
     openFailure: 'antigravity_cli_session_unconfirmed',
     allowLargeCommandList: true,
@@ -25,7 +29,9 @@ export async function runAntigravityTurn({
       const selected = kind => options.filter(option => option?.kind === kind
         && typeof option.optionId === 'string' && option.optionId.length > 0 && option.optionId.length <= 128);
       const once = selected('allow_once');
-      if (allowedTools.includes(toolCall?.name) && once.length === 1
+      const name = toolCall?.name;
+      const native = unrestricted && typeof name === 'string' && name.length > 0 && !name.startsWith('mcp_');
+      if ((native || allowedTools.includes(name)) && once.length === 1
           && await onToolPermission?.(sessionId, toolCall) !== false) return once[0].optionId;
       const rejected = selected('reject_once');
       return rejected.length === 1 ? rejected[0].optionId : undefined;
