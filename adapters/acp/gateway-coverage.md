@@ -198,6 +198,20 @@ for live user testing. Muse Code is on hold
 pending Meta's response to the submitted support case. Check the response before
 resuming the subscription-backed trial.
 
+ITACA has distinct Cluster target profiles for Qwen Code 0.28.7 and
+MiniMax Code 0.8.0. Two current signed siblings confirmed the same
+predecessor used for the Qwen target-owned custody and prepared enrollment
+intent. The Qwen pilot from App #1123 also builds over the selected ITACA
+Gateway with its native resume and journal tests passing. Signature,
+receiving body activation, and its live topic are still pending. The
+incumbent owner observation role has expired. Its established renewal
+also needs the signed visibility installation rebound to the renewed
+runtime.
+
+MiniMax Code's isolated Global subscription sign-in timed out without an
+account credential. Its target profile is prepared. Its live payer and
+Gateway worker still need qualification before topic activation.
+
 The ITACA `agy` 1.5.18 probe
 negotiated ACP v1, opened a sandboxed session, selected Neon with medium
 reasoning and received the expected synthetic reply from the selected
