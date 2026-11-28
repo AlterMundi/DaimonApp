@@ -7,6 +7,7 @@ import pathlib
 import subprocess
 import sqlite3
 import sys
+import threading
 from routing_io import Routing
 
 
@@ -370,6 +371,29 @@ def deferred_logical_completion(binary):
     finally:j.close()
 
 
+def local_preparation_wait_stays_private(binary):
+    j = Sessions(binary, control=True)
+    try:
+        j.prepare(max_active_workers=2)
+        j.admit('#Alpha Work here and ask Beta about the selected detail.', topic=1)
+        j.wait(lambda: j.instructions(7) and j.instructions(7)[0][1] == 'accepted')
+        j.block_binding = True
+        _, admitted = j.request()
+        j.wait(j.binding_held.is_set)
+        assert j.instructions(8)[0][1] == 'queued'
+        assert admitted['instruction']['origin']['message_id'] is not None
+        # Allow the 10 s notice and Telegram's outbound pacing to elapse.
+        threading.Event().wait(15)
+        assert j.instructions(8)[0][1] == 'queued'
+        assert not j.has('native submission has not started', 1)
+        j.release_binding.set()
+        j.wait(lambda: j.instructions(8)[0][1] == 'accepted')
+        print('PASS internal handoff preparation stays out of the human Telegram topic')
+    finally:
+        j.release_binding.set()
+        j.close()
+
+
 def later_helper_completion(binary):
     j = Sessions(binary, control=True)
     j.allow_native_launch = True
@@ -475,6 +499,7 @@ if __name__=='__main__':
     private_draft_does_not_become_public(binary)
     direct_topic_request_and_return(binary)
     one_slot_deferred_return(binary)
+    local_preparation_wait_stays_private(binary)
     deferred_logical_completion(binary)
     later_helper_completion(binary)
     completed_group_not_renarrated(binary)
