@@ -26,6 +26,11 @@ one original.
 The worker accepts paired text and images for this topic and uses the journaled
 native ID from the same topic generation, workspace and signed incarnation.
 There is no fallback to a fresh session after a failed native load.
+A local handoff from another owned topic can reach the same agy session under
+its retained paired-human original. Gateway uses its existing authored
+handoff and canonical result contract, including the caller-selected visible
+report. The agy configuration is required for this route. The separate SDK
+worker does not acquire this capability.
 An owner that also has the Antigravity SDK worker can select it for private
 Matrix originals in `interaction.antigravity_matrix_foreground`. The two
 profiles must designate the same signed embodiment. This preserves the private
@@ -54,6 +59,9 @@ Name the disposable executable or its symlink `telecodex` for the fixture's
 embedded Telegram loopback. The fixture uses the selected signed profile and
 real agy model, a disposable topic journal, and two synthetic PNGs. It verifies
 the Telegram reply reference, the Conversation result, and one native session.
+It then submits a paired Codex handoff to that topic and checks the agy
+incorporation receipt, visible request and response, and one canonical return
+in the original Codex conversation.
 
 ## Goose
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a retained image on both surfaces against the owner-selected agy."""
+"""Exercise both surfaces and a paired handoff against the owner-selected agy."""
 
 import binascii
 import hashlib
@@ -119,6 +119,47 @@ def qualify(binary, source_profile):
         assert journey.read("input", "submit-human", json.dumps(packet))["result"]["new_input"]
         assert result(ident, "blue") == first
         print("Telegram and Conversation images reached the same native Antigravity session with incorporation receipts.")
+
+        journey.routing = True
+        journey.allow_local_dependencies = True
+        original = str(uuid.uuid4())
+        journey.read("input", "submit-human", json.dumps({
+            "id": original, "binding": binding, "text": "Request an attributed synthetic color check.",
+        }))
+        journey.wait(lambda: journey.row("SELECT phase FROM conversation_inputs WHERE id=?",
+                                        (original,)) == [("accepted",)])
+        parents = journey.call("route-agy-parents", "coordination_inputs", {})["inputs"]
+        parent, = [row for row in parents if row["source_event"] == original
+                   and row["eligible_coordination_parent"]]
+        request = {
+            "parent_instruction": parent["instruction"], "request_id": "agy-color-check",
+            "selector": "Alpha", "report_to_topic": True,
+            "text": "Name the color in the last image with the prefix COLOR- and include the requested completion footer.",
+        }
+        handoff = journey.call("route-agy-request", "session_request", request)
+        assert handoff.get("new_admission"), handoff
+        instruction = handoff["instruction"]["id"]
+        caller = journey.web_thread
+        journey.finish(caller, journey.web_turn)
+
+        def handoff_state():
+            return journey.row("""
+                SELECT i.phase,t.native_thread_id,json_extract(i.doc,'$.native_input_accepted'),
+                       t.assistant_text,c.phase
+                FROM interaction_session_requests c JOIN interaction_instructions i ON i.id=c.target_instruction
+                LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE i.id=?
+            """, (instruction,))
+
+        journey.wait(lambda: handoff_state()[0][0] in {"accepted", "retained_unsent", "uncertain", "rejected"},
+                     seconds=35)
+        phase, native, receipt, answer, _ = handoff_state()[0]
+        assert (phase, native, receipt) == ("accepted", first, 1), handoff_state()
+        assert "COLOR-BLUE" in answer.upper(), answer
+        journey.wait(lambda: journey.has(request["text"], 7) and journey.has("COLOR-", 7), seconds=12)
+        journey.wait(lambda: handoff_state()[0][-1] == "returned", seconds=12)
+        journey.wait(lambda: any("COLOR-BLUE" in str(packet["input"]).upper()
+                                for packet in journey.worker_packets.get(caller, [])), seconds=12)
+        print("A paired Codex handoff reached the same Antigravity history, appeared in the topic and returned its canonical result to Codex.")
     finally:
         journey.close()
 

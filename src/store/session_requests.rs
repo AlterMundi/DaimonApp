@@ -26,7 +26,9 @@ fn local_portable_route(
 ) -> Result<Option<crate::interaction::ForegroundAdmission<'_>>> {
     let route = config.and_then(|cfg| cfg.portable_route(target));
     anyhow::ensure!(
-        route.is_none_or(|(engine, _)| engine.attributed_handoff_text_limit().is_some()),
+        route.is_none_or(|(engine, worker)| engine
+            .attributed_handoff_text_limit(worker.agy_cli)
+            .is_some()),
         "This portable harness does not support attributed session dependencies"
     );
     Ok(route.map(|(engine, worker)| (engine, &worker.transport.source, worker.agy_cli)))
@@ -738,7 +740,7 @@ impl Store {
         let route = local_portable_route(config, target)?;
         anyhow::ensure!(
             route
-                .and_then(|(engine, _, _)| engine.attributed_handoff_text_limit())
+                .and_then(|(engine, _, agy_cli)| engine.attributed_handoff_text_limit(agy_cli))
                 .is_none_or(|limit| text.len() <= limit),
             "The selected handoff is too large for its receiving adapter"
         );
@@ -755,6 +757,13 @@ impl Store {
             |r| r.get(0),
         )?;
         let original: SourceInput = serde_json::from_str(&raw)?;
+        if route.is_some_and(|(_, _, agy_cli)| agy_cli) {
+            let root_source = super::routing::source_on(&tx, &root.id, human)?;
+            anyhow::ensure!(
+                paired_original_on(&tx, &root, &root_source)?,
+                "Antigravity handoffs require a paired human original"
+            );
+        }
         if report_to_topic {
             anyhow::ensure!(
                 route.is_some()
@@ -1125,7 +1134,7 @@ impl Store {
         }
         let route = local_portable_route(config, call.caller)?;
         let result_text = if let Some(limit) =
-            route.and_then(|(engine, _, _)| engine.attributed_handoff_text_limit())
+            route.and_then(|(engine, _, agy_cli)| engine.attributed_handoff_text_limit(agy_cli))
         {
             let end = d
                 .body
@@ -1422,7 +1431,7 @@ mod tests {
         };
         let oversized = "任".repeat(
             ForegroundEngine::Claude
-                .attributed_handoff_text_limit()
+                .attributed_handoff_text_limit(false)
                 .unwrap()
                 / 3
                 + 1,
