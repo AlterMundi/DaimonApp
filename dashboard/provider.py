@@ -410,6 +410,16 @@ class Provider:
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
+    def topic_rooms(self, room=None):
+        """Project the current owned workspace into a bounded room catalogue."""
+        if room is not None and (not isinstance(room,str) or re.fullmatch('[a-f0-9]{64}',room) is None):
+            raise ValueError('Select a topic room')
+        workspace=self.session_workspace()
+        return {'schema':'daimon.topic-rooms/v1','rooms':[
+            {'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
+             'direct_available':row['is_entry'] or row['destination'] is not None}
+            for row in workspace['sessions'] if room is None or row['topic_ref']==room]}
+
     def portable_session_runtime(self, selected):
         profile=self.receiver.get('interaction',{})
         portable_harnesses=('claude','antigravity','goose')

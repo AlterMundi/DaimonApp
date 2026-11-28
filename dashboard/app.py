@@ -1081,26 +1081,22 @@ def create_app(config=None, provider=None, validator=validate_launch, alerts=Non
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'This device has no complete session workspace grant')
+        if projection not in (None,'holodeck') or room is not None and (
+                projection!='holodeck' or re.fullmatch('[a-f0-9]{64}',room) is None):
+            raise HTTPException(400,'Select a topic room projection')
         try:
             from starlette.concurrency import run_in_threadpool
-            result=await run_in_threadpool(provider.session_workspace)
+            result=(await run_in_threadpool(provider.topic_rooms,room) if projection=='holodeck'
+                    else await run_in_threadpool(provider.session_workspace))
         except (ValueError,KeyError,ProviderUnavailable,OSError,sqlite3.Error):
             raise HTTPException(503,'Session list unavailable; no work was started') from None
         session=await authorize_async(request)
         if not workspace_granted(session):
             raise HTTPException(403,'Session workspace grant changed')
         if projection=='holodeck':
-            if room is not None and re.fullmatch('[a-f0-9]{64}',room) is None:
-                raise HTTPException(400,'Select a topic room')
-            rooms=[{'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
-                    'direct_available':row['is_entry'] or row['destination'] is not None}
-                   for row in result['sessions'] if room is None or row['topic_ref']==room]
-            if room is not None and len(rooms)!=1:
+            if room is not None and len(result['rooms'])!=1:
                 raise HTTPException(404,'Topic room unavailable')
-            value={'schema':'daimon.topic-rooms/v1','rooms':rooms}
-            return JSONResponse(value,headers={'Cache-Control':'private, no-store'})
-        if projection is not None or room is not None:
-            raise HTTPException(400,'Unknown session projection')
+            return JSONResponse(result,headers={'Cache-Control':'private, no-store'})
         return {**result,'default_filter':'all' if config.get('session_workspace',{}).get('default_filter')=='all' else 'recent'}
 
     @app.get('/api/interaction/sessions/{ident}')
