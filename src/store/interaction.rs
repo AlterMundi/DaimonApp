@@ -443,6 +443,7 @@ fn admit_selected_with_origin_on(
         subscription_limit: None,
         context_unavailable: false,
         goal_control_unavailable: false,
+        native_tool_declined: false,
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,

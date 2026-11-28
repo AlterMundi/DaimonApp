@@ -1630,6 +1630,10 @@ function boot(readOnly=false,standalone=false,options={}) {
   telegramChat.telegramOriginals.get('telegram:42').portable_phase='accepted';
   const telegramCount=telegramLane.children.length;await telegramChat.ui.refresh();assert.equal(telegramLane.children.length,telegramCount,'Refresh does not duplicate Telegram originals');
   assert.match(telegramBubble.children[2].textContent,/Received by the session/);
+  Object.assign(telegramChat.telegramOriginals.get('telegram:42'),{portable_phase:'uncertain',native_tool_declined:true});
+  await telegramChat.ui.refresh();
+  assert.equal(telegramLane.children.length,telegramCount);
+  assert.match(telegramBubble.children[2].textContent,/session ended without a reply/);
   assert(telegramChat.requests.filter(r=>r.telegram).every(r=>r.body===undefined),'Cross-surface observation never resubmits an original');telegramChat.ui.stop();
   const telegramDenied=boot(false,true,{telegramDenied:true});
   await telegramDenied.ui.refresh();

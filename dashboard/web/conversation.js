@@ -912,14 +912,15 @@ window.Conversation = (() => {
     const savedWaiting=value=>value.routing ? value.routing.phase==="queued" : ["retained","queued"].includes(value.phase);
     const contextUnavailable=route=>route?.phase==="retained_unsent" && route.context_unavailable;
     const goalControlUnavailable=route=>route?.phase==="retained_unsent" && route.goal_control_unavailable;
+    const nativeToolDeclinedText="A tool request was declined and the session ended without a reply. Your message is saved.";
     function inputNotice(value){
       if(savedWaiting(value))return composerNotice('',false);
-      composerNotice(phaseText(value),!!(value.subscription_limit || value.routing?.subscription_limit || contextUnavailable(value.routing) || goalControlUnavailable(value.routing)) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','claude_unconfirmed','claude_rejected','reselection'].includes(value.phase) || (!value.phase && !value.routing));
+      composerNotice(phaseText(value),!!(value.subscription_limit || value.routing?.subscription_limit || contextUnavailable(value.routing) || goalControlUnavailable(value.routing) || value.routing?.native_tool_declined) || ['awaiting_target','preparation_unconfirmed','retained_unsent','uncertain','claude_unconfirmed','claude_rejected','reselection'].includes(value.phase) || (!value.phase && !value.routing));
     }
     let replyFocus, focusVersion = 0, routingChoices = [], presentationProfile;
     let posting = false, inputNewest = 0, inputBinding, inputEntryBinding, inputGeneration = 0, inputObservation = 0, latestComposerId;
     let telegramNewest=0,telegramLoaded=false,telegramReading=false;
-    const portableDeliveryText = phase => ({
+    const portableDeliveryText = (phase,toolDeclined) => toolDeclined ? nativeToolDeclinedText : ({
       queued:"Saved · waiting for the session",
       submitting:"Sending to the session…",
       steering:"Waiting for the session to pick up this message",
@@ -929,9 +930,9 @@ window.Conversation = (() => {
       rejected:"Saved · the session did not receive this message",
       cancelled:"Saved · sending cancelled",
     })[phase];
-    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? portableDeliveryText(value.portable_phase) ?? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
+    const phaseText = value => ["blocked","pending"].includes(value.media_retention?.state) ? value.media_retention.message : value.origin_kind==="telegram" ? portableDeliveryText(value.portable_phase,value.native_tool_declined) ?? `Telegram input retained (${value.phase}). Inspect its routing path for delivery evidence.${value.ordering_unknown?" Historical capture order unavailable.":""}${!value.received_at?" Historical capture time unavailable.":""}` : value.retired ? "Saved from an earlier conversation binding."
       : value.subscription_limit ? subscriptionLimitText(value.subscription_limit)
-      : (value.routing?.subscription_limit || contextUnavailable(value.routing) || goalControlUnavailable(value.routing)) ? routeText(value.routing)
+      : (value.routing?.subscription_limit || contextUnavailable(value.routing) || goalControlUnavailable(value.routing) || value.routing?.native_tool_declined) ? routeText(value.routing)
       : value.target==="claude" ? ({retained:"Saved for Claude Code.",sending:"Sending to Claude Code…",matrix_received:"Received by Claude Code. Waiting for a confirmed reply.",matrix_replied:"",claude_preparing:"Preparing Claude Code…",claude_running:"Waiting for Claude Code…",claude_replied:"",retained_unsent:"Saved. Claude Code did not receive this message.",uncertain:"Delivery to Claude Code is unconfirmed.",claude_rejected:"Claude Code could not start. Your message is saved.",claude_unconfirmed:"Claude Code’s reply could not be confirmed. Your message is saved."})[value.phase]??"Check this message’s status before sending again."
       : value.routing ? routeText(value.routing) : ({foreground:"Saved in the voice conversation; no work requested automatically.",foreground_captured:"Voice original saved; waiting for its interpretation.",awaiting_target:"Choose the session for this saved message.",preparing:"Confirming transcript…", preparation_unconfirmed:"Recording saved; transcription unconfirmed. No work was submitted automatically.", retained:"Saved · in queue", queued:"Saved · in queue",
           sending:"Sending to your conversation…", steering:"Sending to your conversation…",
@@ -948,6 +949,7 @@ window.Conversation = (() => {
       return `Claude Code reached its ${window}. Your message is saved.${when}`;
     }
     function routeText(route) {
+      if(route.native_tool_declined)return `#${route.label}: ${nativeToolDeclinedText}`;
       if(goalControlUnavailable(route))return `#${route.label}: Claude Code cannot pause or resume a goal. The goal was not changed. Use /goal to check its status.`;
       if(contextUnavailable(route))return `#${route.label}: Your message is saved. Claude Code could not recover the earlier context it needs.`;
       if(route.subscription_limit)return `#${route.label}: ${subscriptionLimitText(route.subscription_limit)}`;

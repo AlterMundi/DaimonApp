@@ -488,6 +488,7 @@ pub(super) fn notice(shared: Arc<AppShared>, origin: ReturnRoute, text: String) 
 enum NoticeFailure {
     Context(i64),
     GoalControl(i64),
+    NativeTool(i64),
 }
 
 struct ExpectedNotice {
@@ -532,6 +533,25 @@ pub(super) fn notice_goal_control_unavailable(
             human: input.human_id,
             phase: P::RetainedUnsent,
             failure: Some(NoticeFailure::GoalControl(local_turn)),
+        }),
+    );
+}
+
+pub(super) fn notice_native_tool_declined(
+    shared: Arc<AppShared>,
+    input: &Instruction,
+    local_turn: i64,
+) {
+    notice_when(
+        shared,
+        input.origin.clone(),
+        "A tool request was declined and the session ended without a reply. Your message is saved."
+            .into(),
+        Some(ExpectedNotice {
+            instruction: input.id.clone(),
+            human: input.human_id,
+            phase: P::Uncertain,
+            failure: Some(NoticeFailure::NativeTool(local_turn)),
         }),
     );
 }
@@ -589,6 +609,9 @@ fn notice_when(
                                         }
                                         Some(NoticeFailure::GoalControl(turn)) => {
                                             i.goal_control_unavailable && i.local_turn == Some(turn)
+                                        }
+                                        Some(NoticeFailure::NativeTool(turn)) => {
+                                            i.native_tool_declined && i.local_turn == Some(turn)
                                         }
                                         None => true,
                                     }

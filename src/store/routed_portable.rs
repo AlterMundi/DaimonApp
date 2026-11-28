@@ -1878,6 +1878,21 @@ impl Store {
                 _ => Phase::Uncertain,
             };
             super::interaction::transport_on(&tx, &input.id, input.human_id, local, phase, None)?;
+            if phase == Phase::Uncertain
+                && outcome["phase"] == "uncertain"
+                && outcome["reason"] == "native_tool_declined_without_reply"
+                && current.native_input_accepted
+                && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+                && current
+                    .target_execution
+                    .as_ref()
+                    .is_some_and(|binding| binding.harness == Harness::Antigravity)
+            {
+                tx.execute(
+                    "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_tool_declined',json('true')) WHERE id=?1",
+                    [&input.id],
+                )?;
+            }
             if let Some(limit) = limit {
                 tx.execute(
                     "UPDATE interaction_instructions

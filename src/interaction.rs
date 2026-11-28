@@ -1008,6 +1008,8 @@ pub struct Instruction {
     pub context_unavailable: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub goal_control_unavailable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_tool_declined: bool,
     /// Captured for this dispatch attempt; async continuations must not adopt a
     /// later admission generation. Only explicit known-unsent recovery clears it.
     #[serde(default)]

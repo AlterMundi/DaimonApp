@@ -1326,7 +1326,13 @@ pub(super) async fn run_routed_portable(
             && instruction.goal_control_unavailable
             && instruction.phase == crate::interaction::TransportPhase::RetainedUnsent
         {
-            super::routing::notice_goal_control_unavailable(app.shared.clone(), &instruction, local);
+            super::routing::notice_goal_control_unavailable(
+                app.shared.clone(),
+                &instruction,
+                local,
+            );
+        } else if human_authored && instruction.native_tool_declined {
+            super::routing::notice_native_tool_declined(app.shared.clone(), &instruction, local);
         } else if let Some(limit) = instruction.subscription_limit {
             super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
         }

@@ -250,6 +250,18 @@ class PortableHistory(unittest.TestCase):
             self.assertEqual([(row['input_id'],row['text']) for row in before_reply['pending_items']],
                              [('input7','Human 7'),('telegram:20','Telegram 20'),('telegram:21','Telegram 21')])
             self.assertEqual(before_reply['after'],page['after'])
+            exchange(25,'Unconfirmed reply',status='failed')
+            declined = {'local_turn':25,'native_tool_declined':True,
+                        'target_execution':{'harness':'claude','revision':binding}}
+            db.execute("UPDATE interaction_instructions SET phase='uncertain',doc=? WHERE sequence=25",
+                       (json.dumps(declined),))
+            ended = read_portable(db,20,10,'claude')
+            self.assertEqual(ended['items'],page['items'])
+            saved = next(row for row in ended['pending_items'] if row['input_id']=='input25')
+            self.assertTrue(saved['native_tool_declined'])
+            self.assertEqual(saved['portable_phase'],'uncertain')
+            db.execute("UPDATE turns SET execution_generation='old' WHERE id=25")
+            self.assertNotIn('input25',[row['input_id'] for row in read_portable(db,20,10,'claude')['pending_items']])
             db.execute('DELETE FROM interaction_instructions WHERE sequence>=20')
             db.execute("INSERT INTO topic_publications VALUES(4,'portable_handoff_input','instruction8',20,10,8,'Handoff from #Design')")
             db.execute("INSERT INTO topic_publications VALUES(5,'portable_handoff_input','foreign',20,11,8,'Foreign handoff')")

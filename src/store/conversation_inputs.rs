@@ -407,21 +407,30 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
-        let selected: Option<(String, Option<String>, bool, bool)> = conn
+        let selected: Option<(String, Option<String>, bool, bool, bool)> = conn
             .query_row(
                 "SELECT phase,json_extract(doc,'$.subscription_limit'),
                  coalesce(json_extract(doc,'$.context_unavailable'),0),
-                 coalesce(json_extract(doc,'$.goal_control_unavailable'),0)
+                 coalesce(json_extract(doc,'$.goal_control_unavailable'),0),
+                 coalesce(json_extract(doc,'$.native_tool_declined'),0)
                  FROM interaction_instructions WHERE id=?1",
                 [instruction],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        if let Some((phase, limit, context_unavailable, goal_control_unavailable)) = selected {
+        if let Some((
+            phase,
+            limit,
+            context_unavailable,
+            goal_control_unavailable,
+            native_tool_declined,
+        )) = selected
+        {
             route.phase = phase;
             route.subscription_limit = limit.as_deref().map(serde_json::from_str).transpose()?;
             route.context_unavailable = context_unavailable;
             route.goal_control_unavailable = goal_control_unavailable;
+            route.native_tool_declined = native_tool_declined;
         } else {
             route.phase = "unavailable".into();
         }
@@ -474,8 +483,8 @@ fn projected_phase_on<'a>(
 // A paired human's original in an owned portable topic can also be shown in
 // their integrating conversation. The admitted route fixes the actual source
 // and target. Raw Telegram traffic from unrelated topics stays scoped locally.
-const DIRECT_PORTABLE_TELEGRAM_PHASE: &str = "(
-    SELECT r.phase FROM interaction_sources x
+const DIRECT_PORTABLE_TELEGRAM_OUTCOME: &str = "(
+    SELECT json_array(r.phase,coalesce(json_extract(r.doc,'$.native_tool_declined'),0)=1) FROM interaction_sources x
     JOIN interaction_instructions r ON r.input_id=x.id
     JOIN sessions w ON w.id=r.session_id
     WHERE x.update_id=i.update_id AND x.human_id=?1 AND w.creator_user_id=?1
@@ -502,14 +511,20 @@ fn trace_original_on(
         if update_id < 0 || update_id.to_string() != value {
             bail!("Invalid Telegram input identity");
         }
-        let (raw, phase, portable_phase): (String, String, Option<String>) = conn.query_row(
+        let (raw, phase, portable_outcome): (String, String, Option<String>) = conn.query_row(
             &format!(
-                "SELECT payload_json,status,{DIRECT_PORTABLE_TELEGRAM_PHASE}
+                "SELECT payload_json,status,{DIRECT_PORTABLE_TELEGRAM_OUTCOME}
                       FROM incoming_updates i WHERE update_id=?3"
             ),
             params![human, entry.chat_id, update_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
+        let (portable_phase, native_tool_declined) = portable_outcome
+            .as_deref()
+            .map(serde_json::from_str::<(String, u8)>)
+            .transpose()?
+            .map(|(phase, declined)| (Some(phase), declined == 1))
+            .unwrap_or((None, false));
         let update: crate::telegram::Update = serde_json::from_str(&raw)?;
         let message = update.message.context("No original message")?;
         let origin_thread = message.message_thread_id.unwrap_or(0);
@@ -544,7 +559,7 @@ fn trace_original_on(
             )
         };
         return Ok(
-            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread,"portable_phase":portable_phase}),
+            json!({"id":id,"text":text,"voice":voice,"phase":phase,"retired":retired,"routing":null,"channel_kind":"telegram","source_event":value,"update_id":update_id,"origin_thread":origin_thread,"portable_phase":portable_phase,"native_tool_declined":native_tool_declined}),
         );
     }
     let input = read_on(conn, id, human)?;
@@ -2105,6 +2120,7 @@ impl Store {
                 "subscription_limit":instruction.subscription_limit,
                 "context_unavailable":instruction.context_unavailable,
                 "goal_control_unavailable":instruction.goal_control_unavailable,
+                "native_tool_declined":instruction.native_tool_declined,
                 "results":results,"more_results":more_results,"results_cursor":result_cursor}),
             );
         }
@@ -2177,7 +2193,7 @@ impl Store {
         let order = if before { "DESC" } else { "ASC" };
         let mut query=conn.prepare(&format!("SELECT i.update_id,g.id,g.captured_at FROM incoming_updates i LEFT JOIN original_ingress_order g ON g.channel='telegram' AND g.event_id=CAST(i.update_id AS TEXT) WHERE json_extract(i.payload_json,'$.message.from.id')=?1 AND json_extract(i.payload_json,'$.message.from.is_bot')=0 AND json_extract(i.payload_json,'$.message.chat.id')=?2 AND ((COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),0)=?3 AND
           (json_type(i.payload_json,'$.message.text')='text' OR json_type(i.payload_json,'$.message.voice')='object'))
-          OR (json_type(i.payload_json,'$.message.text')='text' AND {DIRECT_PORTABLE_TELEGRAM_PHASE} IS NOT NULL)) AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
+          OR (json_type(i.payload_json,'$.message.text')='text' AND {DIRECT_PORTABLE_TELEGRAM_OUTCOME} IS NOT NULL)) AND i.update_id{comparison}?4 ORDER BY i.update_id {order} LIMIT 9"))?;
         let rows = query
             .query_map(
                 params![
@@ -2203,7 +2219,7 @@ impl Store {
         for (update, capture, received_at) in rows.iter().take(8) {
             let id = format!("telegram:{update}");
             let original = trace_original_on(&conn, human, entry, &id)?;
-            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"portable_phase":original["portable_phase"],"retired":original["retired"]}));
+            items.push(json!({"id":id,"sequence":update,"received_at":received_at,"capture_order":capture,"ordering_unknown":capture.is_none(),"origin_kind":"telegram","read_only":true,"preview":original["text"].as_str().unwrap_or_default().chars().take(1000).collect::<String>(),"voice":original["voice"],"phase":original["phase"],"portable_phase":original["portable_phase"],"native_tool_declined":original["native_tool_declined"],"retired":original["retired"]}));
         }
         Ok(
             json!({"schema":"telecodex.telegram-input-list/v1","entry_binding":[human,entry,session,native],"binding":super::presentation::entry_binding(&conn,human,entry,session)?,"items":items,"cursor":rows.iter().take(8).next_back().map(|r|r.0),"newest":rows.iter().take(8).map(|r|r.0).max().unwrap_or(0),"more":rows.len()>8,"read_only":true}),
