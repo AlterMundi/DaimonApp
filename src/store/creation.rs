@@ -398,6 +398,29 @@ impl Store {
         id.map(|id| creation_on(&conn, &id, human)).transpose()
     }
 
+    pub(crate) fn interaction_creation_original(
+        &self,
+        entry: SessionKey,
+        human: i64,
+        native: &str,
+        reference: &InputReference,
+        channel: &str,
+        allow_relay: bool,
+    ) -> Result<(SourceInput, Option<crate::telegram::Message>)> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (source, message, _) = creation_original_on(
+            &conn,
+            entry,
+            human,
+            native,
+            reference,
+            channel,
+            allow_relay,
+            false,
+        )?;
+        Ok((source, message))
+    }
+
     /// Freeze one original, attributed context package before a topic RPC.
     #[allow(clippy::too_many_arguments)]
     pub fn interaction_prepare_creation(
@@ -415,9 +438,17 @@ impl Store {
         let update = update.into();
         update.validate()?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
-        let (source, _) =
-            super::dialogue::original_on(&tx, key, human, native, &update, "", false)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (source, _, relay) = creation_original_on(
+            &tx,
+            key,
+            human,
+            native,
+            &update,
+            "",
+            context["purpose"] != "interview",
+            false,
+        )?;
         let text = source.text;
         let transcription = source.transcription;
         let tribu_source = source.tribu_source;
@@ -437,6 +468,10 @@ impl Store {
         )
         .to_string();
         let mut doc = json!({"id":id,"human":human,"entry":key,"entry_native":native,"input_update":update,"name":name,"reason":reason,"context":context,"original_text":text,"origin":source.origin});
+        if let Some(relay) = relay {
+            doc["original_relay"] = relay;
+            doc["original_channel"] = json!(source.channel);
+        }
         if let Some(source) = tribu_source {
             doc["tribu_source"] = serde_json::to_value(source)?;
         }
@@ -476,6 +511,15 @@ impl Store {
             }
             return Ok((creation_on(&tx, &id, human)?, false));
         }
+        let reserved_elsewhere: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?2)",
+            params![human, update],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            !reserved_elsewhere,
+            "Original input already has a retained creation"
+        );
         // A mixed original may already have an immutable dispatch. Creation
         // adds exactly its confirmed topic; it never rewrites that source plan.
         let prior: Option<(String, String)> = tx.query_row(
@@ -800,7 +844,7 @@ impl Store {
             channel: if d["input_update"].is_string() {
                 "conversation".into()
             } else {
-                channel.into()
+                d["original_channel"].as_str().unwrap_or(channel).into()
             },
             event_id: serde_json::from_value::<InputReference>(d["input_update"].clone())?.event(),
             update_id: d["input_update"].as_i64(),
@@ -954,6 +998,41 @@ pub(super) fn workflow_continuation_on(
     Ok(())
 }
 
+type CreationOriginal = (SourceInput, Option<crate::telegram::Message>, Option<Value>);
+
+#[allow(clippy::too_many_arguments)]
+fn creation_original_on(
+    conn: &Connection,
+    entry: SessionKey,
+    human: i64,
+    native: &str,
+    reference: &InputReference,
+    channel: &str,
+    allow_relay: bool,
+    committed: bool,
+) -> Result<CreationOriginal> {
+    if allow_relay
+        && let Some((source, message, receipt)) =
+            super::session_requests::relayed_telegram_original_on(
+                conn, human, entry, None, reference,
+            )?
+    {
+        let (_, current_native) = super::presentation::entry_on(conn, human, entry)?;
+        anyhow::ensure!(current_native == native, "Creation entry changed");
+        super::matrix::unclaimed_on(
+            conn,
+            human,
+            &source.channel,
+            &source.event_id,
+            source.update_id,
+        )?;
+        return Ok((source, Some(message), Some(receipt)));
+    }
+    let (source, message) =
+        super::dialogue::original_on(conn, entry, human, native, reference, channel, committed)?;
+    Ok((source, message, None))
+}
+
 fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
     let d = &operation["intent"];
     if d["kind"] == "telegram_topic" {
@@ -961,15 +1040,22 @@ fn eligible(conn: &Connection, operation: &Value) -> Result<()> {
     }
     let key: SessionKey = serde_json::from_value(d["entry"].clone())?;
     let reference: InputReference = serde_json::from_value(d["input_update"].clone())?;
-    let (original, _) = super::dialogue::original_on(
+    let (original, _, relay) = creation_original_on(
         conn,
         key,
         d["human"].as_i64().context("Missing human")?,
         d["entry_native"].as_str().context("Missing native")?,
         &reference,
         "",
+        d["original_relay"].is_object(),
         true,
     )?;
+    if let Some(frozen) = d.get("original_relay") {
+        anyhow::ensure!(
+            relay.as_ref() == Some(frozen) && d["original_channel"] == original.channel,
+            "Exact creation relay authority changed"
+        );
+    }
     eligible_original(conn, operation, original)
 }
 
