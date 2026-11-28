@@ -355,13 +355,13 @@ export async function runClaudeTurn({
         await steering.ready();
         steeringReady = true;
       }
-      const rootEcho = !rootOutcome && event.parent_tool_use_id == null
-        && (event.type === 'assistant' || event.type === 'stream_event'
-            || (event.type === 'system' && event.subtype === 'status'))
-        && answered.includes(input.id);
-      if (!observedAcceptance && onInputAccepted && rootEcho) {
-        await onInputAccepted();
-        observedAcceptance = true;
+      const rootReply = !rootOutcome && answered.includes(input.id) && event.parent_tool_use_id == null
+        && ((event.type === 'assistant' && !event.error && !event.aborted)
+          || (event.type === 'stream_event' && event.event?.type !== 'ping'));
+      const rootStatus = !rootOutcome && event.type === 'system' && event.subtype === 'status'
+        && event.parent_tool_use_id == null && answered.includes(input.id);
+      if (!observedAcceptance && onInputAccepted && (rootReply || rootStatus)) {
+        observedAcceptance = await onInputAccepted(rootReply) !== false;
       }
       if (event.type !== 'result') continue;
       const successful = event.subtype === 'success' && event.is_error === false

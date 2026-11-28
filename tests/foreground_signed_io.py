@@ -1765,6 +1765,25 @@ timeout_seconds=5
             ), seconds=25)
             self.assertIsNone(provider.failure)
             self.assertTrue(started.exists(), (state(root), provider.calls, provider.exposures))
+
+            def original_receipt():
+                return journey.row(
+                    "SELECT i.phase,json_extract(i.doc,'$.native_input_accepted'),t.status "
+                    "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
+                    "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
+                    (str(root),),
+                )
+
+            journey.wait(lambda: original_receipt() == [("submitting", 1, "running")], seconds=5)
+            self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(0,)])
+            from contextlib import closing
+            from dashboard.session_view import read_portable
+            session, = journey.row("SELECT id FROM sessions WHERE chat_id=100 AND thread_id=7")[0]
+            with closing(sqlite3.connect(f"file:{journey.root / 'state.sqlite'}?mode=ro", uri=True)) as db:
+                pending = read_portable(db, session, 100, "claude")["pending_items"]
+            self.assertEqual([(row["text"], row["portable_phase"]) for row in pending
+                              if row.get("input_id") == f"telegram:{root}"],
+                             [(provider.original, "accepted")])
             followup = journey.admit(provider.steer_fixture["text"], topic=7)
             conversation = str(uuid.uuid4())
             try:

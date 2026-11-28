@@ -325,8 +325,15 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     pending_items = []
     original_id = "CASE WHEN s.channel='conversation' THEN s.event_id END"
     if event is None and before is None:
-        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
-            {accepted} WHERE {ownership} AND {human_original} AND t.status='running'
+        native_receipt = """i.phase='submitting'
+            AND json_extract(i.doc,'$.native_input_accepted')=1
+            AND json_extract(i.doc,'$.native_thread')=t.native_thread_id"""
+        pending_scope = ownership.replace("i.phase='accepted'",
+                                          f"(i.phase='accepted' OR ({native_receipt}))", 1)
+        pending_id = """CASE WHEN s.channel LIKE 'telegram:%' THEN 'telegram:'||s.event_id
+            WHEN s.channel='conversation' THEN s.event_id END"""
+        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{pending_id}
+            {accepted} WHERE {pending_scope} AND {human_original} AND t.status='running'
             AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final})
             ORDER BY i.sequence DESC LIMIT 8""", scope)
         for instruction, started, text, input_id in reversed(pending.fetchall()):
@@ -334,7 +341,7 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                 if len(text)>1000:text=text[:1000]+'…'
                 item_id = hashlib.sha256(f'{identity}:pending:{instruction}'.encode()).hexdigest()[:32]
                 pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
-                                      'timestamp':started,'pending':True})
+                                      'timestamp':started,'pending':True,'portable_phase':'accepted'})
                 if input_id:pending_items[-1]['input_id']=input_id
         has_early_view = db.execute("""SELECT 1 FROM sqlite_schema
             WHERE type='view' AND name='visible_portable_handoff_inputs'""").fetchone()

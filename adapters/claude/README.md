@@ -336,8 +336,14 @@ existing journal before returning `submission_decision` with
 `committed: true`. When the worker advertises `inputAcceptance` and Gateway
 selects `observeAcceptance`, the worker emits one `input_accepted` frame
 only after the SDK echoes the exact original UUID in the selected native
-session. Gateway retains that evidence apart from the result. Older workers
-can complete through the existing result path. Each `start` provides a fresh
+session. For ordinary paired inputs, Gateway also requires the worker to
+advertise `workAcceptance` and sends `requireWork`. An exact UUID in a
+status-only event can still establish attributed handoff acceptance. A paired
+input needs an exact root reply frame, so a terminal pre-work quota refusal
+retains its original classification. Gateway retains the accepted receipt
+apart from the result and Conversation can show the original as received while
+that native turn runs. Older workers can complete through the existing result
+path. Each `start` provides a fresh
 native UUID independent of the turn's correlation UUID. For a private Interaction conversation, Gateway can
 also offer the previous native UUID and scope. It selects that candidate
 only when the last exposed turn in the same

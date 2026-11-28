@@ -644,6 +644,7 @@ async function main() {
     let nextCall = 0;
     let committed = false;
     let observeAcceptance = false;
+    let requireWork = false;
     let steeringSelected = false;
     let acceptingSteers = false;
     let steerClosed = false;
@@ -751,7 +752,8 @@ async function main() {
     }
     const outcome = await runClaudeTurn({
       query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
-      async onInputAccepted() {
+      async onInputAccepted(workObserved) {
+        if (requireWork && !workObserved) return false;
         if (observeAcceptance) {
           await writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
         }
@@ -777,14 +779,16 @@ async function main() {
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
           nativeSessionId: sessionId, sessionScope: scope,
-          inputAcceptance: true,
+          inputAcceptance: true, workAcceptance: true,
           ...(workspace === undefined ? {} : { workspace }),
           ...(steering ? { steering: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;
         observeAcceptance = decision?.observeAcceptance === true;
+        requireWork = observeAcceptance && decision.requireWork === true;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed',
-          ...(steeringSelected ? ['steering'] : []), ...(observeAcceptance ? ['observeAcceptance'] : [])])
+          ...(steeringSelected ? ['steering'] : []), ...(observeAcceptance ? ['observeAcceptance'] : []),
+          ...(requireWork ? ['requireWork'] : [])])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;
