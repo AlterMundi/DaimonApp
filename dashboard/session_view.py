@@ -311,12 +311,28 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     # Keep outstanding originals separate from the append-only result cursor.
     # A final result can arrive out of order and still has its own position.
     pending_items = []
-    original_id = "CASE WHEN s.channel='conversation' THEN s.event_id END"
+    original_id = """CASE WHEN s.channel='conversation' THEN s.event_id
+        WHEN s.channel LIKE 'telegram:%' THEN 'telegram:'||s.update_id END"""
     if event is None and before is None:
-        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
-            {accepted} WHERE {ownership} AND {human_original} AND t.status='running'
-            AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final})
-            ORDER BY i.sequence DESC LIMIT 8""", scope)
+        chat, topic = db.execute('SELECT chat_id,thread_id FROM sessions WHERE id=?', (session,)).fetchone()
+        dispatch_binding = hashlib.sha256(json.dumps(
+            [human, {'chat_id':chat, 'thread_id':topic}, session, generation],
+            ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        pending = db.execute(f"""SELECT i.id,COALESCE(s.created_at,t.started_at),
+                substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
+            FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id
+            LEFT JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn')
+            WHERE i.session_id=?1 AND s.human_id=?2 AND {human_original}
+            AND ((i.phase='accepted' AND t.status='running' AND t.session_id=i.session_id
+                  AND t.from_user_id=s.human_id AND t.execution_harness=?3 AND t.execution_generation=?4
+                  AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final}))
+                OR (i.phase IN ('queued','submitting','steering','retained_unsent','uncertain')
+                  AND json_extract(i.doc,'$.target_execution.harness')=?3
+                  AND json_extract(i.doc,'$.target_execution.revision')=?5
+                  AND s.origin_chat=?6 AND s.origin_thread=?7 AND s.channel LIKE 'telegram:%'
+                  AND s.update_id IS NOT NULL AND s.origin_message IS NOT NULL
+                  AND json_type(s.doc,'$.tribu_source') IS NOT 'object'))
+            ORDER BY i.sequence DESC LIMIT 8""", (*scope, dispatch_binding, chat, topic))
         for instruction, started, text, input_id in reversed(pending.fetchall()):
             if isinstance(text, str) and text.strip():
                 if len(text)>1000:text=text[:1000]+'…'
