@@ -26,6 +26,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
     pub workspace: Option<&'a std::path::Path>,
+    pub topic_id: Option<i64>,
     pub output_directory: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
@@ -166,6 +167,7 @@ pub(in crate::app) async fn execute_worker(
         routed_host_access,
         session_instructions,
         workspace,
+        topic_id,
         output_directory,
         history_seed,
         project_checkpoint,
@@ -240,6 +242,9 @@ pub(in crate::app) async fn execute_worker(
                     "Invalid Claude workspace"
                 );
                 start["workspace"] = json!(path);
+            }
+            if let Some(topic) = topic_id {
+                start["topicId"] = json!(topic.to_string());
             }
             if let Some(path) = output_directory {
                 start["outputDirectory"] = json!(path);
@@ -919,6 +924,7 @@ pub(super) async fn run_portable_turn(
                 routed_host_access: false,
                 session_instructions: None,
                 workspace: None,
+                topic_id: None,
                 output_directory: None,
                 history_seed: None,
                 project_checkpoint: None,
@@ -1197,6 +1203,9 @@ pub(super) async fn run_routed_portable(
                     routed_human: !human_original,
                     routed_host_access: routed_host_access && !human_original,
                     session_instructions: session.session_prompt.as_deref(),
+                    topic_id: (engine == ForegroundEngine::Claude && routed_host_access
+                        && config.worker_command.last().is_some_and(|arg| arg == "--topic-models-v1"))
+                        .then_some(session.id),
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),
                     output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),

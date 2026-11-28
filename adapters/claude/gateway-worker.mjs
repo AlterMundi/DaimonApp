@@ -44,11 +44,10 @@ async function ownerProfile(path) {
   const authFields = subscription ? ['subscriptionEmail'] : ['configurationDirectory', 'apiKeyFile'];
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
-  const workspaceModels = Object.hasOwn(value ?? {}, 'workspaceModels') ? ['workspaceModels'] : [];
+  const topicModels = Object.hasOwn(value ?? {}, 'topicModels') ? ['topicModels'] : [];
   const validEffort = effort => ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort);
-  const validWorkspaceModel = item => closed(item, ['workspace', 'model', 'effort'])
-    && typeof item.workspace === 'string' && isAbsolute(item.workspace)
-    && !item.workspace.includes('\0') && Buffer.byteLength(item.workspace) <= 4096
+  const validTopicModel = item => closed(item, ['topicId', 'model', 'effort'])
+    && typeof item.topicId === 'string' && /^[1-9][0-9]{0,18}$/.test(item.topicId)
     && typeof item.model === 'string' && /^[a-zA-Z0-9._-]{1,160}$/.test(item.model)
     && validEffort(item.effort);
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
@@ -63,7 +62,7 @@ async function ownerProfile(path) {
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...workspaceModels, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...skillContinuity, ...foundation, ...messaging, ...hostTools,
+      'cliVersion', 'model', ...effort, ...topicModels, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...skillContinuity, ...foundation, ...messaging, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
@@ -95,9 +94,9 @@ async function ownerProfile(path) {
       || (guidance.length > 0 && (typeof value.bodyGuidanceFile !== 'string'
         || !isAbsolute(value.bodyGuidanceFile)))
       || (effort.length > 0 && !validEffort(value.effort))
-      || (workspaceModels.length > 0 && (!Array.isArray(value.workspaceModels)
-        || value.workspaceModels.length > 8 || !value.workspaceModels.every(validWorkspaceModel)
-        || new Set(value.workspaceModels.map(item => item.workspace)).size !== value.workspaceModels.length))
+      || (topicModels.length > 0 && (!Array.isArray(value.topicModels)
+        || value.topicModels.length > 8 || !value.topicModels.every(validTopicModel)
+        || new Set(value.topicModels.map(item => item.topicId)).size !== value.topicModels.length))
       || (displayName.length > 0 && (typeof value.displayName !== 'string'
         || value.displayName !== value.displayName.trim()
         || !/^[\p{L}\p{M}\p{N} .@·_-]{1,80}$/u.test(value.displayName)))
@@ -390,13 +389,13 @@ async function providerEnvironment(profile, signal) {
   return env;
 }
 
-function workspaceProfile(profile, workspace) {
-  const selection = profile.workspaceModels?.find(item => item.workspace === workspace);
-  return selection ? { ...profile, cwd: workspace, model: selection.model, effort: selection.effort } : profile;
+function topicProfile(profile, topicId) {
+  const selection = profile.topicModels?.find(item => item.topicId === topicId);
+  return selection ? { ...profile, model: selection.model, effort: selection.effort } : profile;
 }
 
-async function observeRuntime(path, workspace) {
-  const profile = workspaceProfile(await ownerProfile(path), workspace);
+async function observeRuntime(path, topicId) {
+  const profile = topicProfile(await ownerProfile(path), topicId);
   if (!profile.subscriptionEmail) return {};
   const deadline = AbortSignal.timeout(10000);
   const env = await providerEnvironment(profile, deadline);
@@ -486,7 +485,8 @@ async function main() {
     process.stdout.write(JSON.stringify({ revision, layoutRevision }) + '\n');
     return;
   }
-  if (flag !== '--profile' || extra.length) throw new Error('Owner profile required');
+  const topicSelection = extra.length === 1 && extra[0] === '--topic-models-v1';
+  if (flag !== '--profile' || (extra.length && !topicSelection)) throw new Error('Owner profile required');
   const stop = new AbortController();
   const timeout = setTimeout(() => stop.abort(), 125_000);
   stop.signal.addEventListener('abort', () => process.stdin.destroy(), { once: true });
@@ -499,6 +499,7 @@ async function main() {
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
     const workspace = first?.workspace;
+    const topicId = first?.topicId;
     const outputDirectory = first?.outputDirectory;
     const historySeed = first?.historySeed;
     const projectCheckpoint = first?.projectCheckpoint;
@@ -542,11 +543,14 @@ async function main() {
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
       ...(workspace === undefined ? [] : ['workspace']),
+      ...(topicId === undefined ? [] : ['topicId']),
       ...(outputDirectory === undefined ? [] : ['outputDirectory']),
       ...(historySeed === undefined ? [] : ['historySeed']),
       ...(projectCheckpoint === undefined ? [] : ['projectCheckpoint'])])
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
+      || (topicId !== undefined && (!topicSelection || !fullAccess || workspace === undefined
+        || typeof topicId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(topicId)))
       || (outputDirectory !== undefined && (!fullAccess || nativeGoalCommand
         || typeof workspace !== 'string' || typeof outputDirectory !== 'string'
         || outputDirectory.includes('\0') || Buffer.byteLength(outputDirectory) > 4096
@@ -604,8 +608,9 @@ async function main() {
         }, stop.signal);
         return;
       }
-      profile = workspaceProfile({ ...profile, cwd: workspace }, workspace);
+      profile = { ...profile, cwd: workspace };
     }
+    profile = topicProfile(profile, topicId);
     let env;
     try {
       env = await providerEnvironment(profile, stop.signal);

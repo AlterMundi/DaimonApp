@@ -607,12 +607,13 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 All Matrix identities, user input and provider output are synthetic.
 
-### Selecting a model for one owned workspace
+### Selecting a model for one owned topic
 
-The private worker profile can set `workspaceModels` to up to eight exact
-`{ workspace, model, effort }` entries. The worker applies an entry to a
-Gateway-authorized workspace on new turns. The account, permissions, native
+The private worker profile can set `topicModels` to up to eight exact
+`{ topicId, model, effort }` entries. Select this release with the
+`--topic-models-v1` worker argument. Gateway supplies the verified local
+conversation ID as a string on new turns. The account, permissions, native
 resume scope and profile defaults remain the same. Originals without a
-Gateway workspace use the normal profile. Remove an entry to restore its
-default on the next turn. The owner can pass the workspace after
+Gateway topic ID use the normal profile. Remove an entry to restore its
+default on the next turn. The owner can pass the local topic ID after
 `--observe-runtime PROFILE` to read back the resolved Claude Code model.

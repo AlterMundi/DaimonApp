@@ -204,7 +204,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
         cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
         hostTools: ['Read', 'Bash'], bodyGuidanceFile, sharedSkillsDirectory, skillResumeAnchor,
-        workspaceModels: [{ workspace: alternateWorkspace, model: 'claude-fable-5-2', effort: 'high' }],
+        topicModels: [{ topicId: '63', model: 'claude-fable-5-2', effort: 'high' }],
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,
@@ -308,7 +308,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         if (decision === 'native-auth-rejected') {
           await writeFile(selection, JSON.stringify({ ...profile, binary: realBinary }));
         }
-        const worker = spawn(process.execPath, [executable, '--profile', selection], {
+        const worker = spawn(process.execPath, [executable, '--profile', selection, '--topic-models-v1'], {
           env: {},
           stdio: ['pipe', 'pipe', 'ignore'],
         });
@@ -342,6 +342,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           worker.stdin.write(JSON.stringify({ ...correlation, type: 'start', freshNativeSessionId: nativeSessionId,
             resume, humanOriginal, text, body,
             ...(workspace === undefined ? {} : { workspace }),
+            ...(decision === 'workspace-selected' ? { topicId: '63' } : {}),
             ...(['changed-skill-metadata', 'updated-guidance-resume'].includes(decision) ? { historySeed } : {}),
             ...(decision === 'quoted-resume' ? { historySeed: exactQuote } : {}),
             ...(decision === 'telegram-quoted-resume' ? { historySeed: telegramQuote } : {}),
