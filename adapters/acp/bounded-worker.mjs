@@ -1,6 +1,31 @@
+import { isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 
+import { validSharedMemory } from './shared-memory.mjs';
+
 export const BODY = ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'];
+
+export function validBoundedProfileTools(profile, requiredFields) {
+  const selected = ['sharedSkillsDirectory', 'sharedMemory'].filter(
+    field => profile && Object.hasOwn(profile, field));
+  return closed(profile, [...requiredFields, ...selected])
+    && (profile.sharedSkillsDirectory === undefined
+      || (typeof profile.sharedSkillsDirectory === 'string' && isAbsolute(profile.sharedSkillsDirectory)))
+    && (profile.sharedMemory === undefined || validSharedMemory(profile.sharedMemory));
+}
+
+export function boundedMcpServers(profile) {
+  const { body, matrixStatusCommand, sharedSkillsDirectory, sharedMemory } = profile;
+  const binding = { body, matrixStatusCommand, sharedSkillsDirectory, sharedMemory };
+  return [{
+    name: 'matrix',
+    command: process.execPath,
+    args: [fileURLToPath(new URL('./gateway-worker.mjs', import.meta.url)), '--matrix-mcp'],
+    env: [{ name: 'DAIMON_OBSERVATION', value: JSON.stringify(binding) }],
+  }];
+}
 
 export async function readBodyGuidance(path) {
   const guidance = new TextDecoder('utf-8', { fatal: true })

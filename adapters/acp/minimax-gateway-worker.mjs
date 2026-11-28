@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 
 import { observeMatrixBody, validObservationCommand } from '../owner-observation.mjs';
 import { closed, privateBytes } from '../worker-pipes.mjs';
-import { BODY, readBodyGuidance, runBoundedWorker } from './bounded-worker.mjs';
+import { BODY, boundedMcpServers, readBodyGuidance, runBoundedWorker, validBoundedProfileTools } from './bounded-worker.mjs';
 import { runMiniMaxTurn } from './minimax-turn.mjs';
 
 const SCHEMA = 'daimon-gateway.minimax-turn/v1';
@@ -25,7 +25,7 @@ async function requireSelectedAccount(profile, env, signal) {
 
 async function run(path) {
   const profile = JSON.parse(await privateBytes(path, 32 * 1024));
-  if (!closed(profile, ['body', 'binary', 'cwd', 'stateRoot', 'bodyGuidanceFile', 'matrixStatusCommand'])
+  if (!validBoundedProfileTools(profile, ['body', 'binary', 'cwd', 'stateRoot', 'bodyGuidanceFile', 'matrixStatusCommand'])
       || ![profile.binary, profile.cwd, profile.stateRoot, profile.bodyGuidanceFile]
         .every(value => typeof value === 'string' && isAbsolute(value))
       || !validObservationCommand(profile.matrixStatusCommand) || !closed(profile.body, BODY)
@@ -51,7 +51,7 @@ async function run(path) {
     return runMiniMaxTurn({
       binary: profile.binary, cwd: profile.cwd, env, signal, beforeSubmit,
       nativeSessionId: input.resume ?? undefined, text: input.text,
-      guidanceFile: profile.bodyGuidanceFile, mcpServers: [],
+      guidanceFile: profile.bodyGuidanceFile, mcpServers: boundedMcpServers(profile),
     });
   });
 }

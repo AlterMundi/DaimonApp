@@ -11,9 +11,16 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { frames } from '../worker-pipes.mjs';
+import { boundedMcpServers } from './bounded-worker.mjs';
 import { runMiniMaxTurn } from './minimax-turn.mjs';
 
 const binary = process.env.MINIMAX_TEST_ACP_BINARY;
+
+const matrixBinding = (home) => ({
+  body: { beingRef: 'fixture', embodimentId: 'body', incarnationId: 'inc', manifestHash: 'hash' },
+  matrixStatusCommand: [process.execPath, '-e', 'process.exit(1)'],
+  sharedSkillsDirectory: home,
+});
 
 test('MiniMax Code loads its own exact session and waits for the Gateway journal', {
   skip: !binary, timeout: 60_000,
@@ -62,7 +69,7 @@ test('MiniMax Code loads its own exact session and waits for the Gateway journal
     ], { cwd, env, timeout: 20_000 });
     requests.length = 0;
     const run = options => runMiniMaxTurn({
-      binary, cwd, env, guidanceFile, mcpServers: [], beforeSubmit: () => true, ...options,
+      binary, cwd, env, guidanceFile, mcpServers: boundedMcpServers(matrixBinding(home)), beforeSubmit: () => true, ...options,
     });
 
     const denied = await run({ text: 'Held original.', beforeSubmit: () => false });
@@ -81,6 +88,9 @@ test('MiniMax Code loads its own exact session and waits for the Gateway journal
     const second = await run({ text: 'Second MiniMax original.', nativeSessionId: first.sessionId });
     assert.equal(second.phase, 'completed', JSON.stringify(second));
     assert.equal(second.sessionId, first.sessionId);
+    const names = requests.flatMap(payload => (payload.tools ?? []).map(tool => tool.function?.name));
+    assert.ok(names.some(name => name?.endsWith('daimon_status')), JSON.stringify(names));
+    assert.ok(names.some(name => name?.endsWith('shared_skill')), JSON.stringify(names));
     assert.ok(requests.some(payload => {
       const body = JSON.stringify(payload);
       return body.includes(guidance)

@@ -228,7 +228,11 @@ signed receiving body's Matrix transport and the absolute Node command for
 `adapters/acp/minimax-gateway-worker.mjs --profile PROFILE`. The private
 profile selects `body`, `binary`, `cwd`, `stateRoot`, `bodyGuidanceFile`
 and `matrixStatusCommand`. The worker checks the signed body and selected
-OAuth account before opening the native topic. Live signed topic delivery
-remains separate from the provider qualification. The CLI advertises steering, queue and goals through
+OAuth account before opening the native topic. Its read-only MCP catalog
+provides `daimon_status`. The optional private profile fields
+`sharedSkillsDirectory` and `sharedMemory` add `shared_skill` and
+`dmk_recall`, respectively. The pinned CLI fixture verifies that this catalog
+reaches the provider. Live signed topic delivery remains separate from the
+provider qualification. The CLI advertises steering, queue and goals through
 `minimax-code/extensions`. A method in this inventory does not establish
 insertion, replay or goal lifecycle semantics.
