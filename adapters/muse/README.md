@@ -24,6 +24,13 @@ configuration and data directories using the existing credential. The
 provider refused the published Wonder 1.0 (also with Contributor enabled),
 Ember 1.0 and Spark 1.3 and 1.2 IDs. One earlier completed interactive turn
 had no model identifier in the native export.
+The native transport trace shows that the Contributor request used
+`muse-wonder-1.0-contributor` and Standard used `muse-wonder-1.0`. Both
+were refused. Interactive startup also reported an empty catalog before
+sending any prompt. The provider's documented model-list read returned HTTP
+200 with zero models using the credential provisioned on that login. It
+does not identify why Meta granted no models to that credential.
+
 Keep authentication and history while testing config isolation. Qualify a
 real MSP turn against the selected subscription before wiring the topic.
 Gateway topic binding, effective tools, steering and interruption remain
