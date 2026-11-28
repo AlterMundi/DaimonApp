@@ -26,6 +26,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
     pub workspace: Option<&'a std::path::Path>,
+    pub output_directory: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
     pub require_recovery_context: bool,
@@ -165,6 +166,7 @@ pub(in crate::app) async fn execute_worker(
         routed_host_access,
         session_instructions,
         workspace,
+        output_directory,
         history_seed,
         project_checkpoint,
         require_recovery_context,
@@ -238,6 +240,9 @@ pub(in crate::app) async fn execute_worker(
                     "Invalid Claude workspace"
                 );
                 start["workspace"] = json!(path);
+            }
+            if let Some(path) = output_directory {
+                start["outputDirectory"] = json!(path);
             }
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
@@ -884,6 +889,7 @@ pub(super) async fn run_portable_turn(
                 routed_host_access: false,
                 session_instructions: None,
                 workspace: None,
+                output_directory: None,
                 history_seed: None,
                 project_checkpoint: None,
                 require_recovery_context: false,
@@ -1008,6 +1014,19 @@ pub(super) async fn run_routed_portable(
                 Some("session_request" | "session_result")
             )
         });
+    let output_workspace = (engine == ForegroundEngine::Claude
+        && routed_host_access
+        && human_authored
+        && !crate::interaction::native_claude_goal(&input.text)
+        && cfg.artifact_store.is_some())
+    .then(|| super::turns::prepare_turn_workspace(&session, local))
+    .and_then(|result| match result {
+        Ok(workspace) => Some(workspace),
+        Err(error) => {
+            tracing::warn!(%error, "Generated file workspace unavailable");
+            None
+        }
+    });
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -1145,6 +1164,7 @@ pub(super) async fn run_routed_portable(
                     session_instructions: session.session_prompt.as_deref(),
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),
+                    output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),
                     history_seed: history_seed.as_ref(),
                     project_checkpoint: project_checkpoint.as_deref(),
                     require_recovery_context: missing_resume.is_some(),
@@ -1221,7 +1241,36 @@ pub(super) async fn run_routed_portable(
             missing_resume = Some((scope.to_owned(), outcome));
         }
     }.await.unwrap_or(Value::Null);
-    let deliveries = store.finish_routed_portable(input, local, &outcome, Some(cfg.entry()))?;
+    let mut artifact_job = None;
+    if let Some(workspace) = &output_workspace {
+        if outcome["phase"] == "completed" {
+            let publish =
+                super::topic_publications::enabled(&app.shared, input.target, input.human_id);
+            match super::artifact_outputs::job_at_completion(workspace) {
+                Ok(Some(mut job)) => {
+                    job["publish_files"] = json!(publish);
+                    artifact_job = Some(job);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "Generated files remain in the turn workspace")
+                }
+            }
+        }
+        if std::fs::remove_dir(&workspace.out_dir).is_ok() {
+            let _ = std::fs::remove_dir(&workspace.root);
+        }
+    }
+    let deliveries = store.finish_routed_portable(
+        input,
+        local,
+        &outcome,
+        Some(cfg.entry()),
+        artifact_job.as_ref(),
+    )?;
+    if artifact_job.is_some() && super::artifact_outputs::recover(app.shared.clone()).is_err() {
+        tracing::warn!("Generated file recovery remains pending");
+    }
     if let Some(steering) = steering {
         steering.resolve(&outcome)?;
     }

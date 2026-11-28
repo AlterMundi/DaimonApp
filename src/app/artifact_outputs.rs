@@ -1,5 +1,6 @@
 //! Capture only files from the directory created for this actual execution.
 use super::*;
+use serde_json::{Value, json};
 
 pub(super) fn anchor(path: &Path) -> Result<Option<Arc<fs::File>>> {
     #[cfg(unix)]
@@ -39,8 +40,22 @@ pub(super) fn retain(
     let Some(mut output) = output.or(shared.store.artifact_output(local, human)?) else {
         return Ok(false);
     };
-    if fs::read_dir(&workspace.out_dir)?.next().is_none() {
+    let Some(mut job) = job_at_completion(workspace)? else {
         return Ok(false);
+    };
+    let source_key = shared.store.native_interaction_source(local, human)?.0;
+    job["publish_files"] = json!(super::topic_publications::enabled(&shared, source_key, human)
+        && shared.store.topic_projection_active(local)?);
+    output["files"] = job["output"]["files"].take();
+    job["output"] = output;
+    shared.store.artifact_job_stage(local, human, &job)?;
+    recover(shared)?;
+    Ok(true)
+}
+
+pub(super) fn job_at_completion(workspace: &TurnWorkspace) -> Result<Option<Value>> {
+    if fs::read_dir(&workspace.out_dir)?.next().is_none() {
+        return Ok(None);
     }
     #[cfg(unix)]
     {
@@ -50,8 +65,7 @@ pub(super) fn retain(
             .as_ref()
             .context("Missing output directory anchor")?
             .metadata()?;
-        // Freeze a bounded selection at this canonical final. Later goal cycles
-        // must not add or replace files attributed to this response.
+        // Freeze the files at the completed turn before later work can replace them.
         let entries = fs::read_dir(&workspace.out_dir)?.collect::<std::io::Result<Vec<_>>>()?;
         if entries.len() > 10 {
             bail!("At most ten generated files per execution are supported");
@@ -74,23 +88,14 @@ pub(super) fn retain(
                 );
             }
         }
-        output["files"] = serde_json::Value::Object(files);
-        let source_key = shared.store.native_interaction_source(local, human)?.0;
-        let publish_files = super::topic_publications::enabled(&shared, source_key, human)
-            && shared.store.topic_projection_active(local)?;
-        shared.store.artifact_job_stage(
-            local,
-            human,
-            &serde_json::json!({
-                "out":workspace.out_dir,"device":source.dev(),"inode":source.ino(),"output":output,"publish_files":publish_files
-            }),
-        )?;
-        recover(shared)?;
-        Ok(true)
+        Ok(Some(json!({
+            "out":workspace.out_dir,"device":source.dev(),"inode":source.ino(),
+            "output":{"files":files}
+        })))
     }
     #[cfg(not(unix))]
     {
-        let _ = (output, workspace);
+        let _ = workspace;
         bail!("Retained artifacts require descriptor-relative file access")
     }
 }

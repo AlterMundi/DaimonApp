@@ -215,10 +215,18 @@ operator.main()
                     "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1))
             adapter_recovery = telegram_topic and os.environ.get(
                 "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
-            if adapter_recovery or visible_handoff:
+            output_artifacts = telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_OUTPUT_ARTIFACTS") == "1"
+            if adapter_recovery or visible_handoff or output_artifacts:
                 journey.config.write_text(journey.config.read_text().replace(
                     "[interaction]\n",
                     "[interaction]\ntelegram_projection=true\ntelegram_entry_projection=true\n", 1))
+            if output_artifacts:
+                retained = journey.root / "retained"
+                retained.mkdir(mode=0o700)
+                journey.config.write_text(
+                    journey.config.read_text()
+                    + "\n[interaction.artifact_store]\ndirectory=" + json.dumps(str(retained)) + "\n"
+                )
             if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 if telegram_topic:
                     adapter_config = journey.root / "telegram-adapter.toml"
@@ -581,6 +589,8 @@ timeout_seconds=5
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
                                 self._exact_claude_quote(journey, provider, profile)
+                            elif output_artifacts:
+                                self._claude_output_artifacts(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -1929,6 +1939,73 @@ timeout_seconds=5
             journey.idle()
             self.assertEqual(provider.calls, calls)
             self.assertEqual(len(set(provider.exposures)), expected)
+
+        def _claude_output_artifacts(self, journey, provider, profile):
+            from email import policy
+            from email.parser import BytesParser
+            from conversation_cold_entry_http_io import Browser
+
+            selected = json.loads(profile.read_text())
+            selected["hostTools"] = ["Write"]
+            profile.write_text(json.dumps(selected))
+            provider.host_tools = ["Write"]
+            uploads = []
+
+            def upload(method, headers, raw):
+                message = BytesParser(policy=policy.default).parsebytes(
+                    ("Content-Type: " + headers["Content-Type"] + "\r\n\r\n").encode() + raw
+                )
+                fields = {part.get_param("name", header="content-disposition"): part
+                          for part in message.iter_parts()}
+                self.assertEqual(method, "sendDocument")
+                self.assertEqual(fields["chat_id"].get_payload(), "100")
+                self.assertEqual(fields["message_thread_id"].get_payload(), "7")
+                document = fields["document"]
+                uploads.append((document.get_filename(), document.get_payload(decode=True)))
+                return {"ok": True, "result": {"message_id": 900 + len(uploads),
+                                                "chat": {"id": 100, "type": "private"},
+                                                "message_thread_id": 7}}
+
+            journey.multipart_reply = upload
+            browser = Browser(journey)
+            self.addCleanup(browser.provider.close)
+            self.addCleanup(browser.client.close)
+            destination = next(row["destination"]
+                               for row in browser.get("/api/interaction/sessions")["sessions"]
+                               if row["audio_key"] == "100:7")
+            expected = []
+            for surface in ("Telegram", "Conversation"):
+                provider.original = f"Create the {surface} fixture deliverable."
+                name, content = f"{surface}.txt", f"Exact {surface} file bytes.\n"
+                provider.output_artifact = {"name": name, "text": content}
+                provider.calls.clear()
+                provider.paired_human = surface == "Telegram"
+                provider.routed_paired_human = None if surface == "Telegram" else 100
+                if surface == "Telegram":
+                    with journey.lock:
+                        provider.human_original = str(journey.sequence + 1)
+                    journey.admit(provider.original, topic=7)
+                else:
+                    provider.human_original = str(uuid.uuid4())
+                    browser.text(provider.original, reply=destination, original_id=provider.human_original)
+                expected.append((name, content.encode()))
+                journey.wait(lambda: provider.failure or len(uploads) == len(expected), seconds=25)
+                self.assertIsNone(provider.failure, surface)
+                self.assertEqual(uploads, expected)
+                journey.idle()
+            rows = journey.row(
+                "SELECT a.name,a.native_thread,a.native_turn,r.id FROM interaction_artifacts a "
+                "JOIN interaction_results r ON r.local_turn=a.source_local AND r.native_thread=a.native_thread "
+                "AND r.native_turn=a.native_turn AND r.item_id=a.native_item ORDER BY a.rowid"
+            )
+            self.assertEqual([row[0] for row in rows], [name for name, _ in expected])
+            self.assertEqual({row[1] for row in rows}, {provider.artifact_native_session})
+            self.assertEqual(len({row[2] for row in rows}), 2)
+            entries = browser.get("/api/interaction/artifacts")["items"]
+            selected = next(entry for entry in entries if entry["name"] == "Conversation.txt")
+            response = browser.client.get("/api/interaction/artifacts/" + selected["id"],
+                                          headers=browser.headers)
+            self.assertEqual((response.status_code, response.content), (200, expected[-1][1]))
 
         def _telegram_attachments(self, journey, provider):
             import base64

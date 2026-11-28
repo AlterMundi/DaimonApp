@@ -1700,6 +1700,7 @@ mod tests {
                     local,
                     &json!({"phase":"completed","sessionId":native,"text":partial}),
                     None,
+                    None,
                 )
                 .unwrap();
             assert!(!partial[0].completed);
@@ -1724,6 +1725,7 @@ mod tests {
                         &next,
                         next_local,
                         &json!({"phase":"completed","sessionId":native,"text":text}),
+                        None,
                         None,
                     )
                     .unwrap();
@@ -1752,6 +1754,7 @@ mod tests {
                 &delivered,
                 local,
                 &json!({"phase":"completed", "sessionId":native, "text":text}),
+                None,
                 None,
             )
             .unwrap();
@@ -1965,6 +1968,7 @@ mod tests {
                     &stale,
                     stale_local,
                     &json!({"phase":"completed","sessionId":native,"text":stale_text}),
+                    None,
                     None,
                 )
                 .unwrap();

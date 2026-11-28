@@ -484,6 +484,7 @@ async function main() {
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
     const workspace = first?.workspace;
+    const outputDirectory = first?.outputDirectory;
     const historySeed = first?.historySeed;
     const projectCheckpoint = first?.projectCheckpoint;
     const validExchange = exchange => closed(exchange, ['turn', 'human', 'assistant', 'harness', 'nativeThread'])
@@ -526,10 +527,16 @@ async function main() {
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
       ...(workspace === undefined ? [] : ['workspace']),
+      ...(outputDirectory === undefined ? [] : ['outputDirectory']),
       ...(historySeed === undefined ? [] : ['historySeed']),
       ...(projectCheckpoint === undefined ? [] : ['projectCheckpoint'])])
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
+      || (outputDirectory !== undefined && (!fullAccess || nativeGoalCommand
+        || typeof workspace !== 'string' || typeof outputDirectory !== 'string'
+        || outputDirectory.includes('\0') || Buffer.byteLength(outputDirectory) > 4096
+        || dirname(dirname(outputDirectory)) !== join(workspace, '.telecodex', 'turns')
+        || basename(outputDirectory) !== 'out'))
       || (historySeed !== undefined && (!fullAccess
         || (!exactQuote && !singleExchange && !multipleExchanges && !referencedExchanges
           && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
@@ -787,7 +794,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, matrixMessaging: messaging, hostTools, controller,
-        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions,
+        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions, outputDirectory,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,
