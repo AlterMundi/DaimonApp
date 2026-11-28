@@ -66,6 +66,28 @@ function boot(count=1, mayDecide=true,maxCards=200,allowCancel=true) {
   };
 }
 (async()=>{
+  const selected=boot(4),home={chat_id:1,thread_id:7};
+  Object.assign(selected.sources.get('request-1'),{target:home});
+  Object.assign(selected.sources.get('request-2'),{target:{chat_id:1,thread_id:8}});
+  Object.assign(selected.sources.get('request-3'),{target:home,kind:'approval'});
+  Object.assign(selected.sources.get('request-4'),{target:home,state:'unknown'});
+  const ids=await selected.ui.questionIds(home,()=>true);
+  assert.deepEqual(clone(ids),['request:request-1']);
+  assert.deepEqual(clone(await selected.ui.questionIds(home,()=>false)),[]);
+  assert.equal(selected.calls.filter(v=>v.body).length,0,'Opening a room question never applies a decision');
+  const exactQuestion=selected.ui.attentionItems().find(v=>v.id===ids[0]);
+  await selected.read(exactQuestion.box);
+  await selected.button(exactQuestion.box,'Selected scope').handlers.click();
+  const decision=selected.calls.filter(v=>v.body);
+  assert.equal(decision.length,1);
+  assert.equal(decision[0].route,'interaction/requests/request-1');
+  assert.equal(decision[0].body.revision,'revision-1-0');
+  const laterQuestion=boot(9);
+  laterQuestion.sources.get('request-9').target=home;
+  assert.deepEqual(clone(await laterQuestion.ui.questionIds(home,()=>true)),['request:request-9']);
+  assert.deepEqual(laterQuestion.calls.filter(v=>v.route.startsWith('interaction/requests?')).map(v=>v.route),
+    ['interaction/requests?after=0','interaction/requests?after=8']);
+
   const bounded=boot(3,true,2);await bounded.ui.refresh();
   assert.equal(bounded.cards().length,2);
   assert.match(bounded.nodes.get('#conversation-request-state').textContent,/up to 2 loaded/);

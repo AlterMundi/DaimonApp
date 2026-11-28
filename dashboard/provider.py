@@ -422,6 +422,12 @@ class Provider:
             selected={'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
                       'direct_available':row['is_entry'] or row['destination'] is not None}
             if include_projects and room is not None:
+                execution=row['execution']
+                selected['work']={
+                    'execution':execution if row['fresh'] and execution in ('working','queued','idle') else 'unknown',
+                    'question':row['human_action_pending'] is True,
+                    'result':not row['is_entry'] and row['result_available'] is True,
+                }
                 chat,topic=map(int,row['audio_key'].split(':'))
                 target={'chat_id':chat,'thread_id':topic}
                 selection={**target, **({'cursor':project_cursor} if project_cursor is not None else {})}

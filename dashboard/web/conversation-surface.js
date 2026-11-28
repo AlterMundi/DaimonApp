@@ -3,17 +3,17 @@
 window.ConversationSurface=(()=>{
   const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
   const topicKey=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
-  function create({readTopics,selectTopic}={}){
+  function create({readTopics,selectTopic,openResult,closeResult,openQuestion,closeQuestion}={}){
     const {surfaceParent:parent,surfaceVisit:visit}=(document.documentElement?.dataset||{});
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
     let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
-    let topicsEnabled=false,directEnabled=false,topicRead,topicSelection;
+    let topicsEnabled=false,directEnabled=false,resultEnabled=false,questionEnabled=false,topicRead,topicSelection,resultRead;
     let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;directEnabled=false;topicRead=topicSelection=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{}),...(selectTopic?{topicDirect:true}:{})}});}
+    function cancel(){closeItem();playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;directEnabled=resultEnabled=questionEnabled=false;topicRead=topicSelection=resultRead=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{}),...(selectTopic?{topicDirect:true}:{}),...(openResult?{topicResult:true}:{}),...(openQuestion?{topicQuestion:true}:{})}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function receive(event){
@@ -26,6 +26,8 @@ window.ConversationSurface=(()=>{
         connected=true;
         topicsEnabled=!!readTopics&&d.features?.topicRooms===true;
         directEnabled=!!selectTopic&&d.features?.topicDirect===true;
+        resultEnabled=!!openResult&&d.features?.topicResult===true;
+        questionEnabled=!!openQuestion&&d.features?.topicQuestion===true;
         avatarPlayback=d.features?.avatarPlayback===true;
         avatarMicrophone=d.features?.avatarMicrophone===true;
         return;
@@ -36,6 +38,15 @@ window.ConversationSurface=(()=>{
       }
       if(d.type==='topic-direct-select'){
         if(connected&&directEnabled)void selectDirect(d);
+        return;
+      }
+      if(d.type==='topic-result-open'||d.type==='topic-question-open'){
+        const question=d.type==='topic-question-open';
+        if(connected&&(question?questionEnabled:resultEnabled))void showItem(d,question);
+        return;
+      }
+      if(d.type==='topic-result-cancel'||d.type==='topic-question-cancel'){
+        if(resultRead&&resultRead.request===d.request&&resultRead.question===(d.type==='topic-question-cancel'))closeItem();
         return;
       }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
@@ -61,6 +72,26 @@ window.ConversationSurface=(()=>{
         if(current())send('topic-direct-readback',{request,unavailable:true});
       }finally{
         if(current())topicSelection=undefined;
+      }
+    }
+    function closeItem(){
+      const read=resultRead;
+      resultRead=undefined;
+      if(read?.question)closeQuestion?.();
+      if(read&&!read.question)closeResult?.();
+    }
+    async function showItem({request,room},question){
+      if(!uuid(request)||!topicKey(room))return;
+      closeItem();
+      const read={request,question};resultRead=read;
+      const current=()=>connected&&(question?questionEnabled:resultEnabled)&&resultRead===read;
+      const open=question?openQuestion:openResult;
+      const type=question?'topic-question-readback':'topic-result-readback';
+      try{
+        const opened=await open(room,current);
+        if(current())send(type,{request,room,opened:opened===true});
+      }catch{
+        if(current())send(type,{request,room,opened:false});
       }
     }
     async function projectRooms({request,room,after}){

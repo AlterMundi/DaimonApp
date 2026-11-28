@@ -184,3 +184,41 @@ locators, workspace paths, source text and effect receipts stay in the owner.
 The conversation frame and the general room catalogue carry no project
 references. A room visit and the explicit project read are separate. The
 project read uses the current actor and room and does not open model work.
+
+The paired bridge's exact project read can include a `work` observation
+derived from Session Workspace. It carries only `execution` (unknown, idle,
+queued or working), `question` and `result` presence flags. A stale
+execution observation becomes unknown. The project read does not disclose
+question or result text, native identifiers, or result revisions. Select
+the current Conversation reader to inspect or respond to an original.
+
+### Open the current topic result
+
+A compatible frame advertises `topicResult`. The paired host sends
+`topic-result-open` with a request UUID and the visited room reference, using
+the existing actor, binding, visit and channel. The current Workspace reader
+resolves that room again, then reads its ordinary, owner-scoped Conversation
+page. For Codex the displayed item must match the registry's result revision.
+Portable harnesses use the latest final in the selected generation's retained
+exchange page. If that result is unavailable in the page, the reader declines
+rather than displaying a different result. Text continuations use the exact
+selected event and history revision.
+
+The frame opens the result in a read-only dialogue. Its reply carries only
+the correlated opening outcome. Neither result text nor history coordinates
+return to the host. The host cancels the request when leaving the room or
+closing Conversation. The composer, drafts and active recipient stay as they
+were. The result reader does not start a model or send a human original.
+
+### Open a pending topic question
+
+The optional `topicQuestion` feature uses `topic-question-open` with the
+same room reference and request correlation. Conversation resolves the
+owned room and selects only actionable, current questions addressed to
+its exact target in the existing canonical request list. It reuses the
+request reader and For You dialog. Native question text, IDs and revisions
+stay in the frame. Opening the question does not send an answer or change
+the active conversation recipient. The person's explicit response uses
+the existing request controls, exact revision and original receipt route.
+A question outside the canonical Conversation request audience remains
+with its owning session.
