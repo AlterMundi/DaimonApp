@@ -182,12 +182,22 @@ operator.main()
             if visible_handoff not in {"1", "entry"}:
                 visible_handoff = None
             if mixed or inverse:
-                journey.start()
-                for topic in (1, 7, 8) if visible_handoff else (1, 7) if inverse else (7,):
-                    journey.admit("Fixture seed for the owned Codex conversation", topic=topic)
-                    journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
-                    journey.idle()
-                journey.stop()
+                # The seeded topics represent an existing embedded Telegram
+                # install. Only that predecessor runs in the legacy role.
+                selected_binary = journey.binary
+                if Path(selected_binary).name == "daimon-gateway" and telegram_topic:
+                    predecessor = journey.root / "telecodex"
+                    predecessor.symlink_to(Path(selected_binary).resolve())
+                    journey.binary = str(predecessor)
+                try:
+                    journey.start()
+                    for topic in (1, 7, 8) if visible_handoff else (1, 7) if inverse else (7,):
+                        journey.admit("Fixture seed for the owned Codex conversation", topic=topic)
+                        journey.wait(lambda: journey.has("Initial goal turn delivered.", topic))
+                        journey.idle()
+                    journey.stop()
+                finally:
+                    journey.binary = selected_binary
                 if telegram_topic:
                     with sqlite3.connect(journey.root / "state.sqlite") as db:
                         db.execute("UPDATE sessions SET session_prompt=? WHERE thread_id=7",
@@ -561,8 +571,10 @@ timeout_seconds=5
                         self._telegram_codex_handoff(journey, provider)
                         return
                     if telegram_topic:
+                        teledaimon = journey.root / "teledaimon"
+                        teledaimon.symlink_to(Path(gateway).resolve())
                         adapter = subprocess.Popen(
-                            [gateway, "--tele-daimon-poll", str(adapter_config)],
+                            [str(teledaimon), str(adapter_config)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                         )
                         try:
