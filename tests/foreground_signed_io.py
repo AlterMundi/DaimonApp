@@ -2732,7 +2732,7 @@ if __name__ == "__main__":
         signed_interrupt = None
     if signed_interrupt == "return-crash" and engine != "claude":
         raise SystemExit("The signed return crash fixture requires Claude")
-    if signed_interrupt in {"crash", "return-crash"}:
+    if signed_interrupt and not telegram_topic:
         os.environ["FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX"] = "1"
     if inverse and engine == "claude":
         direct = True
