@@ -454,7 +454,7 @@ impl Store {
                 |row| row.get(0),
             )?;
             if let Some(native) = native {
-                deliveries = crate::store::routing::later_completion_result_on(
+                deliveries = crate::store::routing::later_dependency_result_on(
                     &tx,
                     &self.instance_id,
                     current.human,

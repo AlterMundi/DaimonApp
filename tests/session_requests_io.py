@@ -398,6 +398,19 @@ def later_helper_completion(binary):
 
         helper = j.instructions(8)[0]
         selected = json.loads(helper[2])['requests']
+        advance = 'Beta measured the artifact and left validation open.'
+        progress_claim = {'requests': selected, 'covered': [helper[0]], 'completed': [], 'deferred': [helper[0]]}
+        interim = {'turnId': j.runs[native], 'item': {'id': 'later-progress', 'type': 'agentMessage',
+            'phase': 'final_answer', 'text': advance + '\n<daimon-result>' + json.dumps(progress_claim) + '</daimon-result>'}}
+        j.broadcast(native, 'item/completed', interim)
+        j.broadcast(native, 'item/completed', interim)
+        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('requested',)]
+        assert len(j.internal_delivery(advance)) == 1
+        assert 'left this dependency open' in json.loads(j.instructions(7)[1][2])['text']
+        j.defer(7)
+        j.wait(lambda: j.row("SELECT status FROM turns WHERE session_id=(SELECT id FROM sessions WHERE thread_id=7) ORDER BY id DESC LIMIT 1") == [('completed',)])
+
         claim = {'requests': selected, 'covered': [helper[0]], 'completed': selected}
         answer = 'Beta finished the exact deferred dependency.'
         params = {'turnId': j.runs[native], 'item': {'id': 'later-completion',
@@ -406,13 +419,13 @@ def later_helper_completion(binary):
         j.broadcast(native, 'item/completed', params)
         j.broadcast(native, 'item/completed', params)
         j.broadcast(native, 'turn/completed', {'turn': {'id': j.runs[native], 'status': 'completed'}})
-        j.wait(lambda: len(j.instructions(7)) == 2 and j.instructions(7)[1][1] == 'accepted')
+        j.wait(lambda: len(j.instructions(7)) == 3 and j.instructions(7)[2][1] == 'accepted')
         assert j.row('SELECT phase FROM interaction_session_requests WHERE id=?', (request,)) == [('returned',)]
         assert len(j.internal_delivery(answer)) == 1
         assert len(j.instructions(8)) == 2
         j.answer(7, 'The consultation returned to its original caller.')
         j.idle()
-        print('PASS a later ordinary native turn links one exact pending helper, with one internal return on duplicate final observation')
+        print('PASS a later native turn returns one private advance without closing its dependency, then returns one final after duplicate observations')
     finally:
         j.close()
 

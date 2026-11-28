@@ -1427,10 +1427,12 @@ use the same instruction journals as human routing.
 
 Admission is nonblocking. A caller can continue independent work or finish its
 turn with a dependency deferred; it must not poll or wait in a tool loop. The
-helper's first current, worker-declared completed canonical result reserves one
-context input to the original logical caller. An active caller receives it through
-steer; a caller that finished can receive a new native turn through the existing
-worker queue and capacity limit. The helper result is attributed evidence, not a
+helper's current canonical report can reserve an attributed context input to
+the original logical caller. A report that explicitly covers and defers the
+dependency returns the advance once and leaves the request open. A completed
+report closes the request and returns the final result. An active caller can
+receive it through steer where supported. Otherwise it enters the same logical
+topic through the existing worker queue and capacity limit. The helper result is attributed evidence, not a
 new human instruction. Original request and return references survive logical
 session renewal, while the original native executions stay in provenance.
 
