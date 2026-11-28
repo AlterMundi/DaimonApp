@@ -256,11 +256,17 @@ async function main(path) {
       }
     }
     let providerUnavailable = false;
+    let reportAcceptance = false;
     const run = agy ? runAntigravityTurn : runGooseTurn;
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
         nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions, images,
+        async onInputAccepted(nativeSessionId) {
+          if (reportAcceptance) {
+            await writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
+          }
+        },
         allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : []),
           ...(sharedSkillsDirectory ? ['mcp_matrix_' + SKILL] : []),
           ...(profile.sharedMemory ? ['mcp_matrix_' + RECALL] : [])],
@@ -289,12 +295,15 @@ async function main(path) {
           }
         }
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId,
-          ...(agy ? { workspace: profile.cwd } : {}) }, stop.signal);
+          ...(agy ? { workspace: profile.cwd, inputAcceptance: true, workAcceptance: true } : {}) }, stop.signal);
         const decision = (await pipe.next()).value;
-        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed'])
+        const acceptanceFields = ['observeAcceptance', 'requireWork'].filter(field => agy && decision?.[field] === true);
+        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed', ...acceptanceFields])
+            || (decision.requireWork === true && decision.observeAcceptance !== true)
             || decision.schema !== schema || decision.type !== 'submission_decision'
             || decision.inputId !== first.inputId || decision.sessionId !== first.sessionId
             || decision.committed !== true) return false;
+        reportAcceptance = decision.observeAcceptance === true;
         void pipe.next().then(() => stop.abort(), () => stop.abort());
         return true;
       },

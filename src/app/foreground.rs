@@ -1050,7 +1050,7 @@ pub(super) async fn run_routed_portable(
                     cancel: &cancel,
                     controller,
                     steering: steering.as_mut(),
-                    acceptance: (engine == ForegroundEngine::Claude
+                    acceptance: ((engine == ForegroundEngine::Claude || config.agy_cli)
                         && ((routed_host_access && human_authored)
                             || author.as_ref().is_some_and(|a| a["report_to_topic"] == true)))
                     .then_some(WorkerAcceptance {

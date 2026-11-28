@@ -15,6 +15,7 @@ export function validateSessionId(value) {
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
   unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions, images = [],
+  onInputAccepted,
 }) {
   if (typeof text !== 'string' || (!text.trim() && !images.length) || Buffer.byteLength(text) > MAX_TEXT) {
     throw new TypeError('Invalid ACP foreground input');
@@ -80,7 +81,7 @@ export async function runAcpTurn({
               });
             }
           } else if (value.method === 'session/update') {
-            onUpdate?.(value.params);
+            await onUpdate?.(value.params);
           }
           continue;
         }
@@ -115,6 +116,7 @@ export async function runAcpTurn({
     exposed = true;
     reason = 'native_result_unconfirmed';
 
+    let inputAccepted = false;
     let answer = '';
     let answerBytes = 0;
     const terminal = await request('session/prompt', {
@@ -124,13 +126,17 @@ export async function runAcpTurn({
         ...(text ? [{ type: 'text', text }] : []),
         ...images,
       ],
-    }, ({ sessionId, update } = {}) => {
+    }, async ({ sessionId, update } = {}) => {
       if (sessionId !== nativeSessionId) throw new Error('ACP update came from another session');
       if (update?.sessionUpdate !== 'agent_message_chunk' || update.content?.type !== 'text') return;
       const chunk = update.content.text;
       if (typeof chunk !== 'string') throw new Error('Invalid response text');
       answerBytes += Buffer.byteLength(chunk);
       if (answerBytes > MAX_TEXT) throw new Error('ACP response exceeds bound');
+      if (!inputAccepted && chunk.trim() && onInputAccepted) {
+        await onInputAccepted(nativeSessionId);
+        inputAccepted = true;
+      }
       answer += chunk;
     });
     const visible = answer.trim();

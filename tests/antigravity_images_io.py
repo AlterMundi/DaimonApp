@@ -68,16 +68,18 @@ def qualify(binary, source_profile):
         def result(original, expected):
             def record():
                 rows = journey.row(
-                    "SELECT i.phase,t.status,t.native_thread_id,t.assistant_text "
+                    "SELECT i.phase,t.status,t.native_thread_id,t.assistant_text,"
+                    "json_extract(i.doc,'$.native_input_accepted') "
                     "FROM interaction_sources s JOIN interaction_instructions i ON i.input_id=s.id "
                     "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
                     (str(original),),
                 )
-                return rows[0] if rows else (None, None, None, None)
+                return rows[0] if rows else (None, None, None, None, None)
 
             journey.wait(lambda: record()[0] in {"accepted", "retained_unsent", "uncertain", "rejected"},
                          seconds=28)
-            phase, status, native, answer = record()
+            phase, status, native, answer, accepted = record()
+            assert accepted == 1, "Native incorporation receipt missing"
             assert (phase, status) == ("accepted", "completed"), (phase, status)
             assert answer.strip().lower().strip(".") == expected, answer
             return native
@@ -116,7 +118,7 @@ def qualify(binary, source_profile):
         }
         assert journey.read("input", "submit-human", json.dumps(packet))["result"]["new_input"]
         assert result(ident, "blue") == first
-        print("Telegram and Conversation images reached the same native Antigravity session.")
+        print("Telegram and Conversation images reached the same native Antigravity session with incorporation receipts.")
     finally:
         journey.close()
 

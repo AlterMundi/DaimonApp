@@ -200,7 +200,10 @@ The Gateway image worker also passed the retained digest check and kept
 modified bytes unsent. The joined test sent distinct images from Telegram
 and Conversation to the same native session and verified the Telegram
 reply reference. The model and signed reader were real; the surface clients
-and topic were disposable fixtures.
+and topic were disposable fixtures. Gateway records an ordinary agy input
+as incorporated when the active prompt streams its first nonblank model
+text from the committed native session. The session load and submission
+decision are not incorporation receipts. Result settlement remains separate.
 An explicit Gateway foreground profile wires agy through the common ACP
 worker and keeps the SDK/local-provider protocol available for existing
 profiles. The worker qualification checks selected tool use, journal
