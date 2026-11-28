@@ -122,6 +122,19 @@ shared work on Goose, MCP and Agent Skills.
 
 ## Upstream contribution map
 
+Use the inventory as evidence for ecosystem work. When several harnesses offer
+the same operation with observably similar semantics, compare their contracts
+and take a minimal multi-harness trace to the relevant standards group. If the
+standard can already express the operation and one connector loses it, send a
+focused adapter fix. When several harnesses need the same host-side plumbing,
+look for a reusable module with a stable boundary and publish its contract and
+tests upstream or as a small open-source component. Features specific to one
+harness remain accessible through that harness's supported surface and can
+inform later proposals once another implementation needs them. Keep proprietary
+provider internals and user data outside the evidence. Track external proposals
+and releases from this inventory so adoption can be checked against the same
+fixture.
+
 Wiggle Stash researched these entry points on 2026-11-28.
 
 | Audience | First contribution |
@@ -190,6 +203,13 @@ refusal, and same-session continuation. The ITACA topic has a recorded live
 Antigravity response. A disposable Gateway exchange across Telegram and
 Conversation reused the same native session. The signed body profile also
 identifies the receiving being in a fresh process and on resume.
+
+A real agy probe sent a second prompt while its first text turn was active.
+Both prompts completed in the same session, but the correction marker appeared
+only after the first prompt's terminal acknowledgement. This shows live
+same-session queueing for that action. Exact in-turn incorporation at a tool
+boundary, with receipts and reconnect behavior, still needs a direct
+comparison before Gateway advertises steer on this route.
 
 The real agy test reads an installed fixture skill, searches DMK and reads
 the selected original. The staged ITACA binding separately verifies the
