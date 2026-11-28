@@ -20,9 +20,10 @@ The ITACA pilot follows the official `muse-canary` channel and retains
 `muse-stable` for comparison. The same selected subscription credential
 reports an active subscription locally. Stable 1.4.25 and Canary 1.4.26
 returned an empty visible model catalog. Canary reproduced this with fresh
-configuration and data directories using the existing credential, and a
-single explicit model probe was refused by the provider. One earlier
-completed interactive turn had no model identifier in the native export.
+configuration and data directories using the existing credential. The
+provider refused the published Wonder 1.0 (also with Contributor enabled),
+Ember 1.0 and Spark 1.3 and 1.2 IDs. One earlier completed interactive turn
+had no model identifier in the native export.
 Keep authentication and history while testing config isolation. Qualify a
 real MSP turn against the selected subscription before wiring the topic.
 Gateway topic binding, effective tools, steering and interruption remain
