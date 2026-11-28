@@ -914,7 +914,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
             // never withdraw dependencies or cancel work begun during ASR.
             requested
         } else {
-            app.stop_session(target).await
+            app.interrupt_session(target).await
         };
         notice(
             app.shared.clone(),

@@ -58,6 +58,7 @@ pub enum BridgeCommand {
         title: String,
     },
     Stop,
+    Interrupt,
     StopControl {
         args: String,
     },
@@ -191,7 +192,8 @@ pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<P
         "/rename" => BridgeCommand::Rename {
             title: required_arg(args, "/rename <new name>")?.to_string(),
         },
-        "/interrupt" | "/stop" if args.trim().is_empty() => BridgeCommand::Stop,
+        "/interrupt" if args.trim().is_empty() => BridgeCommand::Interrupt,
+        "/stop" if args.trim().is_empty() => BridgeCommand::Stop,
         "/interrupt" => {
             bail!("Use /interrupt without arguments to stop the current conversation's turn.")
         }
@@ -606,7 +608,7 @@ mod tests {
     fn interrupt_is_scoped_to_the_current_turn() {
         assert!(matches!(
             parse_command("/interrupt", "", "/interrupt").unwrap(),
-            ParsedInput::Bridge(BridgeCommand::Stop)
+            ParsedInput::Bridge(BridgeCommand::Interrupt)
         ));
         assert!(parse_command("/interrupt", "all", "/interrupt all").is_err());
     }
