@@ -873,7 +873,8 @@ impl App {
                 from.id,
                 topic_key,
                 (direct_human_text, direct_human_attachment),
-                (engine, &profile.transport.source),
+                engine,
+                profile,
             )
             .await;
         }

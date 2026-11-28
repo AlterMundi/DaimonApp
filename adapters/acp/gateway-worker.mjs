@@ -8,6 +8,7 @@ import { inspectMatrixStatus, readDmkObservation } from '../owner-observation.mj
 import { closed, frames, privateBytes, UUID, writeFrame } from '../worker-pipes.mjs';
 import { runAntigravityTurn } from './antigravity-turn.mjs';
 import { runGooseTurn } from './goose-turn.mjs';
+import { retainedImages } from './images.mjs';
 import { sharedSkill } from './shared-skills.mjs';
 import { recallProperties, sharedMemory, validSharedMemory } from './shared-memory.mjs';
 
@@ -214,7 +215,8 @@ async function main(path) {
     }
     const first = (await pipe.next()).value;
     if (!closed(first, ['schema', 'type', 'inputId', 'sessionId', 'text', 'body',
-      ...(agy ? ['workspace', 'resumeNativeSessionId'] : [])])
+      ...(agy ? ['workspace', 'resumeNativeSessionId'] : []),
+      ...(agy && Object.hasOwn(first ?? {}, 'attachments') ? ['attachments'] : [])])
         || first.schema !== schema || first.type !== 'start'
         || typeof first.inputId !== 'string' || typeof first.sessionId !== 'string'
         || !UUID.test(first.inputId) || !UUID.test(first.sessionId)
@@ -243,12 +245,22 @@ async function main(path) {
         + (sharedSkillsDirectory ? '\nUse shared_skill to discover and load current installed skills for a task.' : '')
         + '\nThe following content block is the current original.';
     }
+    let images;
+    if (agy && first.attachments !== undefined) {
+      try {
+        images = await retainedImages(first.attachments);
+      } catch {
+        await writeFrame(process.stdout, { ...correlation, type: 'outcome',
+          outcome: { phase: 'not_submitted', reason: 'antigravity_attachment_unavailable' } }, stop.signal);
+        return;
+      }
+    }
     let providerUnavailable = false;
     const run = agy ? runAntigravityTurn : runGooseTurn;
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       ...(agy ? { model: profile.model, effort: profile.effort,
-        nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions,
+        nativeSessionId: first.resumeNativeSessionId ?? undefined, instructions, images,
         allowedReadTools: ['mcp_matrix_' + STATUS, ...(selectedMemory ? ['mcp_matrix_' + MEMORY] : []),
           ...(sharedSkillsDirectory ? ['mcp_matrix_' + SKILL] : []),
           ...(profile.sharedMemory ? ['mcp_matrix_' + RECALL] : [])],

@@ -246,10 +246,8 @@ pub(super) async fn handle_portable_topic(
     human: i64,
     key: SessionKey,
     (direct_human_text, direct_human_attachment): (bool, bool),
-    selected: (
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    ),
+    engine: crate::interaction::ForegroundEngine,
+    profile: &crate::interaction::ForegroundConfig,
 ) -> Result<()> {
     if app
         .shared
@@ -262,8 +260,8 @@ pub(super) async fn handle_portable_topic(
         return Ok(());
     }
     let origin = route(message);
-    let with_files =
-        direct_human_attachment && selected.0 == crate::interaction::ForegroundEngine::Claude;
+    let with_files = direct_human_attachment
+        && (engine == crate::interaction::ForegroundEngine::Claude || profile.agy_cli);
     let text = if with_files {
         Some(message.attachment_caption())
     } else {
@@ -280,9 +278,9 @@ pub(super) async fn handle_portable_topic(
     };
     if !with_files
         && text.trim_start().starts_with('/')
-        && !(selected.0 == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
+        && !(engine == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
     {
-        let commands = match selected.0 {
+        let commands = match engine {
             crate::interaction::ForegroundEngine::Claude => {
                 "Use /status for activity, /goal for Claude's goal, /pwd or /cd for the workspace, /interrupt to stop the current turn, or /interaction to inspect a saved input."
             }
@@ -318,6 +316,19 @@ pub(super) async fn handle_portable_topic(
     } else {
         Vec::new()
     };
+    if profile.agy_cli
+        && with_files
+        && (telegram_files.iter().any(|file| {
+            !matches!(file.mime.as_str(), "image/png" | "image/jpeg") || file.size == 0
+        }) || telegram_files.iter().map(|file| file.size).sum::<u64>() > 4 * 1024 * 1024)
+    {
+        notice(
+            app.shared.clone(),
+            origin,
+            "Antigravity can receive PNG or JPEG images up to 4 MiB in total.".into(),
+        );
+        return Ok(());
+    }
     let source = SourceInput {
         telegram_files,
         tribu_source: None,
@@ -330,10 +341,11 @@ pub(super) async fn handle_portable_topic(
         origin,
         text: text.to_owned(),
     };
-    let (instruction, fresh) = app
-        .shared
-        .store
-        .interaction_admit_portable_topic(&source, key, selected)?;
+    let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
+        &source,
+        key,
+        (engine, &profile.transport.source),
+    )?;
     if fresh {
         dispatch(app, &instruction.id, human).await?;
     }

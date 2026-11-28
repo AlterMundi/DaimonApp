@@ -14,9 +14,9 @@ export function validateSessionId(value) {
 
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
-  unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions,
+  unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions, images = [],
 }) {
-  if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_TEXT) {
+  if (typeof text !== 'string' || (!text.trim() && !images.length) || Buffer.byteLength(text) > MAX_TEXT) {
     throw new TypeError('Invalid ACP foreground input');
   }
   if (instructions !== undefined && (typeof instructions !== 'string'
@@ -94,6 +94,9 @@ export async function runAcpTurn({
     const initialized = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
     if (initialized?.protocolVersion !== 1) throw new Error('ACP v1 required');
     reason = openFailure;
+    if (images.length && initialized.agentCapabilities?.promptCapabilities?.image !== true) {
+      return { phase: 'not_submitted', reason: 'acp_image_input_unavailable' };
+    }
     nativeSessionId = validateSessionId(await openSession(request, initialized));
 
     reason = 'gateway_submission_not_recorded';
@@ -118,7 +121,8 @@ export async function runAcpTurn({
       sessionId: nativeSessionId,
       prompt: [
         ...(instructions ? [{ type: 'text', text: instructions }] : []),
-        { type: 'text', text },
+        ...(text ? [{ type: 'text', text }] : []),
+        ...images,
       ],
     }, ({ sessionId, update } = {}) => {
       if (sessionId !== nativeSessionId) throw new Error('ACP update came from another session');

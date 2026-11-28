@@ -268,6 +268,16 @@ pub(in crate::app) async fn execute_worker(
         if let Some(agy) = &agy {
             start["workspace"] = json!(agy.workspace);
             start["resumeNativeSessionId"] = json!(agy.native_session_id);
+            if !attachments.is_empty() {
+                start["attachments"] = json!(
+                    attachments
+                        .iter()
+                        .map(|file| json!({
+                            "path": file.path, "mime": file.mime_type,
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
@@ -970,8 +980,9 @@ pub(super) async fn run_routed_portable(
         // files using the paired authority they inherit for host tools.
         anyhow::ensure!(
             request.attachments.is_empty()
-                || (engine == ForegroundEngine::Claude && routed_host_access && human_authored),
-            "Routed worker attachments require an authenticated human Claude turn"
+                || ((engine == ForegroundEngine::Claude || config.agy_cli)
+                    && routed_host_access && human_authored),
+            "Routed worker attachments require a paired human and an attachment-capable route"
         );
         let (_,body) = tokio::select! {
             biased;
