@@ -160,6 +160,32 @@ argument to Claude's native `/goal` command may replace the goal condition.
 Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
 
+### Native interrupt capability and session reuse
+
+Claude Code 2.1.325 advertised both `interrupt_receipt_v1` and
+`interrupt_cancel_queued_v1` in the installed SDK 0.3.325 probe. Its runtime
+accepted `query.interrupt({ cancelQueued: true })`, even though its published
+TypeScript declaration exposes `interrupt()`. Do not assume older SDKs
+forward that option. The fixture leaves a provider reply open, sends a queued
+correction, checks the exact correction ID in the cancellation receipt, and
+observes the terminal result on the same session. A fresh process then sends
+one new original to that exact session. The loopback provider sees no replay
+of the correction.
+
+```sh
+CLAUDE_TEST_SDK_PATH=/absolute/sdk.mjs CLAUDE_TEST_NATIVE_BINARY=/absolute/claude \
+  node --test adapters/claude/interrupt.test.mjs
+```
+
+The Gateway interruption path still terminates its managed worker and retains
+exposed work as uncertain. Using the native receipt to continue the same
+session requires a bounded worker cancellation exchange, validation of the
+original and queued IDs, and a matched terminal result. Queued messages with
+ambiguous receipts cannot be resubmitted automatically. An interrupt receipt
+does not pause a native goal or preserve provider-side goal accounting.
+
+### Topic continuity across harnesses
+
 When the last eligible exchange came from the topic's current Codex thread,
 Gateway can attach its exact original and final answer to a resumed or fresh
 Claude thread. It checks the logical owner and generation, the physical
