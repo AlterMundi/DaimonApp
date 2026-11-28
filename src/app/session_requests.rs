@@ -30,6 +30,7 @@ fn project_shadow_capability() -> Value {
         "projects":"select_recovery: selected [{project, repository, revision, checkout}] for cold startup",
         "project":"read: optional project UUID",
         "repository":"read: optional repository UUID",
+        "commit":"read: optional full commit hash, requires project and repository; resolves a retained revision within the current link",
         "before":"projects: optional cursor returned as nextBefore",
         "effects":"select_recovery: up to eight original instruction UUIDs owned by this topic"
     }, "description":"Read or stage a durable shadow link from this owned topic to an exact Git commit and its retained sources. Work kinds: decision, dependency and next_action. Only select_recovery opts the exact revision into the next cold startup. No Git changes or dispatch."})

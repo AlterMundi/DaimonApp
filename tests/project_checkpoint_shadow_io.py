@@ -44,6 +44,14 @@ def select_project(journey, *, paginate=False):
                    ("notes", prepare_checkout("notes", str(uuid.uuid4())))]
 
     if paginate:
+        checkout = folder / "story"
+        def commit_draft(message):
+            git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", message)
+            return git(checkout, "rev-parse", "HEAD")
+
+        next_link = {**link, "commit": commit_draft("Second draft")}
+        unregistered_commit = commit_draft("Private working draft")
         other_links.extend((f"extra-{n}", prepare_checkout(f"extra-{n}", str(uuid.uuid4())))
                            for n in range(7))
     binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
@@ -80,6 +88,8 @@ def select_project(journey, *, paginate=False):
     citations = "\n".join("Project link: " + json.dumps(item) for item in
                           [link, *(other for _, other in other_links)])
     citations += "\nProject checkpoint: " + json.dumps({"link": link, "work": work})
+    if paginate:
+        citations += "\nProject checkpoint: " + json.dumps({"link": next_link, "work": work})
     journey.answer_worker(7, "Staged the selected repo.\n" + citations)
     journey.wait(lambda: journey.row("SELECT busy FROM sessions WHERE thread_id=7") == [(0,)])
     page = journey.read("presentation", "list", "0", "0")["result"]
@@ -181,6 +191,28 @@ def select_project(journey, *, paginate=False):
         "original": unfinished, "transport": "accepted", "result": None, "disposition": "unresolved", "requestCompleted": False,
     }, selected
     assert journey.row("SELECT count(*) FROM interaction_instructions") == queried_before
+    if paginate:
+        advanced = shadow(7, "advance-story", {
+            **apply, "checkout": "archive/moved",
+            "delta": {**delta, "operation": str(uuid.uuid4()),
+                      "expected_revision": count, "link": next_link, "work": work},
+        })
+        assert advanced["status"] == "accepted", advanced
+        assert advanced["checkpoint"]["revision"] == count + 1, advanced
+        repositories.append({"revision": count + 1, "link": next_link, "checkout": "archive/moved"})
+        exact = {"action": "read", "workspace": workspace, "checkout": "archive/moved",
+                 "project": story, "repository": story}
+        latest = shadow(7, "latest-story", exact)
+        assert latest == advanced["checkpoint"], latest
+        assert shadow(7, "old-story", {**exact, "commit": link["commit"]}) == accepted["checkpoint"]
+        assert shadow(7, "unregistered-object", {**exact, "commit": unregistered_commit}) is None
+        assert shadow(7, "different-repository", {
+            **exact, "repository": other_links[0][1]["repository"], "commit": link["commit"],
+        }) is None
+        shadow(7, "wrong-checkout", {**exact, "checkout": "illustrations", "commit": link["commit"]}, ok=False)
+        shadow(7, "abbreviated-commit", {**exact, "commit": link["commit"][:12]}, ok=False)
+        shadow(7, "unscoped-commit", {**exact, "repository": None, "commit": link["commit"]}, ok=False)
+        assert journey.row("SELECT count(*) FROM interaction_instructions") == queried_before
     return repositories, selected["effects"], workspace, apply, result, dispatch, shadow
 
 
@@ -213,12 +245,16 @@ def run(binary):
         corrected_count = journey.row("SELECT count(*) FROM interaction_instructions")
         shadow(7, "revoked-read", {"action": "read", "workspace": workspace, "checkout": "archive/moved",
                                     "project": apply["delta"]["link"]["project"]}, ok=False)
+        shadow(7, "revoked-old-story", {"action": "read", "workspace": workspace,
+                 "checkout": "archive/moved", "project": apply["delta"]["link"]["project"],
+                 "repository": apply["delta"]["link"]["project"], "commit": apply["delta"]["link"]["commit"]},
+               ok=False)
         shadow(7, "revoked-repeat", {**apply, "checkout": "archive/moved"}, ok=False)
         room = journey.read("input", "topic-projects", json.dumps({"chat_id":100,"thread_id":7}))["result"]
         assert room["repositories"] == [], room
         assert journey.row("SELECT count(*) FROM interaction_instructions") == corrected_count
         assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,len(repositories)+1)]
-        print("PASS owned Gateway controller verified canonical conversation evidence and paged repository links; checkout move, exact repeat and source correction caused no duplicate dispatch or extra model call.")
+        print("PASS owned Gateway controller verified canonical conversation evidence and paged repository links; checkout move, historical commit read, exact repeat and source correction caused no duplicate dispatch or extra model call.")
     finally:
         journey.close()
 

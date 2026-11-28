@@ -104,12 +104,7 @@ impl ProjectDelta {
                         && label.chars().count() <= 80
                         && !label.chars().any(char::is_control)
                 })
-                && matches!(self.link.commit.len(), 40 | 64)
-                && self
-                    .link
-                    .commit
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && exact_git_commit(&self.link.commit)
                 && self.work.as_ref().is_none_or(|work| {
                     work.len() <= 8
                         && work.iter().all(|item| {
@@ -127,6 +122,13 @@ impl ProjectDelta {
     }
 }
 
+fn exact_git_commit(commit: &str) -> bool {
+    matches!(commit.len(), 40 | 64)
+        && commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ProjectShadowCommand {
@@ -136,6 +138,7 @@ pub(crate) enum ProjectShadowCommand {
         checkout: PathBuf,
         project: Option<Uuid>,
         repository: Option<Uuid>,
+        commit: Option<String>,
     },
     Projects {
         workspace: String,
@@ -405,9 +408,10 @@ fn verify_checkout(folder: &Path, claim: &str, checkout: &Path, link: &ProjectLi
 }
 
 #[derive(Clone, Copy, Default)]
-struct LinkSelector {
+struct LinkSelector<'a> {
     project: Option<Uuid>,
     repository: Option<Uuid>,
+    commit: Option<&'a str>,
 }
 
 fn checkpoint_on(
@@ -417,14 +421,15 @@ fn checkpoint_on(
     human: i64,
     session: i64,
     workspace: &str,
-    selector: LinkSelector,
+    selector: LinkSelector<'_>,
 ) -> Result<Option<ProjectCheckpoint>> {
     let raw: Option<String> = conn.query_row(
         "SELECT doc FROM project_checkpoint_deltas WHERE session_id=?1
          AND (?2 IS NULL OR json_extract(doc,'$.delta.link.project')=?2)
          AND (?3 IS NULL OR COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project'))=?3)
+         AND (?4 IS NULL OR json_extract(doc,'$.delta.link.commit')=?4)
          ORDER BY revision DESC LIMIT 1",
-        params![session, selector.project.map(|project| project.to_string()), selector.repository.map(|id|id.to_string())], |row| row.get(0),
+        params![session, selector.project.map(|project| project.to_string()), selector.repository.map(|id|id.to_string()), selector.commit], |row| row.get(0),
     ).optional()?;
     let checkpoint = raw
         .map(|raw| serde_json::from_str::<ProjectCheckpoint>(&raw))
@@ -490,6 +495,7 @@ fn catalog_on(
         let selector = LinkSelector {
             project: Some(Uuid::parse_str(&row.get::<_, String>(0)?)?),
             repository: Some(Uuid::parse_str(&row.get::<_, String>(1)?)?),
+            commit: None,
         };
         if let Ok(Some(checkpoint)) =
             checkpoint_on(conn, key, entry, human, session, workspace, selector)
@@ -557,6 +563,7 @@ impl Store {
                 checkout,
                 project,
                 repository,
+                commit,
             } => Ok(serde_json::to_value(self.project_checkpoint(
                 &scope,
                 &workspace,
@@ -564,6 +571,7 @@ impl Store {
                 LinkSelector {
                     project,
                     repository,
+                    commit: commit.as_deref(),
                 },
             )?)?),
             ProjectShadowCommand::Projects { workspace, before } => {
@@ -663,7 +671,8 @@ impl Store {
                             &claim,
                             LinkSelector {
                                 project: Some(project),
-                                repository: Some(repository)
+                                repository: Some(repository),
+                                commit: None,
                             }
                         )?
                         .is_some(),
@@ -723,9 +732,17 @@ impl Store {
         scope: &CheckpointScope,
         workspace: &str,
         checkout: &Path,
-        selector: LinkSelector,
+        selector: LinkSelector<'_>,
     ) -> Result<Option<ProjectCheckpoint>> {
-        let inspect = || -> Result<(PathBuf, Option<ProjectCheckpoint>)> {
+        if let Some(commit) = selector.commit {
+            anyhow::ensure!(
+                selector.project.is_some()
+                    && selector.repository.is_some()
+                    && exact_git_commit(commit),
+                "Select a project, repository and full Git commit"
+            );
+        }
+        let inspect = || -> Result<_> {
             let mut conn = self.conn.lock().expect("store mutex poisoned");
             let tx = conn.transaction()?;
             scope.authorize(&tx, &self.instance_id)?;
@@ -733,25 +750,56 @@ impl Store {
                 key, entry, human, ..
             } = *scope;
             let (session, folder) = workspace_on(&tx, key, human, workspace)?;
-            let checkpoint = checkpoint_on(&tx, key, entry, human, session, workspace, selector)?;
+            let tip = checkpoint_on(
+                &tx,
+                key,
+                entry,
+                human,
+                session,
+                workspace,
+                LinkSelector {
+                    commit: None,
+                    ..selector
+                },
+            )?;
+            let historical = match (selector.commit, &tip) {
+                (Some(commit), Some(tip)) if commit != tip.delta.link.commit => {
+                    let checkpoint =
+                        checkpoint_on(&tx, key, entry, human, session, workspace, selector)?;
+                    checkpoint.filter(|old| old.delta.link.locator == tip.delta.link.locator)
+                }
+                _ => None,
+            };
             tx.commit()?;
-            Ok((folder, checkpoint))
+            Ok((folder, tip, historical))
         };
-        let (folder, selected) = inspect()?;
+        let initial = inspect()?;
+        let (folder, tip, historical) = &initial;
         anyhow::ensure!(
-            crate::files::workspace_marker_matches(&folder, workspace)?,
+            crate::files::workspace_marker_matches(folder, workspace)?,
             "Topic workspace ownership marker unavailable"
         );
+        let selected = historical.as_ref().or_else(|| {
+            tip.as_ref().filter(|tip| {
+                selector
+                    .commit
+                    .is_none_or(|commit| commit == tip.delta.link.commit)
+            })
+        });
         let Some(selected) = selected else {
             return Ok(None);
         };
-        verify_checkout(&folder, workspace, checkout, &selected.delta.link)?;
-        let (current_folder, current) = inspect()?;
+        verify_checkout(folder, workspace, checkout, &selected.delta.link)?;
+        let current = inspect()?;
         anyhow::ensure!(
-            current_folder == folder && current.as_ref() == Some(&selected),
+            current == initial,
             "Checkpoint changed during Git inspection"
         );
-        Ok(current)
+        Ok(if historical.is_some() {
+            current.2
+        } else {
+            current.1
+        })
     }
 
     fn apply_project_delta(

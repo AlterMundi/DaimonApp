@@ -11,12 +11,19 @@ operations do not inject context, start a turn, or dispatch an effect.
 | --- | --- |
 | `workspace` | No additional arguments. Returns the current claim or null if there is no permanent workspace. |
 | `projects` | Exact `workspace` claim and optional `before` cursor. Lists each authorized project/repository's latest shadow link. Use `nextBefore` for the next page. |
-| `read` | Exact `workspace` claim and workspace-relative `checkout`. Select `project` and `repository` for an exact link. Returns its latest verified revision or null if absent. An unfiltered read selects the most recently changed link. |
+| `read` | Exact `workspace` claim and workspace-relative `checkout`. Select `project` and `repository` for an exact link. Returns its latest verified revision or null if absent. With both IDs, optional full `commit` resolves the exact retained revision. An unfiltered read selects the most recently changed link. |
 | `apply` | Workspace-relative `checkout` and a `delta` with a stable `operation` UUID, `expected_revision`, `workspace`, `link`, `sources` and optional `work`. Returns `accepted`, `retained`, or `conflict` with the observed revision. |
 
 The link takes distinct project and repository UUIDs, a stable private `git:`
 locator and a full lowercase Git commit ID. Links accepted before a separate
 repository UUID was supplied use the project UUID as their repository ID.
+An exact historical read requires the current project/repository link and
+its unchanged Git locator, the historical revision's still-valid cited sources,
+and the exact commit object in the selected checkout. Gateway rechecks the
+current link, historical checkpoint and invocation after local Git inspection.
+A commit merely present in Git has no checkpoint unless it was accepted.
+The room catalogue continues to return current links.
+
 Updating one repository leaves the other links in the topic available. The caller resolves it to an available checkout
 within the claimed workspace. The locator matches the checkout's unique
 `remote.origin.url` after the `git:` prefix. Use an absolute local origin

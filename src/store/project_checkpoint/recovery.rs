@@ -20,10 +20,11 @@ pub(crate) struct CheckoutSelection {
 }
 
 impl CheckoutSelection {
-    fn selector(&self) -> LinkSelector {
+    fn selector(&self) -> LinkSelector<'_> {
         LinkSelector {
             project: Some(self.project),
             repository: Some(self.repository),
+            commit: None,
         }
     }
 }
