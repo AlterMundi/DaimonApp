@@ -3,6 +3,21 @@
 Product direction: [full roadmap and current continuous-voice plan](interaction-roadmap.md).
 Current execution: [DaimonApp issues](https://github.com/AlterMundi/DaimonApp/issues) and the [DaimonGateway milestone](https://github.com/AlterMundi/daimon-matrix/milestone/8).
 
+### Create from a direct Telegram request relayed to General
+
+When `create.relayed_original` is `accepted-first-hop/v1`, General can
+inspect and create from the exact Telegram `input_ref` in a pending,
+accepted first-hop handoff from the original topic. The stored human origin
+and text are used for the new instruction. The relay remains attributed to
+the calling session. Unrelated updates and nested or withdrawn handoffs
+do not grant creation authority.
+
+Use `creation_status` before attempting creation. A missing intent only
+reports the current journal state. The same original can reserve one
+intent. A reserved intent binds its exact relay and rechecks it before
+submission and enrollment. If a topic outcome is uncertain, inspect the
+existing intent and keep the existing recovery rules.
+
 ## DaimonGateway and TeleDaimon boundary
 
 DaimonGateway owns the authenticated owner socket, canonical originals,

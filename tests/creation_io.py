@@ -246,7 +246,12 @@ def uncertain_topic(binary):
         j.wait(lambda:len(j.creation_outputs)==4)
         j.idle()
         assert j.topic_calls==1 and j.row('SELECT count(*) FROM interaction_enrollments')==[(0,)]
-        assert j.row('SELECT count(*) FROM interaction_sources WHERE update_id=?',(original,))==[(0,)]
+        assert j.row("""SELECT count(*) FROM interaction_instructions i
+                        JOIN interaction_sources x ON x.id=i.input_id
+                        JOIN sessions destination ON destination.id=i.session_id
+                       WHERE x.update_id=? AND destination.thread_id!=1""", (original,)) == [(0,)]
+        assert j.row("""SELECT count(*) FROM interaction_sources
+                       WHERE update_id=? AND json_array_length(doc,'$.target_sessions')>0""", (original,)) == [(0,)]
         assert j.row("SELECT phase FROM interaction_creations")==[('uncertain',)]
         j.stop();j.start()
         j.command('/interaction status','Interaction status',topic=1)
@@ -276,6 +281,88 @@ def retired_before_send(binary):
     finally:j.close()
 
 
+def first_hop_creation(binary, *, unknown=False, withdrawn=False):
+    from warm_controller_io import Warm
+
+    class RelayCreation(Warm):
+        def __init__(self, binary):
+            self.topic_calls = 0
+            super().__init__(binary)
+
+        def created_topic(self, payload):
+            self.topic_calls += 1
+            assert payload == {'chat_id': 100, 'name': 'Independent Work'}
+            return {} if unknown else {'message_thread_id': 77, 'name': payload['name']}
+
+    j = RelayCreation(binary)
+    try:
+        j.prepare(seed_entry=True)
+        j.allow_native_launch = True
+        original_text = 'Please have General create the Independent Work topic for this request.'
+        original = j.admit(original_text, topic=7)
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(1,)])
+        alpha = j.access(7)
+        parent = j.cli(alpha, 'coordination_inputs')['inputs'][0]
+        unrelated = j.admit('An unrelated message in the same source topic.', topic=7)
+        j.wait(lambda: j.row('SELECT count(*) FROM interaction_direct_parents') == [(2,)])
+        handoff = j.cli(alpha, 'session_request', {
+            'parent_instruction': parent['instruction'], 'request_id': 'create-first-hop',
+            'selector': 'general', 'text': 'Select the retained human original for creation.'})
+        assert handoff['new_admission']
+        j.wait(lambda: j.instructions(1) and j.instructions(1)[0][1] == 'accepted')
+        entry = j.access(1)
+        j.answer(7, 'Relayed the human request.')
+        j.wait(lambda: j.row("""SELECT t.status FROM turns t JOIN sessions s ON s.id=t.session_id
+                                 WHERE s.thread_id=7 ORDER BY t.id DESC LIMIT 1""") == [('completed',)])
+        refs = {'input_ref': original}
+        args = {**refs, 'name': 'Independent Work', 'reason': 'The original explicitly requests a separate topic.',
+                'context_selectors': []}
+        j.cli(entry, 'creation_status', {'input_ref': unrelated}, ok=False)
+        j.cli(entry, 'create', {**args, 'input_ref': unrelated}, ok=False)
+        assert j.topic_calls == 0
+        assert j.cli(entry, 'creation_status', refs)['phase'] == 'not_found'
+        if withdrawn:
+            import sqlite3
+            from concurrent.futures import ThreadPoolExecutor
+
+            j.cooldown_once = True
+            j.admit('/interaction status', topic=1)
+            j.wait(j.cooldown_seen.is_set)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(j.cli, entry, 'create', args, ok=False)
+                j.wait(lambda: j.row('SELECT phase FROM interaction_creations') == [('prepared',)])
+                with sqlite3.connect(j.root / 'state.sqlite') as db:
+                    db.execute("UPDATE interaction_session_requests SET phase='withdrawn'")
+                pending.result()
+            assert j.cli(entry, 'creation_status', refs)['phase'] == 'retained_unsent'
+            j.cli(entry, 'creation_resume', refs, ok=False)
+            assert j.topic_calls == 0
+            assert j.row('SELECT count(*) FROM interaction_enrollments') == [(0,)]
+        elif unknown:
+            j.cli(entry, 'create', args, ok=False)
+            assert j.cli(entry, 'creation_status', refs)['phase'] == 'uncertain'
+            assert j.cli(entry, 'create', args)['phase'] == 'uncertain'
+            assert j.cli(entry, 'creation_resume', refs)['phase'] == 'uncertain'
+            assert j.row('SELECT count(*) FROM interaction_enrollments') == [(0,)]
+        else:
+            operation = j.cli(entry, 'create', args)['operation']
+            assert operation['phase'] == 'ready'
+            assert operation['intent']['origin']['thread_id'] == 7
+            assert operation['intent']['original_text'] == original_text
+            assert operation['intent']['original_relay']['parent'] == parent['instruction']
+            assert operation['intent']['original_relay']['received'] == j.instructions(1)[0][0]
+            assert j.cli(entry, 'creation_status', refs)['id'] == operation['id']
+            j.wait(lambda: j.instructions(77) and j.instructions(77)[0][1] == 'accepted')
+            assert len(j.instructions(7)) == 2
+            assert j.row('SELECT count(*) FROM interaction_enrollments') == [(1,)]
+        assert j.topic_calls == (0 if withdrawn else 1)
+        assert j.row('SELECT count(*) FROM interaction_creations') == [(1,)]
+        print('PASS exact accepted first hop, sibling refusal and one retained intent',
+              {'unknown': unknown, 'withdrawn_before_send': withdrawn})
+    finally:
+        j.close()
+
+
 if __name__=='__main__':
     binary=str(pathlib.Path(sys.argv[1]).resolve())
     standalone_destination(binary)
@@ -285,3 +372,6 @@ if __name__=='__main__':
     invalid_title_then_corrected(binary)
     uncertain_topic(binary)
     retired_before_send(binary)
+    first_hop_creation(binary)
+    first_hop_creation(binary, unknown=True)
+    first_hop_creation(binary, withdrawn=True)

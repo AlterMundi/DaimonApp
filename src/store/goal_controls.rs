@@ -214,8 +214,14 @@ fn eligible_on(conn: &Connection, human: i64, entry: SessionKey, value: &Value) 
     let original = &d["original"];
     if original["relay"].is_object() {
         let reference = serde_json::from_value(original["input_ref"].clone())?;
-        let (source, relay) = relayed_source_on(conn, human, entry, target, &reference)?
-            .context("Exact goal relay authority changed")?;
+        let (source, _, relay) = super::session_requests::relayed_telegram_original_on(
+            conn,
+            human,
+            entry,
+            Some(target),
+            &reference,
+        )?
+        .context("Exact goal relay authority changed")?;
         if relay != original["relay"]
             || serde_json::to_value(&source)? != original["source"]
             || serde_json::to_value(super::dialogue::original_order_on(conn, &source)?)?
@@ -226,100 +232,6 @@ fn eligible_on(conn: &Connection, human: i64, entry: SessionKey, value: &Value) 
     }
     Ok(())
 }
-/// An integrator may interpret the original accepted in this selected work
-/// topic only through its exact, still-pending first-hop dependency receipt.
-fn relayed_source_on(
-    conn: &Connection,
-    human: i64,
-    entry: SessionKey,
-    target: SessionKey,
-    reference: &InputReference,
-) -> Result<Option<(crate::interaction::SourceInput, Value)>> {
-    let Some(update) = reference.update().filter(|_| entry != target) else {
-        return Ok(None);
-    };
-    let mut stmt = conn.prepare(
-        "SELECT r.id,p.id,i.id,x.channel
-         FROM interaction_direct_parents direct
-         JOIN interaction_instructions p ON p.id=direct.instruction
-         JOIN interaction_sources x ON x.id=p.input_id
-         JOIN interaction_session_requests r ON r.parent_instruction=p.id AND r.human_id=x.human_id
-         JOIN interaction_instructions i ON i.id=r.target_instruction
-         JOIN interaction_session_authors a ON a.input_id=i.input_id
-         JOIN sessions e ON e.id=i.session_id
-         JOIN native_input_receipts n ON n.update_id=x.update_id
-           AND n.native_thread=json_extract(p.doc,'$.native_thread')
-           AND n.native_turn=json_extract(p.doc,'$.native_turn')
-         WHERE x.update_id=?1 AND x.human_id=?2 AND x.channel LIKE 'telegram:%'
-           AND x.origin_chat=?3 AND x.origin_thread=?4
-           AND r.caller_chat=?3 AND r.caller_topic=?4
-           AND e.chat_id=?5 AND e.thread_id=?6 AND e.creator_user_id=?2
-           AND p.phase='accepted' AND i.phase='accepted' AND r.phase='requested'
-           AND json_extract(a.doc,'$.kind')='session_request'
-           AND json_extract(a.doc,'$.local_request')=r.id
-           AND json_extract(a.doc,'$.parent_instruction')=p.id
-           AND json_extract(a.doc,'$.authorized_human')=?2
-           AND json_extract(a.doc,'$.human_parent.input_ref')=?1
-           AND NOT EXISTS(SELECT 1 FROM interaction_session_withdrawals w WHERE w.parent_instruction=p.id)
-         ORDER BY r.id LIMIT 2",
-    )?;
-    let candidates = stmt
-        .query_map(
-            params![
-                update,
-                human,
-                target.chat_id,
-                target.thread_id,
-                entry.chat_id,
-                entry.thread_id
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            },
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let [(request, parent, received, channel)] = candidates.as_slice() else {
-        return Ok(None);
-    };
-    let original = super::session_requests::instruction_on(conn, parent, human)?;
-    let relay = super::session_requests::instruction_on(conn, received, human)?;
-    if original.target != target
-        || relay.target != entry
-        || !super::session_requests::current_bound_turn_on(conn, &original)?
-        || !super::session_requests::current_bound_turn_on(conn, &relay)?
-    {
-        return Ok(None);
-    }
-    let (source, message) = super::dialogue::original_owned_on(
-        conn,
-        target,
-        human,
-        original
-            .native_thread
-            .as_deref()
-            .context("Relay original native binding missing")?,
-        reference,
-        channel,
-        false,
-    )?;
-    if message
-        .as_ref()
-        .and_then(|m| m.from.as_ref())
-        .is_none_or(|u| u.is_bot)
-    {
-        bail!("Actual human input required");
-    }
-    Ok(Some((
-        source,
-        json!({"request":request,"parent":parent,"received":received}),
-    )))
-}
-
 fn source_on(
     conn: &Connection,
     actor: &LiveTaskActor<'_>,
@@ -327,10 +239,16 @@ fn source_on(
     target: Option<SessionKey>,
 ) -> Result<Value> {
     let relay = match target.filter(|_| actor.integrator) {
-        Some(target) => relayed_source_on(conn, actor.human, actor.key, target, reference)?,
+        Some(target) => super::session_requests::relayed_telegram_original_on(
+            conn,
+            actor.human,
+            actor.key,
+            Some(target),
+            reference,
+        )?,
         None => None,
     };
-    let (source, message, scope) = if let Some((source, scope)) = relay {
+    let (source, message, scope) = if let Some((source, _, scope)) = relay {
         super::matrix::unclaimed_on(
             conn,
             actor.human,
