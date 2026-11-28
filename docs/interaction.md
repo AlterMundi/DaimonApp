@@ -64,13 +64,14 @@ Telegram supplies a chat-scoped media group identifier on each album member.
 The adapter preserves it on each original update, and Gateway keeps the members
 under their individual update IDs in the existing ingress journal. An older
 adapter can omit the identifier on redelivery without rewriting the original.
-Conflicting known group identifiers for one update are rejected. Dispatch still
-handles each member separately. Album dispatch needs to collect the retained
-members across polls, with one bounded wait and one native original tied back to
-the member receipts. Poll boundaries alone do not identify complete albums.
-Scope the group to its verified sender, chat, and topic. Keep each member's
-caption, reply, and stop epoch. A member that arrives after native admission
-must remain accounted for without replaying the earlier submission.
+Conflicting known group identifiers for one update are rejected. Attachment-capable
+portable topics collect consecutive members from the same verified sender, chat,
+topic, and stop epoch within a short bounded window. Every member retains its
+original ID and caption. Gateway rechecks the topic generation and commits the
+aggregate instruction and the member dispatch states in one transaction.
+The native reply anchors to the first member. A member that arrives after
+aggregation is handled as its own original. A redelivery of a retained member
+cannot start another submission.
 
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Remove the Gateway's Telegram token

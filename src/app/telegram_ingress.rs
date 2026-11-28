@@ -169,6 +169,17 @@ async fn dispatch_work(app: &App, key: SessionKey, work: Dispatch) -> Result<()>
             capture
                 .await
                 .context("Nexus ingress capture task interrupted")??;
+            if update
+                .message
+                .as_ref()
+                .is_some_and(|message| message.media_group_id.is_some())
+                && app
+                    .shared
+                    .store
+                    .telegram_album_member_handled(update.update_id)?
+            {
+                return Ok(());
+            }
             let stop = update
                 .message
                 .as_ref()

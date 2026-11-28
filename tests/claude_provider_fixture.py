@@ -132,7 +132,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, dispatch, '"new_admission":false'),
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
-            assert self.server.original in json.dumps(data["messages"], ensure_ascii=False)
+            assert any(
+                self.server.original in text
+                for message in data["messages"]
+                for text in (
+                    [message["content"]] if isinstance(message["content"], str)
+                    else [block["text"] for block in message["content"] if block.get("type") == "text"]
+                )
+            )
             routed_human = getattr(self.server, "routed_paired_human", None)
             if routed_human is not None:
                 assert "Gateway delivered a routed packet with its author and source recorded." in system

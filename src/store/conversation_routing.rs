@@ -796,6 +796,7 @@ impl Store {
         }
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: input.tribu_source.clone(),
             transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
             channel: "conversation".into(),

@@ -524,6 +524,7 @@ impl Store {
         let epoch = current_epoch(tx, human)?;
         let mut source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "conversation".into(),
@@ -784,6 +785,7 @@ impl Store {
         .to_string();
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
@@ -1152,6 +1154,7 @@ impl Store {
         );
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "local-session-result".into(),
@@ -1244,6 +1247,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture".into(),
@@ -1358,6 +1362,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: if update.is_some() {
