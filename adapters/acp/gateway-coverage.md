@@ -195,7 +195,9 @@ reasoning and received the expected synthetic reply from the selected
 account. The common ACP client then reopened the exact native ID in a fresh
 process and recovered a synthetic marker from the earlier turn. Its live
 check also kept a denied admission and a missing session unsent. The server
-advertised image input.
+advertised image input. A real PNG reached the model as ACP image content.
+The Gateway image worker also passed the retained digest check and kept
+modified bytes unsent. Live paired surface acceptance is still open.
 An explicit Gateway foreground profile wires agy through the common ACP
 worker and keeps the SDK/local-provider protocol available for existing
 profiles. The worker qualification checks selected tool use, journal

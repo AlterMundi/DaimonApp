@@ -10,13 +10,13 @@ function readSelection(state, category) {
 
 /** Use the paired, sandboxed agy account for one journaled native turn. */
 export async function runAntigravityTurn({
-  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, allowedReadTools = [], instructions,
+  binary, cwd, env, model, effort, mcpServers = [], nativeSessionId, text, beforeSubmit, signal, allowedReadTools = [], instructions, images,
 }) {
   if (typeof model !== 'string' || !model || typeof effort !== 'string' || !effort) {
     throw new TypeError('Select the Antigravity model and reasoning effort');
   }
   return runAcpTurn({
-    binary, args: ['acp', '--sandbox', '--disable-telemetry', '--include-default-customizations=false'], cwd, env, text, beforeSubmit, signal, instructions,
+    binary, args: ['acp', '--sandbox', '--disable-telemetry', '--include-default-customizations=false'], cwd, env, text, beforeSubmit, signal, instructions, images,
     unavailable: 'antigravity_cli_unavailable',
     openFailure: 'antigravity_cli_session_unconfirmed',
     allowLargeCommandList: true,

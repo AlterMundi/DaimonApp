@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -111,6 +112,33 @@ test('agy foreground worker journals, uses its selected tool and resumes the sam
     { ...start, resumeNativeSessionId: first.nativeSessionId });
   assert.equal(resumed.outcome.phase, 'completed', resumed.outcome.reason);
   assert.deepEqual(resumed.outcome.text.trim().split(/\s+/), ['AUDIT-GREEN', 'jade-pocket']);
+});
+
+test('agy accepts an owner-retained image and leaves a changed image unsent', {
+  skip: !process.env.AGY_TEST_AUTHENTICATED_BINARY, timeout: 45_000,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'agy-image-worker-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const profile = join(root, 'profile.json');
+  await writeFile(profile, JSON.stringify({
+    adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
+    home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
+    matrixStatusCommand: await fixtureObservation(root), body,
+  }), { mode: 0o600 });
+  const redPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAQ0lEQVR4nO3OMQ0AIBAAsRfBjH9RiMEFx9CkAjpn7a9MPhASEhKqB0JCQkL1QEhISKgeCAkJCdUDISEhoXogJCT02AUpiX6I5IlWSAAAAABJRU5ErkJggg==', 'base64');
+  const path = join(root, createHash('sha256').update(redPng).digest('hex'));
+  await writeFile(path, redPng, { mode: 0o600 });
+  const start = { workspace: root, resumeNativeSessionId: null,
+    attachments: [{ path, mime: 'image/png' }] };
+  const accepted = await runWorker(t, profile,
+    'What primary color is the attached square? Reply only with the color.', () => true, start);
+  assert.equal(accepted.outcome.phase, 'completed', accepted.outcome.reason);
+  assert.match(accepted.outcome.text.trim(), /^red[.!]?$/i);
+
+  await writeFile(path, Buffer.alloc(redPng.length));
+  const changed = await runWorker(t, profile, 'Do not submit changed bytes.', null, start);
+  assert.deepEqual(changed.outcome,
+    { phase: 'not_submitted', reason: 'antigravity_attachment_unavailable' });
 });
 
 test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {
