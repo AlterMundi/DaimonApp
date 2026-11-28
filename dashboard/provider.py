@@ -411,7 +411,7 @@ class Provider:
 
     def portable_session_runtime(self, selected):
         profile=self.receiver.get('interaction',{})
-        portable_harnesses=('claude','antigravity','goose')
+        portable_harnesses=('claude','antigravity','goose','qwen')
         expected=next((row.get('harness') for row in profile.get('targets',[])
                        if profile.get('chat_id')==selected['chat_id']
                        and row.get('topic_id')==selected['thread_id']),None)

@@ -20,6 +20,7 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
     pub(super) acp_topic: Option<AcpTopicTurn<'a>>,
+    pub qwen_resume: Option<&'a str>,
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
@@ -153,6 +154,7 @@ pub(in crate::app) async fn execute_worker(
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
         ForegroundEngine::Antigravity if turn.acp_topic.is_some() => "daimon-gateway.antigravity-turn/v2",
+        ForegroundEngine::Qwen => "daimon-gateway.qwen-turn/v1",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
@@ -160,6 +162,7 @@ pub(in crate::app) async fn execute_worker(
         session,
         resume,
         acp_topic,
+        qwen_resume,
         human_original,
         native_goal_command,
         routed_human,
@@ -297,6 +300,14 @@ pub(in crate::app) async fn execute_worker(
                 );
             }
         }
+        if engine == ForegroundEngine::Qwen {
+            let path = workspace
+                .and_then(std::path::Path::to_str)
+                .filter(|path| path.len() <= 4096 && std::path::Path::new(path).is_absolute())
+                .context("Selected Qwen workspace is invalid")?;
+            start["workspace"] = json!(path);
+            start["resume"] = json!(qwen_resume);
+        }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
@@ -319,6 +330,16 @@ pub(in crate::app) async fn execute_worker(
                         "Claude preparation returned another native session"
                     );
                     expected
+                }
+                ForegroundEngine::Qwen => {
+                    let native = observed
+                        .and_then(Value::as_str)
+                        .context("Qwen preparation omitted its native session")?;
+                    anyhow::ensure!(
+                        qwen_resume.unwrap_or(session) == native,
+                        "Qwen preparation returned another native session"
+                    );
+                    native
                 }
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
@@ -362,6 +383,14 @@ pub(in crate::app) async fn execute_worker(
                 if let Some(store_id) = topic.store_id {
                     prepared["store_id"] = json!(store_id);
                 }
+            }
+            if engine == ForegroundEngine::Qwen {
+                let requested = workspace.and_then(std::path::Path::to_str);
+                anyhow::ensure!(
+                    frame["workspace"].as_str() == requested,
+                    "Qwen preparation omitted or changed the selected workspace"
+                );
+                prepared["workspace"] = json!(requested);
             }
             let committed = commit(prepared)?;
             if committed {
@@ -644,6 +673,7 @@ pub(in crate::app) async fn execute_worker(
                                 ForegroundEngine::Claude => outcome["cancelled"].is_array(),
                                 ForegroundEngine::Antigravity | ForegroundEngine::Goose =>
                                     acp_topic.is_some() && outcome.get("cancelled").is_none(),
+                                ForegroundEngine::Qwen => false,
                             },
                     Some("not_submitted") => true,
                     _ => false,
@@ -912,6 +942,7 @@ pub(super) async fn run_portable_turn(
                 session: &input.id,
                 resume: resume.as_slice(),
                 acp_topic: None,
+                qwen_resume: None,
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && crate::interaction::native_claude_goal(&input.text),
@@ -1144,6 +1175,11 @@ pub(super) async fn run_routed_portable(
                 "Antigravity return cannot resume its requesting native session"
             );
         }
+        let qwen_resume = if engine == ForegroundEngine::Qwen {
+            store.routed_qwen_continuation(local, &body)?
+        } else {
+            None
+        };
         let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
@@ -1192,12 +1228,14 @@ pub(super) async fn run_routed_portable(
                         native_session_id: acp_resume.as_deref(),
                         store_id: goose_store,
                     }),
+                    qwen_resume: qwen_resume.as_deref(),
                     human_original,
                     native_goal_command,
                     routed_human: !human_original,
                     routed_host_access: routed_host_access && !human_original,
                     session_instructions: session.session_prompt.as_deref(),
-                    workspace: (engine == ForegroundEngine::Claude && routed_host_access)
+                    workspace: ((engine == ForegroundEngine::Claude && routed_host_access)
+                        || engine == ForegroundEngine::Qwen)
                         .then_some(session.cwd.as_path()),
                     output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),
                     history_seed: history_seed.as_ref(),

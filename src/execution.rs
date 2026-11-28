@@ -8,6 +8,7 @@ pub(crate) enum Harness {
     Claude,
     Antigravity,
     Goose,
+    Qwen,
 }
 
 impl Harness {
@@ -21,6 +22,7 @@ impl Harness {
             Self::Claude => "claude",
             Self::Antigravity => "antigravity",
             Self::Goose => "goose",
+            Self::Qwen => "qwen",
         }
     }
 }

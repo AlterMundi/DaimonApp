@@ -52,6 +52,7 @@ pub struct InteractionConfig {
     pub matrix_transport: Option<MatrixTransportConfig>,
     pub claude_foreground: Option<ForegroundConfig>,
     pub goose_foreground: Option<ForegroundConfig>,
+    pub qwen_foreground: Option<ForegroundConfig>,
     pub antigravity_foreground: Option<ForegroundConfig>,
     /// Existing SDK worker for signed Matrix originals when a topic uses agy.
     pub antigravity_matrix_foreground: Option<ForegroundConfig>,
@@ -203,6 +204,7 @@ pub struct ForegroundConfig {
 pub(crate) enum ForegroundEngine {
     Claude,
     Goose,
+    Qwen,
     Antigravity,
 }
 
@@ -217,6 +219,7 @@ impl ForegroundEngine {
             Harness::Codex => None,
             Harness::Claude => Some(Self::Claude),
             Harness::Goose => Some(Self::Goose),
+            Harness::Qwen => Some(Self::Qwen),
             Harness::Antigravity => Some(Self::Antigravity),
         }
     }
@@ -226,6 +229,7 @@ impl ForegroundEngine {
         match self {
             Self::Claude => Harness::Claude,
             Self::Goose => Harness::Goose,
+            Self::Qwen => Harness::Qwen,
             Self::Antigravity => Harness::Antigravity,
         }
     }
@@ -238,7 +242,7 @@ impl ForegroundEngine {
         match self {
             Self::Claude => Some(8192),
             Self::Antigravity if agy_cli => Some(8192),
-            Self::Goose | Self::Antigravity => None,
+            Self::Goose | Self::Antigravity | Self::Qwen => None,
         }
     }
 }
@@ -496,6 +500,7 @@ impl InteractionConfig {
         for foreground in [
             &self.claude_foreground,
             &self.goose_foreground,
+            &self.qwen_foreground,
             &self.antigravity_foreground,
             &self.antigravity_matrix_foreground,
         ]
@@ -575,10 +580,14 @@ impl InteractionConfig {
                 bail!("Interaction requires a fixed same-being Claude route");
             }
         }
-        if [&self.goose_foreground, &self.antigravity_foreground]
-            .into_iter()
-            .flatten()
-            .any(|foreground| foreground.interaction_origin.is_some())
+        if [
+            &self.goose_foreground,
+            &self.antigravity_foreground,
+            &self.qwen_foreground,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|foreground| foreground.interaction_origin.is_some())
         {
             bail!("A signed Interaction origin is only supported for Claude");
         }
@@ -656,6 +665,7 @@ impl InteractionConfig {
         match engine {
             ForegroundEngine::Claude => self.claude_foreground.as_ref(),
             ForegroundEngine::Goose => self.goose_foreground.as_ref(),
+            ForegroundEngine::Qwen => self.qwen_foreground.as_ref(),
             ForegroundEngine::Antigravity => self.antigravity_foreground.as_ref(),
         }
     }
@@ -1197,6 +1207,7 @@ mod tests {
             matrix_transport: None,
             claude_foreground: None,
             goose_foreground: None,
+            qwen_foreground: None,
             antigravity_foreground: None,
             antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,

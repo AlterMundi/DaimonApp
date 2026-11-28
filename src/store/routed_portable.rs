@@ -1038,6 +1038,25 @@ impl Store {
         ).optional().context("Could not read the selected ACP topic session")
     }
 
+    pub(crate) fn routed_qwen_continuation(
+        &self,
+        local: i64,
+        body: &Value,
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT p.native_thread_id FROM turns p JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
+             WHERE p.id<t.id AND p.execution_harness='qwen'
+               AND p.execution_generation=t.execution_generation AND p.native_thread_id IS NOT NULL
+               AND json_extract(p.execution_body,'$.beingRef')=json_extract(?2,'$.beingRef')
+               AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?2,'$.embodimentId')
+               AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?2,'$.incarnationId')
+             ORDER BY p.id DESC LIMIT 1",
+            params![local, serde_json::to_string(body)?],
+            |row| row.get(0),
+        ).optional()?)
+    }
+
     pub(crate) fn routed_claude_continuations(
         &self,
         local: i64,
@@ -1397,7 +1416,7 @@ impl Store {
                 Harness::Claude | Harness::Antigravity => {
                     Uuid::parse_str(id).is_ok_and(|v| v.to_string() == *id)
                 }
-                Harness::Goose => {
+                Harness::Goose | Harness::Qwen => {
                     !id.is_empty()
                         && id.len() <= 256
                         && !id.chars().any(|ch| ch.is_control() || ch.is_whitespace())
@@ -2018,6 +2037,62 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("initial")
+        );
+    }
+
+    #[test]
+    fn qwen_continuation_keeps_the_topic_generation_and_signed_body() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let topic = |id| {
+            store
+                .ensure_session(SessionKey::new(100, Some(id)), 100, &defaults)
+                .unwrap()
+                .id
+        };
+        let current = topic(7);
+        let foreign = topic(8);
+        let body = json!({"beingRef":"compaii","embodimentId":"qwen-itaca",
+            "incarnationId":"current","manifestHash":"selected"});
+        let add = |session, harness, generation, identity: &Value, native| {
+            store.conn.lock().unwrap().query_row(
+                "INSERT INTO turns (session_id,from_user_id,prompt,status,started_at,native_thread_id,
+                   execution_harness,execution_generation,execution_body)
+                 VALUES (?1,100,'test','completed','2026-11-28',?2,?3,?4,?5) RETURNING id",
+                params![session, native, harness, generation, identity.to_string()],
+                |row| row.get::<_, i64>(0),
+            ).unwrap()
+        };
+        let mut previous_manifest = body.clone();
+        previous_manifest["manifestHash"] = json!("earlier");
+        add(
+            current,
+            "qwen",
+            "active",
+            &previous_manifest,
+            Some("retained"),
+        );
+        add(foreign, "qwen", "active", &body, Some("other-topic"));
+        add(current, "qwen", "retired", &body, Some("other-generation"));
+        add(current, "claude", "active", &body, Some("other-harness"));
+        let mut previous_body = body.clone();
+        previous_body["incarnationId"] = json!("earlier");
+        add(
+            current,
+            "qwen",
+            "active",
+            &previous_body,
+            Some("other-incarnation"),
+        );
+        add(current, "qwen", "active", &body, None);
+        let local = add(current, "qwen", "active", &body, None);
+        assert_eq!(
+            store
+                .routed_qwen_continuation(local, &body)
+                .unwrap()
+                .as_deref(),
+            Some("retained")
         );
     }
 
