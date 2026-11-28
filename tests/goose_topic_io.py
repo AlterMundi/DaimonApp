@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import sys
-from threading import Thread
+from threading import Event, Thread
 import uuid
 
 from conversation_routing_io import CanonicalRouting
@@ -24,10 +24,22 @@ class Provider(BaseHTTPRequestHandler):
         self.server.requests.append(body)
         answer = "History retained." if "remember-heron-381" in json.dumps(body["messages"]) else "History absent."
         events = []
+        last_user = next(message for message in reversed(body["messages"]) if message["role"] == "user")
+        interrupt = "hold-goose-interruption-481" in json.dumps(last_user)
         for delta, reason in [({"role": "assistant", "content": answer}, None), ({}, "stop")]:
             events.append(dict(id="fixture", created=1766229303, model="gpt-4o-mini",
                                object="chat.completion.chunk",
                                choices=[dict(index=0, delta=delta, finish_reason=reason)]))
+        if interrupt:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(events[0])}\n\n".encode())
+            self.wfile.flush()
+            self.server.exposed.set()
+            self.server.release.wait(10)
+            return
+
         data = "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
         encoded = data.encode()
         self.send_response(200)
@@ -41,6 +53,8 @@ def qualify(binary, goose):
     journey = CanonicalRouting(binary)
     provider = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     provider.requests = []
+    provider.exposed = Event()
+    provider.release = Event()
     serving = Thread(target=provider.serve_forever, daemon=True)
     serving.start()
     try:
@@ -131,6 +145,22 @@ timeout_seconds=5
         assert retained.get("new_input") is False, retained
         assert journey.row("SELECT count(*) FROM turns WHERE execution_harness='goose'") == [(2,)]
         assert len(provider.requests) == 2
+        retained_results = journey.row("SELECT count(*) FROM interaction_results")
+
+        held = journey.admit("hold-goose-interruption-481", topic=7)
+        assert provider.exposed.wait(15), state(held)
+        assert state(held) == ("submitting", "running", session, scope, None), state(held)
+        journey.command("/interrupt", "Stop signal sent.", topic=7)
+        assert settled(held) == ("cancelled", "failed", session, scope, None), state(held)
+        assert journey.row("""
+            SELECT json_extract(i.doc,'$.native_interrupt_confirmed')
+            FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id WHERE s.event_id=?
+            """, (str(held),)) == [(1,)]
+        assert journey.row("SELECT count(*) FROM interaction_results") == retained_results
+        provider.release.set()
+        following = journey.admit("Continue after the interrupted turn.", topic=7)
+        assert settled(following) == ("accepted", "completed", session, scope, "History retained."), state(following)
+        assert len(provider.requests) == 4
 
         journey.stop()
         other_store = journey.root / "other-goose-store"
@@ -147,7 +177,7 @@ timeout_seconds=5
         journey.wait_control_socket(journey.socket)
         replaced_store = journey.admit("Do not load another session store.", topic=7)
         assert settled(replaced_store) == ("retained_unsent", "failed", None, None, None), state(replaced_store)
-        assert len(provider.requests) == 2
+        assert len(provider.requests) == 4
 
         journey.stop()
         profile.write_text(json.dumps(profile_doc))
@@ -159,10 +189,11 @@ timeout_seconds=5
         journey.wait_control_socket(journey.socket)
         refused = journey.admit("Do not load the other workspace.", topic=7)
         assert settled(refused) == ("retained_unsent", "failed", None, None, None), state(refused)
-        assert len(provider.requests) == 2
+        assert len(provider.requests) == 4
         print("Goose resumed the same scoped topic across Gateway restart and both surfaces, "
-              "deduplicated the original and refused a mismatched store or workspace.")
+              "deduplicated the original, confirmed native interruption and refused a mismatched store or workspace.")
     finally:
+        provider.release.set()
         journey.close()
         provider.shutdown()
         provider.server_close()

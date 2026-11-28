@@ -311,9 +311,10 @@ async function main(path) {
     const outcome = await run({
       binary: profile.binary, cwd: profile.cwd, env, signal: stop.signal,
       nativeSessionId: first.resumeNativeSessionId ?? undefined,
+      interruptSignal: topic ? interrupt.signal : undefined,
       ...(agy ? { model: profile.model, effort: profile.effort,
         instructions, images,
-        onInputAccepted: accept, interruptSignal: interrupt.signal,
+        onInputAccepted: accept,
         async onToolPermission(nativeSessionId, toolCall) {
           if (toolCall.name !== 'mcp_matrix_' + CONTROLLER) return true;
           const key = controllerCallKey(toolCall.rawInput);
@@ -351,10 +352,12 @@ async function main(path) {
         }
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission', nativeSessionId,
           ...(topic ? { workspace: profile.cwd, ...(!agy ? { storeId: first.storeId } : {}) } : {}),
-          ...(agy ? { inputAcceptance: true, workAcceptance: true, targetedInterrupt: true } : {}) }, stop.signal);
+          ...(agy ? { inputAcceptance: true, workAcceptance: true } : {}),
+          ...(topic ? { targetedInterrupt: true } : {}) }, stop.signal);
         const decision = (await pipe.next()).value;
-        const acceptanceFields = ['observeAcceptance', 'requireWork', 'targetedInterrupt'].filter(field => agy && decision?.[field] === true);
-        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed', ...acceptanceFields])
+        const extensions = ['observeAcceptance', 'requireWork'].filter(field => agy && decision?.[field] === true);
+        if (topic && decision?.targetedInterrupt === true) extensions.push('targetedInterrupt');
+        if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed', ...extensions])
             || (decision.requireWork === true && decision.observeAcceptance !== true)
             || decision.schema !== schema || decision.type !== 'submission_decision'
             || decision.inputId !== first.inputId || decision.sessionId !== first.sessionId

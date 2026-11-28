@@ -127,8 +127,12 @@ journal's original and return uniqueness.
 Goose keeps cancelled text in its native transcript. The ACP client can load
 an explicitly selected existing native session in a new process and rechecks
 the exact tool catalog before journal admission. A missing or mismatched
-session leaves the original unsent. Status and recovery preserve uncertain
-originals.
+session leaves the original unsent. On selected resumable topics, Gateway
+uses ACP `session/cancel` for `/interrupt` and records interruption only
+when the committed prompt returns its matching `cancelled` receipt.
+Partial responses stay out of the topic's published results. A missing
+receipt leaves the original uncertain, and a Gateway shutdown retains its
+existing teardown path.
 
 For a topic, set both `interaction_direct = true` and
 `goose_topic_store_id` (a UUID) on its selected Goose foreground profile.
@@ -143,8 +147,8 @@ since native history can retain its result. The private Matrix route continues t
 worker contract. To exercise both topic surfaces through Gateway, run
 `python3 tests/goose_topic_io.py /absolute/telecodex /absolute/goose-acp` with the
 pinned patched binary. The fixture uses a disposable journal and a loopback
-provider, restarts Gateway, and checks continuation, duplicate suppression and
-workspace mismatch.
+provider, restarts Gateway, and checks continuation, duplicate suppression,
+native interruption without partial publication, and store and workspace mismatch.
 
 ## Selecting Goose in Gateway
 

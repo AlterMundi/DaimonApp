@@ -141,6 +141,8 @@ for line in sys.stdin:
   const original = 'native-goose-probe-42';
   const resumed = 'native-goose-continue-44';
   const interrupted = 'native-goose-interrupt-43';
+  const targeted = 'native-goose-targeted-interrupt-45';
+  const interrupt = new AbortController();
   const stop = new AbortController();
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST') {
@@ -151,6 +153,15 @@ for line in sys.stdin:
     for await (const bytes of request) raw += bytes;
     const body = JSON.parse(raw);
     requests.push({ url: request.url, body });
+    if (JSON.stringify(body.messages).includes(targeted)) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('data: ' + JSON.stringify({
+        id: 'fixture-45', model: 'gpt-4o-mini', created: 1766229303, object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'Partial result' }, finish_reason: null }],
+      }) + '\n\n');
+      interrupt.abort();
+      return;
+    }
     if (JSON.stringify(body.messages).includes(interrupted)) {
       stop.abort();
       return;
@@ -228,4 +239,11 @@ for line in sys.stdin:
     phase: 'uncertain', sessionId: interruptedSession, reason: 'native_result_unconfirmed',
   });
   assert.equal(requests.length, 3);
+
+  const confirmed = await runGooseTurn({
+    binary, cwd, env, toolNames: [toolName], text: targeted, interruptSignal: interrupt.signal,
+    nativeSessionId: admitted, mcpServers, beforeSubmit: session => session === admitted,
+  });
+  assert.deepEqual(confirmed, { phase: 'interrupted', sessionId: admitted });
+  assert.equal(requests.length, 4);
 });
