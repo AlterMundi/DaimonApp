@@ -195,7 +195,27 @@ topic_id=8
         self.provider.presentation.side_effect=with_projects
         self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['projects'],
                          {'repositories':repositories,'next':None,'restarted':False})
-        self.assertTrue(all('projects' not in room for room in self.provider.topic_rooms(include_projects=True)['rooms']))
+        initial=self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]
+        self.assertEqual(initial['work'],{'execution':'unknown','question':False,'result':False})
+        self.observation['observations']['100:7']['native']='new-harness-thread'
+        self.observation['observations']['100:7']['observed_at']=time.time()
+        self.save()
+        self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['work'],
+                         {'execution':'working','question':True,'result':False})
+        self.destinations[0]['result_available']=True
+        # The actual retained-result reader joins canonical items in the owned session.
+        with closing(sqlite3.connect(self.db)) as db:
+            db.executescript('''ALTER TABLE turns ADD COLUMN id INTEGER;
+                CREATE TABLE interaction_native_messages(item_id TEXT, local_turn INTEGER,
+                    native_thread TEXT, phase TEXT);
+                INSERT INTO turns VALUES(2,100,'2026-11-28T10:00:00Z',1);
+                INSERT INTO interaction_native_messages VALUES('receipt',1,'new-harness-thread','final_answer');''')
+        self.observation['observations']['100:7']['observed_at']=time.time()-30
+        self.save()
+        self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['work'],
+                         {'execution':'unknown','question':False,'result':True})
+        catalog=self.provider.topic_rooms(include_projects=True)['rooms']
+        self.assertTrue(all('projects' not in room and 'work' not in room for room in catalog))
         row=repositories[0]
         historical={**row,'commit':'b'*40}
         selection={key:row[key] for key in ('project','repository')}

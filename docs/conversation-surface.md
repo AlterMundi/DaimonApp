@@ -184,3 +184,10 @@ locators, workspace paths, source text and effect receipts stay in the owner.
 The conversation frame and the general room catalogue carry no project
 references. A room visit and the explicit project read are separate. The
 project read uses the current actor and room and does not open model work.
+
+The paired bridge's exact project read can include a `work` observation
+derived from Session Workspace. It carries only `execution` (unknown, idle,
+queued or working), `question` and `result` presence flags. A stale
+execution observation becomes unknown. The project read does not disclose
+question or result text, native identifiers, or result revisions. Select
+the current Conversation reader to inspect or respond to an original.
