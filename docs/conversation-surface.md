@@ -191,3 +191,21 @@ queued or working), `question` and `result` presence flags. A stale
 execution observation becomes unknown. The project read does not disclose
 question or result text, native identifiers, or result revisions. Select
 the current Conversation reader to inspect or respond to an original.
+
+### Open the current topic result
+
+A compatible frame advertises `topicResult`. The paired host sends
+`topic-result-open` with a request UUID and the visited room reference, using
+the existing actor, binding, visit and channel. The current Workspace reader
+resolves that room again, then reads its ordinary, owner-scoped Conversation
+page. For Codex the displayed item must match the registry's result revision.
+Portable harnesses use the latest final in the selected generation's retained
+exchange page. If that result is unavailable in the page, the reader declines
+rather than displaying a different result. Text continuations use the exact
+selected event and history revision.
+
+The frame opens the result in a read-only dialogue. Its reply carries only
+the correlated opening outcome. Neither result text nor history coordinates
+return to the host. The host cancels the request when leaving the room or
+closing Conversation. The composer, drafts and active recipient stay as they
+were. The result reader does not start a model or send a human original.

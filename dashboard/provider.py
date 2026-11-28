@@ -426,7 +426,7 @@ class Provider:
                 selected['work']={
                     'execution':execution if row['fresh'] and execution in ('working','queued','idle') else 'unknown',
                     'question':row['human_action_pending'] is True,
-                    'result':row['result_available'] is True,
+                    'result':not row['is_entry'] and row['result_available'] is True,
                 }
                 chat,topic=map(int,row['audio_key'].split(':'))
                 target={'chat_id':chat,'thread_id':topic}

@@ -3,17 +3,17 @@
 window.ConversationSurface=(()=>{
   const uuid=v=>typeof v==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
   const topicKey=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
-  function create({readTopics,selectTopic}={}){
+  function create({readTopics,selectTopic,openResult,closeResult}={}){
     const {surfaceParent:parent,surfaceVisit:visit}=(document.documentElement?.dataset||{});
     if(!parent||!uuid(visit))return;
     const channel=crypto.randomUUID(),host=window.parent,tracked=new Map();
     let actor,binding,connected=false,pending,closed=false,avatarPlayback=false,lastLevel,lastSpeech=0;
-    let topicsEnabled=false,directEnabled=false,topicRead,topicSelection;
+    let topicsEnabled=false,directEnabled=false,resultEnabled=false,topicRead,topicSelection,resultRead;
     let avatarMicrophone=false,lastMicLevel=0,lastMicAt=-Infinity,microphoneGeneration=0;
     const envelope=()=>({schema:'conversation.surface/v1',visit,channel,actor,binding});
     function send(type,fields={}){if(!closed&&actor&&binding&&host!==window)host.postMessage({...envelope(),type,...fields},parent);}
-    function cancel(){playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;directEnabled=false;topicRead=topicSelection=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
-    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{}),...(selectTopic?{topicDirect:true}:{})}});}
+    function cancel(){closeResult?.();playback(0);microphone(0);microphoneGeneration++;connected=false;topicsEnabled=false;directEnabled=resultEnabled=false;topicRead=topicSelection=resultRead=undefined;avatarMicrophone=false;lastMicAt=-Infinity;avatarPlayback=false;lastLevel=undefined;lastSpeech=0;if(pending){clearTimeout(pending.timer);pending.reject(Error('World connection changed. Your draft is kept.'));pending=undefined;}}
+    function ready(){if(actor&&binding)send('ready',{features:{avatarMicrophone:true,...(readTopics?{topicRooms:true}:{}),...(selectTopic?{topicDirect:true}:{}),...(openResult?{topicResult:true}:{})}});}
     function identity(value){if(actor!==value){cancel();actor=typeof value==='string'&&/^human:[A-Za-z0-9:._/-]{1,240}$/.test(value)?value:undefined;ready();}}
     function bind(value){if(binding!==value){cancel();binding=/^[a-f0-9]{64}$/.test(value||'')?value:undefined;ready();}}
     function receive(event){
@@ -26,6 +26,7 @@ window.ConversationSurface=(()=>{
         connected=true;
         topicsEnabled=!!readTopics&&d.features?.topicRooms===true;
         directEnabled=!!selectTopic&&d.features?.topicDirect===true;
+        resultEnabled=!!openResult&&d.features?.topicResult===true;
         avatarPlayback=d.features?.avatarPlayback===true;
         avatarMicrophone=d.features?.avatarMicrophone===true;
         return;
@@ -36,6 +37,14 @@ window.ConversationSurface=(()=>{
       }
       if(d.type==='topic-direct-select'){
         if(connected&&directEnabled)void selectDirect(d);
+        return;
+      }
+      if(d.type==='topic-result-open'){
+        if(connected&&resultEnabled)void showResult(d);
+        return;
+      }
+      if(d.type==='topic-result-cancel'){
+        if(resultRead&&resultRead.request===d.request){resultRead=undefined;closeResult?.();}
         return;
       }
       if(!connected||!pending||d.request!==pending.request||d.id!==pending.id)return;
@@ -61,6 +70,18 @@ window.ConversationSurface=(()=>{
         if(current())send('topic-direct-readback',{request,unavailable:true});
       }finally{
         if(current())topicSelection=undefined;
+      }
+    }
+    async function showResult({request,room}){
+      if(!uuid(request)||!topicKey(room))return;
+      closeResult?.();
+      const read={request};resultRead=read;
+      const current=()=>connected&&resultEnabled&&resultRead===read;
+      try{
+        const opened=await openResult(room,current);
+        if(current())send('topic-result-readback',{request,room,opened:opened===true});
+      }catch{
+        if(current())send('topic-result-readback',{request,room,opened:false});
       }
     }
     async function projectRooms({request,room,after}){

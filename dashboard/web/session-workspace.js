@@ -302,6 +302,31 @@
       open(row,{restore:true});
       return {room};
     }
+    async function readHostedResult(room,nextBinding,current){
+      if(!hosted||!resultId(room)||!nextBinding||!current()||!await refresh(nextBinding)||
+        !current()||nextBinding!==binding||!allowed||!complete)return null;
+      const matches=[...inventory.values()].filter(row=>row.topic_ref===room&&!row.is_entry&&row.result_available===true);
+      if(matches.length!==1)return null;
+      const row=matches[0],revision=row.result_revision;
+      const portable=['claude','antigravity','goose'].includes(row.runtime?.harness);
+      if(!sessionId(row.id)||!portable&&!resultId(revision))return null;
+      const path=`interaction/sessions/${row.id}`,owned=epoch;
+      const authorized=()=>current()&&owned===epoch&&allowed&&nextBinding===binding&&
+        inventory.get(row.id)?.result_available===true&&inventory.get(row.id)?.result_revision===revision;
+      const page=await api(path);
+      if(!authorized()||page.schema!=='daimon.session-view/v1'||page.session!==row.id||!resultId(page.revision)||
+        !Array.isArray(page.items)||page.items.length>80)return null;
+      const item=[...page.items].reverse().find(entry=>entry.kind==='message'&&entry.role==='assistant'&&
+        (portable||entry.result_revision===revision));
+      if(!item||typeof item.text!=='string'||!Number.isSafeInteger(item.position))return null;
+      return {title:row.title,item,async part(offset){
+        if(!authorized())return null;
+        const value=await api(path+'?'+new URLSearchParams({revision:page.revision,event:item.position,text_offset:offset}));
+        const next=value.items?.[0];
+        return authorized()&&value.revision===page.revision&&value.session===row.id&&
+          next?.id===item.id&&next.offset===offset?next:null;
+      }};
+    }
     function revoke(){
       clearStatusFailure();retryStatus.hidden=true;allowed=false;complete=false;inventory.clear();rows.clear();list.replaceChildren();clearHistory();view.hidden=true;timeline.hidden=false;
       shell.hidden=false;rail.hidden=true;toolbar.hidden=hosted||!selected();
@@ -467,7 +492,7 @@
       if(row?.destination?.revision===current.destination?.revision &&
           row?.destination?.source===current.destination?.source)return row?.runtime;
     }
-    return {refresh,selectHostedTopic,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
+    return {refresh,selectHostedTopic,readHostedResult,observeSubmission,previewSubmission,settlePreview,capture,syncAudio,pinState,pinSource,audioScope,runtime,reset:()=>resetBinding(undefined),get active(){return allowed;},
       canSend(){const value=selected();if(!value||value.is_entry)return true;const row=inventory.get(value.id);return !!(allowed&&value.destination&&row?.destination?.source===value.destination.source&&row.destination.revision===value.destination.revision);}};
   }
   window.SessionWorkspace={mount};
