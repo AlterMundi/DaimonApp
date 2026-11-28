@@ -21,17 +21,23 @@ pub(super) fn telegram_original_epoch_for_parent(
     source: &SourceInput,
     parent: &Instruction,
 ) -> Result<Option<String>> {
-    let accepted_turn = (parent.phase == Phase::Accepted && parent.native_turn.is_some())
-        .then_some(parent.local_turn)
-        .flatten();
-    telegram_original_epoch_on(conn, source, parent.target, accepted_turn)
+    let accepted_parent = if parent.phase == Phase::Accepted {
+        parent
+            .local_turn
+            .zip(parent.native_thread.as_deref())
+            .zip(parent.native_turn.as_deref())
+            .map(|((local, thread), turn)| (local, thread, turn))
+    } else {
+        None
+    };
+    telegram_original_epoch_on(conn, source, parent.target, accepted_parent)
 }
 
 fn telegram_original_epoch_on(
     conn: &Connection,
     source: &SourceInput,
     target: SessionKey,
-    accepted_turn: Option<i64>,
+    accepted_parent: Option<(i64, &str, &str)>,
 ) -> Result<Option<String>> {
     let Some(update) = source.update_id else {
         return Ok(None);
@@ -85,9 +91,24 @@ fn telegram_original_epoch_on(
         return Ok(None);
     }
     if source.origin.thread_id == target.thread_id {
-        let accepted_parent = matches!(status.as_str(), "started" | "settled")
-            && accepted_turn.is_some()
-            && accepted_turn == retained_turn;
+        let accepted_parent = if let Some((local, thread, turn)) = accepted_parent
+            && Some(local) == retained_turn
+        {
+            match status.as_str() {
+                "started" | "settled" => true,
+                // Reattaching a collector can leave the Telegram transport
+                // uncertain after native input acceptance was already retained.
+                "undetermined" => conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_input_receipts
+                     WHERE update_id=?1 AND native_thread=?2 AND native_turn=?3)",
+                    params![update, thread, turn],
+                    |row| row.get(0),
+                )?,
+                _ => false,
+            }
+        } else {
+            false
+        };
         return Ok(
             (matches!(status.as_str(), "processing" | "handled") || accepted_parent)
                 .then_some(epoch),
@@ -1503,11 +1524,11 @@ mod tests {
             VALUES(41,?1,'settled','fixture',46,'2026-11-28')", [raw.to_string()]).unwrap();
         assert_eq!(telegram_original_epoch(&conn, &source, key).unwrap(), None);
         assert_eq!(
-            telegram_original_epoch_on(&conn, &source, key, Some(45)).unwrap(),
+            telegram_original_epoch_on(&conn, &source, key, Some((45, "native", "turn"))).unwrap(),
             None
         );
         assert_eq!(
-            telegram_original_epoch_on(&conn, &source, key, Some(46))
+            telegram_original_epoch_on(&conn, &source, key, Some((46, "native", "turn")))
                 .unwrap()
                 .as_deref(),
             Some("initial")
@@ -1518,8 +1539,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            telegram_original_epoch_on(&conn, &source, key, Some(46)).unwrap(),
+            telegram_original_epoch_on(&conn, &source, key, Some((46, "native", "turn"))).unwrap(),
             None
+        );
+        conn.execute(
+            "INSERT INTO native_input_receipts VALUES(41,'native','turn','2026-11-28')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(telegram_original_epoch(&conn, &source, key).unwrap(), None);
+        for parent in [
+            (45, "native", "turn"),
+            (46, "other", "turn"),
+            (46, "native", "other"),
+        ] {
+            assert_eq!(
+                telegram_original_epoch_on(&conn, &source, key, Some(parent)).unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            telegram_original_epoch_on(&conn, &source, key, Some((46, "native", "turn")))
+                .unwrap()
+                .as_deref(),
+            Some("initial")
         );
     }
 
