@@ -121,8 +121,15 @@ Codex Core's missing-rollout error on the exact saved thread. Gateway
 recognizes it only from the metadata resume reply, with the native invalid
 request code and the exact requested thread ID. A later failure or a refusal
 for a different thread cannot qualify the original for cold continuation.
-The original stays retained and unsent. The test checks that Gateway preserves
-the native binding and dispatches neither a fresh thread nor a turn.
+The original stays retained and unsent. On an existing routed paired-human
+Codex startup with verified project context, Gateway records the refusal
+against the exact original and local execution. It binds the observed
+predecessor and the verified checkpoint digest and retains the event in
+the owner audit. The existing owner input status exposes
+`recoveries[].codex_recovery = "missing_native_history"` for the current
+route. Reading this status does not reserve a successor or authorize another
+submission. The fixture restarts Gateway and verifies the same receipt,
+generation and preserved native binding, with no fresh thread or turn.
 
 The ordinary native replacement changes the conversation generation and
 retires queued inputs tied to the old binding. Cold continuation needs a

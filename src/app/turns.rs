@@ -900,6 +900,7 @@ pub(super) async fn process_turn(
                 let requester_user_id = queued.request.from_user_id;
                 let session_key = session.key;
                 let history_owner = historical_context.as_ref().map(|_| session.clone());
+                let historical_context = historical_context.clone();
                 let voice_update = queued.update_id;
                 // A control may retain a Telegram update ID while starting a
                 // native goal/merge/Nexus prompt. That is not raw human input.
@@ -1379,6 +1380,27 @@ pub(super) async fn process_turn(
     steered_files
         .completed
         .store(run_result.is_ok(), std::sync::atomic::Ordering::Release);
+    if run_result.as_ref().err().is_some_and(|error| {
+        error.is::<crate::codex::MissingNativeRollout>()
+            && error.is::<crate::codex::NativeInputNotSubmitted>()
+    }) && let (Some(context), Some(id), Some(native), Some(config)) = (
+        historical_context.as_ref(),
+        queued.interaction.as_deref(),
+        session.codex_thread_id.as_deref(),
+        shared.config.interaction.as_ref(),
+    ) && let Ok(seed) = serde_json::from_str::<serde_json::Value>(context)
+        && let Some(project) = seed["projectCheckpoint"].as_str()
+        && let Err(error) = shared.store.retain_codex_project_refusal(
+            config.entry(),
+            queued.request.from_user_id,
+            id,
+            turn_id,
+            native,
+            project,
+        )
+    {
+        tracing::warn!(%error, "Codex project recovery refusal could not be correlated");
+    }
     if run_result
         .as_ref()
         .err()

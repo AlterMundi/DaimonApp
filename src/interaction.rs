@@ -927,6 +927,15 @@ pub struct Instruction {
     pub local_turn: Option<i64>,
     pub native_thread: Option<String>,
     pub native_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_recovery_refusal: Option<CodexRecoveryRefusal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CodexRecoveryRefusal {
+    pub local_turn: i64,
+    pub previous_native: String,
+    pub checkpoint_sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

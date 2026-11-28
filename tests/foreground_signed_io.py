@@ -1002,6 +1002,23 @@ timeout_seconds=5
                 self.assertEqual(receipt["text"], prompt)
                 self.assertFalse(receipt["retired"])
                 self.assertEqual(receipt["routing"]["phase"], "retained_unsent")
+                recovery = receipt["recoveries"][0]
+                self.assertEqual(recovery["instruction"], receipt["routing"]["instruction"])
+                self.assertEqual(recovery.get("codex_recovery"), "missing_native_history", receipt)
+                refusal, = journey.row(
+                    "SELECT json_extract(doc,'$.codex_recovery_refusal') "
+                    "FROM interaction_instructions WHERE id=?",
+                    (recovery["instruction"],),
+                )[0]
+                refusal = json.loads(refusal)
+                self.assertEqual(refusal["previous_native"], codex)
+                self.assertEqual(len(refusal["checkpoint_sha256"]), 64)
+                audit_query = (
+                    "SELECT details_json FROM audit_log WHERE action='codex_project_recovery_refusal'"
+                )
+                self.assertEqual([json.loads(row[0]) for row in journey.row(audit_query)], [{
+                    "instruction": recovery["instruction"], "receipt": refusal,
+                }])
                 self.assertEqual(rejected_resumes, [codex])
                 self.assertFalse([
                     rpc["method"] for rpc in journey.rpc[offset:]
@@ -1013,6 +1030,15 @@ timeout_seconds=5
                 self.assertEqual(journey.row(generation_query, (session,)), generation)
                 self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
                 self.assertEqual(provider.calls, calls_before_switch)
+                journey.idle()
+                journey.stop()
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                restored_browser, _ = selected_browser()
+                self.assertEqual(restored_browser.status(original)["recoveries"], [recovery])
+                self.assertEqual(journey.row(audit_query)[0][0].count(recovery["instruction"]), 1)
+                self.assertEqual(len(journey.row(audit_query)), 1)
+                self.assertEqual(journey.row(generation_query, (session,)), generation)
                 return
 
             def native_start(original):

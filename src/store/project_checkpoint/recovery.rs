@@ -223,6 +223,86 @@ impl Store {
         )
     }
 
+    /// Retain an exact refusal observed by the native adapter. This receipt
+    /// fences recovery to one original and one verified project selection.
+    pub(crate) fn retain_codex_project_refusal(
+        &self,
+        entry: SessionKey,
+        human: i64,
+        original_id: &str,
+        local: i64,
+        previous_native: &str,
+        context: &str,
+    ) -> Result<()> {
+        use crate::interaction::{CodexRecoveryRefusal, TransportPhase};
+        use sha2::{Digest, Sha256};
+
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let original = interaction::instruction_on(&tx, original_id, human)?
+            .context("Cold recovery original missing")?;
+        let bound: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns t JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_entry_generations g ON g.session_id=s.id
+             JOIN bot_state b ON b.key='execution_root:'||t.id
+             WHERE t.id=?1 AND t.status='running' AND t.execution_harness='codex'
+               AND t.execution_generation=g.generation AND t.native_thread_id IS NULL
+               AND t.from_user_id=?2 AND s.creator_user_id=?2 AND s.codex_thread_id=?3
+               AND s.force_fresh_thread=0 AND json_extract(b.value,'$')=?4
+               AND EXISTS(SELECT 1 FROM interaction_instructions i
+                 WHERE i.id=?4 AND i.session_id=s.id AND i.instance_id=?5))",
+            params![local, human, previous_native, original_id, self.instance_id],
+            |row| row.get(0),
+        )?;
+        if !bound
+            || original.phase != TransportPhase::Queued
+            || !interaction::target_execution_allowed_on(&tx, &original)?
+            || stopping::fenced_on(&tx, original.target)?
+            || maintenance_writer_held_on(&tx, original.target)?
+            || !paired_source_on(&tx, &original)?
+        {
+            return Ok(());
+        }
+        let Some(current) = recovery_on(&tx, original.target, entry, human)? else {
+            return Ok(());
+        };
+        if verified_context(&current) != context {
+            return Ok(());
+        }
+        let mut retained = interaction::transport_on(
+            &tx,
+            original_id,
+            human,
+            local,
+            TransportPhase::RetainedUnsent,
+            None,
+        )?;
+        retained.codex_recovery_refusal = Some(CodexRecoveryRefusal {
+            local_turn: local,
+            previous_native: previous_native.to_owned(),
+            checkpoint_sha256: format!("{:x}", Sha256::digest(context.as_bytes())),
+        });
+        tx.execute(
+            "UPDATE interaction_instructions SET doc=?2 WHERE id=?1",
+            params![original_id, serde_json::to_string(&retained)?],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_log(actor_user_id,action,details_json,created_at)
+             VALUES(?1,'codex_project_recovery_refusal',?2,?3)",
+            params![
+                human,
+                json!({
+                    "instruction": original_id,
+                    "receipt": retained.codex_recovery_refusal
+                })
+                .to_string(),
+                now_string()
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Called only by existing paired-human startup paths. It never dispatches
     /// or writes another copy of an original effect.
     pub(crate) fn project_startup(

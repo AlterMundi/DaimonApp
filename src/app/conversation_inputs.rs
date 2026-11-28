@@ -113,9 +113,24 @@ fn decorate_recovery(
     id: &str,
     value: &mut Value,
 ) -> Result<()> {
-    let recoveries=app.shared.store.conversation_recoverable_routes(human,entry,id)?.into_iter()
-        .filter(|i|super::routing::instruction_available(&app.shared,i))
-        .map(|i|json!({"instruction":i.id,"label":super::routing::label(&app.shared,i.target),"target":i.target})).collect::<Vec<_>>();
+    let recoveries = app
+        .shared
+        .store
+        .conversation_recoverable_routes(human, entry, id)?
+        .into_iter()
+        .filter(|i| super::routing::instruction_available(&app.shared, i))
+        .map(|i| {
+            let mut route = json!({
+                "instruction": i.id,
+                "label": super::routing::label(&app.shared, i.target),
+                "target": i.target,
+            });
+            if i.codex_recovery_refusal.is_some() {
+                route["codex_recovery"] = json!("missing_native_history");
+            }
+            route
+        })
+        .collect::<Vec<_>>();
     if !recoveries.is_empty() {
         value["binding"] = app
             .shared
