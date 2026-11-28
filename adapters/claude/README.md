@@ -181,7 +181,10 @@ For a paired topic turn that negotiates targeted interruption, Gateway gives
 the Claude worker four seconds to return an exact native receipt and the
 terminal result for the original. It checks every submitted steer against
 the cancelled IDs. A confirmed interruption retains the cancelled originals
-and selects the same session for the next eligible turn. Gateway retains
+and selects the same session for the next eligible turn. The native terminal
+result can still contain the answer to the original, for example when its
+first goal iteration finished before the interruption. Gateway preserves
+that answer and settles the separately cancelled corrections. Gateway retains
 uncertain effects if the native capabilities, complete receipt or terminal
 result are unavailable. A successful root answer remains visible when a
 submitted correction is unaccounted for, but normal resume on that thread

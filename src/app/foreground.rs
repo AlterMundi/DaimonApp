@@ -566,6 +566,10 @@ pub(in crate::app) async fn execute_worker(
                     Some("completed") =>
                         outcome["sessionId"].as_str() == native_session.as_deref()
                             && native_session.is_some()
+                            && (outcome.get("cancelled").is_none()
+                                || (interrupt_sent
+                                    && engine == ForegroundEngine::Claude
+                                    && outcome["cancelled"].is_array()))
                             && outcome["text"]
                                 .as_str()
                                 .is_some_and(|text| !text.trim().is_empty() && text.len() <= 65536),
@@ -696,7 +700,8 @@ impl WorkerSteering<'_> {
     }
 
     fn validate_outcome(&self, outcome: &Value, results: &[Value]) -> Result<()> {
-        if outcome["phase"] != "interrupted"
+        if outcome.get("cancelled").is_none()
+            && outcome["phase"] != "interrupted"
             && self.sent.is_empty()
             && results.is_empty()
             && outcome["steerSubmitted"].is_null()
@@ -714,7 +719,7 @@ impl WorkerSteering<'_> {
                 "Unknown or duplicate Claude submission"
             );
         }
-        if outcome["phase"] == "interrupted" {
+        if outcome.get("cancelled").is_some() || outcome["phase"] == "interrupted" {
             let cancelled = outcome["cancelled"]
                 .as_array()
                 .context("Claude interrupt receipt missing")?;
