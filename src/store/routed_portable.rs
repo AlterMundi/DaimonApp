@@ -413,6 +413,11 @@ fn claude_history_for_input_on(
     claude_history_seed_on(conn, local, body)
 }
 
+fn history_terms(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 4)
+}
+
 fn owned_history_seed_on(
     conn: &Connection,
     local: i64,
@@ -420,9 +425,19 @@ fn owned_history_seed_on(
     include_only_claude: bool,
     search: Option<&str>,
 ) -> Result<Option<Value>> {
-    let exact_reference = search
-        .filter(|text| numbered_history_references(text).next() == Some(*text))
-        .map(str::to_lowercase);
+    let references: std::collections::HashSet<_> = search
+        .into_iter()
+        .flat_map(numbered_history_references)
+        .map(str::to_lowercase)
+        .collect();
+    let exact_reference =
+        search.is_some_and(|text| numbered_history_references(text).next() == Some(text));
+    let phrase = search.map(str::to_lowercase);
+    let terms: std::collections::HashSet<_> = phrase
+        .as_deref()
+        .into_iter()
+        .flat_map(history_terms)
+        .collect();
     let mut query = conn.prepare(
         "WITH search_window AS (
             SELECT p.id FROM turns current
@@ -513,12 +528,11 @@ fn owned_history_seed_on(
             SELECT *,row_number() OVER (PARTITION BY harness,native_thread ORDER BY id DESC) AS position
             FROM (SELECT * FROM routed UNION ALL SELECT * FROM direct)
             WHERE human IS NOT NULL AND native_thread IS NOT NULL
-              AND (?4 IS NULL OR (length(CAST(human AS BLOB))+length(CAST(assistant AS BLOB))<12288
-                AND (?5 OR instr(lower(human),lower(?4))>0 OR instr(lower(assistant),lower(?4))>0)))
+              AND (?4 IS NULL OR length(CAST(human AS BLOB))+length(CAST(assistant AS BLOB))<12288)
          )
          SELECT id,human,assistant,harness,native_thread FROM ranked
          WHERE position=1 OR ?4 IS NOT NULL
-         ORDER BY (instr(lower(human),lower(?4))>0) DESC,id DESC
+         ORDER BY id DESC
          LIMIT (CASE WHEN ?4 IS NULL THEN 3 ELSE 192 END)",
     )?;
     let mut rows = query.query(params![
@@ -526,9 +540,8 @@ fn owned_history_seed_on(
         body.to_string(),
         include_only_claude,
         search,
-        exact_reference.is_some()
     ])?;
-    let mut exchanges = Vec::new();
+    let mut candidates = Vec::new();
     while let Some(row) = rows.next()? {
         let turn: i64 = row.get(0)?;
         let human: String = row.get(1)?;
@@ -538,15 +551,49 @@ fn owned_history_seed_on(
         if human.trim().is_empty() || assistant.trim().is_empty() {
             continue;
         }
-        if exact_reference.as_ref().is_some_and(|reference| {
-            !numbered_history_references(&human)
+        if !references.is_empty() {
+            let candidate_references = numbered_history_references(&human)
                 .chain(numbered_history_references(&assistant))
-                .any(|candidate| candidate.to_lowercase() == *reference)
-        }) {
-            continue;
+                .map(str::to_lowercase)
+                .collect();
+            if !references.is_subset(&candidate_references) {
+                continue;
+            }
         }
-        let exchange = json!({"turn":turn,"human":human,"assistant":assistant,
-                            "harness":harness,"nativeThread":native_thread});
+        let relevance = if let Some(phrase) = &phrase {
+            let human = human.to_lowercase();
+            let assistant = assistant.to_lowercase();
+            if human.contains(phrase) {
+                3
+            } else if assistant.contains(phrase) {
+                2
+            } else if exact_reference {
+                // Complete numbered references were checked above.
+                1
+            } else {
+                let words: std::collections::HashSet<_> = history_terms(&human)
+                    .chain(history_terms(&assistant))
+                    .collect();
+                if terms.len() < 2 || !terms.is_subset(&words) {
+                    continue;
+                }
+                0
+            }
+        } else {
+            0
+        };
+        candidates.push((
+            relevance,
+            turn,
+            json!({"turn":turn,"human":human,"assistant":assistant,
+                            "harness":harness,"nativeThread":native_thread}),
+        ));
+    }
+    if search.is_some() {
+        candidates.sort_by_key(|(relevance, turn, _)| std::cmp::Reverse((*relevance, *turn)));
+    }
+    let mut exchanges = Vec::new();
+    for (_, _, exchange) in candidates {
         exchanges.push(exchange);
         if serde_json::to_vec(&json!({"exchanges":exchanges}))?.len() > 12 * 1024 {
             // Never clip a quotation that could change the meaning of an approval.
@@ -906,9 +953,9 @@ impl Store {
         let found = owned_history_seed_on(&conn, request.local_turn, &body, false, Some(search))?
             .context("Owned history unavailable")?;
         if found["exchanges"].as_array().is_some_and(Vec::is_empty)
-            && let Some(reference) = numbered_history_references(search)
-                .next()
-                .filter(|value| *value != search)
+            && let mut references = numbered_history_references(search)
+            && let Some(reference) = references.next().filter(|value| *value != search)
+            && references.all(|other| other.eq_ignore_ascii_case(reference))
         {
             return owned_history_seed_on(
                 &conn,
@@ -1492,6 +1539,16 @@ mod tests {
             assert_eq!(found["exchanges"].as_array().unwrap().len(), 1);
             assert_eq!(found["exchanges"][0]["turn"], prior);
             assert_eq!(found["exchanges"][0]["human"], "Review the layout.");
+            let reordered =
+                owned_history_seed_on(&conn, researching, &body, false, Some("layout UPDATE"))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(reordered, found);
+            let partial =
+                owned_history_seed_on(&conn, researching, &body, false, Some("layouts UPDATE"))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(partial, json!({"exchanges":[]}));
             conn.execute_batch("SAVEPOINT numbered_reference").unwrap();
             let native = Uuid::new_v4().to_string();
             conn.execute(
@@ -1531,6 +1588,17 @@ mod tests {
                     "turn":prior,"human":"Review the layout.",
                     "assistant":"The Explorador v29 has two clips.","harness":"claude","nativeThread":native}]}))
             );
+            let longer = owned_history_seed_on(
+                &conn,
+                researching,
+                &body,
+                false,
+                Some("clips Explorador v29"),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(longer["exchanges"].as_array().unwrap().len(), 1);
+            assert_eq!(longer["exchanges"][0]["turn"], prior);
             conn.execute_batch("ROLLBACK TO numbered_reference; RELEASE numbered_reference")
                 .unwrap();
             conn.execute(

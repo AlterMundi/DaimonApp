@@ -71,7 +71,7 @@ pub(super) fn tool_call(
                 return Ok(json!({"schema":"telecodex.local-session/v1","operations":{
                     "capabilities":{}, "inputs":{}, "coordination_inputs":{}, "session_requests":{},
                     "session_receive":{"arguments":{"request_id":"exact retained local request id with a completed canonical result"}},
-                    "topic_history":{"arguments":{"query":"short phrase to find in earlier originals or final replies in this same topic"},"description":"Read up to three verified exchanges from this topic for a paired human's current question. No native turn or external lookup."},
+                    "topic_history":{"arguments":{"query":"short phrase or distinctive words from earlier work in this topic"},"description":"Read up to three verified exchanges from this topic for a paired human's current question. No native turn or external lookup."},
                     "session_request":{"arguments":{"parent_instruction":"current retained human instruction or first attributed handoff from inputs",
                         "request_id":"stable caller-chosen identifier", "selector":"stable_selector from targets, or general for our general conversation (display_name is a label)",
                         "text":"bounded session-authored request under the current human instruction", "report_to_topic":"omit for ordinary cross-topic coordination. true only for a visible work result requested by the paired human in a Claude destination"}}
