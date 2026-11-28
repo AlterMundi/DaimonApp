@@ -1489,6 +1489,7 @@ impl Store {
         local: i64,
         outcome: &Value,
         projection_entry: Option<SessionKey>,
+        artifact_job: Option<&Value>,
     ) -> Result<Vec<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1651,6 +1652,20 @@ impl Store {
                 {
                     exchange_inputs.push(steered);
                 }
+            }
+            if let Some(job) = artifact_job {
+                let final_anchor: String = tx.query_row(
+                    "SELECT native_turn FROM interaction_native_messages WHERE local_turn=?1
+                     AND native_thread=?2 AND item_id='final' ORDER BY rowid DESC LIMIT 1",
+                    params![local, native],
+                    |row| row.get(0),
+                )?;
+                let mut job = job.clone();
+                job["output"]["native"] = json!(native);
+                job["output"]["turn"] = json!(final_anchor);
+                job["output"]["item"] = json!("final");
+                job["portable_projection"] = json!(true);
+                super::artifacts::artifact_job_stage_on(&tx, local, input.human_id, &job)?;
             }
             if outcome["steerSubmitted"]
                 .as_array()

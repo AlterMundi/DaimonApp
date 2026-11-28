@@ -241,10 +241,50 @@ impl Store {
                 tx.execute("INSERT OR IGNORE INTO interaction_artifact_audiences SELECT ?1,s.id,?2 FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id WHERE s.chat_id=?3 AND s.thread_id=?4 AND s.creator_user_id=?2 AND u.allowed=1",params![id,human,input.origin.chat_id,input.origin.thread_id])?;
             }
         }
+        let portable_projection: Option<bool> = tx.query_row(
+            "SELECT json_extract(doc,'$.publish_files') FROM interaction_artifact_jobs
+             WHERE local=?1 AND human=?2 AND json_extract(doc,'$.portable_projection')=1
+               AND json_extract(doc,'$.output.turn')=?3",
+            params![local, human, turn],
+            |row| row.get(0),
+        ).optional()?;
+        if portable_projection.is_some() {
+            // The paired Conversation that supplied this exact original can
+            // download the files returned by its selected topic.
+            tx.execute(
+                "INSERT OR IGNORE INTO interaction_artifact_audiences
+                 SELECT ?1,s.id,?2 FROM interaction_instructions i
+                 JOIN interaction_sources x ON x.id=i.input_id
+                 JOIN sessions s ON s.chat_id=x.origin_chat AND s.thread_id=x.origin_thread
+                 WHERE x.channel='conversation' AND x.human_id=?2 AND s.creator_user_id=?2
+                   AND i.phase='accepted' AND json_extract(i.doc,'$.local_turn')=?3
+                   AND json_extract(i.doc,'$.native_thread')=?4
+                   AND json_extract(i.doc,'$.native_turn')=?5",
+                params![id, human, local, native, turn],
+            )?;
+        }
         if sha.is_some() {
-            let publish:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_artifact_jobs WHERE local=?1 AND json_extract(doc,'$.publish_files')=1)",[local],|r|r.get(0))?;
-            if publish {
-                super::topic_publications::enqueue_on(&tx, local, "artifact", &id, name)?;
+            match portable_projection {
+                Some(true) => {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO topic_publications
+                         (local_turn,session_id,human_id,kind,source,body,phase,instance_id)
+                         VALUES(?1,?2,?3,'artifact',?4,?5,'ready','')",
+                        params![local, source, human, id, name],
+                    )?;
+                }
+                Some(false) => {}
+                None => {
+                    let publish: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM interaction_artifact_jobs
+                         WHERE local=?1 AND json_extract(doc,'$.publish_files')=1)",
+                        [local],
+                        |row| row.get(0),
+                    )?;
+                    if publish {
+                        super::topic_publications::enqueue_on(&tx, local, "artifact", &id, name)?;
+                    }
+                }
             }
         }
         tx.commit()?;
@@ -391,7 +431,12 @@ pub(super) fn status_on(
     Ok(conn.query_row("SELECT j.phase FROM interaction_artifact_jobs j JOIN interaction_native_messages m ON m.local_turn=j.local AND m.native_thread=json_extract(j.doc,'$.output.native') AND m.native_turn=json_extract(j.doc,'$.output.turn') AND m.item_id=json_extract(j.doc,'$.output.item') LEFT JOIN interaction_results r ON r.native_thread=m.native_thread AND r.native_turn=m.native_turn AND r.item_id=m.item_id WHERE r.id=?1 OR m.rowid=?2 LIMIT 1",params![result,native],|r|r.get(0)).optional()?)
 }
 
-fn artifact_job_stage_on(conn: &Connection, local: i64, human: i64, doc: &Value) -> Result<()> {
+pub(super) fn artifact_job_stage_on(
+    conn: &Connection,
+    local: i64,
+    human: i64,
+    doc: &Value,
+) -> Result<()> {
     use sha2::{Digest, Sha256};
     let output = &doc["output"];
     let job = format!(

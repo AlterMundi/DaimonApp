@@ -2,6 +2,7 @@
 
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 
 
 TOOL = "mcp__matrix__daimon_status"
@@ -115,6 +116,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             elif write_memory := getattr(self.server, "memory_write_command", None):
                 assert "owner-configured DMK wrapper" in system
                 steps.append(("Bash", {"command": write_memory}, "Native DMK write accepted."))
+            elif artifact := getattr(self.server, "output_artifact", None):
+                directory = re.search(r"Save final deliverable files for this turn in (.+?)/out\.",
+                                      system).group(1) + "/out"
+                steps.append(("Write", {"file_path": directory + "/" + artifact["name"],
+                                        "content": artifact["text"]}, "successfully"))
             elif host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
@@ -223,9 +229,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
+            if artifact := getattr(self.server, "output_artifact", None):
+                fixture_id = "artifact_" + artifact["name"].removesuffix(".txt")
+                if previous_session := getattr(self.server, "artifact_native_session", None):
+                    assert submission["native_session_id"] == previous_session
+                self.server.artifact_native_session = submission["native_session_id"]
             result = [
                 item for message in messages if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
+                and (not artifact or item["tool_use_id"].startswith(f"toolu_{fixture_id}_"))
             ]
             if self.server.current == getattr(self.server, "interrupted_id", None):
                 block = {"type": "text", "text": ""}

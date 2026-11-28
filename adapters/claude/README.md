@@ -522,6 +522,11 @@ incorporates the original canonical result into the same Claude session.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_OUTPUT_ARTIFACTS=1` for a native file write,
+  immutable result provenance, Telegram upload, and Conversation download
+  after exact native resume. The paired routed topic uses Gateway's existing
+  artifact store when enabled. Its per-turn output directory does not affect
+  the selected native session scope.
 - `FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY=1` keeps Gateway running with
   TeleDaimon stopped and reads a routed Claude result in Conversation. It then
   starts the named TeleDaimon process, verifies one projection of the

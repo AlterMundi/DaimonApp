@@ -2507,7 +2507,7 @@ fn is_default_attachment_prompt(prompt: &str) -> bool {
     prompt.trim() == "Analyze the attached files."
 }
 
-fn prepare_turn_workspace(
+pub(super) fn prepare_turn_workspace(
     session: &crate::models::SessionRecord,
     turn_id: i64,
 ) -> Result<TurnWorkspace> {
