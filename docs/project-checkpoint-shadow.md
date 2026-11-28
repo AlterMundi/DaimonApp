@@ -133,6 +133,34 @@ exposing the known-unsent original in the successor. A lost metadata or turn
 acknowledgment must be reconciled from its reserved attempt.
 
 
+### Native Codex successor boundary
+
+Run `python3 -B tests/codex_project_successor_io.py <native Codex binary>`
+to exercise the actual App Server with a disposable profile and loopback
+Responses fixture. A metadata-only `thread/start` returns an ID, but even
+the same connection's `thread/resume` rejects that ID until the first user
+turn materializes the rollout. The first turn can use the existing connection
+and carry the checkpoint under the untrusted context field. On a subsequent
+connection resume loads the materialized successor and its one saved turn.
+
+The fixture verifies one new original and one unchanged checkpoint at
+inference. The checkpoint contains both a retained result and an unresolved
+original, with their distinct IDs. It records elapsed first-turn time, loopback
+requests and the token count from the successor turn's native usage event. On
+Codex 0.167.0 (native executable SHA-256
+`522cbdabe0c746fb127e4fa037f07f5a67f8b8e53efb0ca9b1cb28c4689a7b50`),
+the reference run took 235 ms with one loopback request and 218 simulated
+tokens reported by Core. No real provider or production conversation was used.
+
+This constrains the Gateway successor writer. Reserve the attempt before
+native creation and retain the returned ID. Do the first submission on the
+connection that created it, after checking the current owner, generation and
+checkpoint. A metadata acknowledgment alone cannot select the successor as
+a resumable conversation. If that connection is lost before materialization,
+retain the observed stages and original rather than using resume failure as
+permission to create or send again.
+
+
 ## Holodeck topic-room catalogue
 
 The existing authenticated Session Workspace reader accepts
