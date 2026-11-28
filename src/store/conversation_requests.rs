@@ -145,6 +145,7 @@ impl Store {
         };
         let on_update = lineage("NEW");
         let on_delete = lineage("OLD");
+        let continuity = super::conversation_entry::CODEX_PROJECT_CONTINUATION;
         self.conn.lock().expect("store mutex poisoned").execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS native_request_binding_retired; CREATE TABLE IF NOT EXISTS conversation_decisions(
             human_id INTEGER NOT NULL,entry_session INTEGER NOT NULL,entry_chat INTEGER NOT NULL,entry_topic INTEGER NOT NULL,
             request_id TEXT NOT NULL,revision TEXT NOT NULL,doc TEXT NOT NULL,created_at TEXT NOT NULL,
@@ -156,7 +157,9 @@ impl Store {
             CREATE TRIGGER IF NOT EXISTS native_request_discovery_order AFTER INSERT ON human_interactions WHEN NEW.kind='native'
             BEGIN INSERT INTO conversation_request_order(request_id) VALUES(NEW.id); END;
             CREATE TRIGGER IF NOT EXISTS native_request_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
-            WHEN (OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id) OR OLD.creator_user_id!=NEW.creator_user_id OR NEW.force_fresh_thread=1
+            WHEN ((OLD.codex_thread_id IS NOT NULL AND OLD.codex_thread_id IS NOT NEW.codex_thread_id)
+              OR OLD.creator_user_id!=NEW.creator_user_id OR NEW.force_fresh_thread=1)
+              AND NOT ({continuity})
             BEGIN UPDATE human_interactions SET state=CASE WHEN state='pending' THEN 'expired' ELSE 'unknown' END
               WHERE kind='native' AND state IN ('pending','answering') AND (session_id=NEW.id OR id IN(
                 SELECT h.id FROM human_interactions h JOIN sessions s ON s.id=h.session_id WHERE 1=1 {on_update})); END;

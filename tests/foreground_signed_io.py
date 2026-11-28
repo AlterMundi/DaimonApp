@@ -833,7 +833,7 @@ timeout_seconds=5
                 journey.start()
                 journey.wait_control_socket(journey.socket)
                 journey.routing = True
-                repositories, effects, _, _, _, _, _ = select_project(journey)
+                repositories, effects, workspace_claim, _, _, _, shadow = select_project(journey)
                 provider.expected_verified_checkpoint = {
                     "kind": "gateway_project_recovery", "status": "verified",
                     "repositories": repositories, "effectReceipts": effects,
@@ -1164,7 +1164,63 @@ timeout_seconds=5
                 self.assertEqual(journey.row(generation_query, (session,)), generation)
                 self.assertEqual(journey.row(
                     "SELECT codex_thread_id FROM sessions WHERE thread_id=7"
-                ), [(codex,)])
+                ), [(candidate,)])
+                self.assertEqual(journey.row(
+                    "SELECT generation,previous_native,successor_native,instruction,sealed "
+                    "FROM codex_project_lineage WHERE session_id=?", (session,),
+                ), [(generation[0][0], codex, candidate, recovery["instruction"], 1)])
+
+                # Start a new process to ensure the next original uses the
+                # persisted successor and can still read the exact old citation.
+                journey.stop()
+                journey.handle_extra_rpc = missing_native_history
+                journey.start()
+                journey.wait_control_socket(journey.socket)
+                following, following_destination = selected_browser()
+                later_prompt = "Continue reviewing the selected scene on the recovered thread."
+                offset = len(journey.rpc)
+                later, _ = following.text(later_prompt, reply=following_destination)
+                journey.wait(lambda: candidate in journey.workers)
+                starts = [rpc["params"] for rpc in journey.rpc[offset:]
+                          if rpc.get("method") == "turn/start"]
+                self.assertEqual(len(starts), 1)
+                self.assertEqual(starts[0]["threadId"], candidate)
+                self.assertIn(later_prompt, starts[0]["input"][0]["text"])
+                self.assertFalse(any(rpc.get("method") == "thread/start"
+                                     for rpc in journey.rpc[offset:]))
+                self.assertFalse(any(key.startswith("gateway.history.")
+                                     for key in starts[0]["additionalContext"]))
+                journey.wait(lambda: following.status(later)["native_acceptance"] == "observed")
+                catalog = journey.read("input", "topic-projects",
+                    json.dumps({"chat_id": 100, "thread_id": 7}))["result"]
+                self.assertEqual(len(catalog["repositories"]), len(repositories), catalog)
+                old_checkpoint = shadow(7, "after-codex-adoption", {
+                    "action": "read", "workspace": workspace_claim,
+                    "checkout": repositories[0]["checkout"],
+                    "project": repositories[0]["link"]["project"],
+                    "repository": repositories[0]["link"].get("repository", repositories[0]["link"]["project"]),
+                })
+                self.assertEqual(old_checkpoint["delta"]["sources"], repositories[0]["sources"])
+                self.assertEqual(old_checkpoint["delta"]["work"], repositories[0]["work"])
+                self.assertEqual(old_checkpoint["revision"], repositories[0]["revision"])
+                later_instruction = following.status(later)["routing"]["instruction"]
+                native_turn = journey.workers[candidate]
+                claim = {"requests": [later_instruction], "covered": [later_instruction],
+                         "completed": [later_instruction]}
+                journey.broadcast(candidate, "item/completed", {
+                    "turnId": native_turn, "item": {"id": "answer-after-adoption",
+                    "type": "agentMessage", "phase": "final_answer",
+                    "text": "Review continued.\n<daimon-result>" + json.dumps(claim) + "</daimon-result>"},
+                })
+                journey.broadcast(candidate, "turn/completed", {
+                    "turn": {"id": native_turn, "status": "completed"},
+                })
+                journey.wait(lambda: any(
+                    item.get("preview") == "Review continued."
+                    for item in following.get("/api/interaction")["items"]
+                ))
+                journey.idle()
+                self.assertEqual(journey.instructions(7)[:2], retained_before_switch)
                 self.assertEqual(provider.calls, calls_before_switch)
                 return
 

@@ -149,11 +149,17 @@ route. Add `FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK=1` to withhold that
 acknowledgment in the fixture and verify that duplicate requests and a Gateway
 restart create no second thread or turn.
 
-The candidate first turn preserves the topic generation and the saved native
-binding. Selecting the observed, materialized successor for later turns is
-a separate remaining transition. Ordinary replacement would advance the
-generation and retire old-bound inputs. The successor transition needs to keep
-earlier originals, goals and receipts on their existing native lineage.
+Gateway selects the successor only after that exact instruction has a
+native acceptance and a completed turn with a recorded final item. The
+existing writer commits completion and the predecessor-to-successor edge
+together, advancing the native pointer while retaining the topic generation.
+Earlier originals, questions and receipts retain their native identity and
+existing disposition. This does not move a native goal to another thread.
+A source-bound checkpoint can still read the exact cited Observer or
+Conversation revision from a sealed predecessor in the same generation.
+Historical citation access does not allow work to be submitted to the old
+binding. An ordinary replacement, clear or grant revocation still fences
+the earlier generation.
 
 ### Native Codex successor boundary
 

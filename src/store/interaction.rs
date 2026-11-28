@@ -515,7 +515,15 @@ pub(super) fn transport_on(
     }
     instruction.phase = phase;
     instruction.local_turn = Some(local_turn);
-    if phase == P::Accepted {
+    if phase == P::Accepted
+        && instruction
+            .codex_successor_reservation
+            .as_ref()
+            .is_some_and(|reservation| {
+                reservation.creation_turn != Some(local_turn)
+                    || reservation.candidate_native.as_deref() != native.as_deref()
+            })
+    {
         instruction.codex_successor_reservation = None;
     }
     if native.is_some() {

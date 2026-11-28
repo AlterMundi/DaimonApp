@@ -1505,14 +1505,34 @@ pub(super) async fn process_turn(
     if (routed || !attached.is_empty() || shared.store.conversation_turn_return(turn_id)?)
         && !shared.store.conversation_turn_direct_return(turn_id)?
     {
-        shared.store.set_session_busy(session.key, false)?;
         let status = match &run_result {
             Ok(_) => "completed",
             Err(e) if e.to_string().contains("cancelled") => "cancelled",
             Err(_) => "failed",
         };
         let text = run_result.as_ref().ok().map(|s| s.assistant_text.as_str());
-        shared.store.record_turn_finished(turn_id, status, text)?;
+        let adopted = if status == "completed"
+            && let Some(id) = return_instruction
+        {
+            match shared.store.adopt_codex_project_successor(
+                queued.request.from_user_id,
+                id,
+                turn_id,
+                text,
+            ) {
+                Ok(adopted) => adopted,
+                Err(error) => {
+                    tracing::warn!(%error, "Completed Codex successor remains unselected");
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !adopted {
+            shared.store.record_turn_finished(turn_id, status, text)?;
+        }
+        shared.store.set_session_busy(session.key, false)?;
         let declaration_exists =
             fs::symlink_metadata(turn_workspace.root.join(interactions::MANIFEST)).is_ok();
         let mut declaration_retained = declaration_exists;

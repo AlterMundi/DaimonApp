@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 mod recovery;
 pub(crate) use recovery::ProjectStartup;
+pub(super) use recovery::ancestor_session_on;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -230,7 +231,10 @@ fn check_sources(
                 revision,
                 source_revision,
             } => {
-                let session = observer_cards::binding(conn, key, human, native)?;
+                let session = match ancestor_session_on(conn, key, human, native)? {
+                    Some(session) => session,
+                    None => observer_cards::binding(conn, key, human, native)?,
+                };
                 let (card, evidence): (String, String) = conn
                     .query_row(
                         "SELECT c.doc,a.source_doc FROM interaction_observer_cards c
@@ -257,7 +261,7 @@ fn check_sources(
                 })
             }
             CheckpointSource::Conversation { source, revision } => {
-                let evidence = presentation::source_on(conn, human, entry, source)?
+                let evidence = presentation::project_source_on(conn, human, entry, source, key)?
                     .filter(|view| {
                         (key == entry || view["target"] == serde_json::json!(key))
                             && view["revision"].as_str() == Some(revision)

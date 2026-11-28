@@ -270,6 +270,7 @@ impl Store {
         store.init_artifacts()?;
         store.init_topic_publications()?;
         store.init_native_recovery()?;
+        store.init_codex_project_lineage()?;
         store.init_voice()?;
         store.init_interaction_creation()?;
         store.init_routing()?;
@@ -1522,10 +1523,22 @@ impl Store {
         status: &str,
         assistant_text: Option<&str>,
     ) -> Result<()> {
-        let now = now_string();
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        tx.execute(
+        self.record_turn_finished_on(&tx, turn_id, status, assistant_text)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn record_turn_finished_on(
+        &self,
+        conn: &Connection,
+        turn_id: i64,
+        status: &str,
+        assistant_text: Option<&str>,
+    ) -> Result<()> {
+        let now = now_string();
+        conn.execute(
             "UPDATE turns
              SET status = ?2, assistant_text = COALESCE(?3, assistant_text), completed_at = ?4
              WHERE id = ?1",
@@ -1533,11 +1546,11 @@ impl Store {
         )?;
         // An acknowledged steer shares this turn's outcome. Unacknowledged attempts
         // remain uncertain even if the original turn completes successfully.
-        tx.execute(
+        conn.execute(
             "UPDATE incoming_updates SET status='undetermined',updated_at=?2 WHERE turn_id=?1 AND status='answering' AND instance_id=?3",
             params![turn_id,now,self.instance_id],
         )?;
-        tx.execute(
+        conn.execute(
             "UPDATE incoming_updates SET status=?2,updated_at=?3
              WHERE turn_id=?1 AND status='started' AND instance_id=?4",
             params![
@@ -1551,7 +1564,6 @@ impl Store {
                 self.instance_id
             ],
         )?;
-        tx.commit()?;
         Ok(())
     }
 

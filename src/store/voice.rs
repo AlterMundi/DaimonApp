@@ -47,12 +47,15 @@ impl Store {
     pub(super) fn init_voice(&self) -> Result<()> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS interaction_voice_inputs(update_id INTEGER PRIMARY KEY REFERENCES incoming_updates(update_id),human_id INTEGER NOT NULL,session_id INTEGER NOT NULL,native TEXT,phase TEXT NOT NULL,text TEXT,source TEXT,instance_id TEXT NOT NULL);")?;
-        conn.execute_batch("CREATE TRIGGER IF NOT EXISTS voice_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions BEGIN
+        let continuity = super::conversation_entry::CODEX_PROJECT_CONTINUATION;
+        conn.execute_batch(&format!("BEGIN IMMEDIATE; DROP TRIGGER IF EXISTS voice_binding_retired;
+            CREATE TRIGGER voice_binding_retired AFTER UPDATE OF codex_thread_id,force_fresh_thread,creator_user_id ON sessions
+            WHEN NOT ({continuity}) BEGIN
             UPDATE interaction_voice_inputs SET phase='retired' WHERE session_id=NEW.id AND phase IN ('preparing','committed') AND (native IS NOT NEW.codex_thread_id OR NEW.force_fresh_thread=1 OR human_id!=NEW.creator_user_id);
             END;
             CREATE TRIGGER IF NOT EXISTS voice_owner_revoked AFTER UPDATE OF allowed ON users WHEN NEW.allowed=0 BEGIN
             UPDATE interaction_voice_inputs SET phase='retired' WHERE human_id=NEW.tg_user_id AND phase IN ('preparing','committed');
-            END;")?;
+            END; COMMIT;"))?;
         conn.execute("UPDATE interaction_voice_inputs SET phase='uncertain' WHERE phase='preparing' AND instance_id!=?1",[&self.instance_id])?;
         Ok(())
     }

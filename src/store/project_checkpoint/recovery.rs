@@ -410,6 +410,104 @@ impl Store {
         Ok(authorized)
     }
 
+    pub(in crate::store) fn init_codex_project_lineage(&self) -> Result<()> {
+        self.conn
+            .lock()
+            .expect("store mutex poisoned")
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS codex_project_lineage(
+                session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                generation TEXT NOT NULL, previous_native TEXT NOT NULL,
+                successor_native TEXT NOT NULL UNIQUE, instruction TEXT NOT NULL UNIQUE,
+                local_turn INTEGER NOT NULL UNIQUE, sealed INTEGER NOT NULL,
+                PRIMARY KEY(session_id,generation,previous_native)
+             );",
+            )?;
+        Ok(())
+    }
+
+    /// Select only a completed successor whose input and final item were
+    /// recorded against this exact owned original.
+    pub(crate) fn adopt_codex_project_successor(
+        &self,
+        human: i64,
+        id: &str,
+        local: i64,
+        assistant_text: Option<&str>,
+    ) -> Result<bool> {
+        use crate::interaction::TransportPhase;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let Some(original) = interaction::instruction_on(&tx, id, human)? else {
+            return Ok(false);
+        };
+        let Some(reservation) = original
+            .codex_successor_reservation
+            .as_ref()
+            .filter(|reservation| reservation.creation_turn == Some(local))
+        else {
+            return Ok(false);
+        };
+        let Some(native) = reservation.candidate_native.as_deref() else {
+            return Ok(false);
+        };
+        if original.phase != TransportPhase::Accepted
+            || original.local_turn != Some(local)
+            || original.native_thread.as_deref() != Some(native)
+            || !interaction::target_execution_allowed_on(&tx, &original)?
+            || stopping::fenced_on(&tx, original.target)?
+            || maintenance_writer_held_on(&tx, original.target)?
+            || !paired_source_on(&tx, &original)?
+        {
+            return Ok(false);
+        }
+        let generation: Option<String> = tx.query_row(
+            "SELECT g.generation FROM turns t JOIN sessions s ON s.id=t.session_id
+             JOIN conversation_entry_generations g ON g.session_id=s.id AND g.generation=t.execution_generation
+             JOIN bot_state b ON b.key='execution_root:'||t.id
+             WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND s.creator_user_id=?3
+               AND s.force_fresh_thread=0 AND s.codex_thread_id=?4 AND t.native_thread_id=?5
+               AND t.execution_harness='codex' AND t.status='running'
+               AND json_extract(b.value,'$')=?6
+               AND EXISTS(SELECT 1 FROM interaction_native_messages m
+                  WHERE m.local_turn=t.id AND m.native_thread=?5 AND m.native_turn=?7
+                    AND m.phase='final_answer')",
+            params![local, original.target_session, human, reservation.previous_native, native, id, original.native_turn],
+            |row| row.get(0),
+        ).optional()?;
+        let Some(generation) = generation else {
+            return Ok(false);
+        };
+        tx.execute(
+            "INSERT INTO codex_project_lineage
+                (session_id,generation,previous_native,successor_native,instruction,local_turn,sealed)
+             VALUES(?1,?2,?3,?4,?5,?6,0)",
+            params![original.target_session,generation,reservation.previous_native,native,id,local],
+        )?;
+        let changed = tx.execute(
+            "UPDATE sessions SET codex_thread_id=?2,updated_at=?3
+             WHERE id=?1 AND creator_user_id=?4 AND force_fresh_thread=0 AND codex_thread_id=?5",
+            params![
+                original.target_session,
+                native,
+                now_string(),
+                human,
+                reservation.previous_native
+            ],
+        )?;
+        anyhow::ensure!(
+            changed == 1,
+            "Codex predecessor changed before successor adoption"
+        );
+        tx.execute(
+            "UPDATE codex_project_lineage SET sealed=1 WHERE local_turn=?1",
+            [local],
+        )?;
+        self.record_turn_finished_on(&tx, local, "completed", assistant_text)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Called only by existing paired-human startup paths. It never dispatches
     /// or writes another copy of an original effect.
     pub(crate) fn project_startup(
@@ -456,6 +554,26 @@ impl Store {
             witness: valid.then_some(selected),
         }
     }
+}
+
+/// Read-only lineage. It does not make an old native binding a current writer.
+pub(in crate::store) fn ancestor_session_on(
+    conn: &Connection,
+    key: SessionKey,
+    human: i64,
+    native: &str,
+) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT s.id FROM sessions s JOIN users u ON u.tg_user_id=s.creator_user_id
+         JOIN conversation_entry_generations g ON g.session_id=s.id
+         JOIN codex_project_lineage p ON p.session_id=s.id AND p.generation=g.generation
+         WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
+           AND s.force_fresh_thread=0 AND p.previous_native=?4 AND p.sealed=1",
+            params![key.chat_id, key.thread_id, human, native],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 fn selected_on(conn: &Connection, key: SessionKey, human: i64) -> Result<Option<String>> {
