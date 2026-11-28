@@ -369,14 +369,16 @@ pub(in crate::app) async fn execute_worker(
                     .as_deref()
                     .context("No committed native session")?;
                 anyhow::ensure!(
-                    frame["nativeSessionId"].as_str() == Some(native)
-                        && receipt.store.record_routed_input_acceptance(
-                            receipt.input,
-                            receipt.local_turn,
-                            native
-                        )?,
+                    frame["nativeSessionId"].as_str() == Some(native),
                     "Native input receipt differs from the committed turn"
                 );
+                // A withdrawal or reset may fence this receipt after dispatch.
+                // Keep collecting the exposed worker's outcome in that case.
+                receipt.store.record_routed_input_acceptance(
+                    receipt.input,
+                    receipt.local_turn,
+                    native,
+                )?;
                 observe_acceptance = false;
                 frame = Value::Null;
                 continue;
