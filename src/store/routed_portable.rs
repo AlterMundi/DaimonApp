@@ -8,6 +8,17 @@ use anyhow::bail;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[derive(Debug)]
+pub(crate) struct ClaudeContextUnavailable;
+
+impl std::fmt::Display for ClaudeContextUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The selected conversation context is unavailable")
+    }
+}
+
+impl std::error::Error for ClaudeContextUnavailable {}
+
 pub(super) fn telegram_original_epoch(
     conn: &Connection,
     source: &SourceInput,
@@ -315,19 +326,29 @@ pub(super) fn claude_quoted_seed_on(
     Ok((serde_json::to_vec(&seed)?.len() <= 12 * 1024).then_some(seed))
 }
 
-pub(super) fn telegram_reply_message_on(
+pub(super) struct TelegramReply {
+    pub message_id: i64,
+    textless_bot_reference: bool,
+}
+
+pub(super) fn telegram_reply_on(
     conn: &Connection,
     source: &SourceInput,
-) -> Result<Option<i64>> {
-    if !source.channel.starts_with("telegram:") {
+) -> Result<Option<TelegramReply>> {
+    let Some(bot) = source.channel.strip_prefix("telegram:") else {
         return Ok(None);
-    }
+    };
     let (Some(update), Some(message)) = (source.update_id, source.origin.message_id) else {
         return Ok(None);
     };
     Ok(conn
         .query_row(
-            "SELECT json_extract(payload_json,'$.message.reply_to_message.message_id')
+            "SELECT json_extract(payload_json,'$.message.reply_to_message.message_id'),
+                coalesce(json_extract(payload_json,'$.message.reply_to_message.from.is_bot')=1
+                    AND json_extract(payload_json,'$.message.reply_to_message.from.id')=?6
+                    AND json_extract(payload_json,'$.message.reply_to_message.text') IS NULL
+                    AND json_extract(payload_json,'$.message.reply_to_message.caption') IS NULL
+                    AND json_extract(payload_json,'$.message.reply_to_message.sticker') IS NULL,0)
          FROM incoming_updates WHERE update_id=?1
            AND json_extract(payload_json,'$.message.message_id')=?2
            AND json_extract(payload_json,'$.message.chat.id')=?3
@@ -339,9 +360,10 @@ pub(super) fn telegram_reply_message_on(
                 message,
                 source.origin.chat_id,
                 source.origin.thread_id,
-                source.human_id
+                source.human_id,
+                bot.parse::<i64>().ok()
             ],
-            |row| row.get(0),
+            |row| Ok(TelegramReply { message_id: row.get(0)?, textless_bot_reference: row.get(1)? }),
         )
         .optional()?)
 }
@@ -942,10 +964,10 @@ impl Store {
     ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         if source.channel != "conversation" {
-            let Some(message) = telegram_reply_message_on(&conn, source)? else {
+            let Some(reply) = telegram_reply_on(&conn, source)? else {
                 return Ok(false);
             };
-            return Ok(claude_telegram_quote_on(&conn, source, target, message)?
+            return Ok(claude_telegram_quote_on(&conn, source, target, reply.message_id)?
                 != TelegramQuote::Unrelated);
         }
         let original =
@@ -1151,20 +1173,21 @@ impl Store {
                         && original.reply_text_sha256.is_some());
                 anyhow::ensure!(
                     !exact_quote_selected || reference.context_only || quote.is_some(),
-                    "The selected conversation reply is unavailable; original retained without submission"
+                    ClaudeContextUnavailable
                 );
                 return Ok(quote);
             }
             true
         } else if source.channel.starts_with("telegram:") {
-            if let Some(message) = telegram_reply_message_on(&conn, &source)? {
-                return match claude_telegram_quote_on(&conn, &source, input.target, message)? {
-                    TelegramQuote::Selected(seed) => Ok(Some(seed)),
-                    TelegramQuote::Unrelated => Ok(None),
-                    TelegramQuote::Unavailable => anyhow::bail!(
-                        "The selected Telegram reply is unavailable; original retained without submission"
-                    ),
-                };
+            if let Some(reply) = telegram_reply_on(&conn, &source)? {
+                match claude_telegram_quote_on(&conn, &source, input.target, reply.message_id)? {
+                    TelegramQuote::Selected(seed) => return Ok(Some(seed)),
+                    TelegramQuote::Unavailable => return Err(ClaudeContextUnavailable.into()),
+                    TelegramQuote::Unrelated
+                        if reply.textless_bot_reference
+                            && source.origin.thread_id == input.target.thread_id => {}
+                    TelegramQuote::Unrelated => return Ok(None),
+                }
             }
             true
         } else {
@@ -1265,18 +1288,18 @@ impl Store {
                     return Ok(false);
                 };
                 claude_quoted_seed_on(&tx, &original, reference, current.target)?
-            } else if let Some(message) = telegram_reply_message_on(&tx, &source)? {
-                match claude_telegram_quote_on(&tx, &source, current.target, message)? {
+            } else if let Some(reply) = telegram_reply_on(&tx, &source)? {
+                match claude_telegram_quote_on(&tx, &source, current.target, reply.message_id)? {
                     TelegramQuote::Selected(seed) => Some(seed),
                     _ => None,
                 }
             } else {
                 None
             };
-            if harness != Harness::Claude || !paired_host_access || resolved.as_ref() != Some(quote)
-            {
+            if harness != Harness::Claude || !paired_host_access {
                 return Ok(false);
             }
+            anyhow::ensure!(resolved.as_ref() == Some(quote), ClaudeContextUnavailable);
         }
         if let Some(seed) = history_seed
             .filter(|seed| seed["nativeThread"].is_string() || seed["exchanges"].is_array())
@@ -1676,6 +1699,24 @@ impl Store {
             .get("resumeUnavailableBody")
             .map(serde_json::to_string)
             .transpose()?;
+        let context_unavailable = current.phase == Phase::Queued
+            && outcome["phase"] == "not_submitted"
+            && outcome["contextUnavailable"] == true
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|target| target.harness == Harness::Claude);
+        if context_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.context_unavailable',json('true')) WHERE id=?1",
+                [&input.id],
+            )?;
+        } else if current.context_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_remove(doc,'$.context_unavailable') WHERE id=?1",
+                [&input.id],
+            )?;
+        }
         if current.phase == Phase::Submitting {
             super::retain_claude_session_usage_on(&tx, local, outcome)?;
         }

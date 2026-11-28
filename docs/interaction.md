@@ -284,7 +284,14 @@ current scope and authenticated being, embodiment and incarnation. A change
 to the signed roster alone preserves that incarnation's native history. A
 known quota rejection before work leaves the last completed candidate usable.
 An uncertain turn or a missing resume target protects the affected history
-from implicit replay. Session-authored dependencies use the parent admission
+from implicit replay. If Gateway cannot recover a required quoted answer or
+cannot replace a missing session with its bounded context, it retains the
+original without submitting it. Conversation shows the reason on that route.
+Telegram reports it on the original message. An unmatched textless reference
+from the selected bot in a direct Telegram topic can still use bounded recent
+history from that topic when Claude opens a new native session. Gateway keeps
+that history as background, separate from exact quoted answers.
+Session-authored dependencies use the parent admission
 epoch and remain attributed when routed into a Claude topic. Other portable
 harnesses require a separately qualified dependency return contract.
 

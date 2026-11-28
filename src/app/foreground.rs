@@ -266,7 +266,7 @@ pub(in crate::app) async fn execute_worker(
                 !require_recovery_context
                     || start.get("historySeed").is_some()
                     || start.get("projectCheckpoint").is_some(),
-                "Claude recovery requires context that fits the worker input"
+                crate::store::ClaudeContextUnavailable
             );
         }
         if let Some(agy) = &agy {
@@ -631,6 +631,7 @@ pub(in crate::app) async fn execute_worker(
         let mut outcome = outcome;
         if let Some(object) = outcome.as_object_mut() {
             object.remove("resumeUnavailableBody");
+            object.remove("contextUnavailable");
             object.remove("steerResults");
         }
         if let Some(adapter) = steering.as_deref_mut() {
@@ -926,9 +927,8 @@ pub(super) async fn run_portable_turn(
     Ok(())
 }
 
-fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
-    if can_recover
-        && outcome["phase"] == "not_submitted"
+fn missing_resume_scope(outcome: &Value) -> Option<&str> {
+    if outcome["phase"] == "not_submitted"
         && outcome["reason"] == "claude_resume_session_missing"
         // execute_worker adds this only after matching the selected session and
         // scope, verifying worker exit, and confirming no committed submission.
@@ -942,24 +942,23 @@ fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
 
 #[cfg(test)]
 #[test]
-fn claude_recovery_requires_an_attested_unsent_original_and_context() {
+fn claude_missing_session_requires_attested_unsent_evidence() {
     let missing = json!({
         "phase": "not_submitted",
         "reason": "claude_resume_session_missing",
         "resumeUnavailable": {"sessionId": "selected", "scope": "selected-scope"},
         "resumeUnavailableBody": {"beingRef": "authenticated"},
     });
-    assert_eq!(missing_resume_scope(&missing, true), Some("selected-scope"));
-    assert_eq!(missing_resume_scope(&missing, false), None);
+    assert_eq!(missing_resume_scope(&missing), Some("selected-scope"));
     let mut uncertain = missing.clone();
     uncertain["phase"] = json!("uncertain");
-    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    assert_eq!(missing_resume_scope(&uncertain), None);
     uncertain = missing;
     uncertain
         .as_object_mut()
         .unwrap()
         .remove("resumeUnavailableBody");
-    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    assert_eq!(missing_resume_scope(&uncertain), None);
 }
 
 pub(super) async fn run_routed_portable(
@@ -1103,8 +1102,15 @@ pub(super) async fn run_routed_portable(
             && human_authored
             && !native_goal_command
         {
+            let history_seed = match store.routed_claude_history_seed(input, local, &body) {
+                Ok(seed) => seed,
+                Err(error) if error.is::<crate::store::ClaudeContextUnavailable>() => {
+                    return Ok(json!({"phase":"not_submitted","contextUnavailable":true}));
+                }
+                Err(error) => return Err(error),
+            };
             (
-                store.routed_claude_history_seed(input, local, &body)?,
+                history_seed,
                 store
                     .topic_folder_claim(input.target, input.human_id)?
                     .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim)),
@@ -1115,6 +1121,7 @@ pub(super) async fn run_routed_portable(
         let mut missing_resume: Option<(String, Value)> = None;
         loop {
             let mut exposed = false;
+            let mut quote_unavailable = false;
             let controller = ((engine == ForegroundEngine::Claude || config.agy_cli) && routed_host_access && paired_work)
                 .then_some(WorkerController {
                     app,
@@ -1176,21 +1183,45 @@ pub(super) async fn run_routed_portable(
                     {
                         return Ok(false);
                     }
-                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())?;
+                    exposed = match store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref()) {
+                        Ok(exposed) => exposed,
+                        Err(error) if error.is::<crate::store::ClaudeContextUnavailable>() => {
+                            quote_unavailable = true;
+                            false
+                        }
+                        Err(error) => return Err(error),
+                    };
                     Ok(exposed)
                 },
             ).await;
+            if !exposed && !cancel.is_cancelled()
+                && (quote_unavailable || result.as_ref().is_err_and(|error| {
+                    error.is::<crate::store::ClaudeContextUnavailable>()
+                }))
+            {
+                let mut outcome = missing_resume
+                    .map(|(_, original)| original)
+                    .unwrap_or_else(|| json!({"phase":"not_submitted"}));
+                outcome["contextUnavailable"] = json!(true);
+                break Ok(outcome);
+            }
             if let Some((_, missing)) = missing_resume {
                 // Keep the missing-session evidence when the replacement never
                 // reached exposure. Once exposed, only its outcome may settle it.
                 break if exposed { result } else { Ok(missing) };
             }
-            let Ok(outcome) = result else {
+            let Ok(mut outcome) = result else {
                 break result;
             };
-            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || project_checkpoint.is_some()) else {
+            let Some(scope) = missing_resume_scope(&outcome) else {
                 break Ok(outcome);
             };
+            if history_seed.is_none() && project_checkpoint.is_none() {
+                if !cancel.is_cancelled() {
+                    outcome["contextUnavailable"] = json!(true);
+                }
+                break Ok(outcome);
+            }
             missing_resume = Some((scope.to_owned(), outcome));
         }
     }.await.unwrap_or(Value::Null);
@@ -1199,11 +1230,21 @@ pub(super) async fn run_routed_portable(
         steering.resolve(&outcome)?;
     }
     if input.origin.message_id.is_some()
-        && let Some(limit) = store
-            .interaction_instruction(&input.id, input.human_id)?
-            .and_then(|instruction| instruction.subscription_limit)
+        && let Some(instruction) = store.interaction_instruction(&input.id, input.human_id)?
     {
-        super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+        if human_authored && instruction.context_unavailable
+            && instruction.phase == crate::interaction::TransportPhase::RetainedUnsent
+        {
+            super::routing::notice_context_unavailable(
+                app.shared.clone(),
+                input.origin.clone(),
+                input.id.clone(),
+                input.human_id,
+                local,
+            );
+        } else if let Some(limit) = instruction.subscription_limit {
+            super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+        }
     }
     super::topic_publications::wake(app.shared.clone(), input.target);
     super::routing::publish_results(app, input.human_id, deliveries);

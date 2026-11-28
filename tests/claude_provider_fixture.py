@@ -280,6 +280,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 if prior_answer := getattr(self.server, "expected_native_context", None):
                     assert any(prior_answer in json.dumps(message["content"], ensure_ascii=False)
                                for message in messages if message["role"] == "assistant")
+                if recent := getattr(self.server, "expected_recent_exchange", None):
+                    prefix = "Gateway historical context (JSON):\n"
+                    content = next(message["content"] for message in reversed(messages)
+                                   if message["role"] == "user")
+                    snapshots = [json.loads(block["text"][len(prefix):]) for block in content
+                                 if block.get("text", "").startswith(prefix)]
+                    assert len(snapshots) == 1, snapshots
+                    snapshot, = snapshots
+                    assert "source" not in snapshot, snapshot
+                    exchanges = snapshot.get("exchanges", [snapshot])
+                    assert any((row["human"], row["assistant"]) == recent for row in exchanges), exchanges
                 if expected := getattr(self.server, "expected_quote", None):
                     # Only the current exchange's context may resolve this
                     # short approval. Earlier messages include other proposals.

@@ -987,6 +987,8 @@ pub struct Instruction {
     pub phase: TransportPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_limit: Option<SubscriptionLimit>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_unavailable: bool,
     /// Captured for this dispatch attempt; async continuations must not adopt a
     /// later admission generation. Only explicit known-unsent recovery clears it.
     #[serde(default)]

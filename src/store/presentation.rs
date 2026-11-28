@@ -2167,7 +2167,7 @@ mod tests {
     #[test]
     fn claude_telegram_quote_uses_the_receipt_and_canonical_body() {
         use crate::store::routed_portable::{
-            TelegramQuote, claude_telegram_quote_on, telegram_reply_message_on,
+            TelegramQuote, claude_telegram_quote_on, telegram_reply_on,
         };
         let (_file, store, entry, worker, instruction, body) = setup();
         let conn = store.conn.lock().unwrap();
@@ -2210,7 +2210,10 @@ mod tests {
               "message_id":32,"message_thread_id":entry.thread_id,"chat":{"id":entry.chat_id},"from":{"id":100},
               "reply_to_message":{"message_id":17,"text":"Untrusted nested copy"}
           }}).to_string()]).unwrap();
-        assert_eq!(telegram_reply_message_on(&conn, &source).unwrap(), Some(17));
+        assert_eq!(
+            telegram_reply_on(&conn, &source).unwrap().map(|reply| reply.message_id),
+            Some(17)
+        );
         let TelegramQuote::Selected(seed) =
             claude_telegram_quote_on(&conn, &source, instruction.target, 17).unwrap()
         else {
@@ -2225,7 +2228,7 @@ mod tests {
         let mut other_topic = source.clone();
         other_topic.origin.thread_id = 99;
         assert!(
-            telegram_reply_message_on(&conn, &other_topic)
+            telegram_reply_on(&conn, &other_topic)
                 .unwrap()
                 .is_none()
         );

@@ -379,11 +379,39 @@ pub(super) fn notice(shared: Arc<AppShared>, origin: ReturnRoute, text: String) 
     notice_when(shared, origin, text, None);
 }
 
+struct ExpectedNotice {
+    instruction: String,
+    human: i64,
+    phase: P,
+    context_failure_turn: Option<i64>,
+}
+
+pub(super) fn notice_context_unavailable(
+    shared: Arc<AppShared>,
+    origin: ReturnRoute,
+    id: String,
+    human: i64,
+    local_turn: i64,
+) {
+    notice_when(
+        shared,
+        origin,
+        "Your message is saved. Claude Code could not recover the earlier context it needs."
+            .into(),
+        Some(ExpectedNotice {
+            instruction: id,
+            human,
+            phase: P::RetainedUnsent,
+            context_failure_turn: Some(local_turn),
+        }),
+    );
+}
+
 fn notice_when(
     shared: Arc<AppShared>,
     origin: ReturnRoute,
     text: String,
-    expected: Option<(String, i64, P)>,
+    expected: Option<ExpectedNotice>,
 ) {
     if origin.message_id.is_none() {
         // Operational notice, never fabricated human speech or Telegram delivery.
@@ -420,11 +448,16 @@ fn notice_when(
                     let Some(cfg) = shared.config.interaction.as_ref() else {
                         return Ok(None);
                     };
-                    if let Some((id, human, phase)) = &expected
+                    if let Some(expected) = &expected
                         && !shared
                             .store
-                            .interaction_instruction(id, *human)?
-                            .is_some_and(|i| i.phase == *phase)
+                            .interaction_instruction(&expected.instruction, expected.human)?
+                            .is_some_and(|i| {
+                                i.phase == expected.phase
+                                    && expected.context_failure_turn.is_none_or(|turn| {
+                                        i.context_unavailable && i.local_turn == Some(turn)
+                                    })
+                            })
                     {
                         return Ok(None);
                     }
@@ -1403,7 +1436,12 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
                 shared.clone(),
                 waiting.origin,
                 message,
-                Some((waiting.id, waiting.human_id, P::Queued)),
+                Some(ExpectedNotice {
+                    instruction: waiting.id,
+                    human: waiting.human_id,
+                    phase: P::Queued,
+                    context_failure_turn: None,
+                }),
             );
         });
     }
