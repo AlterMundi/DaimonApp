@@ -388,11 +388,19 @@ async fn command_input(app: &App, human: i64, args: &str) -> Result<Value> {
         return super::execution_status::workspace(app, human, cfg).await;
     }
     if let Some(target) = args.strip_prefix("topic-projects ") {
-        let target: SessionKey = serde_json::from_str(target)?;
-        return app
-            .shared
-            .store
-            .topic_project_projection(human, cfg.entry(), target);
+        #[derive(Deserialize)]
+        struct ProjectPage {
+            #[serde(flatten)]
+            target: SessionKey,
+            cursor: Option<String>,
+        }
+        let page: ProjectPage = serde_json::from_str(target)?;
+        return app.shared.store.topic_project_projection(
+            human,
+            cfg.entry(),
+            page.target,
+            page.cursor.as_deref(),
+        );
     }
     if let Some(body) = args.strip_prefix("foreground context ") {
         let selected: crate::store::LiveContextCommand = serde_json::from_str(body)?;

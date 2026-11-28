@@ -399,6 +399,14 @@ fn checkpoint_on(
     Ok(checkpoint)
 }
 
+fn catalog_revision_on(conn: &Connection, session: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(revision),0) FROM project_checkpoint_deltas WHERE session_id=?1",
+        [session],
+        |row| row.get(0),
+    )?)
+}
+
 fn catalog_on(
     conn: &Connection,
     key: SessionKey,
@@ -538,11 +546,7 @@ impl Store {
             crate::files::workspace_marker_matches(&folder, workspace)?,
             "Topic workspace ownership marker unavailable"
         );
-        let revision: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(revision),0) FROM project_checkpoint_deltas WHERE session_id=?1",
-            [session],
-            |row| row.get(0),
-        )?;
+        let revision = catalog_revision_on(&conn, session)?;
         let (links, next) = catalog_on(
             &conn,
             scope.key,
@@ -563,6 +567,7 @@ impl Store {
         human: i64,
         entry: SessionKey,
         key: SessionKey,
+        cursor: Option<&str>,
     ) -> Result<serde_json::Value> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let (entry_session, native) = presentation::entry_on(&conn, human, entry)?;
@@ -574,17 +579,29 @@ impl Store {
             params![key.chat_id, key.thread_id, human],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let links = match (folder, claim) {
-            (None, None) => Vec::new(),
+        let revision = catalog_revision_on(&conn, session)?;
+        let page = cursor
+            .map(|value| -> Result<(i64, i64)> {
+                let (revision, before) = value.split_once('.').context("Invalid project cursor")?;
+                let (revision, before) = (revision.parse::<i64>()?, before.parse::<i64>()?);
+                anyhow::ensure!(before > 0 && before <= revision, "Invalid project cursor");
+                Ok((revision, before))
+            })
+            .transpose()?;
+        let restarted = page.is_some_and(|(previous, _)| previous != revision);
+        let before = page.filter(|_| !restarted).map(|(_, before)| before);
+        let (links, next) = match (folder, claim) {
+            (None, None) => (Vec::new(), None),
             (Some(folder), Some(claim)) => {
                 anyhow::ensure!(
                     crate::files::workspace_marker_matches(Path::new(&folder), &claim)?,
                     "Topic workspace ownership marker unavailable"
                 );
-                catalog_on(&conn, key, entry, human, session, &claim, None)?.0
+                catalog_on(&conn, key, entry, human, session, &claim, before)?
             }
             _ => anyhow::bail!("Current owned topic workspace unavailable"),
         };
+        let next = next.map(|before| format!("{revision}.{before}"));
         let repositories = links
             .into_iter()
             .map(|checkpoint| {
@@ -615,7 +632,7 @@ impl Store {
         Ok(serde_json::json!({
             "schema":"daimon.topic-projects/v1",
             "entry_binding":[human,entry,entry_session,native],
-            "target":key,"repositories":repositories,
+            "target":key,"repositories":repositories,"next":next,"restarted":restarted,
         }))
     }
 
@@ -1058,7 +1075,9 @@ mod tests {
             delta
         );
         assert_eq!(git(&moved, &["diff", "--cached"]), staged);
-        let projected = store.topic_project_projection(100, entry, topic).unwrap();
+        let projected = store
+            .topic_project_projection(100, entry, topic, None)
+            .unwrap();
         assert_eq!(
             projected["repositories"][0]["project"],
             delta.link.project.to_string()
@@ -1066,7 +1085,11 @@ mod tests {
         assert_eq!(projected["repositories"][0]["commit"], delta.link.commit);
         assert!(projected["repositories"][0].get("locator").is_none());
         assert_eq!(projected["repositories"][0]["label"], "Story");
-        assert!(store.topic_project_projection(101, entry, topic).is_err());
+        assert!(
+            store
+                .topic_project_projection(101, entry, topic, None)
+                .is_err()
+        );
         assert!(
             store
                 .project_checkpoint(
@@ -1092,7 +1115,9 @@ mod tests {
             .unwrap();
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
         assert_eq!(
-            store.topic_project_projection(100, entry, topic).unwrap()["repositories"],
+            store
+                .topic_project_projection(100, entry, topic, None)
+                .unwrap()["repositories"],
             serde_json::json!([])
         );
         assert!(

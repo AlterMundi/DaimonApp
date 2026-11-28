@@ -13,7 +13,7 @@ def git(path, *args):
     return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
 
 
-def select_project(journey):
+def select_project(journey, *, paginate=False):
     topic, = journey.row("SELECT id FROM sessions WHERE thread_id=7")[0]
     adopted = journey.read("topics", "workspace", "adopt", "7", str(topic))["result"]
     assert adopted["folder_ready"], adopted
@@ -38,6 +38,9 @@ def select_project(journey):
     other_links = [("illustrations", prepare_checkout("illustrations", story, str(uuid.uuid4()))),
                    ("notes", prepare_checkout("notes", str(uuid.uuid4())))]
 
+    if paginate:
+        other_links.extend((f"extra-{n}", prepare_checkout(f"extra-{n}", str(uuid.uuid4())))
+                           for n in range(7))
     binding = journey.read("presentation", "list", "0", "0")["result"]["binding"]
 
     def dispatch(number, selector, thread, text, *, relation="new", requests=()):
@@ -110,18 +113,33 @@ def select_project(journey):
                            "revision": revision, "checkout": folder_name})
         repositories.append({"revision": revision, "link": other,
                              "checkout": folder_name, "sources": [source]})
+    count = len(repositories)
     visible = shadow(7, "workspace-links", {"action": "projects", "workspace": workspace})
-    assert visible["revision"] == 3 and visible["nextBefore"] is None, visible
+    assert visible["revision"] == count, visible
     assert visible["links"] == [
-        {"revision": row["revision"], "link": row["link"]} for row in reversed(repositories)
+        {"revision": row["revision"], "link": row["link"]} for row in list(reversed(repositories))[:8]
     ], visible
-    room = journey.read("input", "topic-projects", json.dumps({"chat_id":100,"thread_id":7}))["result"]
-    assert room["schema"] == "daimon.topic-projects/v1"
-    assert room["repositories"] == [
+
+    def room_page(cursor=None):
+        target = {"chat_id": 100, "thread_id": 7, **({"cursor": cursor} if cursor else {})}
+        room = journey.read("input", "topic-projects", json.dumps(target))["result"]
+        assert room["schema"] == "daimon.topic-projects/v1"
+        return room
+
+    room = room_page()
+    projected = [
         {"project": item["project"], "repository": item.get("repository", item["project"]),
          "label": item["label"], "commit": item["commit"]}
-        for item in [other_links[1][1], other_links[0][1], link]
-    ], room
+        for item in [row["link"] for row in reversed(repositories)]
+    ]
+    assert room["repositories"] == projected[:8] and not room["restarted"], room
+    if paginate:
+        second = room_page(room["next"])
+        assert second["repositories"] == projected[8:] and second["next"] is None, second
+        old = room_page("1.1")
+        assert old["restarted"] and old["repositories"] == projected[:8], old
+    else:
+        assert room["next"] is None
     for selection_row, expected in zip(selections, repositories, strict=True):
         result_row = shadow(7, f"read-repository-{expected['revision']}", {
             "action": "read", "workspace": workspace, "checkout": selection_row["checkout"],
@@ -129,11 +147,11 @@ def select_project(journey):
         })
         assert result_row["revision"] == expected["revision"], result_row
         assert result_row["delta"]["link"] == expected["link"], result_row
-    assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(1,), (2,), (3,)]
+    assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,count+1)]
 
     finished, unfinished = [row[0] for row in journey.instructions(7)]
     selected = shadow(7, "select", {
-        "action": "select_recovery", "workspace": workspace, "projects": selections,
+        "action": "select_recovery", "workspace": workspace, "projects": selections[:3],
         "effects": [finished, unfinished],
     })
     assert selected["selected"] and selected["revisions"] == [1, 2, 3], selected
@@ -167,7 +185,7 @@ def run(binary):
         journey.start()
         journey.wait_control_socket(journey.socket)
         journey.routing = True
-        _, _, workspace, apply, result, dispatch, shadow = select_project(journey)
+        repositories, _, workspace, apply, result, dispatch, shadow = select_project(journey, paginate=True)
         dispatch(3, "Alpha", 7, "Correct the first iteration: withdraw the old revision citation.",
                  relation="amends", requests=result["request_ids"])
         corrected = journey.read("presentation", "list", "0", "0")["result"]["items"]
@@ -180,8 +198,8 @@ def run(binary):
         room = journey.read("input", "topic-projects", json.dumps({"chat_id":100,"thread_id":7}))["result"]
         assert room["repositories"] == [], room
         assert journey.row("SELECT count(*) FROM interaction_instructions") == corrected_count
-        assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(1,), (2,), (3,)]
-        print("PASS owned Gateway controller verified canonical conversation evidence and three repository links spanning two projects; checkout move, exact repeat and source correction caused no duplicate dispatch or extra model call.")
+        assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,len(repositories)+1)]
+        print("PASS owned Gateway controller verified canonical conversation evidence and paged repository links; checkout move, exact repeat and source correction caused no duplicate dispatch or extra model call.")
     finally:
         journey.close()
 

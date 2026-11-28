@@ -170,8 +170,11 @@ General Conversation continues to use its independent server draft.
 The admitted Holodeck owner can request project references for one exact
 room through the paired bridge. The Gateway reuses the current workspace
 marker and the checkpoint catalogue's source checks. The receiving view
-gets up to eight recent repository links, with opaque project and repository
-IDs, a display label, and the exact Git commit. Repository labels can be
+gets up to eight repository links per page, with opaque project and
+repository IDs, a display label, and the exact Git commit. The cursor walks
+the retained catalogue in descending revision order and authorizes no reads
+by itself. Each page checks current source access. If the catalogue revision
+changed, the read returns the current first page and marks the restart. Repository labels can be
 cited in the original project link. Legacy links remain readable. Raw Git
 locators, workspace paths, source text and effect receipts stay in the owner.
 

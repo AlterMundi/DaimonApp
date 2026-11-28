@@ -194,7 +194,7 @@ topic_id=8
             return self.presentation(command)
         self.provider.presentation.side_effect=with_projects
         self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['projects'],
-                         {'repositories':repositories})
+                         {'repositories':repositories,'next':None,'restarted':False})
         self.assertTrue(all('projects' not in room for room in self.provider.topic_rooms(include_projects=True)['rooms']))
         with closing(sqlite3.connect(self.db)) as db:
             db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=2')

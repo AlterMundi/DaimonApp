@@ -410,7 +410,7 @@ class Provider:
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
-    def topic_rooms(self, room=None, *, include_projects=False):
+    def topic_rooms(self, room=None, *, include_projects=False, project_cursor=None):
         """Project the current owned workspace into a bounded room catalogue."""
         if room is not None and (not isinstance(room,str) or re.fullmatch('[a-f0-9]{64}',room) is None):
             raise ValueError('Select a topic room')
@@ -424,15 +424,22 @@ class Provider:
             if include_projects and room is not None:
                 chat,topic=map(int,row['audio_key'].split(':'))
                 target={'chat_id':chat,'thread_id':topic}
+                selection={**target, **({'cursor':project_cursor} if project_cursor is not None else {})}
                 try:
-                    projects=self.presentation('input topic-projects '+json.dumps(target,separators=(',',':')))
+                    projects=self.presentation('input topic-projects '+json.dumps(selection,separators=(',',':')))
                 except ProviderUnavailable:
                     pass  # Older owners can still describe the room.
                 else:
                     if (projects.get('schema')!='daimon.topic-projects/v1' or projects.get('target')!=target
                         or not isinstance(projects.get('repositories'),list) or len(projects['repositories'])>8):
                         raise ProviderUnavailable('Invalid topic project projection')
-                    selected['projects']={'repositories':projects['repositories']}
+                    next_page=projects.get('next')
+                    restarted=projects.get('restarted',False)
+                    if ((next_page is not None and (not isinstance(next_page,str) or
+                         re.fullmatch(r'[0-9]{1,19}\.[0-9]{1,19}',next_page) is None))
+                        or type(restarted) is not bool):
+                        raise ProviderUnavailable('Invalid topic project page')
+                    selected['projects']={'repositories':projects['repositories'],'next':next_page,'restarted':restarted}
             rooms.append(selected)
         return {'schema':'daimon.topic-rooms/v1','rooms':rooms}
 
