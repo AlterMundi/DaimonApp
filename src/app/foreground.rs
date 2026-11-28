@@ -1,4 +1,5 @@
 //! Native worker protocol shared by the Gateway's foreground entrypoints.
+use super::AppShared;
 use crate::store::{ClaudeContinuation, valid_claude_scope};
 use crate::{
     execution::{Harness, ToolInvocation},
@@ -6,17 +7,26 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::sync::Arc;
+
+pub(super) struct AcpTopicTurn<'a> {
+    workspace: &'a str,
+    native_session_id: Option<&'a str>,
+    store_id: Option<&'a str>,
+}
 
 pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub id: &'a str,
     pub session: &'a str,
     pub resume: &'a [ClaudeContinuation],
+    pub(super) acp_topic: Option<AcpTopicTurn<'a>>,
     pub human_original: bool,
     pub native_goal_command: bool,
     pub routed_human: bool,
     pub routed_host_access: bool,
     pub session_instructions: Option<&'a str>,
     pub workspace: Option<&'a std::path::Path>,
+    pub output_directory: Option<&'a std::path::Path>,
     pub history_seed: Option<&'a Value>,
     pub project_checkpoint: Option<&'a str>,
     pub require_recovery_context: bool,
@@ -24,8 +34,17 @@ pub(in crate::app) struct WorkerTurn<'a, 's> {
     pub attachments: &'a [crate::models::LocalAttachment],
     pub body: Value,
     pub cancel: &'a tokio_util::sync::CancellationToken,
+    pub shutdown: &'a tokio_util::sync::CancellationToken,
     pub controller: Option<WorkerController<'a>>,
     pub steering: Option<&'a mut WorkerSteering<'s>>,
+    pub acceptance: Option<WorkerAcceptance<'a>>,
+}
+
+pub(in crate::app) struct WorkerAcceptance<'a> {
+    shared: &'a Arc<AppShared>,
+    input: &'a crate::interaction::Instruction,
+    local_turn: i64,
+    require_work: bool,
 }
 
 pub(in crate::app) struct WorkerSteering<'a> {
@@ -133,18 +152,21 @@ pub(in crate::app) async fn execute_worker(
     let schema = match engine {
         ForegroundEngine::Claude => "daimon-gateway.claude-turn/v2",
         ForegroundEngine::Goose => "daimon-gateway.goose-turn/v1",
+        ForegroundEngine::Antigravity if turn.acp_topic.is_some() => "daimon-gateway.antigravity-turn/v2",
         ForegroundEngine::Antigravity => "daimon-gateway.antigravity-turn/v1",
     };
     let WorkerTurn {
         id,
         session,
         resume,
+        acp_topic,
         human_original,
         native_goal_command,
         routed_human,
         routed_host_access,
         session_instructions,
         workspace,
+        output_directory,
         history_seed,
         project_checkpoint,
         require_recovery_context,
@@ -152,9 +174,12 @@ pub(in crate::app) async fn execute_worker(
         attachments,
         body,
         cancel,
+        shutdown,
         controller,
         mut steering,
+        acceptance,
     } = turn;
+    let agy = acp_topic.as_ref().filter(|_| engine == ForegroundEngine::Antigravity);
     anyhow::ensure!(
         !cancel.is_cancelled(),
         "Native worker cancelled before preparation"
@@ -176,6 +201,7 @@ pub(in crate::app) async fn execute_worker(
     let allow_long_turn =
         engine == ForegroundEngine::Claude && (human_original || routed_host_access);
     let committed_long_turn = AtomicBool::new(false);
+    let negotiated_interrupt = AtomicBool::new(false);
     let deadline = tokio::time::sleep(Duration::from_secs(130));
     let exchange = async {
         let mut input = child.stdin.take().context("Missing native worker input")?;
@@ -215,6 +241,9 @@ pub(in crate::app) async fn execute_worker(
                 );
                 start["workspace"] = json!(path);
             }
+            if let Some(path) = output_directory {
+                start["outputDirectory"] = json!(path);
+            }
             if let Some(history) = history_seed {
                 start["historySeed"] = history.clone();
             }
@@ -243,13 +272,36 @@ pub(in crate::app) async fn execute_worker(
                 !require_recovery_context
                     || start.get("historySeed").is_some()
                     || start.get("projectCheckpoint").is_some(),
-                "Claude recovery requires context that fits the worker input"
+                crate::store::ClaudeContextUnavailable
             );
+        }
+        if let Some(topic) = &acp_topic {
+            start["workspace"] = json!(topic.workspace);
+            start["resumeNativeSessionId"] = json!(topic.native_session_id);
+            if let Some(store_id) = topic.store_id {
+                start["storeId"] = json!(store_id);
+            }
+        }
+        if agy.is_some() {
+            if controller.is_some() {
+                start["controller"] = json!(true);
+            }
+            if !attachments.is_empty() {
+                start["attachments"] = json!(
+                    attachments
+                        .iter()
+                        .map(|file| json!({
+                            "path": file.path, "mime": file.mime_type,
+                        }))
+                        .collect::<Vec<_>>()
+                );
+            }
         }
         send(&mut input, start).await?;
         let mut frame = receive(&mut output, schema, id, session).await?;
         let mut native_session = None;
         let mut negotiated_steering = false;
+        let mut observe_acceptance = false;
         if frame["type"] == "prepare_submission" {
             let observed = frame.get("nativeSessionId");
             let selected = match engine {
@@ -271,6 +323,10 @@ pub(in crate::app) async fn execute_worker(
                 ForegroundEngine::Goose => observed
                     .and_then(Value::as_str)
                     .context("Goose preparation omitted its native session")?,
+                ForegroundEngine::Antigravity if agy.is_some() => observed
+                    .and_then(Value::as_str)
+                    .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+                    .context("agy preparation omitted its native session")?,
                 ForegroundEngine::Antigravity
                     if observed.and_then(Value::as_str) == Some(session) =>
                 {
@@ -294,6 +350,19 @@ pub(in crate::app) async fn execute_worker(
                     prepared["workspace"] = json!(path);
                 }
             }
+            if let Some(topic) = &acp_topic {
+                anyhow::ensure!(
+                    topic.native_session_id.is_none_or(|expected| expected == selected)
+                        && frame["workspace"].as_str() == Some(topic.workspace)
+                        && frame["storeId"].as_str() == topic.store_id,
+                    "ACP preparation changed the selected session, workspace or store"
+                );
+                prepared["adapter"] = json!(if agy.is_some() { "agy" } else { "goose" });
+                prepared["workspace"] = json!(topic.workspace);
+                if let Some(store_id) = topic.store_id {
+                    prepared["store_id"] = json!(store_id);
+                }
+            }
             let committed = commit(prepared)?;
             if committed {
                 native_session = Some(selected.to_owned());
@@ -301,6 +370,20 @@ pub(in crate::app) async fn execute_worker(
             }
             let mut decision = json!({"schema":schema,"type":"submission_decision",
                 "inputId":id,"sessionId":session,"committed":committed});
+            observe_acceptance = committed
+                && acceptance.as_ref().is_some_and(|receipt| {
+                    frame["inputAcceptance"] == true
+                        && (!receipt.require_work || frame["workAcceptance"] == true)
+                });
+            if observe_acceptance {
+                decision["observeAcceptance"] = json!(true);
+                if acceptance
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.require_work)
+                {
+                    decision["requireWork"] = json!(true);
+                }
+            }
             if committed
                 && engine == ForegroundEngine::Claude
                 && steering.is_some()
@@ -309,39 +392,84 @@ pub(in crate::app) async fn execute_worker(
                 negotiated_steering = true;
                 decision["steering"] = json!(true);
             }
+            if committed
+                && frame["targetedInterrupt"] == true
+                && ((engine == ForegroundEngine::Claude && steering.is_some())
+                    || acp_topic.is_some())
+            {
+                negotiated_interrupt.store(true, Ordering::Relaxed);
+                decision["targetedInterrupt"] = json!(true);
+            }
             send(&mut input, decision).await?;
             frame = Value::Null;
         }
         let mut next_call = 1;
         let mut steer_ready = false;
+        let mut interrupt_sent = false;
+        let interrupt_command = json!({"schema":schema,"type":"interrupt","inputId":id,"sessionId":session});
         let mut steer_results = Vec::new();
         loop {
             if frame.is_null() {
                 let next = receive(&mut output, schema, id, session);
                 tokio::pin!(next);
                 loop {
-                    let Some(steering) = steering.as_deref_mut().filter(|_| steer_ready) else {
-                        frame = next.await?;
-                        break;
-                    };
                     tokio::select! {
                         biased;
+                        _ = cancel.cancelled(), if negotiated_interrupt.load(Ordering::Relaxed) && !interrupt_sent => {
+                            anyhow::ensure!(!shutdown.is_cancelled(),
+                                "Native worker stopped for Gateway shutdown");
+                            send(&mut input, interrupt_command.clone()).await?;
+                            interrupt_sent = true;
+                        }
                         observed = &mut next => {
                             frame = observed?;
                             break;
                         }
-                        request = steering.receiver.recv() => {
+                        request = async {
+                            match steering.as_deref_mut().filter(|_| steer_ready && !interrupt_sent) {
+                                Some(adapter) => adapter.receiver.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
                             let Some(request) = request else {
-                                frame = next.await?;
-                                break;
+                                steer_ready = false;
+                                continue;
                             };
-                            if let Some(wire) = steering.prepare(request).await {
+                            if let Some(wire) = steering.as_deref_mut().expect("selected steer adapter").prepare(request).await {
                                 send(&mut input, json!({"schema":schema,"type":"steer",
                                     "inputId":id, "sessionId":session, "id":wire.0, "text":wire.1})).await?;
                             }
                         }
                     }
                 }
+            }
+            if frame["type"] == "input_accepted" {
+                anyhow::ensure!(
+                    observe_acceptance && frame.as_object().is_some_and(|object| object.len() == 5),
+                    "Unexpected native input receipt"
+                );
+                let receipt = acceptance
+                    .as_ref()
+                    .context("No native receipt destination")?;
+                let native = native_session
+                    .as_deref()
+                    .context("No committed native session")?;
+                anyhow::ensure!(
+                    frame["nativeSessionId"].as_str() == Some(native),
+                    "Native input receipt differs from the committed turn"
+                );
+                // A withdrawal or reset may fence this receipt after dispatch.
+                // Keep collecting the exposed worker's outcome in that case.
+                if receipt.shared.store.record_routed_input_acceptance(
+                    receipt.input,
+                    receipt.local_turn,
+                    native,
+                )? {
+                    super::topic_publications::wake(receipt.shared.clone(), receipt.input.target);
+                }
+                observe_acceptance = false;
+                frame = Value::Null;
+                continue;
             }
             if frame["type"] == "steer_ready" {
                 anyhow::ensure!(
@@ -394,9 +522,14 @@ pub(in crate::app) async fn execute_worker(
                     && frame["arguments"].to_string().len() <= 15600,
                 "Invalid native controller call"
             );
+            if agy.is_some() && interrupt_sent {
+                next_call += 1;
+                frame = Value::Null;
+                continue;
+            }
             let request = ToolInvocation {
                 local_turn: owner.local_turn,
-                harness: Harness::Claude,
+                harness: engine.harness(),
                 native_session: native.clone(),
                 native_turn: id.to_owned(),
                 tool: "interaction_controller".into(),
@@ -421,9 +554,19 @@ pub(in crate::app) async fn execute_worker(
                     controller_closed.clone(),
                 )
             };
-            let reply = result
-                .await
-                .context("Native controller result unavailable; inspect retained effects")?;
+            let reply = tokio::select! {
+                biased;
+                _ = cancel.cancelled(), if agy.is_some() && negotiated_interrupt.load(Ordering::Relaxed) => {
+                    anyhow::ensure!(!shutdown.is_cancelled(),
+                        "Native worker stopped for Gateway shutdown");
+                    send(&mut input, interrupt_command.clone()).await?;
+                    interrupt_sent = true;
+                    next_call += 1;
+                    frame = Value::Null;
+                    continue;
+                }
+                reply = result => reply.context("Native controller result unavailable; inspect retained effects")?,
+            };
             let mut response = json!({"schema":schema,"type":"controller_reply",
                 "inputId":id,"sessionId":session,"callId":next_call,
                 "success":reply.success,"text":reply.text});
@@ -446,6 +589,10 @@ pub(in crate::app) async fn execute_worker(
                     Some("completed") =>
                         outcome["sessionId"].as_str() == native_session.as_deref()
                             && native_session.is_some()
+                            && (outcome.get("cancelled").is_none()
+                                || (interrupt_sent
+                                    && engine == ForegroundEngine::Claude
+                                    && outcome["cancelled"].is_array()))
                             && outcome["text"]
                                 .as_str()
                                 .is_some_and(|text| !text.trim().is_empty() && text.len() <= 65536),
@@ -459,6 +606,15 @@ pub(in crate::app) async fn execute_worker(
                             && outcome["limit"].is_object()
                             && outcome["workObserved"].is_boolean()
                             && outcome["terminalObserved"].is_boolean(),
+                    Some("interrupted") =>
+                        interrupt_sent
+                            && native_session.is_some()
+                            && outcome["sessionId"].as_str() == native_session.as_deref()
+                            && match engine {
+                                ForegroundEngine::Claude => outcome["cancelled"].is_array(),
+                                ForegroundEngine::Antigravity | ForegroundEngine::Goose =>
+                                    acp_topic.is_some() && outcome.get("cancelled").is_none(),
+                            },
                     Some("not_submitted") => true,
                     _ => false,
                 },
@@ -471,6 +627,7 @@ pub(in crate::app) async fn execute_worker(
         let mut outcome = outcome;
         if let Some(object) = outcome.as_object_mut() {
             object.remove("resumeUnavailableBody");
+            object.remove("contextUnavailable");
             object.remove("steerResults");
         }
         if let Some(adapter) = steering.as_deref_mut() {
@@ -496,7 +653,14 @@ pub(in crate::app) async fn execute_worker(
     };
     let result = tokio::select! {
         biased;
-        _ = cancel.cancelled() => Err(anyhow::anyhow!("Native worker cancelled")),
+        _ = async {
+            cancel.cancelled().await;
+            if negotiated_interrupt.load(Ordering::Relaxed)
+                && !shutdown.is_cancelled()
+            {
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+        } => Err(anyhow::anyhow!("Native worker cancelled")),
         _ = async {
             deadline.await;
             if committed_long_turn.load(Ordering::Relaxed) {
@@ -563,7 +727,12 @@ impl WorkerSteering<'_> {
     }
 
     fn validate_outcome(&self, outcome: &Value, results: &[Value]) -> Result<()> {
-        if self.sent.is_empty() && results.is_empty() && outcome["steerSubmitted"].is_null() {
+        if outcome.get("cancelled").is_none()
+            && outcome["phase"] != "interrupted"
+            && self.sent.is_empty()
+            && results.is_empty()
+            && outcome["steerSubmitted"].is_null()
+        {
             return Ok(());
         }
         let submitted = outcome["steerSubmitted"]
@@ -575,6 +744,21 @@ impl WorkerSteering<'_> {
             anyhow::ensure!(
                 self.sent.iter().any(|(sent, _)| sent == id) && submitted_ids.insert(id),
                 "Unknown or duplicate Claude submission"
+            );
+        }
+        if outcome.get("cancelled").is_some() || outcome["phase"] == "interrupted" {
+            let cancelled = outcome["cancelled"]
+                .as_array()
+                .context("Claude interrupt receipt missing")?;
+            let cancelled_ids = cancelled
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::HashSet<_>>();
+            anyhow::ensure!(
+                cancelled.len() == cancelled_ids.len()
+                    && cancelled_ids == submitted_ids
+                    && results.is_empty(),
+                "Claude interrupt receipt differs from the submitted corrections"
             );
         }
         let mut covered = std::collections::HashSet::new();
@@ -611,9 +795,12 @@ impl WorkerSteering<'_> {
                 .shared
                 .store
                 .interaction_instruction(&id, self.root.human_id)?;
-            let result = match retained.and_then(|input| input.native_turn) {
-                Some(anchor) => Ok(Some(anchor)),
-                None if outcome["steerSubmitted"]
+            let result = match retained {
+                Some(input) if input.phase == crate::interaction::TransportPhase::Cancelled => {
+                    Ok(None)
+                }
+                Some(input) if input.native_turn.is_some() => Ok(input.native_turn),
+                _ if outcome["steerSubmitted"]
                     .as_array()
                     .is_some_and(|submitted| !submitted.iter().any(|value| value == &id)) =>
                 {
@@ -621,7 +808,7 @@ impl WorkerSteering<'_> {
                         "Claude stream closed before submission".into(),
                     ))
                 }
-                None => Err(CodexSteerError::Undetermined(
+                _ => Err(CodexSteerError::Undetermined(
                     "Claude incorporation unconfirmed".into(),
                 )),
             };
@@ -694,6 +881,7 @@ pub(super) async fn run_portable_turn(
                 id: &input.id,
                 session: &input.id,
                 resume: resume.as_slice(),
+                acp_topic: None,
                 human_original: true,
                 native_goal_command: input.paired_actor
                     && crate::interaction::native_claude_goal(&input.text),
@@ -701,6 +889,7 @@ pub(super) async fn run_portable_turn(
                 routed_host_access: false,
                 session_instructions: None,
                 workspace: None,
+                output_directory: None,
                 history_seed: None,
                 project_checkpoint: None,
                 require_recovery_context: false,
@@ -708,7 +897,9 @@ pub(super) async fn run_portable_turn(
                 attachments: &[],
                 body: body.clone(),
                 cancel: &cancel,
+                shutdown: &app.shared.shutdown,
                 steering: None,
+                acceptance: None,
                 controller: (cfg.entry() == request.session_key && cfg.human_id == input.human)
                     .then_some(WorkerController {
                         app,
@@ -734,9 +925,8 @@ pub(super) async fn run_portable_turn(
     Ok(())
 }
 
-fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
-    if can_recover
-        && outcome["phase"] == "not_submitted"
+fn missing_resume_scope(outcome: &Value) -> Option<&str> {
+    if outcome["phase"] == "not_submitted"
         && outcome["reason"] == "claude_resume_session_missing"
         // execute_worker adds this only after matching the selected session and
         // scope, verifying worker exit, and confirming no committed submission.
@@ -750,24 +940,23 @@ fn missing_resume_scope(outcome: &Value, can_recover: bool) -> Option<&str> {
 
 #[cfg(test)]
 #[test]
-fn claude_recovery_requires_an_attested_unsent_original_and_context() {
+fn claude_missing_session_requires_attested_unsent_evidence() {
     let missing = json!({
         "phase": "not_submitted",
         "reason": "claude_resume_session_missing",
         "resumeUnavailable": {"sessionId": "selected", "scope": "selected-scope"},
         "resumeUnavailableBody": {"beingRef": "authenticated"},
     });
-    assert_eq!(missing_resume_scope(&missing, true), Some("selected-scope"));
-    assert_eq!(missing_resume_scope(&missing, false), None);
+    assert_eq!(missing_resume_scope(&missing), Some("selected-scope"));
     let mut uncertain = missing.clone();
     uncertain["phase"] = json!("uncertain");
-    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    assert_eq!(missing_resume_scope(&uncertain), None);
     uncertain = missing;
     uncertain
         .as_object_mut()
         .unwrap()
         .remove("resumeUnavailableBody");
-    assert_eq!(missing_resume_scope(&uncertain, true), None);
+    assert_eq!(missing_resume_scope(&uncertain), None);
 }
 
 pub(super) async fn run_routed_portable(
@@ -815,6 +1004,10 @@ pub(super) async fn run_routed_portable(
     let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
+    let transcribed_original = store
+        .interaction_source(&input.id, input.human_id)?
+        .transcription
+        .is_some();
     // Retain the controller catalog on a canonical result so its receiving
     // turn can resume the requesting session. The journal checks each action
     // against its current input, and a result cannot authorize new work.
@@ -825,6 +1018,19 @@ pub(super) async fn run_routed_portable(
                 Some("session_request" | "session_result")
             )
         });
+    let output_workspace = (engine == ForegroundEngine::Claude
+        && routed_host_access
+        && human_authored
+        && !crate::interaction::native_claude_goal(&input.text)
+        && cfg.artifact_store.is_some())
+    .then(|| super::turns::prepare_turn_workspace(&session, local))
+    .and_then(|result| match result {
+        Ok(workspace) => Some(workspace),
+        Err(error) => {
+            tracing::warn!(%error, "Generated file workspace unavailable");
+            None
+        }
+    });
     let mut steering = (engine == ForegroundEngine::Claude && routed_host_access && human_authored)
         .then(|| {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -835,6 +1041,7 @@ pub(super) async fn run_routed_portable(
                 active: super::ActiveTurnSteerHandle {
                     harness: Harness::Claude,
                     turn_id: local,
+                    attributed_root: false,
                     physical_turn: Default::default(),
                     sender,
                     attachments: Default::default(),
@@ -851,8 +1058,9 @@ pub(super) async fn run_routed_portable(
         // files using the paired authority they inherit for host tools.
         anyhow::ensure!(
             request.attachments.is_empty()
-                || (engine == ForegroundEngine::Claude && routed_host_access && human_authored),
-            "Routed worker attachments require an authenticated human Claude turn"
+                || ((engine == ForegroundEngine::Claude || config.agy_cli)
+                    && routed_host_access && human_authored),
+            "Routed worker attachments require a paired human and an attachment-capable route"
         );
         let (_,body) = tokio::select! {
             biased;
@@ -862,6 +1070,7 @@ pub(super) async fn run_routed_portable(
         let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
+            && !transcribed_original
             && request.attachments.is_empty()
             && crate::interaction::native_claude_goal(&input.text);
         let conversation_goal = owned_goal
@@ -882,14 +1091,44 @@ pub(super) async fn run_routed_portable(
         } else {
             Vec::new()
         };
+        let goose_store = config.goose_topic_store_id.as_deref();
+        let acp_workspace = if config.agy_cli || goose_store.is_some() {
+            anyhow::ensure!(routed_host_access && paired_work,
+                "ACP requires a paired original or attributed handoff in the selected workspace");
+            let path = session.cwd.to_str().context("Invalid ACP workspace")?;
+            anyhow::ensure!(session.cwd.is_absolute() && path.len() <= 4096,
+                "Invalid ACP workspace");
+            Some(path)
+        } else {
+            None
+        };
+        let acp_resume = acp_workspace
+            .map(|workspace| store.routed_acp_session(local, engine.harness(), &body, workspace, goose_store))
+            .transpose()?.flatten();
+        if config.agy_cli
+            && let Some(workspace) = acp_workspace
+            && let Some(author) = author.as_ref().filter(|a| a["kind"] == "session_result")
+        {
+            anyhow::ensure!(
+                store.routed_agy_return_matches(input, author, acp_resume.as_deref(), workspace, &body)?,
+                "Antigravity return cannot resume its requesting native session"
+            );
+        }
         let human_original = direct_original || conversation_goal;
         let (history_seed, project_checkpoint) = if engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
             && !native_goal_command
         {
+            let history_seed = match store.routed_claude_history_seed(input, local, &body) {
+                Ok(seed) => seed,
+                Err(error) if error.is::<crate::store::ClaudeContextUnavailable>() => {
+                    return Ok(json!({"phase":"not_submitted","contextUnavailable":true}));
+                }
+                Err(error) => return Err(error),
+            };
             (
-                store.routed_claude_history_seed(input, local, &body)?,
+                history_seed,
                 store
                     .topic_folder_claim(input.target, input.human_id)?
                     .and_then(|(folder, claim)| super::creation::topic_project_checkpoint(&folder, &claim)),
@@ -900,7 +1139,8 @@ pub(super) async fn run_routed_portable(
         let mut missing_resume: Option<(String, Value)> = None;
         loop {
             let mut exposed = false;
-            let controller = (engine == ForegroundEngine::Claude && routed_host_access && paired_work)
+            let mut quote_unavailable = false;
+            let controller = ((engine == ForegroundEngine::Claude || config.agy_cli) && routed_host_access && paired_work)
                 .then_some(WorkerController {
                     app,
                     key: input.target,
@@ -917,6 +1157,11 @@ pub(super) async fn run_routed_portable(
                     id: &input.id,
                     session: &attempt,
                     resume: if missing_resume.is_some() { &[] } else { &resume },
+                    acp_topic: acp_workspace.map(|workspace| AcpTopicTurn {
+                        workspace,
+                        native_session_id: acp_resume.as_deref(),
+                        store_id: goose_store,
+                    }),
                     human_original,
                     native_goal_command,
                     routed_human: !human_original,
@@ -924,6 +1169,7 @@ pub(super) async fn run_routed_portable(
                     session_instructions: session.session_prompt.as_deref(),
                     workspace: (engine == ForegroundEngine::Claude && routed_host_access)
                         .then_some(session.cwd.as_path()),
+                    output_directory: output_workspace.as_ref().map(|w| w.out_dir.as_path()),
                     history_seed: history_seed.as_ref(),
                     project_checkpoint: project_checkpoint.as_deref(),
                     require_recovery_context: missing_resume.is_some(),
@@ -931,8 +1177,15 @@ pub(super) async fn run_routed_portable(
                     attachments: &request.attachments,
                     body: body.clone(),
                     cancel: &cancel,
+                    shutdown: &app.shared.shutdown,
                     controller,
                     steering: steering.as_mut(),
+                    acceptance: ((engine == ForegroundEngine::Claude || config.agy_cli)
+                        && ((routed_host_access && (human_authored || (config.agy_cli && paired_work)))
+                            || author.as_ref().is_some_and(|a| a["report_to_topic"] == true)))
+                    .then_some(WorkerAcceptance {
+                        shared: &app.shared, input, local_turn: local, require_work: human_authored,
+                    }),
                 },
                 |prepared| {
                     if cancel.is_cancelled()
@@ -951,34 +1204,102 @@ pub(super) async fn run_routed_portable(
                     {
                         return Ok(false);
                     }
-                    exposed = store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref())?;
+                    exposed = match store.expose_routed_portable(input, local, &body, &prepared, routed_host_access, history_seed.as_ref()) {
+                        Ok(exposed) => exposed,
+                        Err(error) if error.is::<crate::store::ClaudeContextUnavailable>() => {
+                            quote_unavailable = true;
+                            false
+                        }
+                        Err(error) => return Err(error),
+                    };
                     Ok(exposed)
                 },
             ).await;
+            if !exposed && !cancel.is_cancelled()
+                && (quote_unavailable || result.as_ref().is_err_and(|error| {
+                    error.is::<crate::store::ClaudeContextUnavailable>()
+                }))
+            {
+                let mut outcome = missing_resume
+                    .map(|(_, original)| original)
+                    .unwrap_or_else(|| json!({"phase":"not_submitted"}));
+                outcome["contextUnavailable"] = json!(true);
+                break Ok(outcome);
+            }
             if let Some((_, missing)) = missing_resume {
                 // Keep the missing-session evidence when the replacement never
                 // reached exposure. Once exposed, only its outcome may settle it.
                 break if exposed { result } else { Ok(missing) };
             }
-            let Ok(outcome) = result else {
+            let Ok(mut outcome) = result else {
                 break result;
             };
-            let Some(scope) = missing_resume_scope(&outcome, history_seed.is_some() || project_checkpoint.is_some()) else {
+            let Some(scope) = missing_resume_scope(&outcome) else {
                 break Ok(outcome);
             };
+            if history_seed.is_none() && project_checkpoint.is_none() {
+                if !cancel.is_cancelled() {
+                    outcome["contextUnavailable"] = json!(true);
+                }
+                break Ok(outcome);
+            }
             missing_resume = Some((scope.to_owned(), outcome));
         }
     }.await.unwrap_or(Value::Null);
-    let deliveries = store.finish_routed_portable(input, local, &outcome, Some(cfg.entry()))?;
+    let mut artifact_job = None;
+    if let Some(workspace) = &output_workspace {
+        if outcome["phase"] == "completed" {
+            let publish =
+                super::topic_publications::enabled(&app.shared, input.target, input.human_id);
+            match super::artifact_outputs::job_at_completion(workspace) {
+                Ok(Some(mut job)) => {
+                    job["publish_files"] = json!(publish);
+                    artifact_job = Some(job);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "Generated files remain in the turn workspace")
+                }
+            }
+        }
+        if std::fs::remove_dir(&workspace.out_dir).is_ok() {
+            let _ = std::fs::remove_dir(&workspace.root);
+        }
+    }
+    let deliveries = store.finish_routed_portable(
+        input,
+        local,
+        &outcome,
+        Some(cfg.entry()),
+        artifact_job.as_ref(),
+    )?;
+    if artifact_job.is_some() && super::artifact_outputs::recover(app.shared.clone()).is_err() {
+        tracing::warn!("Generated file recovery remains pending");
+    }
     if let Some(steering) = steering {
         steering.resolve(&outcome)?;
     }
     if input.origin.message_id.is_some()
-        && let Some(limit) = store
-            .interaction_instruction(&input.id, input.human_id)?
-            .and_then(|instruction| instruction.subscription_limit)
+        && let Some(instruction) = store.interaction_instruction(&input.id, input.human_id)?
     {
-        super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+        if human_authored && instruction.context_unavailable
+            && instruction.phase == crate::interaction::TransportPhase::RetainedUnsent
+        {
+            super::routing::notice_context_unavailable(
+                app.shared.clone(),
+                input.origin.clone(),
+                input.id.clone(),
+                input.human_id,
+                local,
+            );
+        } else if human_authored
+            && instruction.goal_control_unavailable
+            && instruction.phase == crate::interaction::TransportPhase::RetainedUnsent
+        {
+            super::routing::notice_goal_control_unavailable(app.shared.clone(), &instruction, local);
+        } else if let Some(limit) = instruction.subscription_limit {
+            super::routing::notice(app.shared.clone(), input.origin.clone(), limit.message());
+        }
     }
     super::topic_publications::wake(app.shared.clone(), input.target);
     super::routing::publish_results(app, input.human_id, deliveries);

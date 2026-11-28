@@ -11,7 +11,7 @@ function isSelectedCatalog(catalog, expected) {
 }
 
 export async function runGooseTurn({
-  binary, cwd, env, mcpServers, toolNames, text, beforeSubmit, signal,
+  binary, cwd, env, mcpServers, toolNames, text, beforeSubmit, signal, nativeSessionId, interruptSignal,
 }) {
   if (!Array.isArray(toolNames) || !toolNames.length
       || toolNames.some(name => typeof name !== 'string' || !name)
@@ -20,7 +20,7 @@ export async function runGooseTurn({
   }
   const expected = [...toolNames].sort();
   return runAcpTurn({
-    binary, args: [], cwd, text, beforeSubmit, signal,
+    binary, args: [], cwd, text, beforeSubmit, signal, interruptSignal,
     env: {
       ...env, GOOSE_DISABLE_SESSION_NAMING: 'true',
       GOOSE_DISABLE_SKILLS: 'true', GOOSE_SLASH_COMMANDS_ENABLED: 'false',
@@ -36,8 +36,25 @@ export async function runGooseTurn({
       if (configured.extensions.some(entry => entry?.enabled !== false)) {
         throw new Error('Unexpected configured Goose extension');
       }
-      const started = await request('session/new', { cwd, mcpServers });
-      const sessionId = validateSessionId(started?.sessionId);
+      let sessionId;
+      if (nativeSessionId === undefined) {
+        const started = await request('session/new', { cwd, mcpServers });
+        sessionId = validateSessionId(started?.sessionId);
+      } else {
+        sessionId = validateSessionId(nativeSessionId);
+        if (initialized.agentCapabilities?.loadSession !== true) {
+          throw new Error('Goose session load unavailable');
+        }
+        const loaded = await request('session/load', { sessionId, cwd, mcpServers }, update => {
+          if (update?.sessionId !== sessionId) {
+            throw new Error('Goose history came from another session');
+          }
+        });
+        if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)
+            || ('sessionId' in loaded && loaded.sessionId !== sessionId)) {
+          throw new Error('Goose session load unconfirmed');
+        }
+      }
       const selected = await request(PREFIX + 'tools/list', { sessionId });
       if (!isSelectedCatalog(selected, expected)) throw new Error('Goose tool catalog mismatch');
       return sessionId;

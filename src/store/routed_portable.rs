@@ -8,6 +8,17 @@ use anyhow::bail;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[derive(Debug)]
+pub(crate) struct ClaudeContextUnavailable;
+
+impl std::fmt::Display for ClaudeContextUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The selected conversation context is unavailable")
+    }
+}
+
+impl std::error::Error for ClaudeContextUnavailable {}
+
 pub(super) fn telegram_original_epoch(
     conn: &Connection,
     source: &SourceInput,
@@ -33,6 +44,156 @@ pub(super) fn telegram_original_epoch_for_parent(
     telegram_original_epoch_on(conn, source, parent.target, accepted_parent)
 }
 
+const MAX_TELEGRAM_ALBUM_MEMBERS: usize = crate::files::MAX_TELEGRAM_ALBUM_FILES;
+
+fn compatible_album_member(
+    update: &crate::telegram::Update,
+    anchor: &crate::telegram::Message,
+    human: i64,
+) -> bool {
+    update.direct_human_attachment
+        && update.message.as_ref().is_some_and(|message| {
+            message.chat.id == anchor.chat.id
+                && message.message_thread_id == anchor.message_thread_id
+                && message.media_group_id == anchor.media_group_id
+                && message
+                    .from
+                    .as_ref()
+                    .is_some_and(|sender| sender.id == human && !sender.is_bot)
+                && message.reply_to_message.as_ref().is_none_or(|reply| {
+                    anchor
+                        .reply_to_message
+                        .as_ref()
+                        .is_some_and(|first| first.message_id == reply.message_id)
+                })
+        })
+}
+
+pub(crate) fn album_text<'a>(captions: impl IntoIterator<Item = &'a str>) -> String {
+    captions
+        .into_iter()
+        .filter(|caption| !caption.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+impl Store {
+    pub(crate) fn telegram_album_generation(&self, session_id: i64) -> Result<String> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT generation FROM conversation_entry_generations WHERE session_id=?1",
+            [session_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn telegram_album_member_handled(&self, update: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM incoming_updates
+             WHERE update_id=?1 AND instance_id=?2 AND status='handled')",
+            params![update, self.instance_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub(crate) fn telegram_album_candidates(
+        &self,
+        anchor_id: i64,
+        anchor: &crate::telegram::Message,
+        human: i64,
+    ) -> Result<Vec<crate::telegram::Update>> {
+        if anchor.media_group_id.is_none() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut query = conn.prepare(
+            "SELECT i.payload_json, i.status, i.instance_id, e.value, i.media_group_id
+             FROM incoming_updates i
+             LEFT JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+             WHERE i.update_id>?1
+               AND COALESCE(json_extract(i.payload_json,'$.message.chat.id'),
+                            json_extract(i.payload_json,'$.callback_query.message.chat.id'))=?2
+               AND COALESCE(json_extract(i.payload_json,'$.message.message_thread_id'),
+                            json_extract(i.payload_json,'$.callback_query.message.message_thread_id'),0)=?3
+             ORDER BY i.update_id LIMIT ?4",
+        )?;
+        let epoch: String = conn.query_row(
+            "SELECT value FROM bot_state WHERE key='stop_input_epoch:'||?1",
+            [anchor_id],
+            |row| row.get(0),
+        )?;
+        let mut rows = query.query(params![
+            anchor_id,
+            anchor.chat.id,
+            anchor.message_thread_id.unwrap_or(0),
+            MAX_TELEGRAM_ALBUM_MEMBERS - 1,
+        ])?;
+        let mut members = Vec::new();
+        while let Some(row) = rows.next()? {
+            let update = crate::telegram::Update::from_journal(&row.get::<_, String>(0)?, row.get(4)?)?;
+            if row.get::<_, String>(1)? != "received"
+                || row.get::<_, String>(2)? != self.instance_id
+                || row.get::<_, Option<String>>(3)?.as_deref() != Some(epoch.as_str())
+                || !compatible_album_member(&update, anchor, human)
+            {
+                break;
+            }
+            members.push(update);
+        }
+        Ok(members)
+    }
+}
+
+fn telegram_album_matches_on(
+    conn: &Connection,
+    source: &SourceInput,
+    anchor_id: i64,
+    anchor: &crate::telegram::Message,
+    epoch: &str,
+) -> Result<bool> {
+    if source.telegram_album_members.is_empty() {
+        return Ok(anchor.attachment_caption() == source.text);
+    }
+    if anchor.media_group_id.is_none()
+        || source.telegram_album_members.len() >= MAX_TELEGRAM_ALBUM_MEMBERS
+        || source.telegram_files.len() <= source.telegram_album_members.len()
+    {
+        return Ok(false);
+    }
+    let mut previous = anchor_id;
+    let mut captions = vec![anchor.attachment_caption().to_owned()];
+    let mut query = conn.prepare(
+        "SELECT i.payload_json, e.value, i.media_group_id FROM incoming_updates i
+         JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
+         WHERE i.update_id=?1 AND i.status IN ('received','handled')",
+    )?;
+    for id in &source.telegram_album_members {
+        if *id <= previous {
+            return Ok(false);
+        }
+        previous = *id;
+        let retained: Option<(String, String, Option<String>)> = query
+            .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .optional()?;
+        let Some((raw, member_epoch, group)) = retained else {
+            return Ok(false);
+        };
+        let member = crate::telegram::Update::from_journal(&raw, group)?;
+        if member_epoch != epoch || !compatible_album_member(&member, anchor, source.human_id) {
+            return Ok(false);
+        }
+        captions.push(
+            member
+                .message
+                .expect("validated album member")
+                .attachment_caption()
+                .to_owned(),
+        );
+    }
+    Ok(album_text(captions.iter().map(String::as_str)) == source.text)
+}
+
 fn telegram_original_epoch_on(
     conn: &Connection,
     source: &SourceInput,
@@ -46,28 +207,46 @@ fn telegram_original_epoch_on(
     // requires retained native acceptance in the owned source conversation.
     if source.event_id != update.to_string()
         || source.tribu_source.is_some()
-        || source.transcription.is_some()
         || source.origin.chat_id != target.chat_id
         || source.text.len() > 16 * 1024
     {
         return Ok(None);
     }
-    let retained: Option<(String, String, String, Option<i64>)> = conn
+    let retained: Option<(String, String, String, Option<i64>, Option<String>)> = conn
         .query_row(
-            "SELECT i.payload_json, e.value, i.status, i.turn_id FROM incoming_updates i
+            "SELECT i.payload_json, e.value, i.status, i.turn_id, i.media_group_id FROM incoming_updates i
          JOIN bot_state e ON e.key='stop_input_epoch:'||i.update_id
          JOIN bot_state b ON b.key='telegram_identity'
          WHERE i.update_id=?1
            AND ?2='telegram:'||json_extract(b.value,'$.id')",
             params![update, source.channel],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .optional()?;
-    let Some((raw, epoch, status, retained_turn)) = retained else {
+    let Some((raw, epoch, status, retained_turn, group)) = retained else {
         return Ok(None);
     };
-    let original: crate::telegram::Update = serde_json::from_str(&raw)?;
-    let matching = original.update_id == update
+    let original = crate::telegram::Update::from_journal(&raw, group)?;
+    let matching_voice = if let Some(proof) = &source.transcription {
+        source.origin.thread_id == target.thread_id
+            && source.telegram_files.is_empty()
+            && original.direct_human_attachment
+            && super::voice::portable_generation_matches_on(conn, update, target, source.human_id)?
+            && super::voice::content_on(conn, &original, source.human_id)
+                .is_ok_and(|(text, observed)| text == source.text && observed.as_ref() == Some(proof))
+    } else {
+        false
+    };
+    let matching_album = if !source.telegram_files.is_empty() {
+        match original.message.as_ref() {
+            Some(anchor) => telegram_album_matches_on(conn, source, update, anchor, &epoch)?,
+            None => false,
+        }
+    } else {
+        source.telegram_album_members.is_empty()
+    };
+    let matching = matching_album
+        && original.update_id == update
         && original.message.is_some_and(|message| {
             Some(message.message_id) == source.origin.message_id
                 && message.chat.id == target.chat_id
@@ -76,7 +255,9 @@ fn telegram_original_epoch_on(
                     .from
                     .as_ref()
                     .is_some_and(|user| user.id == source.human_id && !user.is_bot)
-                && if source.telegram_files.is_empty() {
+                && if source.transcription.is_some() {
+                    matching_voice
+                } else if source.telegram_files.is_empty() {
                     original.direct_human_text
                         && message.text.as_deref() == Some(source.text.as_str())
                         && message.is_text_only()
@@ -84,7 +265,6 @@ fn telegram_original_epoch_on(
                     original.direct_human_attachment
                         && source.origin.thread_id == target.thread_id
                         && message.has_own_attachment()
-                        && message.attachment_caption() == source.text
                 }
         });
     if !matching {
@@ -200,16 +380,18 @@ pub(super) fn controller_parent_on(
     local: i64,
     instance: &str,
 ) -> Result<bool> {
+    let Some(harness) = parent.target_execution.as_ref().map(|value| value.harness) else {
+        return Ok(false);
+    };
     if parent.id != turn
         || parent.target != caller
         || parent.human_id != human
         || parent.phase != Phase::Submitting
         || parent.local_turn != Some(local)
         || parent.native_thread.as_deref() != Some(native)
-        || !parent
-            .target_execution
-            .as_ref()
-            .is_some_and(|value| value.harness == Harness::Claude)
+        || !matches!(harness, Harness::Claude | Harness::Antigravity)
+        || (harness == Harness::Antigravity
+            && (!parent.native_input_accepted || !paired_host_access_on(conn, parent)?))
         || !super::session_requests::controller_parent_eligible_on(conn, human, parent)?
         || !current_on(conn, parent, instance)?
     {
@@ -221,10 +403,19 @@ pub(super) fn controller_parent_on(
          JOIN conversation_entry_generations g ON g.session_id=s.id
          JOIN interaction_instructions i ON i.session_id=s.id
          WHERE t.id=?1 AND t.session_id=?2 AND t.from_user_id=?3 AND s.creator_user_id=?3
-           AND u.allowed=1 AND t.native_thread_id=?4 AND t.execution_harness='claude'
+           AND u.allowed=1 AND t.native_thread_id=?4 AND t.execution_harness=?7
+           AND (?7='claude' OR t.execution_native_scope LIKE 'agy-cli/%')
            AND t.execution_generation=g.generation AND t.status='running'
            AND i.id=?5 AND i.instance_id=?6 AND i.phase='submitting')",
-        params![local, parent.target_session, human, native, turn, instance],
+        params![
+            local,
+            parent.target_session,
+            human,
+            native,
+            turn,
+            instance,
+            harness.name()
+        ],
         |row| row.get(0),
     )?)
 }
@@ -292,19 +483,29 @@ pub(super) fn claude_quoted_seed_on(
     Ok((serde_json::to_vec(&seed)?.len() <= 12 * 1024).then_some(seed))
 }
 
-pub(super) fn telegram_reply_message_on(
+pub(super) struct TelegramReply {
+    pub message_id: i64,
+    textless_bot_reference: bool,
+}
+
+pub(super) fn telegram_reply_on(
     conn: &Connection,
     source: &SourceInput,
-) -> Result<Option<i64>> {
-    if !source.channel.starts_with("telegram:") {
+) -> Result<Option<TelegramReply>> {
+    let Some(bot) = source.channel.strip_prefix("telegram:") else {
         return Ok(None);
-    }
+    };
     let (Some(update), Some(message)) = (source.update_id, source.origin.message_id) else {
         return Ok(None);
     };
     Ok(conn
         .query_row(
-            "SELECT json_extract(payload_json,'$.message.reply_to_message.message_id')
+            "SELECT json_extract(payload_json,'$.message.reply_to_message.message_id'),
+                coalesce(json_extract(payload_json,'$.message.reply_to_message.from.is_bot')=1
+                    AND json_extract(payload_json,'$.message.reply_to_message.from.id')=?6
+                    AND json_extract(payload_json,'$.message.reply_to_message.text') IS NULL
+                    AND json_extract(payload_json,'$.message.reply_to_message.caption') IS NULL
+                    AND json_extract(payload_json,'$.message.reply_to_message.sticker') IS NULL,0)
          FROM incoming_updates WHERE update_id=?1
            AND json_extract(payload_json,'$.message.message_id')=?2
            AND json_extract(payload_json,'$.message.chat.id')=?3
@@ -316,9 +517,10 @@ pub(super) fn telegram_reply_message_on(
                 message,
                 source.origin.chat_id,
                 source.origin.thread_id,
-                source.human_id
+                source.human_id,
+                bot.parse::<i64>().ok()
             ],
-            |row| row.get(0),
+            |row| Ok(TelegramReply { message_id: row.get(0)?, textless_bot_reference: row.get(1)? }),
         )
         .optional()?)
 }
@@ -677,7 +879,63 @@ fn owned_history_seed_on(
     Ok(Some(seed))
 }
 
+fn acp_scope(harness: Harness, workspace: &str, store_id: Option<&str>) -> Result<String> {
+    let workspace = Sha256::digest(workspace.as_bytes());
+    match (harness, store_id) {
+        (Harness::Antigravity, None) => Ok(format!("agy-cli/{workspace:x}")),
+        (Harness::Goose, Some(id)) if Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id) =>
+            Ok(format!("goose-acp/{id}/{workspace:x}")),
+        _ => anyhow::bail!("Invalid ACP topic store"),
+    }
+}
+
+fn agy_return_matches_on(
+    conn: &Connection,
+    input: &Instruction,
+    author: &Value,
+    native: Option<&str>,
+    scope: &str,
+    body: &Value,
+) -> Result<bool> {
+    let Some(native) = native else {
+        return Ok(false);
+    };
+    let call = author["local_request"]
+        .as_str()
+        .context("Return request missing")?;
+    let body = body.to_string();
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_session_requests c
+         JOIN interaction_instructions p ON p.id=c.parent_instruction
+         JOIN turns t ON t.id=json_extract(p.doc,'$.local_turn')
+         JOIN conversation_entry_generations g ON g.session_id=t.session_id
+         WHERE c.id=?1 AND c.human_id=?2 AND c.phase='returned'
+           AND json_extract(c.doc,'$.return_instruction')=?3
+           AND json_extract(c.doc,'$.caller_native')=?4
+           AND t.native_thread_id=?4 AND t.execution_native_scope=?5
+           AND t.session_id=?6 AND t.execution_harness='antigravity'
+           AND t.execution_generation=g.generation
+           AND json_extract(t.execution_body,'$.beingRef')=json_extract(?7,'$.beingRef')
+           AND json_extract(t.execution_body,'$.embodimentId')=json_extract(?7,'$.embodimentId')
+           AND json_extract(t.execution_body,'$.incarnationId')=json_extract(?7,'$.incarnationId'))",
+        params![call, input.human_id, input.id, native, scope, input.target_session, body],
+        |row| row.get(0),
+    )?)
+}
+
 impl Store {
+    pub(crate) fn routed_agy_return_matches(
+        &self,
+        input: &Instruction,
+        author: &Value,
+        native: Option<&str>,
+        workspace: &str,
+        body: &Value,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        agy_return_matches_on(&conn, input, author, native, &acp_scope(Harness::Antigravity, workspace, None)?, body)
+    }
+
     pub(crate) fn routed_portable_status(
         &self,
         session: i64,
@@ -743,6 +1001,31 @@ impl Store {
         Ok((local, paired))
     }
 
+    pub(crate) fn routed_acp_session(
+        &self,
+        local: i64,
+        harness: Harness,
+        body: &Value,
+        workspace: &str,
+        store_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        let scope = acp_scope(harness, workspace, store_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT p.native_thread_id FROM turns p
+             JOIN turns t ON t.id=?1 AND t.session_id=p.session_id
+             WHERE p.id<t.id AND p.execution_harness=?4
+               AND p.execution_generation=t.execution_generation
+               AND p.execution_native_scope=?2 AND p.native_thread_id IS NOT NULL
+               AND json_extract(p.execution_body,'$.beingRef')=json_extract(?3,'$.beingRef')
+               AND json_extract(p.execution_body,'$.embodimentId')=json_extract(?3,'$.embodimentId')
+               AND json_extract(p.execution_body,'$.incarnationId')=json_extract(?3,'$.incarnationId')
+             ORDER BY p.id DESC LIMIT 1",
+            params![local, scope, body.to_string(), harness.name()],
+            |row| row.get(0),
+        ).optional().context("Could not read the selected ACP topic session")
+    }
+
     pub(crate) fn routed_claude_continuations(
         &self,
         local: i64,
@@ -773,7 +1056,20 @@ impl Store {
                 FROM prior WHERE id>coalesce((SELECT max(id) FROM prior WHERE scope='resume_unavailable'),0)
              )
              SELECT native_thread_id,scope FROM ranked
-             WHERE position=1 AND (status='completed' OR (?3 AND status='failed'))
+             WHERE position=1
+               AND (?3 OR NOT EXISTS(
+                   SELECT 1 FROM prior exposed JOIN interaction_instructions i
+                     ON json_extract(i.doc,'$.local_turn')=exposed.id
+                   WHERE exposed.native_thread_id=ranked.native_thread_id AND exposed.scope=ranked.scope
+                     AND (json_extract(i.doc,'$.native_claude_resume_fenced')=1
+                          OR (exposed.status='failed' AND i.phase='uncertain'))
+               ))
+               AND (status='completed' OR (status='failed' AND (?3 OR EXISTS(
+                   SELECT 1 FROM interaction_instructions i WHERE i.phase='cancelled'
+                     AND json_extract(i.doc,'$.local_turn')=ranked.id
+                     AND json_extract(i.doc,'$.native_interrupt_confirmed')=1
+                     AND json_extract(i.doc,'$.native_thread')=ranked.native_thread_id
+               ))))
                AND scope IS NOT NULL
              ORDER BY id DESC LIMIT 8",
         )?;
@@ -834,10 +1130,10 @@ impl Store {
     ) -> Result<bool> {
         let conn = self.conn.lock().expect("store mutex poisoned");
         if source.channel != "conversation" {
-            let Some(message) = telegram_reply_message_on(&conn, source)? else {
+            let Some(reply) = telegram_reply_on(&conn, source)? else {
                 return Ok(false);
             };
-            return Ok(claude_telegram_quote_on(&conn, source, target, message)?
+            return Ok(claude_telegram_quote_on(&conn, source, target, reply.message_id)?
                 != TelegramQuote::Unrelated);
         }
         let original =
@@ -1043,20 +1339,21 @@ impl Store {
                         && original.reply_text_sha256.is_some());
                 anyhow::ensure!(
                     !exact_quote_selected || reference.context_only || quote.is_some(),
-                    "The selected conversation reply is unavailable; original retained without submission"
+                    ClaudeContextUnavailable
                 );
                 return Ok(quote);
             }
             true
         } else if source.channel.starts_with("telegram:") {
-            if let Some(message) = telegram_reply_message_on(&conn, &source)? {
-                return match claude_telegram_quote_on(&conn, &source, input.target, message)? {
-                    TelegramQuote::Selected(seed) => Ok(Some(seed)),
-                    TelegramQuote::Unrelated => Ok(None),
-                    TelegramQuote::Unavailable => anyhow::bail!(
-                        "The selected Telegram reply is unavailable; original retained without submission"
-                    ),
-                };
+            if let Some(reply) = telegram_reply_on(&conn, &source)? {
+                match claude_telegram_quote_on(&conn, &source, input.target, reply.message_id)? {
+                    TelegramQuote::Selected(seed) => return Ok(Some(seed)),
+                    TelegramQuote::Unavailable => return Err(ClaudeContextUnavailable.into()),
+                    TelegramQuote::Unrelated
+                        if reply.textless_bot_reference
+                            && source.origin.thread_id == input.target.thread_id => {}
+                    TelegramQuote::Unrelated => return Ok(None),
+                }
             }
             true
         } else {
@@ -1101,8 +1398,19 @@ impl Store {
                 prepared["native_session_scope"]
                     .as_str()
                     .filter(|v| valid_claude_scope(v))
-                    .context("Routed native session scope missing")?,
+                    .context("Routed native session scope missing")?
+                    .to_owned(),
             )
+        } else if (harness == Harness::Antigravity && prepared["adapter"] == "agy")
+            || (harness == Harness::Goose && prepared["adapter"] == "goose")
+        {
+            Some(acp_scope(
+                harness,
+                prepared["workspace"]
+                    .as_str()
+                    .context("ACP preparation omitted its workspace")?,
+                prepared["store_id"].as_str(),
+            )?)
         } else {
             None
         };
@@ -1124,6 +1432,20 @@ impl Store {
         {
             return Ok(false);
         }
+        if harness == Harness::Antigravity
+            && let Some(author) = super::session_requests::author_on(&tx, &current.input_id)?
+            && author["kind"] == "session_result"
+            && !agy_return_matches_on(
+                &tx,
+                &current,
+                &author,
+                Some(native),
+                scope.as_deref().unwrap_or_default(),
+                body,
+            )?
+        {
+            return Ok(false);
+        }
         if let Some(quote) = history_seed.filter(|seed| seed["source"].is_string()) {
             let source = super::routing::source_on(&tx, &current.id, current.human_id)?;
             let resolved = if source.channel == "conversation" {
@@ -1136,18 +1458,18 @@ impl Store {
                     return Ok(false);
                 };
                 claude_quoted_seed_on(&tx, &original, reference, current.target)?
-            } else if let Some(message) = telegram_reply_message_on(&tx, &source)? {
-                match claude_telegram_quote_on(&tx, &source, current.target, message)? {
+            } else if let Some(reply) = telegram_reply_on(&tx, &source)? {
+                match claude_telegram_quote_on(&tx, &source, current.target, reply.message_id)? {
                     TelegramQuote::Selected(seed) => Some(seed),
                     _ => None,
                 }
             } else {
                 None
             };
-            if harness != Harness::Claude || !paired_host_access || resolved.as_ref() != Some(quote)
-            {
+            if harness != Harness::Claude || !paired_host_access {
                 return Ok(false);
             }
+            anyhow::ensure!(resolved.as_ref() == Some(quote), ClaudeContextUnavailable);
         }
         if let Some(seed) = history_seed
             .filter(|seed| seed["nativeThread"].is_string() || seed["exchanges"].is_array())
@@ -1237,12 +1559,46 @@ impl Store {
             && current_on(&conn, &next, &self.instance_id)?)
     }
 
+    /// Record incorporation separately from result settlement. Preparation and
+    /// transport commitment alone supply no native acceptance evidence.
+    pub(crate) fn record_routed_input_acceptance(
+        &self,
+        input: &Instruction,
+        local: i64,
+        native: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current = super::interaction::instruction_on(&tx, &input.id, input.human_id)?
+            .context("Routed input missing")?;
+        if current.phase != Phase::Submitting
+            || current.local_turn != Some(local)
+            || current.native_thread.as_deref() != Some(native)
+            || !current_on(&tx, &current, &self.instance_id)?
+        {
+            return Ok(false);
+        }
+        let changed = tx.execute(
+            "UPDATE interaction_instructions SET doc=json_set(doc,'$.native_input_accepted',json('true'))
+             WHERE id=?1 AND instance_id=?2 AND phase='submitting'
+             AND coalesce(json_extract(doc,'$.native_input_accepted'),0)=0
+             AND EXISTS(SELECT 1 FROM turns WHERE id=?3 AND status='running' AND native_thread_id=?4)",
+            params![input.id, self.instance_id, local, native],
+        )?;
+        if changed == 1 {
+            super::topic_publications::accepted_handoff_projection_on(&tx, input, local)?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
     pub(crate) fn finish_routed_portable(
         &self,
         input: &Instruction,
         local: i64,
         outcome: &Value,
         projection_entry: Option<SessionKey>,
+        artifact_job: Option<&Value>,
     ) -> Result<Vec<Delivery>> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1275,6 +1631,37 @@ impl Store {
         .flatten();
         let mut deliveries = Vec::new();
         let mut exchange_inputs = Vec::new();
+        let mut cancelled_steers = 0;
+        if current.phase == Phase::Submitting
+            && matches!(outcome["phase"].as_str(), Some("completed" | "interrupted"))
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == Harness::Claude)
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+            && let Some(cancelled) = outcome["cancelled"].as_array()
+        {
+            cancelled_steers = cancelled.len();
+            for id in cancelled {
+                let id = id.as_str().context("Invalid cancelled correction")?;
+                let steer = super::interaction::instruction_on(&tx, id, input.human_id)?
+                    .context("Cancelled correction missing")?;
+                anyhow::ensure!(
+                    steer.phase == Phase::Steering
+                        && steer.local_turn == Some(local)
+                        && steer.native_thread == current.native_thread,
+                    "Claude cancelled correction does not match the retained native turn"
+                );
+                super::interaction::transport_on(
+                    &tx,
+                    id,
+                    input.human_id,
+                    local,
+                    Phase::Cancelled,
+                    None,
+                )?;
+            }
+        }
         if let Some(text) = reply {
             let native = current
                 .native_thread
@@ -1297,11 +1684,13 @@ impl Store {
                 Some(&anchor),
             )?;
             let mut followups = Vec::new();
+            let mut covered_steers = 0;
             if let Some(results) = outcome["steerResults"].as_array() {
                 for result in results {
                     let ids = result["ids"]
                         .as_array()
                         .context("Claude result lacks steer IDs")?;
+                    covered_steers += ids.len();
                     let selected = ids
                         .last()
                         .and_then(Value::as_str)
@@ -1370,12 +1759,56 @@ impl Store {
                     exchange_inputs.push(steered);
                 }
             }
+            if let Some(job) = artifact_job {
+                let final_anchor: String = tx.query_row(
+                    "SELECT native_turn FROM interaction_native_messages WHERE local_turn=?1
+                     AND native_thread=?2 AND item_id='final' ORDER BY rowid DESC LIMIT 1",
+                    params![local, native],
+                    |row| row.get(0),
+                )?;
+                let mut job = job.clone();
+                job["output"]["native"] = json!(native);
+                job["output"]["turn"] = json!(final_anchor);
+                job["output"]["item"] = json!("final");
+                job["portable_projection"] = json!(true);
+                super::artifacts::artifact_job_stage_on(&tx, local, input.human_id, &job)?;
+            }
+            if outcome["steerSubmitted"]
+                .as_array()
+                .is_some_and(|submitted| submitted.len() > covered_steers + cancelled_steers)
+            {
+                tx.execute(
+                    "UPDATE interaction_instructions
+                    SET doc=json_set(doc,'$.native_claude_resume_fenced',json('true')) WHERE id=?1",
+                    [&input.id],
+                )?;
+            }
+        } else if current.phase == Phase::Submitting
+            && outcome["phase"] == "interrupted"
+            && current.target_execution.as_ref().is_some_and(|binding| {
+                matches!(binding.harness, Harness::Claude | Harness::Antigravity | Harness::Goose)
+            })
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+        {
+            super::interaction::transport_on(
+                &tx,
+                &input.id,
+                input.human_id,
+                local,
+                Phase::Cancelled,
+                None,
+            )?;
+            tx.execute("UPDATE interaction_instructions SET doc=json_set(doc,'$.native_interrupt_confirmed',json('true')) WHERE id=?1",
+                [&input.id])?;
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
-                _ if outcome["phase"] == "not_submitted"
-                    || (limit.is_some()
-                        && crate::interaction::SubscriptionLimit::refused_before_work(outcome)) =>
+                _ if !current.native_input_accepted
+                    && (outcome["phase"] == "not_submitted"
+                        || (limit.is_some()
+                            && crate::interaction::SubscriptionLimit::refused_before_work(
+                                outcome,
+                            ))) =>
                 {
                     Phase::Rejected
                 }
@@ -1399,6 +1832,42 @@ impl Store {
             .get("resumeUnavailableBody")
             .map(serde_json::to_string)
             .transpose()?;
+        let context_unavailable = current.phase == Phase::Queued
+            && outcome["phase"] == "not_submitted"
+            && outcome["contextUnavailable"] == true
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|target| target.harness == Harness::Claude);
+        if context_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.context_unavailable',json('true')) WHERE id=?1",
+                [&input.id],
+            )?;
+        } else if current.context_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_remove(doc,'$.context_unavailable') WHERE id=?1",
+                [&input.id],
+            )?;
+        }
+        let goal_control_unavailable = current.phase == Phase::Queued
+            && outcome["phase"] == "not_submitted"
+            && outcome["reason"] == "claude_goal_control_unavailable"
+            && current.target_execution.as_ref().is_some_and(|target| target.harness == Harness::Claude);
+        if goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_set(doc,'$.goal_control_unavailable',json('true')) WHERE id=?1",
+                [&input.id],
+            )?;
+        } else if current.goal_control_unavailable {
+            tx.execute(
+                "UPDATE interaction_instructions SET doc=json_remove(doc,'$.goal_control_unavailable') WHERE id=?1",
+                [&input.id],
+            )?;
+        }
+        if current.phase == Phase::Submitting {
+            super::retain_claude_session_usage_on(&tx, local, outcome)?;
+        }
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3,
             execution_native_scope=coalesce(?5,execution_native_scope),
             native_thread_id=coalesce(?7,native_thread_id),execution_body=coalesce(?8,execution_body)
@@ -1410,7 +1879,7 @@ impl Store {
             "UPDATE sessions SET busy=0 WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id=?1 AND status='running')",
             [input.target_session],
         )?;
-        super::topic_publications::portable_report_on(&tx, input, local, &deliveries)?;
+        super::topic_publications::completed_handoff_projection_on(&tx, input, local, &deliveries)?;
         if let Some(entry) = projection_entry {
             for original in exchange_inputs {
                 super::topic_publications::portable_exchange_on(&tx, &original, local, entry)?;
@@ -1443,6 +1912,7 @@ mod tests {
             },
             text: "Coordinate the design.".into(),
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
         };
@@ -1823,6 +2293,100 @@ mod tests {
     }
 
     #[test]
+    fn agy_continuation_stays_in_its_topic_workspace_generation_and_incarnation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let defaults = super::super::tests::defaults();
+        let store = Store::open(file.path(), &[100], &defaults).unwrap();
+        let topic = store
+            .ensure_session(SessionKey::new(100, Some(7)), 100, &defaults)
+            .unwrap();
+        let other = store
+            .ensure_session(SessionKey::new(100, Some(8)), 100, &defaults)
+            .unwrap();
+        let body = json!({"beingRef":"being","embodimentId":"body","incarnationId":"current"});
+        let retired = json!({"beingRef":"being","embodimentId":"body","incarnationId":"retired"});
+        let scope = acp_scope(Harness::Antigravity, "/workspace/topic", None).unwrap();
+        let record = |session: i64, generation: &str, scope: Option<&str>, identity: &Value| {
+            let native = Uuid::new_v4().to_string();
+            let conn = store.conn.lock().unwrap();
+            let local = conn.query_row(
+                "INSERT INTO turns (session_id,from_user_id,prompt,status,started_at,native_thread_id,
+                     execution_harness,execution_generation,execution_native_scope,execution_body)
+                 VALUES (?1,100,'fixture','completed','2026-11-28',?2,'antigravity',?3,?4,?5) RETURNING id",
+                params![session,&native,generation,scope,identity.to_string()], |r| r.get::<_, i64>(0),
+            ).unwrap();
+            (local, native)
+        };
+        let (requesting_turn, expected) = record(topic.id, "current", Some(&scope), &body);
+        record(other.id, "current", Some(&scope), &body);
+        record(topic.id, "previous", Some(&scope), &body);
+        record(topic.id, "current", None, &body);
+        record(topic.id, "current", Some(&scope), &retired);
+        let (local, _) = record(topic.id, "current", None, &body);
+        assert_eq!(
+            store
+                .routed_acp_session(local, Harness::Antigravity, &body, "/workspace/topic", None)
+                .unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            store
+                .routed_acp_session(local, Harness::Antigravity, &body, "/workspace/moved", None)
+                .unwrap(),
+            None
+        );
+
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='current' WHERE session_id=?1",
+            [topic.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_sources
+            (id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+            VALUES('original',100,'conversation','original',100,7,'{}','2026-11-28')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_instructions
+            (id,input_id,session_id,sequence,phase,doc,instance_id)
+            VALUES('parent','original',?1,1,'accepted',?2,'test')",
+            params![topic.id, json!({"local_turn":requesting_turn}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO interaction_session_requests
+            VALUES('call',100,100,7,'parent','helper','returned',?1)",
+            [json!({"caller_native":expected,"return_instruction":"return"}).to_string()],
+        )
+        .unwrap();
+        let input: Instruction = serde_json::from_value(json!({
+            "id":"return","input_id":"result","human_id":100,"target_session":topic.id,
+            "target":topic.key,"sequence":2,"relation":{"kind":"new"},"requests":[],
+            "text":"result","origin":{"chat_id":100,"thread_id":7},"phase":"queued"
+        }))
+        .unwrap();
+        let author = json!({"kind":"session_result","local_request":"call"});
+        let matches = |native, scope, body| {
+            agy_return_matches_on(&conn, &input, &author, native, scope, body).unwrap()
+        };
+        assert!(matches(Some(&expected), &scope, &body));
+        assert!(!matches(None, &scope, &body));
+        assert!(!matches(Some("other"), &scope, &body));
+        assert!(!matches(Some(&expected), &scope, &retired));
+        let moved = acp_scope(Harness::Antigravity, "/workspace/moved", None).unwrap();
+        assert!(!matches(Some(&expected), &moved, &body));
+        conn.execute(
+            "UPDATE conversation_entry_generations SET generation='new' WHERE session_id=?1",
+            [topic.id],
+        )
+        .unwrap();
+        assert!(!matches(Some(&expected), &scope, &body));
+    }
+
+    #[test]
     fn claude_continuations_keep_each_exact_scope_and_fence_uncertain_work() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let defaults = super::super::tests::defaults();
@@ -1879,6 +2443,59 @@ mod tests {
                 .session_id,
             unfinished
         );
+        let (completed, fenced_native) = record("completed", &second, &body);
+        let (interrupted, confirmed_native) = record("failed", &first, &body);
+        {
+            let conn = store.conn.lock().unwrap();
+            for (source, turn, phase, doc) in [
+                (
+                    "partial",
+                    completed,
+                    "accepted",
+                    json!({"native_claude_resume_fenced":true}),
+                ),
+                (
+                    "confirmed",
+                    interrupted,
+                    "cancelled",
+                    json!({"native_interrupt_confirmed":true,"native_thread":confirmed_native}),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO interaction_sources
+                    (id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+                    VALUES(?1,100,'conversation',?1,100,7,'{}','2026-11-28')",
+                    [source],
+                )
+                .unwrap();
+                let mut doc = doc;
+                doc["local_turn"] = json!(turn);
+                conn.execute(
+                    "INSERT INTO interaction_instructions
+                    (id,input_id,session_id,sequence,phase,doc,instance_id)
+                    VALUES(?1,?1,?2,?3,?4,?5,'test')",
+                    params![source, session.id, turn, phase, doc.to_string()],
+                )
+                .unwrap();
+            }
+        }
+        let (status_check, _) = record("completed", &second, &body);
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE turns SET native_thread_id=?1 WHERE id=?2",
+                params![fenced_native, status_check],
+            )
+            .unwrap();
+        let (following, _) = record("running", "", &body);
+        let scopes = store
+            .routed_claude_continuations(following, &body, false)
+            .unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].session_id, confirmed_native);
+
         record("failed", "resume_unavailable", &body);
         let (next, _) = record("running", "", &body);
         assert!(

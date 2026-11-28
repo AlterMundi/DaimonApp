@@ -1,4 +1,100 @@
-# Goose ACP foreground turn
+# ACP foreground workers
+
+See [Gateway ACP coverage and stack parity](gateway-coverage.md) for the
+native and ACP operation inventory across harnesses.
+
+## Antigravity CLI
+
+`runAntigravityTurn` runs the installed `agy acp` with its sandbox and
+the selected process environment. It reads back the requested model and
+reasoning effort before provider submission. A continuation requires the
+exact prior ACP session ID. Failed session loads stay unsent.
+The Gateway route uses the configured Antigravity foreground with
+`interaction_direct = true` and `agy_cli = true`, an explicitly Antigravity
+target, and the common ACP worker. Its owner profile names the absolute
+`binary`, paired account `home`, canonical topic `cwd`, `model`, `effort`,
+`matrixStatusCommand`, and signed `body`, with `adapter: "agy"`. Set
+`bodyGuidanceFile` to the owner-private portable orientation for the selected
+embodiment. It is sent in a separate content block on new and resumed turns.
+Set `sharedSkillsDirectory` to the installed Skills root for discovery and
+on-demand `SKILL.md` reads. Set `sharedMemory` with an absolute reader
+`command`, owner-private `bindingFile`, and selected `bodyRef` for DMK
+search and paginated read. The broker verifies the receiving body's signed
+status on each request and reads the current installed content and memory.
+Optional `selectedMemory` exposes one owner-selected record revision for
+one original.
+The worker accepts paired text and images for this topic and uses the journaled
+native ID from the same topic generation, workspace and signed incarnation.
+There is no fallback to a fresh session after a failed native load.
+A local handoff from another owned topic can reach the same agy session under
+its retained paired-human original. Gateway uses its existing authored
+handoff and canonical result contract, including the caller-selected visible
+report. The agy configuration is required for this route. The separate SDK
+worker does not acquire this capability.
+For a paired topic turn, the selected agy worker exposes the Gateway
+controller through MCP. A permission event from the active native prompt
+authorizes one call with those exact arguments. Its per-turn socket only
+relays the call to Gateway, which authorizes it against the current original.
+The canonical return must still match the requesting native session,
+generation, workspace and signed incarnation before Gateway exposes it.
+The current agy worker can negotiate a scoped native interruption. After
+the journal commits the prompt, the worker sends `session/cancel` and retains
+the result only from that prompt's ACP response. A matching `cancelled`
+response settles the original as interrupted without publishing a partial
+answer. A disconnected worker or missing response leaves the effect
+uncertain. The next original still uses the existing exact-session lookup.
+A Gateway shutdown keeps its existing teardown behavior.
+An owner that also has the Antigravity SDK worker can select it for private
+Matrix originals in `interaction.antigravity_matrix_foreground`. The two
+profiles must designate the same signed embodiment. This preserves the private
+route without making the SDK worker a fallback for a topic's agy session.
+
+The pilot approves one ACP permission request at a time for its configured
+Matrix status, skills and DMK read tools. No permanent approval is issued. Shipped
+default customizations are disabled for this pilot. An unselected tool uses
+the native one-time refusal when ACP advertises one, leaving permanent
+permissions untouched. Read installed skill instructions through
+`shared_skill`, including when the body guidance mentions a file path.
+The ordinary coordination test gives the model a natural-language request
+without tool names. The image route sends
+paired PNG and JPEG input as negotiated ACP content,
+with up to eight images and 4 MiB total. The worker checks the retained digest
+before committing exposure. A real PNG fixture exercises the model and the
+known-unsent result when the retained bytes change. Wider tool parity, other
+attachments and native steering are separate receiving checks.
+
+The opt-in live check uses the operator's signed-in Antigravity account and
+two synthetic turns. It checks exact reload in a new process, the requested
+model configuration, a withheld original and refusal of a missing session.
+
+```sh
+AGY_TEST_AUTHENTICATED_BINARY=/absolute/agy node --test adapters/acp/antigravity-turn.test.mjs adapters/acp/gateway-worker.test.mjs
+```
+
+For the joined image fixture, run
+`python3 tests/antigravity_images_io.py /absolute/telecodex /absolute/owner-gateway.toml`.
+Name the disposable executable or its symlink `telecodex` for the fixture's
+embedded Telegram loopback. The fixture uses the selected signed profile and
+real agy model, a disposable topic journal, and two synthetic PNGs. It verifies
+the Telegram reply reference, the Conversation result, and one native session.
+It then submits a paired Codex handoff to that topic and checks the agy
+incorporation receipt, visible request and response, and one canonical return
+in the original Codex conversation. It then checks the reverse direction:
+agy starts a request to the fixture Codex topic and uses the result in its
+original native history.
+Use the same fixture with `--interrupt` to qualify the current Gateway and
+worker against the selected real CLI in a disposable Telegram topic. It
+interrupts an active prompt, checks the retained receipt and absence of a
+partial publication, and verifies that a duplicate update does not run
+again and a new original resumes the same native session.
+
+Live receiving acceptance on ITACA also used an ordinary Telegram message.
+Antigravity opened one request to an owned Codex topic. Gateway retained the
+canonical return and observed its acceptance on the same Antigravity native
+session. The Antigravity answer used the returned result and Telegram
+acknowledged it in the originating topic.
+
+## Goose
 
 `runGooseTurn` is the native ACP client for the Goose candidate in
 [Matrix #497](https://github.com/AlterMundi/daimon-matrix/issues/497).
@@ -28,10 +124,31 @@ worker group can end before that ACP request. Both paths retain the original
 and its provider uncertainty. The caller owns the worker group and the
 journal's original and return uniqueness.
 
-Goose keeps cancelled text in the native transcript. Loading an existing
-session is outside this entry point, which admits a new original into a fresh
-session only. Gateway status or recovery must never call this entry point to
-replay an uncertain original.
+Goose keeps cancelled text in its native transcript. The ACP client can load
+an explicitly selected existing native session in a new process and rechecks
+the exact tool catalog before journal admission. A missing or mismatched
+session leaves the original unsent. On selected resumable topics, Gateway
+uses ACP `session/cancel` for `/interrupt` and records interruption only
+when the committed prompt returns its matching `cancelled` receipt.
+Partial responses stay out of the topic's published results. A missing
+receipt leaves the original uncertain, and a Gateway shutdown retains its
+existing teardown path.
+
+For a topic, set both `interaction_direct = true` and
+`goose_topic_store_id` (a UUID) on its selected Goose foreground profile.
+Keep the same UUID in the owner-only `goose-topic-store-id` file alongside
+the worker's Goose configuration and session data in `stateRoot`. A new
+independent store needs its own UUID. Use the topic's exact canonical
+workspace as the worker profile's `cwd`. Gateway selects the last exposed
+session for that topic, generation, workspace, store, and signed incarnation.
+The worker verifies the store and native session before exposing the original.
+A memory grant for one original is unavailable on this resumable route,
+since native history can retain its result. The private Matrix route continues to use its existing
+worker contract. To exercise both topic surfaces through Gateway, run
+`python3 tests/goose_topic_io.py /absolute/telecodex /absolute/goose-acp` with the
+pinned patched binary. The fixture uses a disposable journal and a loopback
+provider, restarts Gateway, and checks continuation, duplicate suppression,
+native interruption without partial publication, and store and workspace mismatch.
 
 ## Selecting Goose in Gateway
 

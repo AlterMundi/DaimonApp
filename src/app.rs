@@ -209,10 +209,17 @@ struct SessionWorkerHandle {
 struct ActiveTurnSteerHandle {
     harness: crate::execution::Harness,
     turn_id: i64,
+    attributed_root: bool,
     physical_turn: Arc<StdMutex<Option<String>>>,
     sender: mpsc::UnboundedSender<CodexSteerRequest>,
     attachments: Arc<SteeredFiles>,
     controller_hint: Option<String>,
+}
+
+impl ActiveTurnSteerHandle {
+    fn requires_human_turn(&self, store: &Store) -> Result<bool> {
+        Ok(self.attributed_root || store.native_turn_private(self.turn_id)?)
+    }
 }
 
 /// Keep downloaded steer inputs alive through their exact native execution.
@@ -787,6 +794,9 @@ impl App {
         {
             return Ok(());
         }
+        if voice::handle(self, &message, from.id, direct_human_attachment).await? {
+            return Ok(());
+        }
         if let Some((engine, profile)) = routing::portable_topic(&self.shared, topic_key) {
             if !message.has_own_attachment()
                 && is_foreign_bot_command(text, self.shared.bot_username().as_deref())
@@ -866,12 +876,10 @@ impl App {
                 from.id,
                 topic_key,
                 (direct_human_text, direct_human_attachment),
-                (engine, &profile.transport.source),
+                engine,
+                profile,
             )
             .await;
-        }
-        if voice::handle(self, &message, from.id).await? {
-            return Ok(());
         }
         if tribu::handle_topic_control(self, &message, from.id, text).await? {
             return Ok(());
@@ -1696,8 +1704,13 @@ impl App {
                     self.send_plain_status(message.chat.id, message.message_thread_id, &text)
                         .await?;
                 }
-                BridgeCommand::Stop => {
-                    if self.stop_session(session_key).await {
+                command @ (BridgeCommand::Stop | BridgeCommand::Interrupt) => {
+                    let requested = if matches!(command, BridgeCommand::Interrupt) {
+                        self.interrupt_session(session_key).await
+                    } else {
+                        self.stop_session(session_key).await
+                    };
+                    if requested {
                         self.send_status(
                             message.chat.id,
                             message.message_thread_id,
@@ -3091,6 +3104,9 @@ impl App {
         let Some(active) = active else {
             return Ok(false);
         };
+        if active.requires_human_turn(&self.shared.store)? {
+            return Ok(false);
+        }
         let admission_epoch = stopping::input_epoch(&self.shared, session_key)?;
 
         let update_id = HUMAN_UPDATE_ID.try_with(|id| *id).ok();
@@ -3140,7 +3156,12 @@ impl App {
                     .collect(),
                 admission_check: Some({
                     let shared = self.shared.clone();
+                    let local = active.turn_id;
                     crate::codex::SteerInputAdmission::Sync(Arc::new(move || {
+                        anyhow::ensure!(
+                            !shared.store.native_turn_private(local)?,
+                            "The human input requires its own turn"
+                        );
                         shared
                             .store
                             .voice_validate(update_id, session_key, from_user_id)
@@ -3430,6 +3451,10 @@ impl App {
             tracing::warn!("Local dependency withdrawal could not be confirmed");
             return false;
         }
+        self.interrupt_session(key).await
+    }
+
+    async fn interrupt_session(&self, key: SessionKey) -> bool {
         let handle = self.workers.lock().await.get(&key).cloned();
         let Some(handle) = handle else {
             return false;

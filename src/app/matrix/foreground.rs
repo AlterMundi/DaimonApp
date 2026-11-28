@@ -73,7 +73,7 @@ pub(super) async fn run_selected(
         return Ok(existing);
     }
     let config = cfg
-        .foreground(engine)
+        .matrix_foreground(engine)
         .context("Selected native foreground route is unavailable")?;
     let MatrixDestination::Body {
         being_ref,
@@ -132,12 +132,14 @@ pub(super) async fn run_selected(
             id: &id,
             session: &attempt.session_id,
             resume: attempt.resume.as_slice(),
+            acp_topic: None,
             human_original: attempt.human_original,
             native_goal_command: false,
             routed_human: false,
             routed_host_access: false,
             session_instructions: None,
             workspace: None,
+            output_directory: None,
             history_seed: None,
             project_checkpoint: None,
             require_recovery_context: false,
@@ -145,8 +147,10 @@ pub(super) async fn run_selected(
             attachments: &[],
             body,
             cancel: &cancel,
+            shutdown: &app.shared.shutdown,
             controller: None,
             steering: None,
+            acceptance: None,
         },
         |prepared| {
             // Order the exposure commit and the operator interruption together.

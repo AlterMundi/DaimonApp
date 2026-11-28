@@ -781,7 +781,18 @@ impl Store {
             format!("telecodex:workflow:{human}:{session}:{source_key}").as_bytes(),
         )
         .to_string();
-        let (selected,creation):(bool,bool)=tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE human_id=?1 AND channel=?2 AND event_id=?3),EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?4)",params![human,source.channel,source.event_id,plan.input_ref],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let selected = super::interaction::selected_local_dispatch_on(
+            &tx,
+            human,
+            &source.channel,
+            &source.event_id,
+            source.update_id,
+        )?;
+        let creation: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND input_update=?2)",
+            params![human, plan.input_ref],
+            |r| r.get(0),
+        )?;
         if (creation || selected) && plan.parent_instruction.is_none() {
             bail!("Original already has a dispatch or creation plan");
         }
@@ -1013,6 +1024,7 @@ impl Store {
         }
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "local-session".into(),
@@ -2921,6 +2933,19 @@ mod tests {
     #[test]
     fn workflow_retains_ownership_exact_scope_milestones_and_final_integration() {
         let (_f, s, e, plan) = setup();
+        let (source, _) = s
+            .interaction_entry_original(e.key, 100, "native-1", &plan.input_ref, "conversation")
+            .unwrap();
+        {
+            let conn = s.conn.lock().unwrap();
+            super::super::interaction::retain_direct_parent_on(
+                &conn,
+                &source,
+                e.key,
+                &s.instance_id,
+            )
+            .unwrap();
+        }
         let initial = declare(&s, &e, plan.clone());
         let id = initial["id"].as_str().unwrap();
         assert_eq!(declare(&s, &e, plan.clone()), initial);
@@ -4396,6 +4421,7 @@ mod tests {
             .interaction_admit(
                 &SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription: None,
                     channel: "fixture-correction".into(),

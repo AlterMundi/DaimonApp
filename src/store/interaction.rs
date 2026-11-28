@@ -91,10 +91,7 @@ pub(super) fn admit_selected_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     admit_selected_with_origin_on(
         tx, source, target, relation, instance, portable, route, None, true,
@@ -107,10 +104,7 @@ pub(super) fn admit_local_session_on(
     target: SessionKey,
     relation: crate::interaction::RequestRelation,
     instance: &str,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
     parent_epoch: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     anyhow::ensure!(
@@ -142,9 +136,11 @@ pub(super) fn retain_direct_parent_on(
     target: SessionKey,
     instance: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
+    let mut unplanned = source.clone();
+    unplanned.target_sessions.clear();
     admit_selected_with_origin_on(
         tx,
-        source,
+        &unplanned,
         target,
         crate::interaction::RequestRelation::New,
         instance,
@@ -163,10 +159,7 @@ fn admit_selected_with_origin_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
     parent_epoch: Option<&str>,
     select_return: bool,
 ) -> Result<(crate::interaction::Instruction, bool)> {
@@ -179,17 +172,21 @@ fn admit_selected_with_origin_on(
         source.update_id,
     )?;
     let claude =
-        route.is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+        route.is_some_and(|(engine, _, _)| engine == crate::interaction::ForegroundEngine::Claude);
+    let agy_images = route.is_some_and(|(_, _, agy)| agy);
     let conversation_original = (source.channel == "conversation")
         .then(|| super::conversation_inputs::read_on(tx, &source.event_id, source.human_id))
         .transpose()?;
     if (source.text.trim().is_empty()
         && source.telegram_files.is_empty()
-        && !(claude
+        && !((claude || agy_images)
             && conversation_original
                 .as_ref()
                 .is_some_and(|input| !input.files.is_empty())))
-        || (!source.telegram_files.is_empty() && (source.update_id.is_none() || !claude))
+        || (!source.telegram_files.is_empty()
+            && (source.update_id.is_none() || (!claude && !agy_images)))
+        || (!source.telegram_album_members.is_empty()
+            && (source.telegram_files.is_empty() || !source.channel.starts_with("telegram:")))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -206,7 +203,7 @@ fn admit_selected_with_origin_on(
             ))
         || source.update_id.is_some_and(|id| id < 0)
         || relation.requests().len() > 64
-        || source.target_sessions.is_empty()
+        || (select_return && source.target_sessions.is_empty())
         || source.target_sessions.len() > 64
         || source
             .target_sessions
@@ -218,7 +215,7 @@ fn admit_selected_with_origin_on(
         return Err(anyhow!("Invalid interaction input"));
     }
     let mut creation_target = false;
-    {
+    if select_return {
         let reference = source
             .update_id
             .map(crate::interaction::InputReference::Telegram)
@@ -275,10 +272,15 @@ fn admit_selected_with_origin_on(
     }
     let mut source_epoch = parent_epoch.map(str::to_owned);
     if let Some(original) = conversation_original {
-        if route.is_some() && !claude {
+        if route.is_some() && !claude && !(original.files.is_empty() && original.visual.is_none()) {
             anyhow::ensure!(
-                original.files.is_empty() && original.visual.is_none(),
-                "The routed portable worker requires a text original"
+                agy_images
+                    && original.paired_actor
+                    && original
+                        .files
+                        .iter()
+                        .all(|file| matches!(file.mime.as_str(), "image/png" | "image/jpeg")),
+                "The selected route cannot receive these attachments"
             );
         }
         if portable.is_some_and(|input| {
@@ -332,7 +334,7 @@ fn admit_selected_with_origin_on(
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
-    if !source.target_sessions.contains(&session) && !creation_target {
+    if select_return && !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
         ));
@@ -343,7 +345,9 @@ fn admit_selected_with_origin_on(
     ).optional()?;
     if let Some((old_source, old_instruction, phase)) = existing {
         let mut previous: Instruction = serde_json::from_str(&old_instruction)?;
-        if raw_source != old_source || previous.relation != relation {
+        if !source_plan_matches(source, &raw_source, &old_source, select_return)?
+            || previous.relation != relation
+        {
             return Err(anyhow!("Interaction source identity is immutable"));
         }
         previous.phase = phase.as_str().try_into()?;
@@ -356,8 +360,21 @@ fn admit_selected_with_origin_on(
             |r| r.get(0),
         )
         .optional()?;
-    if old_source.as_ref().is_some_and(|old| old != &raw_source) {
-        return Err(anyhow!("Interaction source identity is immutable"));
+    if let Some(old) = old_source.as_ref().filter(|old| *old != &raw_source) {
+        let retained: crate::interaction::SourceInput = serde_json::from_str(old)?;
+        if !source_plan_matches(source, &raw_source, old, false)?
+            || (select_return && !retained.target_sessions.is_empty())
+        {
+            return Err(anyhow!("Interaction source identity is immutable"));
+        }
+        if select_return {
+            // An accepted direct parent records receipt before any destinations
+            // are chosen. The first real routing plan freezes them once.
+            tx.execute(
+                "UPDATE interaction_sources SET doc=?2 WHERE id=?1",
+                params![id, raw_source],
+            )?;
+        }
     }
     let mut target_execution = super::execution::binding_on(tx, target, source.human_id)?
         .context("Interaction target execution is unavailable")?
@@ -365,7 +382,7 @@ fn admit_selected_with_origin_on(
     if target_execution.conversation_id != session {
         bail!("Interaction target selection changed");
     }
-    if let Some((engine, body)) = route {
+    if let Some((engine, body, _)) = route {
         target_execution.harness = engine.harness();
         target_execution.body = Some(body.clone());
         target_execution.native_session = None;
@@ -424,9 +441,12 @@ fn admit_selected_with_origin_on(
         phase: crate::interaction::TransportPhase::Queued,
         admission_epoch: source_epoch,
         subscription_limit: None,
+        context_unavailable: false,
+        goal_control_unavailable: false,
         local_turn: None,
         native_thread: if route.is_none() { native } else { None },
         native_turn: None,
+        native_input_accepted: false,
     };
     tx.execute("INSERT OR IGNORE INTO interaction_sources(id,human_id,update_id,channel,event_id,origin_chat,origin_thread,origin_message,doc,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![id,source.human_id,source.update_id,source.channel,source.event_id,source.origin.chat_id,source.origin.thread_id,source.origin.message_id,raw_source,now_string()])?;
     tx.execute("INSERT INTO interaction_instructions(id,input_id,session_id,sequence,phase,doc,instance_id) VALUES(?1,?2,?3,?4,'queued',?5,?6)",params![instruction.id,instruction.input_id,session,sequence,serde_json::to_string(&instruction)?,instance])?;
@@ -450,6 +470,37 @@ fn admit_selected_with_origin_on(
     Ok((instruction, true))
 }
 
+fn source_plan_matches(
+    source: &crate::interaction::SourceInput,
+    raw_source: &str,
+    retained: &str,
+    selected_plan: bool,
+) -> Result<bool> {
+    if selected_plan || raw_source == retained {
+        return Ok(raw_source == retained);
+    }
+    let mut old: crate::interaction::SourceInput = serde_json::from_str(retained)?;
+    old.target_sessions.clone_from(&source.target_sessions);
+    Ok(old == *source)
+}
+
+// A direct-acceptance row has the original but no selected target plan.
+pub(super) fn selected_local_dispatch_on(
+    conn: &Connection,
+    human: i64,
+    channel: &str,
+    event: &str,
+    update: Option<i64>,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_sources
+         WHERE human_id=?1 AND json_array_length(doc,'$.target_sessions')>0
+           AND ((?4 IS NOT NULL AND update_id=?4) OR (?4 IS NULL AND channel=?2 AND event_id=?3)))",
+        params![human, channel, event, update],
+        |r| r.get(0),
+    )?)
+}
+
 pub(super) fn transport_on(
     tx: &Connection,
     id: &str,
@@ -470,7 +521,7 @@ pub(super) fn transport_on(
                 P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
             ) | (
                 P::Submitting | P::Steering,
-                P::Accepted | P::Rejected | P::Uncertain
+                P::Accepted | P::Rejected | P::Uncertain | P::Cancelled
             ) | (P::Uncertain, P::Accepted | P::Rejected)
         );
     if !valid {
@@ -625,13 +676,19 @@ pub(super) fn queued_root_allowed_on(
     Ok(input.target == request.session_key && target_execution_allowed_on(conn, &input)?)
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum TelegramRecovery {
+    HumanUpdate(i64),
+    OwnerSocket,
+}
+
 pub(super) fn recover_on(
     conn: &Connection,
     id: &str,
     human: i64,
     instance: &str,
     paired: bool,
-    telegram_update: Option<i64>,
+    telegram_recovery: Option<TelegramRecovery>,
 ) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
@@ -650,21 +707,39 @@ pub(super) fn recover_on(
     {
         let source = super::routing::source_on(conn, id, human)?;
         if source.update_id.is_some() {
-            let command: Option<String> = conn
-                .query_row(
-                    "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
-                 WHERE update_id=?1 AND instance_id=?2 AND status='processing'
-                 AND json_extract(payload_json,'$.direct_human_text')=1
-                 AND json_extract(payload_json,'$.message.from.id')=?3",
-                    params![telegram_update, instance, human],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if !command
-                .as_deref()
-                .is_some_and(|command| command.split_whitespace().eq(["/interaction", "retry", id]))
-            {
-                return Ok(false);
+            match telegram_recovery {
+                Some(TelegramRecovery::HumanUpdate(update)) => {
+                    let command: Option<String> = conn.query_row(
+                        "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
+                         WHERE update_id=?1 AND instance_id=?2 AND status='processing'
+                         AND json_extract(payload_json,'$.direct_human_text')=1
+                         AND json_extract(payload_json,'$.message.from.id')=?3",
+                        params![update, instance, human], |row| row.get(0),
+                    ).optional()?;
+                    if !command.as_deref().is_some_and(|text| {
+                        text.split_whitespace().eq(["/interaction", "retry", id])
+                    }) {
+                        return Ok(false);
+                    }
+                }
+                Some(TelegramRecovery::OwnerSocket) => {
+                    // A retained input alone cannot authorize a replay across
+                    // the provider exposure boundary.
+                    if source.origin.chat_id != instruction.target.chat_id
+                        || source.origin.thread_id != instruction.target.thread_id
+                        || instruction.native_thread.is_some()
+                        || instruction.native_turn.is_some()
+                        || instruction.native_input_accepted
+                        || conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM native_input_receipts WHERE update_id=?1)",
+                            [source.update_id],
+                            |row| row.get::<_, bool>(0),
+                        )?
+                    {
+                        return Ok(false);
+                    }
+                }
+                None => return Ok(false),
             }
             epoch =
                 super::routed_portable::telegram_original_epoch(conn, &source, instruction.target)?;
@@ -686,9 +761,24 @@ pub(super) fn recover_on(
             bail!("Only the paired human can requeue this retained original");
         }
     }
+    if matches!(telegram_recovery, Some(TelegramRecovery::OwnerSocket)) {
+        if epoch.is_none() {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO audit_log(actor_user_id,action,details_json,created_at)
+             VALUES(?1,'telegram_original_owner_recovery',?2,?3)",
+            params![
+                human,
+                serde_json::json!({"instruction": id, "target": instruction.target}).to_string(),
+                now_string()
+            ],
+        )?;
+    }
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
     instruction.native_turn = None;
+    instruction.context_unavailable = false;
     instruction.admission_epoch = epoch;
     conn.execute(
         "UPDATE interaction_instructions SET phase='queued',doc=?2,instance_id=?3 WHERE id=?1",
@@ -793,6 +883,18 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn native_turn_private(&self, local: i64) -> Result<bool> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        Ok(conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM turns t WHERE t.id=?1 AND ({}))",
+                super::presentation::ONLY_INTERNAL_HANDOFF
+            ),
+            [local],
+            |row| row.get(0),
+        )?)
+    }
+
     /// Keep an attributed-only execution private once native output starts.
     /// A later human steer cannot grant access to its cumulative drafts.
     pub fn freeze_private_handoff(&self, local: i64, thread: &str) -> Result<()> {
@@ -845,13 +947,23 @@ impl Store {
         &self,
         source: &crate::interaction::SourceInput,
         target: SessionKey,
-        route: (
-            crate::interaction::ForegroundEngine,
-            &crate::interaction::MatrixDestination,
-        ),
+        route: crate::interaction::ForegroundAdmission<'_>,
+        album_generation: Option<&str>,
     ) -> Result<(crate::interaction::Instruction, bool)> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        if let Some(generation) = album_generation {
+            anyhow::ensure!(
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions s
+                     JOIN conversation_entry_generations g ON g.session_id=s.id
+                     WHERE s.chat_id=?1 AND s.thread_id=?2 AND g.generation=?3)",
+                    params![target.chat_id, target.thread_id, generation],
+                    |row| row.get::<_, bool>(0),
+                )?,
+                "Topic generation changed during Telegram album collection"
+            );
+        }
         let result = admit_selected_on(
             &tx,
             source,
@@ -873,6 +985,16 @@ impl Store {
                 )? == 1,
                 "Portable topic no longer owns this Telegram dispatch"
             );
+            for member in &source.telegram_album_members {
+                anyhow::ensure!(
+                    tx.execute(
+                        "UPDATE incoming_updates SET status='handled',updated_at=?2
+                         WHERE update_id=?1 AND instance_id=?3 AND status='received' AND turn_id IS NULL",
+                        params![member, now_string(), self.instance_id],
+                    )? == 1,
+                    "Portable topic no longer owns an album member"
+                );
+            }
         }
         tx.commit()?;
         Ok(result)
@@ -1072,7 +1194,29 @@ impl Store {
     ) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let changed = recover_on(&tx, id, human, &self.instance_id, false, telegram_update)?;
+        let changed = recover_on(
+            &tx,
+            id,
+            human,
+            &self.instance_id,
+            false,
+            telegram_update.map(TelegramRecovery::HumanUpdate),
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn interaction_recover_telegram_owner(&self, id: &str, human: i64) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = recover_on(
+            &tx,
+            id,
+            human,
+            &self.instance_id,
+            false,
+            Some(TelegramRecovery::OwnerSocket),
+        )?;
         tx.commit()?;
         Ok(changed)
     }
@@ -1262,6 +1406,7 @@ mod tests {
     fn input(event: i64, targets: &[i64]) -> crate::interaction::SourceInput {
         crate::interaction::SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:test-bot".into(),
@@ -1531,9 +1676,16 @@ mod tests {
                     "origin_message INTEGER,",
                     "origin_message INTEGER NOT NULL,",
                 );
-            // This fixture constructs the historical schema, before native
-            // request retirement triggers referenced interaction_sources.
-            conn.execute_batch("DROP TRIGGER IF EXISTS native_request_binding_retired; DROP TRIGGER IF EXISTS native_request_entry_deleted; DROP TRIGGER IF EXISTS native_request_grant_retired;").unwrap();
+            // Reconstruct the schema before these triggers and derived views
+            // referenced interaction_sources.
+            conn.execute_batch(
+                "DROP VIEW IF EXISTS visible_portable_report_requests;
+                DROP VIEW IF EXISTS visible_portable_handoff_inputs;
+                DROP TRIGGER IF EXISTS native_request_binding_retired;
+                DROP TRIGGER IF EXISTS native_request_entry_deleted;
+                DROP TRIGGER IF EXISTS native_request_grant_retired;",
+            )
+            .unwrap();
             conn.pragma_update(None, "foreign_keys", false).unwrap();
             conn.execute_batch(&format!("BEGIN IMMEDIATE; {old}; INSERT INTO interaction_sources_old SELECT * FROM interaction_sources; DROP TABLE interaction_sources; ALTER TABLE interaction_sources_old RENAME TO interaction_sources; CREATE INDEX interaction_sources_reply ON interaction_sources(human_id,origin_chat,origin_thread,origin_message); COMMIT;")).unwrap();
             conn.pragma_update(None, "foreign_keys", true).unwrap();

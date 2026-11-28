@@ -2,6 +2,7 @@
 
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 
 
 TOOL = "mcp__matrix__daimon_status"
@@ -26,6 +27,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
 
     def do_POST(self):
         quote_gate = None
+        held_request_cancelled = getattr(self.server, "held_request_cancelled", None)
         try:
             assert self.path.startswith("/v1/messages")
             length = int(self.headers["Content-Length"])
@@ -107,6 +109,11 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             elif write_memory := getattr(self.server, "memory_write_command", None):
                 assert "owner-configured DMK wrapper" in system
                 steps.append(("Bash", {"command": write_memory}, "Native DMK write accepted."))
+            elif artifact := getattr(self.server, "output_artifact", None):
+                directory = re.search(r"Save final deliverable files for this turn in (.+?)/out\.",
+                                      system).group(1) + "/out"
+                steps.append(("Write", {"file_path": directory + "/" + artifact["name"],
+                                        "content": artifact["text"]}, "successfully"))
             elif host_tools:
                 steps += [
                     ("Read", {"file_path": str(self.server.host_file)}, "Native file readback marker."),
@@ -125,7 +132,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     (CONTROLLER, dispatch, '"new_admission":false'),
                     (CONTROLLER, {"operation": "conversation", "arguments": {}}, marker),
                 ]
-            assert self.server.original in json.dumps(data["messages"], ensure_ascii=False)
+            assert any(
+                self.server.original in text
+                for message in data["messages"]
+                for text in (
+                    [message["content"]] if isinstance(message["content"], str)
+                    else [block["text"] for block in message["content"] if block.get("type") == "text"]
+                )
+            )
             routed_human = getattr(self.server, "routed_paired_human", None)
             if routed_human is not None:
                 assert "Gateway delivered a routed packet with its author and source recorded." in system
@@ -141,12 +155,12 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 assert provenance["original_human_author"] == routed_human, provenance
             attachment = getattr(self.server, "attachment", None)
             if attachment:
-                assert any(
-                    block.get("type") == "image" and block["source"]["data"] == attachment["base64"]
-                    and block["source"]["media_type"] == "image/png"
-                    for msg in data["messages"] if isinstance(msg["content"], list)
-                    for block in msg["content"]
-                )
+                content = data["messages"][-1]["content"]
+                observed = [
+                    (block["type"], block["source"]["media_type"], block["source"]["data"])
+                    for block in content if block.get("type") in {"image", "document"}
+                ]
+                assert observed == attachment["blocks"], [(kind, mime) for kind, mime, _ in observed]
             submission = self.admitted()
             assert submission["native_session_id"]
             codex_handoff = getattr(self.server, "expected_codex_handoff", None)
@@ -215,9 +229,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 original = next(index for index, message in enumerate(messages)
                                 if self.server.original in json.dumps(message["content"]))
                 messages = messages[original:]
+            if artifact := getattr(self.server, "output_artifact", None):
+                fixture_id = "artifact_" + artifact["name"].removesuffix(".txt")
+                if previous_session := getattr(self.server, "artifact_native_session", None):
+                    assert submission["native_session_id"] == previous_session
+                self.server.artifact_native_session = submission["native_session_id"]
             result = [
                 item for message in messages if isinstance(message["content"], list)
                 for item in message["content"] if item["type"] == "tool_result"
+                and (not artifact or item["tool_use_id"].startswith(f"toolu_{fixture_id}_"))
             ]
             if self.server.current == getattr(self.server, "interrupted_id", None):
                 block = {"type": "text", "text": ""}
@@ -269,6 +289,20 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     delta = {"type": "text_delta", "text": self.server.quote_response}
                     reason = "end_turn"
             elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
+                if prior_answer := getattr(self.server, "expected_native_context", None):
+                    assert any(prior_answer in json.dumps(message["content"], ensure_ascii=False)
+                               for message in messages if message["role"] == "assistant")
+                if recent := getattr(self.server, "expected_recent_exchange", None):
+                    prefix = "Gateway historical context (JSON):\n"
+                    content = next(message["content"] for message in reversed(messages)
+                                   if message["role"] == "user")
+                    snapshots = [json.loads(block["text"][len(prefix):]) for block in content
+                                 if block.get("text", "").startswith(prefix)]
+                    assert len(snapshots) == 1, snapshots
+                    snapshot, = snapshots
+                    assert "source" not in snapshot, snapshot
+                    exchanges = snapshot.get("exchanges", [snapshot])
+                    assert any((row["human"], row["assistant"]) == recent for row in exchanges), exchanges
                 if expected := getattr(self.server, "expected_quote", None):
                     # Only the current exchange's context may resolve this
                     # short approval. Earlier messages include other proposals.
@@ -285,8 +319,9 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                         assert content[-1]["type"] == "text" and self.server.original in content[-1]["text"]
                         assert checkpoint not in content[-1]["text"]
                         assert "The project checkpoint is historical project data" in system
-                    if abandoned := getattr(self.server, "abandoned_quote_original", None):
-                        assert abandoned not in json.dumps(messages, ensure_ascii=False)
+                    if interrupted := getattr(self.server, "interrupted_quote_original", None):
+                        assert json.dumps(messages, ensure_ascii=False).count(interrupted) == 1
+                        assert interrupted not in content[-1]["text"]
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": quote_response}
                 reason = "end_turn"
@@ -309,6 +344,15 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": "I recovered the retained design context."}
                 reason = "end_turn"
+            elif digest := getattr(self.server, "conversation_voice_digest", None):
+                original = data["messages"][-1]["content"]
+                assert digest in json.dumps(original)
+                assert self.server.human_original in json.dumps(original)
+                assert submission["native_session_id"] == self.server.previous_session
+                block = {"type": "text", "text": ""}
+                delta = {"type": "text_delta", "text": self.server.followup_answer}
+                reason = "end_turn"
+                fixture_id = "conversation_voice"
             elif previous is not None:
                 assert prior == len(steps) + 1
                 assert previous in json.dumps(data["messages"])
@@ -365,7 +409,8 @@ class ClaudeProvider(BaseHTTPRequestHandler):
             self.send_fixture_message(data, f"{fixture_id}_{prior}", block, delta, reason)
         except Exception as error:
             if (isinstance(error, (BrokenPipeError, ConnectionResetError))
-                    and quote_gate and quote_gate[2].is_set()):
+                    and ((quote_gate and quote_gate[2].is_set())
+                         or (held_request_cancelled and held_request_cancelled.is_set()))):
                 # The selected CLI already acknowledged cancellation and may
                 # close its HTTP stream before this late answer is written.
                 return
@@ -375,7 +420,7 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 self.server.failure = AssertionError(f"{point.name}:{point.lineno}: {error}")
             self.send_error(400)
 
-    def send_fixture_message(self, data, ident, block, delta, reason):
+    def send_fixture_message(self, data, ident, block, delta, reason, *, before_finish=None):
         message = {
             "id": f"msg_{ident}", "type": "message", "role": "assistant", "content": [],
             "model": data["model"], "stop_reason": None, "stop_sequence": None,
@@ -390,12 +435,17 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                                "usage": {"output_tokens": 4}}),
             ("message_stop", {}),
         ]
-        response = "".join(
-            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n"
+        encoded = [
+            f"event: {event}\ndata: {json.dumps({'type': event, **value})}\n\n".encode()
             for event, value in frames
-        ).encode()
+        ]
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(response)))
+        self.send_header("Content-Length", str(sum(map(len, encoded))))
         self.end_headers()
-        self.wfile.write(response)
+        if before_finish:
+            self.wfile.write(b"".join(encoded[:3]))
+            self.wfile.flush()
+            before_finish()
+            encoded = encoded[3:]
+        self.wfile.write(b"".join(encoded))

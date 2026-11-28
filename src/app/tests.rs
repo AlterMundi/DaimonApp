@@ -1315,6 +1315,7 @@ async fn sends_plain_text_to_the_active_turn() {
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 harness: crate::execution::Harness::Codex,
                 turn_id: 17,
+                attributed_root: false,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
@@ -1363,6 +1364,7 @@ async fn check_rejected_steering(rejection: CodexSteerError) {
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 harness: crate::execution::Harness::Codex,
                 turn_id: 17,
+                attributed_root: false,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
@@ -1398,6 +1400,7 @@ async fn keeps_steering_pending_past_the_previous_timeout() {
             steer: Arc::new(StdMutex::new(Some(ActiveTurnSteerHandle {
                 harness: crate::execution::Harness::Codex,
                 turn_id: 17,
+                attributed_root: false,
                 physical_turn: Arc::new(StdMutex::new(None)),
                 sender: steer_tx,
                 attachments: Arc::new(SteeredFiles::default()),
@@ -3708,7 +3711,12 @@ print(json.dumps(dict(ids, type="outcome", outcome=dict(phase="completed", sessi
     );
     let interaction = config.interaction.as_mut().unwrap();
     interaction.goose_foreground = interaction.claude_foreground.clone();
-    interaction.antigravity_foreground = interaction.claude_foreground.clone();
+    interaction.antigravity_matrix_foreground = interaction.claude_foreground.clone();
+    let mut agy = interaction.claude_foreground.clone().unwrap();
+    agy.agy_cli = true;
+    agy.interaction_direct = true;
+    agy.worker_command = vec!["/unused-agy-topic-worker".into()];
+    interaction.antigravity_foreground = Some(agy);
     let app = App::bootstrap(config.clone()).await.unwrap();
     let antigravity_id = uuid::Uuid::now_v7().to_string();
     let antigravity_missing_id = uuid::Uuid::now_v7().to_string();

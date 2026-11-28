@@ -333,7 +333,7 @@ impl Store {
                 let contextual = input.reply.as_ref().is_some_and(|r| r.context_only);
                 let eligible = if let Some((native, closed, explicit)) = interpretation {
                     let linked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM turns WHERE id=?1 AND session_id=?2 AND from_user_id=?3 AND native_thread_id=?4)",params![input.local_turn,input.session,human,native],|r|r.get(0))?;
-                    let routed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_sources WHERE channel='conversation' AND event_id=?1 AND human_id=?2)",params![input.id,human],|r|r.get(0))?;
+                    let routed = super::interaction::selected_local_dispatch_on(&tx,human,"conversation",&input.id,None)?;
                     let creating: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM interaction_creations WHERE human_id=?1 AND entry_chat=?2 AND entry_topic=?3 AND input_update=?4)",params![human,entry.chat_id,entry.thread_id,input.id],|r|r.get(0))?;
                     (contextual || explicit) && input.native == native && linked && !routed && !creating && !closed.is_cancelled()
                         && matches!(input.phase.as_str(),"sending"|"steering"|"accepted")
@@ -785,6 +785,7 @@ mod tests {
                 .local_turn;
             let source = SourceInput {
                 telegram_files: vec![],
+                telegram_album_members: Vec::new(),
                 tribu_source: None,
                 transcription: None,
                 channel: "local-session".into(),

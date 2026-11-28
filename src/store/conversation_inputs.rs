@@ -407,16 +407,21 @@ pub(super) fn read_on(conn: &Connection, id: &str, human: i64) -> Result<Convers
     if let Some(route) = input.routing.as_mut()
         && let Some(instruction) = &route.instruction
     {
-        let selected: Option<(String, Option<String>)> = conn
+        let selected: Option<(String, Option<String>, bool, bool)> = conn
             .query_row(
-                "SELECT phase,json_extract(doc,'$.subscription_limit') FROM interaction_instructions WHERE id=?1",
+                "SELECT phase,json_extract(doc,'$.subscription_limit'),
+                 coalesce(json_extract(doc,'$.context_unavailable'),0),
+                 coalesce(json_extract(doc,'$.goal_control_unavailable'),0)
+                 FROM interaction_instructions WHERE id=?1",
                 [instruction],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        if let Some((phase, limit)) = selected {
+        if let Some((phase, limit, context_unavailable, goal_control_unavailable)) = selected {
             route.phase = phase;
             route.subscription_limit = limit.as_deref().map(serde_json::from_str).transpose()?;
+            route.context_unavailable = context_unavailable;
+            route.goal_control_unavailable = goal_control_unavailable;
         } else {
             route.phase = "unavailable".into();
         }
@@ -762,6 +767,7 @@ impl Store {
             playback,
             capture_questions,
             Vec::new(),
+            false,
         )
     }
 
@@ -779,12 +785,13 @@ impl Store {
         playback: Option<ConversationPlayback>,
         capture_questions: Option<std::collections::BTreeMap<String, String>>,
         files: Vec<crate::files::FileReference>,
+        paired_actor: bool,
     ) -> Result<(ConversationInput, bool)> {
         voice.validate()?;
         if voice.transcription.is_some() {
             bail!("Transcription is receiving-owned");
         }
-        self.capture_original(
+        self.capture_original_mode(
             human,
             entry,
             binding,
@@ -797,6 +804,9 @@ impl Store {
             playback,
             capture_questions,
             files,
+            None,
+            None,
+            paired_actor.then_some(SelectedRoute::PairedOriginal),
         )
     }
 
@@ -1027,6 +1037,7 @@ impl Store {
         Ok(())
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &self,
@@ -2068,6 +2079,8 @@ impl Store {
                 "forwarded_next_offset":(instruction.text.chars().count()>2048).then_some(2048),"transport_phase":phase,
                 "native_acceptance":phase=="accepted","target_available":available,
                 "subscription_limit":instruction.subscription_limit,
+                "context_unavailable":instruction.context_unavailable,
+                "goal_control_unavailable":instruction.goal_control_unavailable,
                 "results":results,"more_results":more_results,"results_cursor":result_cursor}),
             );
         }

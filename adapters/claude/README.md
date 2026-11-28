@@ -13,6 +13,16 @@ daemon response and returns only the authenticated body fields needed for
 admission. The Claude executable receives no Matrix key or binding path. The
 adapter owns no journal, queue or reply publisher.
 
+Stage the `adapters/claude/` worker with the relative modules
+`adapters/worker-pipes.mjs` and `adapters/owner-observation.mjs` from the same
+revision and preserve that directory layout. Set
+`worker_preflight_command` in the foreground configuration to the staged
+Node worker command with `--check-profile` in place of `--profile`. That check
+loads the worker and SDK modules and validates the selected executable and
+directories without starting a turn or calling the provider. Include the
+shared modules in the release manifest. Use the staged worker path via
+`CLAUDE_TEST_WORKER_PATH` in the joined fixture for the actual execution check.
+
 The Agent SDK must finish initialization before the adapter reads the effective
 MCP inventory. The adapter checks the pinned CLI version, exact tools and
 in-process server provenance. It rechecks Matrix status before releasing the
@@ -143,8 +153,62 @@ another local request. An authenticated paired human can use Claude's native
 Claude topic selected. Gateway binds the command to the original and the
 selected topic. Quoted, voice-derived, attached, companion and session-authored
 inputs cannot invoke the native command through that Conversation path.
+The adapter supports native goal inspection, setting a condition and clearing
+it. It declines Gateway's `/goal pause` and `/goal resume` before native
+submission until those controls have a compatible implementation. A plain
+argument to Claude's native `/goal` command may replace the goal condition.
 Deploy and roll back the Gateway binary
 and Claude adapter together, since older workers reject the added start field.
+
+### Native interrupt capability and session reuse
+
+Claude Code 2.1.325 advertised both `interrupt_receipt_v1` and
+`interrupt_cancel_queued_v1` in the installed SDK 0.3.325 probe. Its runtime
+accepted `query.interrupt({ cancelQueued: true })`, even though its published
+TypeScript declaration exposes `interrupt()`. Do not assume older SDKs
+forward that option. The fixture leaves a provider reply open, sends a queued
+correction, checks the exact correction ID in the cancellation receipt, and
+observes the terminal result on the same session. A fresh process then sends
+one new original to that exact session. The loopback provider sees no replay
+of the correction.
+
+```sh
+CLAUDE_TEST_SDK_PATH=/absolute/sdk.mjs CLAUDE_TEST_NATIVE_BINARY=/absolute/claude \
+  node --test adapters/claude/interrupt.test.mjs
+```
+
+For a paired topic turn that negotiates targeted interruption, Gateway gives
+the Claude worker four seconds to return an exact native receipt and the
+terminal result for the original. It checks every submitted steer against
+the cancelled IDs. A confirmed interruption retains the cancelled originals
+and selects the same session for the next eligible turn. The native terminal
+result can still contain the answer to the original, for example when its
+first goal iteration finished before the interruption. Gateway preserves
+any qualified answer and settles the separately cancelled corrections.
+With an exact cancellation receipt and an empty native success, Gateway
+records the interruption without publishing an answer. Gateway retains
+uncertain effects if the native capabilities, complete receipt or terminal
+result are unavailable. A successful root answer remains visible when a
+submitted correction is unaccounted for, but normal resume on that thread
+stays fenced. Goal pause and provider-side goal accounting are separate.
+
+The installed native interruption fixture also checks both SDK token counters.
+`usage` in the returned result covers the visible model response. In the
+fixture it omits the separate provider call that evaluates the goal condition.
+`modelUsage` includes that evaluation and accumulates across native session
+resume, even when `/goal` reports that its condition has yet to be evaluated.
+An interrupted response before the provider's terminal usage event may report
+zero. These fields therefore cannot directly supply per-goal or billing totals.
+For paired Gateway turns, the adapter emits the cumulative token counters only
+from an SDK result attributed to the current input or an admitted correction on
+that session. Gateway retains the result UUID and counters with the existing
+turn transaction, including after a confirmed interruption. Cache reads and
+writes remain distinct. Missing telemetry stays absent.
+Recovering goal accounting requires a goal-bound baseline and an exact retained
+observation of each advancing native session total. Missing provider usage
+remains unknown.
+
+### Topic continuity across harnesses
 
 When the last eligible exchange came from the topic's current Codex thread,
 Gateway can attach its exact original and final answer to a resumed or fresh
@@ -326,8 +390,18 @@ profile. After the identity and catalog checks, the worker emits
 `prepare_submission` with the native session identity and current DMK
 authorization scope. Gateway records both and the exposure together in the
 existing journal before returning `submission_decision` with
-`committed: true`. Each `start` provides a fresh native UUID independent of the
-turn's correlation UUID. For a private Interaction conversation, Gateway can
+`committed: true`. When the worker advertises `inputAcceptance` and Gateway
+selects `observeAcceptance`, the worker emits one `input_accepted` frame
+only after the SDK echoes the exact original UUID in the selected native
+session. For ordinary paired inputs, Gateway also requires the worker to
+advertise `workAcceptance` and sends `requireWork`. An exact UUID in a
+status-only event can still establish attributed handoff acceptance. A paired
+input needs an exact root reply frame, so a terminal pre-work quota refusal
+retains its original classification. Gateway retains the accepted receipt
+apart from the result and Conversation can show the original as received while
+that native turn runs. Older workers can complete through the existing result
+path. Each `start` provides a fresh
+native UUID independent of the turn's correlation UUID. For a private Interaction conversation, Gateway can
 also offer the previous native UUID and scope. It selects that candidate
 only when the last exposed turn in the same
 conversation and Matrix thread returned a signed reply that Interaction
@@ -498,20 +572,42 @@ incorporates the original canonical result into the same Claude session.
 Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
 
 - `FOREGROUND_TEST_TELEGRAM_FILES=1` for original photo bytes and reply routing.
+- `FOREGROUND_TEST_CLAUDE_TOPIC_VOICE=1` for Telegram and Conversation
+  voice notes reaching the same selected native session. Gateway retains
+  each original and the machine transcript with its clip digest. The
+  dashboard uses the Gateway capability `voice_paired_actor=v1` to preserve
+  paired authority for ordinary Conversation recordings. Companion
+  credentials and an older Gateway use the existing restricted submit path.
+- `FOREGROUND_TEST_CLAUDE_OUTPUT_ARTIFACTS=1` for a native file write,
+  immutable result provenance, Telegram upload, and Conversation download
+  after exact native resume. The paired routed topic uses Gateway's existing
+  artifact store when enabled. Its per-turn output directory does not affect
+  the selected native session scope.
 - `FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY=1` keeps Gateway running with
   TeleDaimon stopped and reads a routed Claude result in Conversation. It then
   starts the named TeleDaimon process, verifies one projection of the
   known-unsent result, and checks that a separate lost acknowledgement is
   retained without replay across adapter restart.
+- `FOREGROUND_TEST_CLAUDE_HARNESS_SWITCH=1` with the Telegram-topic setup
+  uses Conversation to switch one owned topic from Codex to Claude, back to
+  Codex and then back to Claude. It asserts both original native sessions,
+  the topic generation and working directory, the exact quoted Codex answer
+  on Claude, and the retained Claude exchange plus project checkpoint on
+  Codex. The real Claude SDK uses a loopback provider and Codex has a
+  synthetic App Server peer.
 - `FOREGROUND_TEST_CLAUDE_WEB_GOAL=1` for native `/goal` readback in the
   selected Claude session through the paired Conversation composer, with no
   additional provider call and a retained refusal for an unpaired companion.
   Add `FOREGROUND_TEST_CLAUDE_GOAL_LIFECYCLE=completed` for goal creation and
   evaluation, or `=active` to leave a goal unresolved in the native session.
-  The active case verifies that a subsequent paired status or clear command
-  addresses that same session while the earlier turn remains uncertain.
+  The active case verifies that the pause and resume originals stay unsent with
+  an explicit unavailable control status, the existing objective stays
+  inspectable, and a subsequent clear addresses
+  that same session while the earlier turn remains uncertain.
   Both cases verify that resubmitting the same input ID does not run the goal
   again and that an unpaired browser cannot set a goal.
+- `FOREGROUND_TEST_TELEGRAM_GOAL_CONTROLS=1` checks the original-anchored
+  explanation for unsupported pause and resume without provider exposure.
 - `FOREGROUND_TEST_CLAUDE_WEB_QUOTE=1` and
   `FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE=1` submit an exact reply to an older
   proposal while a newer request is still running in the same native session.
@@ -527,10 +623,23 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   exposure. The queued reply reaches a successor with the exact quote. The
   interrupted original remains uncertain, the late answer is withheld, and an
   exact retry of the interruption does not signal the successor.
-- `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired photo sent
-  from the Conversation composer to a selected Claude topic. The provider
-  fixture checks the original image bytes and the human's provenance, with
-  and without a caption. The companion attempt is retained before exposure.
+- `FOREGROUND_TEST_CLAUDE_WEB_FILES=1` for an authenticated paired image and PDF
+  sent together from the Conversation composer to a selected Claude topic.
+  The provider fixture checks both originals in order and the human's
+  provenance, with and without a caption. The companion attempt is retained
+  before exposure.
+- `FOREGROUND_TEST_TELEGRAM_FILES=1` for direct Telegram photos and PDF documents
+  with exact retained bytes and a reply anchored to each original.
+- `FOREGROUND_TEST_TELEGRAM_ALBUM=1` for nine album members delivered in separate
+  Telegram polls. The real CLI sends the original images and captions in a
+  single provider request. Exact redelivery has no second effect, and a late
+  member starts a distinct turn in the same native session. Set
+  `FOREGROUND_TEST_TELEGRAM_ALBUM_PREDECESSOR` to the previous named Gateway
+  executable to qualify redelivery on the retained journal after a rollback.
+
+  Supported images and PDFs share a 4 MiB budget for inline native content. Larger
+  or unsupported files remain in the original attachment manifest for local reads
+  by a turn with file tools. Inline blocks are read from hash-verified originals.
 - `FOREGROUND_TEST_TELEGRAM_STEER=1` for Telegram and Conversation inputs
   delivered to the already-running Claude turn.
 - `FOREGROUND_TEST_TELEGRAM_QUOTA=1` for known rejection and its scoped notice.

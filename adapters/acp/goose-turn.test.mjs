@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -40,11 +41,12 @@ input.on('line', line => {
     }});
   }
   const result = ({
-    initialize: { protocolVersion: 1, agentCapabilities: { _meta: { goose: {
+    initialize: { protocolVersion: 1, agentCapabilities: { loadSession: true, _meta: { goose: {
       nativeSkills: { enabled: process.env.GOOSE_DISABLE_SKILLS !== 'true' || process.env.OUTCOME === 'skills-on' },
     } } } },
     '_goose/unstable/config/extensions/list': { extensions: [{ enabled: false }] },
     'session/new': { sessionId },
+    'session/load': { sessionId: process.env.OUTCOME === 'wrong-session' ? 'another-session' : sessionId },
     '_goose/unstable/tools/list': { tools: process.env.TOOLS.split(' ').map(name => ({ name })) },
     'session/prompt': { stopReason: 'end_turn' },
   })[method];
@@ -52,15 +54,21 @@ input.on('line', line => {
 });
 `);
   await chmod(binary, 0o700);
-  const run = (tools, beforeSubmit, outcome, reply) => runGooseTurn({
+  const run = (tools, beforeSubmit, outcome, reply, nativeSessionId) => runGooseTurn({
     binary, cwd, env: { MARKER: marker, TOOLS: tools, OUTCOME: outcome ?? '', REPLY: reply ?? '' },
-    mcpServers: [], toolNames: [toolName], text: 'Original 42', beforeSubmit,
+    mcpServers: [], toolNames: [toolName], text: 'Original 42', beforeSubmit, nativeSessionId,
     signal: AbortSignal.timeout(5000),
   });
   const skills = await run(toolName, () => assert.fail('skill loader reached journal'), 'skills-on');
   assert.deepEqual(skills, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
   const wrong = await run(toolName + ' unexpected_tool', () => assert.fail('catalog drift reached journal'));
   assert.deepEqual(wrong, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
+  const wrongSession = await run(toolName,
+    () => assert.fail('different session reached journal'), 'wrong-session', '', 'native-session-42');
+  assert.deepEqual(wrongSession, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
+  const changedAfterLoad = await run(toolName + ' unexpected_tool',
+    () => assert.fail('catalog drift after load reached journal'), '', '', 'native-session-42');
+  assert.deepEqual(changedAfterLoad, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
   const veto = await run(toolName, session => {
     assert.equal(session, 'native-session-42');
     return false;
@@ -131,7 +139,10 @@ for line in sys.stdin:
 `);
   const requests = [];
   const original = 'native-goose-probe-42';
+  const resumed = 'native-goose-continue-44';
   const interrupted = 'native-goose-interrupt-43';
+  const targeted = 'native-goose-targeted-interrupt-45';
+  const interrupt = new AbortController();
   const stop = new AbortController();
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST') {
@@ -142,6 +153,15 @@ for line in sys.stdin:
     for await (const bytes of request) raw += bytes;
     const body = JSON.parse(raw);
     requests.push({ url: request.url, body });
+    if (JSON.stringify(body.messages).includes(targeted)) {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('data: ' + JSON.stringify({
+        id: 'fixture-45', model: 'gpt-4o-mini', created: 1766229303, object: 'chat.completion.chunk',
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'Partial result' }, finish_reason: null }],
+      }) + '\n\n');
+      interrupt.abort();
+      return;
+    }
     if (JSON.stringify(body.messages).includes(interrupted)) {
       stop.abort();
       return;
@@ -166,10 +186,11 @@ for line in sys.stdin:
     XDG_CACHE_HOME: join(cwd, 'cache'), GOOSE_PROVIDER: 'openai', GOOSE_MODEL: 'gpt-4o-mini',
     OPENAI_API_KEY: 'fixture-only', OPENAI_HOST: 'http://127.0.0.1:' + server.address().port,
   };
+  const mcpServers = [{ name: 'matrix', command: '/usr/bin/python3', args: [fixture], env: [] }];
   let admitted;
   const result = await runGooseTurn({
     binary, cwd, env, toolNames: [toolName], text: original,
-    mcpServers: [{ name: 'matrix', command: '/usr/bin/python3', args: [fixture], env: [] }],
+    mcpServers,
     beforeSubmit(session) {
       assert.equal(requests.length, 0);
       admitted = session;
@@ -182,12 +203,33 @@ for line in sys.stdin:
   assert.equal(requests[0].url, '/v1/chat/completions');
   assert.ok(JSON.stringify(requests[0].body.messages).includes(original));
 
+  const missing = await runGooseTurn({
+    binary, cwd, env, toolNames: [toolName], text: 'Synthetic missing session',
+    nativeSessionId: randomUUID(), mcpServers,
+    beforeSubmit: () => assert.fail('Missing native session reached the journal'),
+  });
+  assert.deepEqual(missing, { phase: 'not_submitted', reason: 'goose_catalog_unverified' });
+  assert.equal(requests.length, 1);
+  const reopened = await runGooseTurn({
+    binary, cwd, env, toolNames: [toolName], text: resumed, nativeSessionId: admitted,
+    mcpServers,
+    beforeSubmit(session) {
+      assert.equal(requests.length, 1);
+      assert.equal(session, admitted);
+      return true;
+    },
+  });
+  assert.deepEqual(reopened, result);
+  assert.equal(requests.length, 2);
+  assert.ok(JSON.stringify(requests[1].body.messages).includes(original));
+  assert.ok(JSON.stringify(requests[1].body.messages).includes(resumed));
+
   let interruptedSession;
   const cancelled = await runGooseTurn({
     binary, cwd, env, toolNames: [toolName], text: interrupted, signal: stop.signal,
-    mcpServers: [{ name: 'matrix', command: '/usr/bin/python3', args: [fixture], env: [] }],
+    mcpServers,
     beforeSubmit(session) {
-      assert.equal(requests.length, 1);
+      assert.equal(requests.length, 2);
       interruptedSession = session;
       return true;
     },
@@ -196,5 +238,12 @@ for line in sys.stdin:
   assert.deepEqual(cancelled, {
     phase: 'uncertain', sessionId: interruptedSession, reason: 'native_result_unconfirmed',
   });
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
+
+  const confirmed = await runGooseTurn({
+    binary, cwd, env, toolNames: [toolName], text: targeted, interruptSignal: interrupt.signal,
+    nativeSessionId: admitted, mcpServers, beforeSubmit: session => session === admitted,
+  });
+  assert.deepEqual(confirmed, { phase: 'interrupted', sessionId: admitted });
+  assert.equal(requests.length, 4);
 });

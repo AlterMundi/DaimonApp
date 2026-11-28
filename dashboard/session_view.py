@@ -303,18 +303,37 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     final = """r.local_turn=t.id AND r.native_thread=t.native_thread_id
           AND r.native_turn=json_extract(i.doc,'$.native_turn') AND r.item_id='final'
           AND length(trim(r.body))>0 AND t.status='completed'"""
+    # An older Gateway can serve this dashboard during a rolling update. Its
+    # selected answer remains readable before it exposes the scoped request view.
+    has_request_view = db.execute("""SELECT 1 FROM sqlite_schema
+        WHERE type='view' AND name='visible_portable_report_requests'""").fetchone()
+    handoff_view = ('visible_portable_report_requests' if has_request_view else
+                    '(SELECT id,source,session_id,human_id,local_turn,body FROM topic_publications WHERE 0)')
     source = f"""{accepted} JOIN interaction_results r ON {final}
         LEFT JOIN topic_publications p ON p.kind='portable_report' AND p.source=r.id
           AND p.session_id=i.session_id AND p.human_id=s.human_id AND p.local_turn=t.id
-        WHERE {ownership} AND (p.id IS NOT NULL OR {human_original})"""
+        LEFT JOIN topic_publications selected ON p.id IS NOT NULL AND selected.kind='portable_report_request'
+          AND selected.source=p.source AND selected.session_id=p.session_id
+          AND selected.human_id=p.human_id AND selected.local_turn=p.local_turn
+        LEFT JOIN {handoff_view} handoff ON p.id IS NOT NULL AND handoff.source=r.id
+          AND handoff.session_id=p.session_id AND handoff.human_id=p.human_id AND handoff.local_turn=p.local_turn
+        WHERE {ownership} AND ({human_original}
+          OR (p.id IS NOT NULL AND (selected.id IS NULL OR handoff.id IS NOT NULL)))"""
     scope = (session, human, harness, generation)
     # Keep outstanding originals separate from the append-only result cursor.
     # A final result can arrive out of order and still has its own position.
     pending_items = []
     original_id = "CASE WHEN s.channel='conversation' THEN s.event_id END"
     if event is None and before is None:
-        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{original_id}
-            {accepted} WHERE {ownership} AND {human_original} AND t.status='running'
+        native_receipt = """i.phase='submitting'
+            AND json_extract(i.doc,'$.native_input_accepted')=1
+            AND json_extract(i.doc,'$.native_thread')=t.native_thread_id"""
+        pending_scope = ownership.replace("i.phase='accepted'",
+                                          f"(i.phase='accepted' OR ({native_receipt}))", 1)
+        pending_id = """CASE WHEN s.channel LIKE 'telegram:%' THEN 'telegram:'||s.event_id
+            WHEN s.channel='conversation' THEN s.event_id END"""
+        pending = db.execute(f"""SELECT i.id,t.started_at,substr(json_extract(s.doc,'$.text'),1,1001),{pending_id}
+            {accepted} WHERE {pending_scope} AND {human_original} AND t.status='running'
             AND NOT EXISTS (SELECT 1 FROM interaction_results r WHERE {final})
             ORDER BY i.sequence DESC LIMIT 8""", scope)
         for instruction, started, text, input_id in reversed(pending.fetchall()):
@@ -322,8 +341,24 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
                 if len(text)>1000:text=text[:1000]+'…'
                 item_id = hashlib.sha256(f'{identity}:pending:{instruction}'.encode()).hexdigest()[:32]
                 pending_items.append({'id':item_id,'kind':'message','role':'user','text':text,
-                                      'timestamp':started,'pending':True})
+                                      'timestamp':started,'pending':True,'portable_phase':'accepted'})
                 if input_id:pending_items[-1]['input_id']=input_id
+        has_early_view = db.execute("""SELECT 1 FROM sqlite_schema
+            WHERE type='view' AND name='visible_portable_handoff_inputs'""").fetchone()
+        if has_early_view:
+            handoffs = db.execute("""SELECT h.source,t.started_at,substr(h.body,1,1001)
+                FROM visible_portable_handoff_inputs h JOIN turns t ON t.id=h.local_turn
+                WHERE h.session_id=? AND h.human_id=? AND t.execution_harness=?
+                  AND t.execution_generation=? AND t.status='running'
+                ORDER BY h.id DESC LIMIT 8""", scope)
+            for instruction, started, text in reversed(handoffs.fetchall()):
+                if len(text) > 1000:
+                    text = text[:1000] + '…'
+                item_id = hashlib.sha256(f'{identity}:handoff:{instruction}'.encode()).hexdigest()[:32]
+                pending_items.append({'id':item_id,'kind':'message','role':'assistant','text':text,
+                                      'timestamp':started,'pending':True,'handoff':True})
+            pending_items.sort(key=lambda item: item['timestamp'] or '')
+            pending_items = pending_items[-8:]
     ordered = after is not None
     bound = after // 2 if ordered else (before // 2 if before is not None else 2**62)
     order = 'ASC' if ordered else 'DESC'
@@ -332,13 +367,14 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     else:
         where = 'r.rowid>=?' if ordered else 'r.rowid<=?'
     rows = db.execute(f'''SELECT r.rowid,t.started_at,t.completed_at,
-        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') END,r.body,{original_id} {source} AND {where}
+        CASE WHEN p.id IS NULL THEN json_extract(s.doc,'$.text') ELSE handoff.body END,
+        r.body,{original_id},handoff.id IS NOT NULL {source} AND {where}
         ORDER BY r.rowid {order} LIMIT {MAX_ITEMS + 1}''', (*scope, bound))
     items = deque()
     total = 0
     examined_through = after
-    for sequence, started, completed, original, answer, input_id in rows:
-        pair = [(sequence * 2, 'user', started, original),
+    for sequence, started, completed, original, answer, input_id, handoff in rows:
+        pair = [(sequence * 2, 'assistant' if handoff else 'user', started, original),
                 (sequence * 2 + 1, 'assistant', completed, _conversation_answer(answer))]
         for position, role, timestamp, text in (pair if ordered else reversed(pair)):
             if (event is not None and position != event
@@ -375,5 +411,5 @@ def read_portable(db, session, human, harness, *, technical=False, revision=None
     return {'schema':'daimon.session-view/v1', 'revision':identity, 'technical':technical,
             'items':list(items), 'pending_items':pending_items, 'links_input_ids':not technical, 'before':first, 'after':following, 'has_earlier':bool(earlier),
             'more':bool(newer), 'before_scan':False, 'after_scan':False, 'skipped_records':0,
-            'role_meaning':'Human originals and their retained assistant responses.',
+            'role_meaning':'Human originals, selected attributed handoffs and retained assistant responses.',
             'source_meaning':'Read-only portable conversation history.'}

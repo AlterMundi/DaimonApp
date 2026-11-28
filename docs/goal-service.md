@@ -10,6 +10,36 @@ authorized scope after an uncertain turn. The command has its own receipt.
 Reading or clearing the native goal leaves the original input and its outcome
 available for reconciliation. This path uses Claude's own evaluation loop.
 
+The pinned native interrupt fixture runs one actual Claude evaluation against a
+disposable loopback provider, interrupts the next iteration and reopens the
+same native session. Claude returned a successful terminal envelope with empty
+result text, along with the exact cancellation receipt for the queued correction.
+A standalone `/goal` returns the same active condition
+without any provider request, with status `not yet evaluated`. The next real
+input continues the work and invokes the evaluator again. This confirms
+condition persistence and a reset of the native evaluation baseline. An
+interrupt followed by a status query is therefore insufficient evidence for
+durable pause, cumulative accounting or a native resume operation. Keep the
+native objective intact and attach any portable accounting to the existing
+goal service and its exact execution receipts.
+[Claude goal restoration contract](https://code.claude.com/docs/en/goal#resume-with-an-active-goal)
+
+An isolated comparison using Claude Code 2.1.332 and Agent SDK 0.3.332
+observed usage for a partially streamed response in the cumulative counters.
+The visible result's usage still omitted it. The SDK declares an
+`active_goal` event with an initial counter, but the native headless
+stdout did not emit that event on goal evaluation, interruption, status
+inspection or resume in this check. A session total alone cannot recover
+the missing goal boundary. Retain it with its exact result and leave
+goal-specific accounting unconfirmed when the boundary is absent.
+
+The Telegram interruption fixture checks the native cancellation receipt
+before releasing a held loopback provider response. It polls the same human
+original a second time, then submits a distinct new original. Only the new
+original produces an answer, in the same native session. The private Matrix
+fixtures separately cover restart after native exposure and restart across
+an uncertain signed return.
+
 ## Implementation checkpoint
 
 The first implementation slice retains native failure evidence in the existing

@@ -14,10 +14,15 @@ export function validateSessionId(value) {
 
 export async function runAcpTurn({
   binary, args, cwd, env, text, beforeSubmit, signal, openSession,
-  unavailable, openFailure, allowLargeCommandList = false,
+  unavailable, openFailure, allowLargeCommandList = false, selectPermission, instructions, images = [],
+  onInputAccepted, interruptSignal,
 }) {
-  if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_TEXT) {
+  if (typeof text !== 'string' || (!text.trim() && !images.length) || Buffer.byteLength(text) > MAX_TEXT) {
     throw new TypeError('Invalid ACP foreground input');
+  }
+  if (instructions !== undefined && (typeof instructions !== 'string'
+      || !instructions.trim() || Buffer.byteLength(instructions) > 8 * 1024)) {
+    throw new TypeError('Invalid ACP receiving guidance');
   }
   const deadline = AbortSignal.timeout(DEADLINE_MS);
   const stop = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -25,6 +30,8 @@ export async function runAcpTurn({
   let closed;
   let cancellation;
   let cancellationDeadline;
+  let interruptListener;
+  let interruptSent = false;
   let nativeSessionId;
   let exposed = false;
   let reason = unavailable;
@@ -42,22 +49,35 @@ export async function runAcpTurn({
         child.kill('SIGKILL');
         return;
       }
+      if (!interruptSent) sendCancellation();
+      clearTimeout(cancellationDeadline);
+      cancellationDeadline = setTimeout(() => child.kill('SIGKILL'), 500);
+    });
+    function sendCancellation() {
       child.stdin.write(JSON.stringify({
         jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: nativeSessionId },
       }) + '\n');
-      cancellationDeadline = setTimeout(() => child.kill('SIGKILL'), 500);
-    });
+    }
+    function requestInterrupt() {
+      if (stop.aborted) return;
+      interruptSent = true;
+      sendCancellation();
+      // Leave time for the worker to close and return its receipt to Gateway.
+      cancellationDeadline = setTimeout(() => child.kill('SIGKILL'), 2_500);
+    }
     const replies = acpFrames(child.stdout, { allowLargeCommandList });
     let nextId = 0;
-    async function send(message) {
+    async function send(message, onWritten) {
       stop.throwIfAborted();
-      if (!child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n')) {
+      const writable = child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+      onWritten?.();
+      if (!writable) {
         await once(child.stdin, 'drain', { signal: stop });
       }
     }
-    async function request(method, params, onUpdate) {
+    async function request(method, params, onUpdate, onWritten) {
       const id = ++nextId;
-      await send({ id, method, params });
+      await send({ id, method, params }, onWritten);
       for (;;) {
         stop.throwIfAborted();
         const { value, done } = await replies.next();
@@ -65,11 +85,18 @@ export async function runAcpTurn({
         if (done) throw new Error('ACP closed before its response');
         if (typeof value.method === 'string') {
           if ('id' in value) {
-            await send({
-              id: value.id, error: { code: -32601, message: 'Client operation unavailable' },
-            });
+            if (value.method === 'session/request_permission' && (selectPermission || interruptSent)) {
+              const optionId = exposed && !interruptSent && value.params?.sessionId === nativeSessionId
+                ? await selectPermission(value.params) : undefined;
+              await send({ id: value.id, result: { outcome: optionId && !interruptSent
+                ? { outcome: 'selected', optionId } : { outcome: 'cancelled' } } });
+            } else {
+              await send({
+                id: value.id, error: { code: -32601, message: 'Client operation unavailable' },
+              });
+            }
           } else if (value.method === 'session/update') {
-            onUpdate?.(value.params);
+            await onUpdate?.(value.params);
           }
           continue;
         }
@@ -83,6 +110,9 @@ export async function runAcpTurn({
     const initialized = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
     if (initialized?.protocolVersion !== 1) throw new Error('ACP v1 required');
     reason = openFailure;
+    if (images.length && initialized.agentCapabilities?.promptCapabilities?.image !== true) {
+      return { phase: 'not_submitted', reason: 'acp_image_input_unavailable' };
+    }
     nativeSessionId = validateSessionId(await openSession(request, initialized));
 
     reason = 'gateway_submission_not_recorded';
@@ -98,22 +128,40 @@ export async function runAcpTurn({
     } finally {
       abortDecision[Symbol.dispose]();
     }
+    if (interruptSignal?.aborted) {
+      return { phase: 'not_submitted', reason: 'native_interrupt_before_prompt' };
+    }
     exposed = true;
     reason = 'native_result_unconfirmed';
 
+    let inputAccepted = false;
     let answer = '';
     let answerBytes = 0;
     const terminal = await request('session/prompt', {
-      sessionId: nativeSessionId, prompt: [{ type: 'text', text }],
-    }, ({ sessionId, update } = {}) => {
+      sessionId: nativeSessionId,
+      prompt: [
+        ...(instructions ? [{ type: 'text', text: instructions }] : []),
+        ...(text ? [{ type: 'text', text }] : []),
+        ...images,
+      ],
+    }, async ({ sessionId, update } = {}) => {
       if (sessionId !== nativeSessionId) throw new Error('ACP update came from another session');
       if (update?.sessionUpdate !== 'agent_message_chunk' || update.content?.type !== 'text') return;
       const chunk = update.content.text;
       if (typeof chunk !== 'string') throw new Error('Invalid response text');
       answerBytes += Buffer.byteLength(chunk);
       if (answerBytes > MAX_TEXT) throw new Error('ACP response exceeds bound');
+      if (!interruptSent && !inputAccepted && chunk.trim() && onInputAccepted) {
+        await onInputAccepted(nativeSessionId);
+        inputAccepted = true;
+      }
       answer += chunk;
+    }, () => {
+      if (interruptSignal) interruptListener = addAbortListener(interruptSignal, requestInterrupt);
     });
+    if (interruptSent && terminal?.stopReason === 'cancelled') {
+      return { phase: 'interrupted', sessionId: nativeSessionId };
+    }
     const visible = answer.trim();
     const rawToolCall = visible.startsWith('<tool_call>')
       && visible.includes('<function=')
@@ -127,6 +175,7 @@ export async function runAcpTurn({
       ? { phase: 'uncertain', reason, sessionId: nativeSessionId }
       : { phase: 'not_submitted', reason };
   } finally {
+    interruptListener?.[Symbol.dispose]();
     cancellation?.[Symbol.dispose]();
     clearTimeout(cancellationDeadline);
     if (child) {

@@ -60,6 +60,21 @@ The Bot API path and local Bot API storage stay with TeleDaimon. Gateway
 retains the existing transfer limit and writes into its private temporary file.
 A verified complete transfer is required before publishing the local filename.
 
+Telegram supplies a chat-scoped media group identifier on each album member.
+The adapter preserves it on each original update, and Gateway keeps the members
+under their individual update IDs in the existing ingress journal. A separate
+nullable column retains the group while the original JSON stays readable by
+previous Gateway releases. An older adapter can omit the identifier on
+redelivery without rewriting the original.
+Conflicting known group identifiers for one update are rejected. Attachment-capable
+portable topics collect consecutive members from the same verified sender, chat,
+topic, and stop epoch within a short bounded window. Every member retains its
+original ID and caption. Gateway rechecks the topic generation and commits the
+aggregate instruction and the member dispatch states in one transaction.
+The native reply anchors to the first member. A member that arrives after
+aggregation is handled as its own original. A redelivery of a retained member
+cannot start another submission.
+
 For a scoped polling migration, stop the selected embedded consumer through
 the existing receiving service procedure. Remove the Gateway's Telegram token
 setting and environment binding. Start Gateway on the same database and
@@ -269,7 +284,14 @@ current scope and authenticated being, embodiment and incarnation. A change
 to the signed roster alone preserves that incarnation's native history. A
 known quota rejection before work leaves the last completed candidate usable.
 An uncertain turn or a missing resume target protects the affected history
-from implicit replay. Session-authored dependencies use the parent admission
+from implicit replay. If Gateway cannot recover a required quoted answer or
+cannot replace a missing session with its bounded context, it retains the
+original without submitting it. Conversation shows the reason on that route.
+Telegram reports it on the original message. An unmatched textless reference
+from the selected bot in a direct Telegram topic can still use bounded recent
+history from that topic when Claude opens a new native session. Gateway keeps
+that history as background, separate from exact quoted answers.
+Session-authored dependencies use the parent admission
 epoch and remain attributed when routed into a Claude topic. Other portable
 harnesses require a separately qualified dependency return contract.
 
@@ -302,10 +324,14 @@ the worker and waiting-message state from the canonical journal.
 
 In a paired Claude Telegram topic, an explicitly typed `/goal` is sent to the
 selected native session through the existing turn journal. A condition uses
-Claude's native goal loop and `/goal clear` is Claude's native clear. Forwarded
-messages and session-authored context cannot invoke native commands. The worker
-first checks that its selected SDK session advertises the command. Gateway does
-not publish a Codex goal snapshot or apply an old Codex intent for a topic
+Claude's native goal loop and `/goal clear` clears that session's goal.
+Gateway recognizes Claude's clear aliases without regard to letter case, so
+they can still address the selected writer after a previous uncertain result.
+The adapter refuses `/goal pause` and `/goal resume` in any letter case,
+since Claude Code would treat these as new conditions.
+Forwarded messages and session-authored context cannot invoke native commands.
+The worker first checks that its selected SDK session advertises the command.
+Gateway does not publish a Codex goal snapshot or apply an old Codex intent for a topic
 currently assigned to Claude. The shared goal controller still needs a
 portable goal binding for inspection and delegated mutations from other
 conversations.
@@ -1378,7 +1404,12 @@ coverage declarations explicitly include earlier applicable instruction IDs whos
 constraints were actually carried forward, together with new incorporated context.
 A declaration covering only the most recent message does not establish cumulative
 coverage. Missing or unresolved constraints remain visible rather than being
-inferred from a prior answer or native history.
+inferred from a prior answer or native history. For publication, a completed
+correction with an exact earlier delivery receipt for the same request and
+current topic generation no longer counts as pending on a later result. This
+does not add coverage to the later declaration. The sender rechecks the pending
+decision before submitting the part and can prepare the first part again after
+a typed rejection before submission.
 
 Local requests, helper answers and return-only caller wakeups retain their original
 provenance but do not inherit permission to publish into that human conversation.
@@ -1395,6 +1426,17 @@ helper coverage stays internal and cannot reserve a completed return. Internal-o
 executions also do not inherit an older native progress return binding. Legacy
 records use retained session authorship/coverage without erasing any delivery or
 uncertain-send receipt. Later corrections keep their existing freshness semantics.
+When an independently admitted paired human input arrives during a private
+native turn, Gateway retains it on the existing topic queue for its own native
+turn. It uses the same logical topic and native session. The private result may
+still return to its caller. A later human input cannot widen the already
+selected audience, and recovery never resubmits an earlier accepted original.
+If a Codex collector failed locally after the direct Telegram input and its
+final native item were retained, the matching native receipts can still
+qualify an already admitted dependency result for return. Gateway checks the
+same physical turn, topic generation, owner and current binding. A receipt
+from another execution cannot satisfy that check. The scope is the retained
+result, and the failed collector cannot authorize a new handoff.
 
 An attributed local request to Claude can use the destination's paired host
 tools when its exact retained parent came from the authenticated paired human.
@@ -1403,12 +1445,43 @@ recipient receives the request as session-authored context and cannot use it to
 authorize a second dependency. Gateway checks the retained parent independently
 of the helper's text.
 
-When a paired human explicitly requests visible progress in a selected Claude
-topic, `session_request` can set `report_to_topic`. The completed answer uses
-the same working native history as paired direct turns in that topic. Only the
-selected canonical result is available in the topic's Conversation and Telegram
-projection. The dependency input and private sibling handoffs remain internal.
-The report freezes its destination and keeps its separate internal return.
+When a paired human explicitly requests a visible handoff, `session_request`
+can set `report_to_topic` for a destination with a compatible connector. The
+caller must be bound to an authenticated Conversation original or an exact
+Telegram receipt. The completed answer uses the same working native history
+as paired direct turns in that topic. The
+topic's Conversation and Telegram views receive the selected request, labeled
+with its sending conversation, and its canonical result. Both are projected
+when the report completes. Private sibling handoffs remain internal. The report
+freezes its destination and keeps its separate internal return.
+Gateway projects the canonical delivery identity and verifies both conversation
+generations. The projection uses negotiated adapter capabilities and retained
+evidence, independent of the harness name. Each adapter translates its native
+signals into the same receipts and enforces its own packet limits. An adapter
+without early incorporation evidence can publish after a canonical result
+settles if it supports selected reports. The current portable adapter
+qualification for selected reports is Claude.
+Connectors that can prove early native incorporation may negotiate an
+`input_accepted` receipt. Gateway retains the exact evidence on the admitted
+instruction and queues the attributed handoff for the selected destination
+topic in the same transaction. Conversation can show that handoff during the
+native turn. Telegram uses the existing publication queue and revalidates the
+selection before sending. The final result settles separately and keeps the
+handoff in the normal Conversation history without a second Telegram send.
+An incorporated
+input with an unobserved result must remain uncertain even if the worker
+subsequently reports a pre-submission refusal.
+The opt-in `FOREGROUND_TEST_VISIBLE_HANDOFF=1` case in
+`tests/foreground_signed_io.py` holds the Claude response stream open after
+incorporation. With `FOREGROUND_TEST_TELEGRAM_TOPIC=1`, the case uses the
+selected SDK and CLI with a loopback provider and checks the attributed request
+in Telegram and the authenticated Conversation workspace before releasing the
+final response. It also checks the return to the caller and stable request reuse.
+Use `FOREGROUND_TEST_VISIBLE_HANDOFF=entry` to exercise a directly accepted
+paired input in the general conversation. The direct receipt retains the
+original before any destination plan is chosen. The first explicit dispatch
+freezes its own destinations, and an attributed request can still use the
+active direct receipt.
 Telegram revalidates corrections and authorization before each attempted part.
 An uncertain send is left in its original queue record.
 
@@ -1468,6 +1541,18 @@ If the intended earlier request is absent or ambiguous, ask rather than inventin
 an ID or turning the correction into a new task. Existing native conversations
 can discover this operation through the stable controller's `capabilities` call.
 
+
+### Recover a known-unsent Telegram original
+
+After resolving a worker failure, the authenticated local operator can use
+`daimon-gateway --control CONFIG input recover-retained-telegram INSTRUCTION`
+for an exact retained instruction. This resumes the original delivery under
+the operator's existing authority. It does not require another Telegram
+message from the human. Gateway checks the original author, enrolled topic,
+current admission generation and evidence of no native exposure. The owner
+operation is audited. An uncertain submission, an accepted input, a changed
+generation or a held writer is ineligible. Inspect the original again after
+recovery to distinguish queueing, native acceptance and a published answer.
 
 ## Switching between web and direct conversations
 

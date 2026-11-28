@@ -58,6 +58,49 @@ async fn main() -> Result<()> {
     if gateway && first == Some("--preflight") {
         anyhow::ensure!(args.len() == 3, "Usage: daimon-gateway --preflight CONFIG");
         let config = config::Config::load_gateway_preflight(args[2].clone().into())?;
+        if let Some(interaction) = &config.interaction {
+            use interaction::ForegroundEngine;
+            let workers = [
+                (
+                    ForegroundEngine::Claude,
+                    interaction.claude_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Goose,
+                    interaction.goose_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Antigravity,
+                    interaction.antigravity_foreground.as_ref(),
+                ),
+                (
+                    ForegroundEngine::Antigravity,
+                    interaction.antigravity_matrix_foreground.as_ref(),
+                ),
+            ];
+            for (engine, worker) in workers {
+                let Some(command) =
+                    worker.and_then(|worker| worker.worker_preflight_command.as_deref())
+                else {
+                    continue;
+                };
+                use std::process::Stdio;
+                let mut process = tokio::process::Command::new(&command[0]);
+                process
+                    .args(&command[1..])
+                    .env_clear()
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true);
+                let result = tokio::time::timeout(Duration::from_secs(8), process.status()).await;
+                anyhow::ensure!(
+                    matches!(result, Ok(Ok(status)) if status.success()),
+                    "{} worker package preflight failed",
+                    engine.name()
+                );
+            }
+        }
         if store::Store::preflight_receiving(&config)? {
             println!("Gateway profile and selected Reports record are readable.");
         } else {
@@ -77,7 +120,7 @@ async fn main() -> Result<()> {
     if first == Some("--control") {
         if owner_control_command(&args).is_none() {
             anyhow::bail!(
-                "Usage: {} --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; creation status ID|reconcile ID EVENT_UPDATE|resume ID; workflow status ID|result ID STEP REVISION OFFSET|recover ID REVISION; input submit|retry JSON|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic",
+                "Usage: {} --control CONFIG stop all|status ID|resume ID; attach-active CHAT TOPIC NATIVE_THREAD NATIVE_TURN; presentation list|before DELIVERY_CURSOR NATIVE_CURSOR [MATRIX_CURSOR]|part SOURCE REVISION OFFSET; creation status ID|reconcile ID EVENT_UPDATE|resume ID; workflow status ID|result ID STEP REVISION OFFSET|recover ID REVISION; input submit|retry JSON|recover-retained-telegram INSTRUCTION|status UUID|list CURSOR; requests list CURSOR|detail ID OFFSET [REVISION]|decide JSON; matrix status UUID|return JSON; topics list DAYS|notices NATIVE_THREAD [AFTER]; heartbeat status|pause|resume GENERATION|select-review GENERATION CONTRACT_JSON|configure-resources GENERATION CONTRACT_JSON|renew-window GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS|renew-observation GENERATION PREVIOUS_EXPIRY_MS NEW_EXPIRY_MS [MAX_CHECKS]; observer observe #Topic [--retry]|summary #Topic|sources #Topic",
                 executable.unwrap_or("daimon-gateway")
             );
         }

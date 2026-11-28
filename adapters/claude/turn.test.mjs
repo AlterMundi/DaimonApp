@@ -67,6 +67,67 @@ test('submission is recorded before input and loss leaves the same request uncer
   }
 });
 
+test('native input acceptance uses the exact root UUID before the final result', async () => {
+  const status = { type: 'system', subtype: 'status', session_id: input.sessionId };
+  let receipts = 0;
+  const outcome = await runClaudeTurn(options({
+    beforeSubmit: () => true,
+    onInputAccepted() { receipts++; },
+    query: ({ prompt }) => ({
+      async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+      async mcpServerStatus() { return connected; },
+      async *[Symbol.asyncIterator]() {
+        for await (const _request of prompt) {}
+        yield { ...status, user_message_uuids: [input.sessionId] };
+        yield { ...status, type: 'assistant', parent_tool_use_id: 'nested', user_message_uuids: [input.id] };
+        assert.equal(receipts, 0);
+        yield { ...status, user_message_uuids: [input.id] };
+        assert.equal(receipts, 1);
+        yield { ...status, type: 'assistant', user_message_uuids: [input.id] };
+        assert.equal(receipts, 1);
+        yield { type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId, result: 'Done.' };
+      },
+      close() {},
+    }),
+  }));
+  assert.equal(outcome.phase, 'completed');
+  assert.equal(receipts, 1);
+});
+
+test('cumulative usage requires a complete native attribution and a valid model map', async () => {
+  const resultId = '911842d8-c25a-4b7e-bd86-7d0d817e279b';
+  const counts = { inputTokens: 12, outputTokens: 4, cacheReadInputTokens: 8, cacheCreationInputTokens: 2 };
+  const modelUsage = { answer: counts, evaluator: counts };
+  for (const [ids, usage, matching] of [
+    [[input.id], modelUsage, true],
+    [[input.sessionId], modelUsage, false],
+    [[input.id, input.sessionId], modelUsage, false],
+    [[input.id, input.id], modelUsage, false],
+    [input.id, modelUsage, false],
+    [[input.id], [counts], false],
+  ]) {
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async *[Symbol.asyncIterator]() {
+          for await (const _request of prompt) {}
+          yield { type: 'result', subtype: 'success', is_error: false,
+            session_id: input.sessionId, result: 'Done.', uuid: resultId,
+            user_message_uuids: ids, modelUsage: usage,
+          };
+        },
+        close() {},
+      }),
+    }));
+    assert.equal(outcome.phase, 'completed');
+    assert.deepEqual(outcome.sessionUsage, matching
+      ? { resultId, inputTokens: 24, outputTokens: 8, cacheReadInputTokens: 16, cacheCreationInputTokens: 4 }
+      : undefined);
+  }
+});
+
 test('only an explicitly selected human goal uses the native command mode', async () => {
   for (const [nativeGoalCommand, supported] of [[false, true], [true, true], [true, false]]) {
     const observed = [];
@@ -94,6 +155,17 @@ test('only an explicitly selected human goal uses the native command mode', asyn
     assert.deepEqual(observed, supported ? ['committed', 'submitted'] : []);
     assert.equal(outcome.phase, supported ? 'completed' : 'not_submitted');
     if (!supported) assert.equal(outcome.reason, 'claude_goal_command_unavailable');
+  }
+});
+
+test('portable pause and resume cannot replace a Claude goal condition', async () => {
+  for (const text of ['/goal pause', '/goal resume', '/goal  resume ', '/goal Pause', '/goal  RESUME ']) {
+    const outcome = await runClaudeTurn(options({
+      input: { ...input, text, nativeGoalCommand: true },
+      beforeSubmit: () => assert.fail('A goal control must not commit native input'),
+      query: () => assert.fail('A goal control must not start the native writer'),
+    }));
+    assert.deepEqual(outcome, { phase: 'not_submitted', reason: 'claude_goal_control_unavailable' });
   }
 });
 
@@ -130,15 +202,22 @@ test('fresh history quotes preserve the distinct current original at submission'
 test('subscription refusal is retained without mistaking it for an unobserved result', async () => {
   const resetsAt = 1795719000;
   for (const [workObserved, terminalObserved] of [[false, true], [true, true], [false, false]]) {
+    let receipts = 0;
     const outcome = await runClaudeTurn(options({
       beforeSubmit: () => true,
+      onInputAccepted(work) {
+        if (!work) return false;
+        receipts++;
+      },
       query: ({ prompt }) => ({
         async initializationResult() { return { claude_code_version: 'fixture-version' }; },
         async mcpServerStatus() { return connected; },
         async *[Symbol.asyncIterator]() {
           for await (const request of prompt) {
             const session_id = request.session_id;
-            if (workObserved) yield { type: 'assistant', session_id, message: { content: [{ type: 'tool_use' }] } };
+            yield { type: 'system', subtype: 'status', session_id, user_message_uuids: [request.uuid] };
+            if (workObserved) yield { type: 'assistant', session_id, user_message_uuids: [request.uuid],
+              message: { content: [{ type: 'tool_use' }] } };
             yield { type: 'rate_limit_event', session_id,
               rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt } };
             yield { type: 'assistant', session_id, parent_tool_use_id: null, error: 'rate_limit',
@@ -149,6 +228,7 @@ test('subscription refusal is retained without mistaking it for an unobserved re
         close() {},
       }),
     }));
+    assert.equal(receipts, workObserved ? 1 : 0);
     assert.deepEqual(outcome, {
       phase: 'subscription_limited', sessionId: input.sessionId, workObserved, terminalObserved,
       limit: { window: 'five_hour', resets_at: resetsAt },
@@ -320,6 +400,58 @@ test('Claude sends steer on the existing input stream and correlates the native 
     });
     assert.deepEqual(receipts, consumedInRoot === null
       ? [] : [[[steer.id], consumedInRoot ? null : 'Separate reply.']]);
+  }
+});
+
+test('a completed root keeps the exact native cancellation of its queued steer', async () => {
+  const steer = { id: 'c230ad35-1c37-4b03-b60f-44d2f0fc58bf', text: 'Queued correction.' };
+  const accepted = { still_queued: [], cancelled: [steer.id] };
+  for (const [receipt, delay, text = 'Root completed.'] of [
+    [accepted, 0],
+    [accepted, 25],
+    [accepted, 25, ''],
+    [{ still_queued: [], cancelled: [input.id] }, 0],
+    [{ still_queued: [steer.id], cancelled: [] }, 0],
+    [undefined, Infinity],
+  ]) {
+    const interrupt = new AbortController();
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      interruptSignal: interrupt.signal,
+      steering: {
+        messages: (async function* () { yield steer; })(),
+        admit: async () => true,
+        ready: async () => {},
+        close() {},
+        result: () => assert.fail('The steer has no result'),
+      },
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async interrupt(options) {
+          assert.deepEqual(options, { cancelQueued: true });
+          if (delay === Infinity) return new Promise(() => {});
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+          return receipt;
+        },
+        async *[Symbol.asyncIterator]() {
+          assert.equal((await prompt.next()).value.uuid, input.id);
+          yield { type: 'system', subtype: 'init', session_id: input.sessionId,
+            capabilities: ['interrupt_receipt_v1', 'interrupt_cancel_queued_v1'] };
+          yield { type: 'assistant', session_id: input.sessionId, user_message_uuids: [input.id] };
+          assert.equal((await prompt.next()).value.uuid, steer.id);
+          interrupt.abort();
+          await Promise.resolve();
+          yield { type: 'result', subtype: 'success', is_error: false, session_id: input.sessionId,
+            user_message_uuids: [input.id], result: text };
+        },
+        close() {},
+      }),
+    }));
+    assert.equal(outcome.phase, text ? 'completed' : 'interrupted');
+    assert.equal(outcome.text, text || undefined);
+    assert.deepEqual(outcome.steerSubmitted, [steer.id]);
+    assert.deepEqual(outcome.cancelled, receipt?.cancelled.includes(steer.id) ? [steer.id] : undefined);
   }
 });
 

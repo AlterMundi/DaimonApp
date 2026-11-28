@@ -52,8 +52,9 @@ topic_id=8
                                              for line in text.splitlines()
                                              if line.startswith('Transport provenance: ')))
                 assert provenance['via'] == 'interaction-controller'
-                if getattr(self, 'allow_local_dependencies', False) and provenance['source_channel'] == 'local-session':
-                    assert provenance['author']['kind'] == 'session_request'
+                dependencies = {'local-session': 'session_request', 'local-session-result': 'session_result'}
+                if getattr(self, 'allow_local_dependencies', False) and provenance['source_channel'] in dependencies:
+                    assert provenance['author']['kind'] == dependencies[provenance['source_channel']]
                     assert provenance['author']['authorized_human'] == 100
                     assert provenance['original_human_author'] is None
                 else:

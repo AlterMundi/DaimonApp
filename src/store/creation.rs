@@ -167,11 +167,16 @@ impl Store {
                             && !label.chars().any(char::is_control)
                     })
                     .unwrap_or(&target.name);
-                Ok(json!({
+                let mut selection = json!({
                     "name": target.name,
                     "display_name": display_name,
                     "stable_selector": format!("t{}", target.topic_id)
-                }))
+                });
+                if cfg.supports_visible_handoff(SessionKey::new(cfg.chat_id, Some(target.topic_id)))
+                {
+                    selection["visible_handoff"] = json!(true);
+                }
+                Ok(selection)
             })
             .collect()
     }
@@ -252,9 +257,9 @@ impl Store {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         loop {
-            let row: Option<(i64, String, bool)> = tx
+            let row: Option<(i64, String, Option<String>, bool)> = tx
                 .query_row(
-                    "SELECT i.update_id,i.payload_json,
+                    "SELECT i.update_id,i.payload_json,i.media_group_id,
                     COALESCE(e.value=COALESCE(current.value,'initial') AND u.allowed=1
                         AND u.tg_user_id=s.creator_user_id AND c.human_id=s.creator_user_id
                         AND s.id=c.topic_session_id,0)
@@ -271,10 +276,10 @@ impl Store {
                AND COALESCE(json_extract(c.doc,'$.target_chat'),c.entry_chat)=?1
              ORDER BY i.update_id LIMIT 1",
                     params![key.chat_id, key.thread_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            let Some((update_id, payload, eligible)) = row else {
+            let Some((update_id, payload, group, eligible)) = row else {
                 tx.commit()?;
                 return Ok(None);
             };
@@ -285,7 +290,7 @@ impl Store {
             tx.execute("UPDATE incoming_updates SET status=?1,updated_at=?2,instance_id=?3 WHERE update_id=?4",
             params![if eligible {"processing"} else {"retired_creation"}, now_string(), self.instance_id, update_id])?;
             if eligible {
-                let update = serde_json::from_str(&payload)?;
+                let update = crate::telegram::Update::from_journal(&payload, group)?;
                 tx.commit()?;
                 return Ok(Some(update));
             }
@@ -474,7 +479,9 @@ impl Store {
         // A mixed original may already have an immutable dispatch. Creation
         // adds exactly its confirmed topic; it never rewrites that source plan.
         let prior: Option<(String, String)> = tx.query_row(
-            "SELECT id,doc FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))",
+            "SELECT id,doc FROM interaction_sources WHERE human_id=?1
+             AND json_array_length(doc,'$.target_sessions')>0
+             AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))",
             params![human, update.update(), update.event()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?;
@@ -784,6 +791,7 @@ impl Store {
         let session:i64=tx.query_row("SELECT id FROM sessions WHERE chat_id=?1 AND thread_id=?2 AND creator_user_id=?3 AND codex_thread_id IS NULL AND force_fresh_thread=1",params![entry.chat_id,topic,human],|r|r.get(0))?;
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: serde_json::from_value(
                 d.get("tribu_source").cloned().unwrap_or(Value::Null),
             )?,
@@ -1397,6 +1405,7 @@ mod tests {
             claude_foreground: None,
             goose_foreground: None,
             antigravity_foreground: None,
+            antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {
@@ -1663,6 +1672,7 @@ mod tests {
         store.set_session_codex_thread(old, "old-native").unwrap();
         let input = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),
@@ -1844,6 +1854,7 @@ mod tests {
         store.set_session_codex_thread(old, "old-native").unwrap();
         let input = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:fixture".into(),
@@ -1986,6 +1997,7 @@ mod tests {
             claude_foreground: None,
             goose_foreground: None,
             antigravity_foreground: None,
+            antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![Target {

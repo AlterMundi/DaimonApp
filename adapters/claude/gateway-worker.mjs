@@ -448,6 +448,18 @@ async function observeRuntime(path) {
 
 async function main() {
   const [flag, path, ...extra] = process.argv.slice(2);
+  if (flag === '--check-profile' && extra.length === 0) {
+    const profile = await ownerProfile(path);
+    await access(profile.binary, constants.X_OK);
+    if (!(await stat(profile.cwd)).isDirectory() || !(await stat(profile.home)).isDirectory()) {
+      throw new Error('Invalid Claude profile directories');
+    }
+    const sdk = await import(pathToFileURL(profile.sdk));
+    if (![sdk.query, sdk.createSdkMcpServer, sdk.tool].every(value => typeof value === 'function')) {
+      throw new Error('Required Claude SDK exports are missing');
+    }
+    return;
+  }
   if (flag === '--observe-runtime' && extra.length === 0) {
     process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
     return;
@@ -472,6 +484,7 @@ async function main() {
     const nativeGoalCommand = first?.nativeGoalCommand === true;
     const sessionInstructions = first?.sessionInstructions;
     const workspace = first?.workspace;
+    const outputDirectory = first?.outputDirectory;
     const historySeed = first?.historySeed;
     const projectCheckpoint = first?.projectCheckpoint;
     const validExchange = exchange => closed(exchange, ['turn', 'human', 'assistant', 'harness', 'nativeThread'])
@@ -514,10 +527,16 @@ async function main() {
       ...(attachments === undefined ? [] : ['attachments']),
       ...(sessionInstructions === undefined ? [] : ['sessionInstructions']),
       ...(workspace === undefined ? [] : ['workspace']),
+      ...(outputDirectory === undefined ? [] : ['outputDirectory']),
       ...(historySeed === undefined ? [] : ['historySeed']),
       ...(projectCheckpoint === undefined ? [] : ['projectCheckpoint'])])
       || (workspace !== undefined && (!fullAccess || typeof workspace !== 'string'
         || !isAbsolute(workspace) || workspace.includes('\0') || Buffer.byteLength(workspace) > 4096))
+      || (outputDirectory !== undefined && (!fullAccess || nativeGoalCommand
+        || typeof workspace !== 'string' || typeof outputDirectory !== 'string'
+        || outputDirectory.includes('\0') || Buffer.byteLength(outputDirectory) > 4096
+        || dirname(dirname(outputDirectory)) !== join(workspace, '.telecodex', 'turns')
+        || basename(outputDirectory) !== 'out'))
       || (historySeed !== undefined && (!fullAccess
         || (!exactQuote && !singleExchange && !multipleExchanges && !referencedExchanges
           && ((!fromCodex && !closed(historySeed, ['turn', 'human', 'assistant']))
@@ -540,7 +559,7 @@ async function main() {
       || (first.resume !== null && !validResume(first.resume))
       || !Array.isArray(alternates) || alternates.length > 7 || !alternates.every(validResume)
       || (attachments !== undefined && (!fullAccess || nativeGoalCommand
-        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 8
+        || !Array.isArray(attachments) || attachments.length === 0 || attachments.length > 10
         || !attachments.every(file => closed(file, ['path', 'name', 'mime'])
           && typeof file.path === 'string' && isAbsolute(file.path) && file.path.length <= 4096
           && typeof file.name === 'string' && file.name.length <= 240
@@ -643,7 +662,11 @@ async function main() {
     const pending = new Map();
     let nextCall = 0;
     let committed = false;
+    let observeAcceptance = false;
+    let requireWork = false;
     let steeringSelected = false;
+    let interruptSelected = false;
+    const targetedInterrupt = new AbortController();
     let acceptingSteers = false;
     let steerClosed = false;
     let wakeSteering;
@@ -678,6 +701,13 @@ async function main() {
     async function receiveGatewayInput() {
       try {
         for await (const reply of input) {
+          if (interruptSelected && !targetedInterrupt.signal.aborted && reply.type === 'interrupt'
+              && closed(reply, ['schema', 'type', 'inputId', 'sessionId'])
+              && reply.schema === VERSION && reply.inputId === first.inputId && reply.sessionId === first.sessionId) {
+            acceptingSteers = false;
+            targetedInterrupt.abort();
+            continue;
+          }
           if (steeringSelected && reply.type === 'steer') {
             if (!closed(reply, ['schema', 'type', 'inputId', 'sessionId', 'id', 'text'])
               || reply.schema !== VERSION || reply.inputId !== first.inputId
@@ -749,7 +779,13 @@ async function main() {
       }
     }
     const outcome = await runClaudeTurn({
-      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions,
+      query, broker, expectedBody, toolNames: ['daimon_status'], signal: stop.signal, steering: steerOptions, interruptSignal: targetedInterrupt.signal,
+      async onInputAccepted(workObserved) {
+        if (requireWork && !workObserved) return false;
+        if (observeAcceptance) {
+          await writeFrame(process.stdout, { ...correlation, type: 'input_accepted', nativeSessionId }, stop.signal);
+        }
+      },
       input: { id: first.inputId, sessionId: nativeSessionId, text: first.text, attachments, resume, nativeGoalCommand,
         historySeed: recoveredHistory,
         projectCheckpoint: !resume || recoveredHistory ? projectCheckpoint : undefined },
@@ -758,7 +794,7 @@ async function main() {
         model: profile.model, effort: profile.effort, subscriptionEmail: profile.subscriptionEmail,
         displayName: profile.displayName,
         sharedDmk, sharedDmkWriter, sharedSkills, matrixFoundation: foundation, matrixMessaging: messaging, hostTools, controller,
-        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions,
+        fullAccess, routedHuman, bodyGuidance: guidance, sessionInstructions, outputDirectory,
         persistSession: true,
         ...(profile.maxBudgetUsd === undefined ? {} : {
           maxBudgetUsd: profile.maxBudgetUsd,
@@ -771,12 +807,17 @@ async function main() {
         if (!await scopeStillActive()) return false;
         await writeFrame(process.stdout, { ...correlation, type: 'prepare_submission',
           nativeSessionId: sessionId, sessionScope: scope,
+          inputAcceptance: true, workAcceptance: true,
           ...(workspace === undefined ? {} : { workspace }),
-          ...(steering ? { steering: true } : {}) }, stop.signal);
+          ...(steering ? { steering: true, targetedInterrupt: true } : {}) }, stop.signal);
         const decision = (await input.next()).value;
         steeringSelected = !!steering && decision?.steering === true;
+        interruptSelected = !!steering && decision?.targetedInterrupt === true;
+        observeAcceptance = decision?.observeAcceptance === true;
+        requireWork = observeAcceptance && decision.requireWork === true;
         if (!closed(decision, ['schema', 'type', 'inputId', 'sessionId', 'committed',
-          ...(steeringSelected ? ['steering'] : [])])
+          ...(steeringSelected ? ['steering'] : []), ...(observeAcceptance ? ['observeAcceptance'] : []),
+          ...(requireWork ? ['requireWork'] : []), ...(interruptSelected ? ['targetedInterrupt'] : [])])
           || decision.schema !== VERSION || decision.type !== 'submission_decision'
           || decision.inputId !== inputId || decision.sessionId !== first.sessionId
           || decision.committed !== true) return false;

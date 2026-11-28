@@ -109,6 +109,7 @@ pub(super) fn original_owned_on(
             Ok((
                 SourceInput {
                     telegram_files: vec![],
+                    telegram_album_members: Vec::new(),
                     tribu_source: None,
                     transcription,
                     channel: channel.into(),
@@ -169,6 +170,7 @@ pub(super) fn original_order_on(conn: &Connection, source: &SourceInput) -> Resu
 fn conversation_source(input: &super::ConversationInput) -> SourceInput {
     SourceInput {
         telegram_files: vec![],
+        telegram_album_members: Vec::new(),
         tribu_source: input.tribu_source.clone(),
         transcription: input
             .voice
@@ -443,7 +445,7 @@ impl Store {
                 portable.as_ref(),
                 config
                     .and_then(|cfg| cfg.portable_route(*target))
-                    .map(|(engine, route)| (engine, &route.transport.source)),
+                    .map(|(engine, route)| (engine, &route.transport.source, route.agy_cli)),
             )?);
         }
         if closed.is_cancelled() {
@@ -627,6 +629,7 @@ mod tests {
         let closed = tokio_util::sync::CancellationToken::new();
         let mut source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: None,
             channel: "telegram:123".into(),
@@ -694,7 +697,7 @@ mod tests {
                 RequestRelation::New,
                 &store.instance_id,
                 None,
-                Some((crate::interaction::ForegroundEngine::Claude, &body)),
+                Some((crate::interaction::ForegroundEngine::Claude, &body, false)),
             )
             .unwrap();
             assert!(fresh);

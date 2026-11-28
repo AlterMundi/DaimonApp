@@ -91,6 +91,10 @@ pub struct ConversationRouting {
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_limit: Option<crate::interaction::SubscriptionLimit>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_unavailable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_control_unavailable: bool,
 }
 pub enum ConversationRouteAction {
     Worker(Box<crate::interaction::Instruction>, bool),
@@ -725,18 +729,19 @@ impl Store {
         };
         let route = profile
             .portable_route(target)
-            .map(|(engine, config)| (engine, &config.transport.source));
-        let has_claude_files = !input.files.is_empty()
-            && route
-                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
-        if body.trim().is_empty() && !has_claude_files {
+            .map(|(engine, config)| (engine, &config.transport.source, config.agy_cli));
+        let permits_file_only = !input.files.is_empty()
+            && route.is_some_and(|(engine, _, agy)| {
+                agy || engine == crate::interaction::ForegroundEngine::Claude
+            });
+        if body.trim().is_empty() && !permits_file_only {
             bail!("Write a message after the selector");
         }
         if body.starts_with('/')
             && body != "/interrupt"
-            && !(route
-                .is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude)
-                && input.selected_claude_goal())
+            && !(route.is_some_and(|(engine, _, _)| {
+                engine == crate::interaction::ForegroundEngine::Claude
+            }) && input.selected_claude_goal())
         {
             bail!("Only scoped /interrupt or a directly selected Claude /goal is supported");
         }
@@ -766,6 +771,8 @@ impl Store {
             input.phase = "interruption".into();
             input.routing = Some(ConversationRouting {
                 subscription_limit: None,
+                context_unavailable: false,
+                goal_control_unavailable: false,
                 target,
                 label,
                 session: target_session,
@@ -792,6 +799,7 @@ impl Store {
         }
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: input.tribu_source.clone(),
             transcription: input.voice.as_ref().and_then(|v| v.transcription.clone()),
             channel: "conversation".into(),
@@ -821,6 +829,8 @@ impl Store {
         input.phase = "routed".into();
         input.routing = Some(ConversationRouting {
             subscription_limit: None,
+            context_unavailable: false,
+            goal_control_unavailable: false,
             target,
             label,
             session: target_session,

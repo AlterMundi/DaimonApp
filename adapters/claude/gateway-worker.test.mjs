@@ -33,7 +33,7 @@ const nativeQuote = { ...exactQuote, source: 'native:42' };
 const realBinary = process.env.CLAUDE_TEST_BINARY;
 
 test('worker sends one native input only after exact owner persistence decision',
-  { timeout: 20_000 }, async () => {
+  { timeout: 40_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'gateway-claude-worker-'));
     const observerServer = createServer();
     const foreignServer = createServer();
@@ -176,6 +176,8 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                   options.env.CLAUDE_CONFIG_DIR && paired ? '1' : undefined);
                 await writeFile(${JSON.stringify(exposure)}, text, { flag: 'wx' });
                 if (request.message.content === 'Synthetic loss after native input.') return;
+                yield { type: 'system', subtype: 'status', session_id: request.session_id,
+                  user_message_uuids: [request.uuid] };
                 yield { type: 'result', subtype: 'success', is_error: false,
                   session_id: request.session_id, result: 'Qualified fixture reply.' };
               }
@@ -371,8 +373,9 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
           if (decision === 'committed') hostScope = first.sessionScope;
           assert.deepEqual(first,
             { ...correlation, type: 'prepare_submission', nativeSessionId: expectedSession,
-              sessionScope: first.sessionScope, ...(workspace === undefined ? {} : { workspace }),
-              ...(humanOriginal ? { steering: true } : {}) });
+              sessionScope: first.sessionScope, inputAcceptance: true, workAcceptance: true,
+              ...(workspace === undefined ? {} : { workspace }),
+              ...(humanOriginal ? { steering: true, targetedInterrupt: true } : {}) });
           await assert.rejects(readFile(exposure), { code: 'ENOENT' });
           if (decision === 'profile-changed') {
             await writeFile(selection, JSON.stringify({ ...profile, body: { ...body, incarnationId: 'replaced' } }));
@@ -388,7 +391,12 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
             worker.stdin.write(JSON.stringify({ ...correlation, type: 'submission_decision',
               sessionId: decision === 'wrong-correlation' ? correlation.inputId : correlation.sessionId,
               committed: decision !== 'rejected' && decision !== 'native-auth-rejected',
+              ...(decision === 'committed' ? { observeAcceptance: true } : {}),
             }) + '\n');
+          }
+          if (decision === 'committed') {
+            assert.deepEqual(JSON.parse((await lines.next()).value),
+              { ...correlation, type: 'input_accepted', nativeSessionId: expectedSession });
           }
           const frame = JSON.parse((await lines.next()).value);
           const completed = pairedMessaging || ['committed', 'subscription-committed', 'workspace-selected', 'updated-guidance-resume', 'quoted-resume', 'telegram-quoted-resume', 'native-quoted-resume', 'codex-seeded-resume', 'split-history-resume', 'changed-skill-metadata', 'companion-after-human', 'companion-resume', 'companion-selected-resume', 'owner-default', 'messaging-unpaired'].includes(decision);

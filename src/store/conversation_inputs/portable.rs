@@ -425,6 +425,9 @@ impl Store {
             _ => bail!("Portable turn is already settled or unexposed"),
         };
         let visible = reply.map(crate::interaction::visible_answer);
+        if current.phase == "sending" {
+            super::super::retain_claude_session_usage_on(&tx, local, outcome)?;
+        }
         anyhow::ensure!(tx.execute("UPDATE turns SET status=?1,assistant_text=?2,completed_at=?3
             WHERE id=?4 AND status='running' AND EXISTS(SELECT 1 FROM app_instance_lock WHERE key='main' AND instance_id=?5)",
             params![status,visible,now_string(),local,self.instance_id])?==1,"Portable result owner changed");

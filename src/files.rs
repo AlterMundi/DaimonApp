@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{fs::OpenOptions, io::Read, path::Path};
 pub const MAX_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_FILES: usize = 8;
+pub(crate) const MAX_TELEGRAM_ALBUM_FILES: usize = 10;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileReference {
@@ -180,10 +181,25 @@ fn check_private_directory(directory: &Path) -> Result<()> {
 }
 
 pub fn attachments(db: &Path, files: &[FileReference]) -> Result<Vec<LocalAttachment>> {
+    attachments_with_limit(db, files, MAX_FILES)
+}
+
+pub(crate) fn telegram_album_attachments(
+    db: &Path,
+    files: &[FileReference],
+) -> Result<Vec<LocalAttachment>> {
+    attachments_with_limit(db, files, MAX_TELEGRAM_ALBUM_FILES)
+}
+
+fn attachments_with_limit(
+    db: &Path,
+    files: &[FileReference],
+    max_files: usize,
+) -> Result<Vec<LocalAttachment>> {
     for reference in files {
         reference.validate()?;
     }
-    if files.len() > MAX_FILES || files.iter().map(|f| f.size).sum::<u64>() > 2 * MAX_BYTES {
+    if files.len() > max_files || files.iter().map(|f| f.size).sum::<u64>() > 2 * MAX_BYTES {
         bail!("Too many original file bytes")
     }
     let mut ids = std::collections::BTreeSet::new();

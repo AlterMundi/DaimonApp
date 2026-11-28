@@ -246,10 +246,8 @@ pub(super) async fn handle_portable_topic(
     human: i64,
     key: SessionKey,
     (direct_human_text, direct_human_attachment): (bool, bool),
-    selected: (
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    ),
+    engine: crate::interaction::ForegroundEngine,
+    profile: &crate::interaction::ForegroundConfig,
 ) -> Result<()> {
     if app
         .shared
@@ -262,8 +260,8 @@ pub(super) async fn handle_portable_topic(
         return Ok(());
     }
     let origin = route(message);
-    let with_files =
-        direct_human_attachment && selected.0 == crate::interaction::ForegroundEngine::Claude;
+    let with_files = direct_human_attachment
+        && (engine == crate::interaction::ForegroundEngine::Claude || profile.agy_cli);
     let text = if with_files {
         Some(message.attachment_caption())
     } else {
@@ -280,9 +278,9 @@ pub(super) async fn handle_portable_topic(
     };
     if !with_files
         && text.trim_start().starts_with('/')
-        && !(selected.0 == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
+        && !(engine == crate::interaction::ForegroundEngine::Claude && native_claude_goal(text))
     {
-        let commands = match selected.0 {
+        let commands = match engine {
             crate::interaction::ForegroundEngine::Claude => {
                 "Use /status for activity, /goal for Claude's goal, /pwd or /cd for the workspace, /interrupt to stop the current turn, or /interaction to inspect a saved input."
             }
@@ -301,7 +299,10 @@ pub(super) async fn handle_portable_topic(
         .store
         .get_session(key)?
         .context("Selected topic session is missing")?;
-    let telegram_files = if with_files {
+    let group_generation = (with_files && message.media_group_id.is_some())
+        .then(|| app.shared.store.telegram_album_generation(session.id))
+        .transpose()?;
+    let mut telegram_files = if with_files {
         match app.retain_portable_attachments(message).await {
             Ok(files) => files,
             Err(error) => {
@@ -318,8 +319,91 @@ pub(super) async fn handle_portable_topic(
     } else {
         Vec::new()
     };
+    let mut album = Vec::new();
+    let mut album_bytes = telegram_files.iter().map(|file| file.size).sum::<u64>();
+    if group_generation.is_some() {
+        let mut caption_bytes = text.len();
+        // Telegram gives each album member its own update and can split the
+        // album across polls. Polling and journaling continue during this wait.
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        let max_bytes = if profile.agy_cli {
+            4 * 1024 * 1024
+        } else {
+            2 * crate::files::MAX_BYTES
+        };
+        let max_files = if profile.agy_cli {
+            crate::files::MAX_FILES
+        } else {
+            crate::files::MAX_TELEGRAM_ALBUM_FILES
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+        for member in app
+            .shared
+            .store
+            .telegram_album_candidates(update, message, human)?
+        {
+            let member_message = member.message.expect("validated album member");
+            let caption = member_message.attachment_caption();
+            let separator = if caption_bytes > 0 && !caption.is_empty() {
+                2
+            } else {
+                0
+            };
+            let combined_bytes = caption_bytes + separator + caption.len();
+            if combined_bytes > 16 * 1024 {
+                break;
+            }
+            let Ok(Ok(files)) =
+                tokio::time::timeout_at(deadline, app.retain_portable_attachments(&member_message))
+                    .await
+            else {
+                break;
+            };
+            let bytes = files.iter().map(|file| file.size).sum::<u64>();
+            if album_bytes + bytes > max_bytes
+                || telegram_files.len() + files.len() > max_files
+                || (profile.agy_cli
+                    && files.iter().any(|file| {
+                        !matches!(file.mime.as_str(), "image/png" | "image/jpeg") || file.size == 0
+                    }))
+            {
+                break;
+            }
+            album_bytes += bytes;
+            caption_bytes = combined_bytes;
+            telegram_files.extend(files);
+            album.push((member.update_id, member_message));
+        }
+    }
+    if profile.agy_cli
+        && with_files
+        && (telegram_files.iter().any(|file| {
+            !matches!(file.mime.as_str(), "image/png" | "image/jpeg") || file.size == 0
+        }) || telegram_files.iter().map(|file| file.size).sum::<u64>() > 4 * 1024 * 1024)
+    {
+        notice(
+            app.shared.clone(),
+            origin,
+            "Antigravity can receive PNG or JPEG images up to 4 MiB in total.".into(),
+        );
+        return Ok(());
+    }
+    let combined;
+    let text = if album.is_empty() {
+        text
+    } else {
+        combined = crate::store::album_text(
+            std::iter::once(text).chain(
+                album
+                    .iter()
+                    .map(|(_, message)| message.attachment_caption()),
+            ),
+        );
+        &combined
+    };
     let source = SourceInput {
         telegram_files,
+        telegram_album_members: album.iter().map(|(update, _)| *update).collect(),
         tribu_source: None,
         transcription: None,
         channel: format!("telegram:{}", app.shared.bot_id),
@@ -330,10 +414,44 @@ pub(super) async fn handle_portable_topic(
         origin,
         text: text.to_owned(),
     };
-    let (instruction, fresh) = app
-        .shared
-        .store
-        .interaction_admit_portable_topic(&source, key, selected)?;
+    let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
+        &source,
+        key,
+        (engine, &profile.transport.source, profile.agy_cli),
+        group_generation.as_deref(),
+    )?;
+    if fresh {
+        dispatch(app, &instruction.id, human).await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn admit_portable_voice(
+    app: &App, message: &Message, update: i64, key: SessionKey, text: &str,
+    proof: crate::voice::TranscriptSource,
+) -> Result<()> {
+    let human = message.from.as_ref().context("Voice author missing")?.id;
+    let (engine, profile) = portable_topic(&app.shared, key).context("Voice topic route changed")?;
+    let session = app.shared.store.get_session(key)?.context("Voice topic session missing")?;
+    let source = SourceInput {
+        telegram_files: Vec::new(),
+        telegram_album_members: Vec::new(),
+        tribu_source: None,
+        transcription: Some(proof),
+        channel: format!("telegram:{}", app.shared.bot_id),
+        event_id: update.to_string(),
+        update_id: Some(update),
+        human_id: human,
+        target_sessions: vec![session.id],
+        origin: route(message),
+        text: text.to_owned(),
+    };
+    let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
+        &source,
+        key,
+        (engine, &profile.transport.source, profile.agy_cli),
+        None,
+    )?;
     if fresh {
         dispatch(app, &instruction.id, human).await?;
     }
@@ -367,11 +485,62 @@ pub(super) fn notice(shared: Arc<AppShared>, origin: ReturnRoute, text: String) 
     notice_when(shared, origin, text, None);
 }
 
+enum NoticeFailure {
+    Context(i64),
+    GoalControl(i64),
+}
+
+struct ExpectedNotice {
+    instruction: String,
+    human: i64,
+    phase: P,
+    failure: Option<NoticeFailure>,
+}
+
+pub(super) fn notice_context_unavailable(
+    shared: Arc<AppShared>,
+    origin: ReturnRoute,
+    id: String,
+    human: i64,
+    local_turn: i64,
+) {
+    notice_when(
+        shared,
+        origin,
+        "Your message is saved. Claude Code could not recover the earlier context it needs."
+            .into(),
+        Some(ExpectedNotice {
+            instruction: id,
+            human,
+            phase: P::RetainedUnsent,
+            failure: Some(NoticeFailure::Context(local_turn)),
+        }),
+    );
+}
+
+pub(super) fn notice_goal_control_unavailable(
+    shared: Arc<AppShared>,
+    input: &Instruction,
+    local_turn: i64,
+) {
+    notice_when(
+        shared,
+        input.origin.clone(),
+        "Claude Code cannot pause or resume a goal. The goal was not changed. Use /goal to check its status.".into(),
+        Some(ExpectedNotice {
+            instruction: input.id.clone(),
+            human: input.human_id,
+            phase: P::RetainedUnsent,
+            failure: Some(NoticeFailure::GoalControl(local_turn)),
+        }),
+    );
+}
+
 fn notice_when(
     shared: Arc<AppShared>,
     origin: ReturnRoute,
     text: String,
-    expected: Option<(String, i64, P)>,
+    expected: Option<ExpectedNotice>,
 ) {
     if origin.message_id.is_none() {
         // Operational notice, never fabricated human speech or Telegram delivery.
@@ -408,11 +577,22 @@ fn notice_when(
                     let Some(cfg) = shared.config.interaction.as_ref() else {
                         return Ok(None);
                     };
-                    if let Some((id, human, phase)) = &expected
+                    if let Some(expected) = &expected
                         && !shared
                             .store
-                            .interaction_instruction(id, *human)?
-                            .is_some_and(|i| i.phase == *phase)
+                            .interaction_instruction(&expected.instruction, expected.human)?
+                            .is_some_and(|i| {
+                                i.phase == expected.phase
+                                    && match expected.failure {
+                                        Some(NoticeFailure::Context(turn)) => {
+                                            i.context_unavailable && i.local_turn == Some(turn)
+                                        }
+                                        Some(NoticeFailure::GoalControl(turn)) => {
+                                            i.goal_control_unavailable && i.local_turn == Some(turn)
+                                        }
+                                        None => true,
+                                    }
+                            })
                     {
                         return Ok(None);
                     }
@@ -854,6 +1034,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
     if targets.len() != 1 {
         let source = SourceInput {
             telegram_files: vec![],
+            telegram_album_members: Vec::new(),
             tribu_source: None,
             transcription: app
                 .shared
@@ -902,7 +1083,7 @@ pub(super) async fn handle(app: &App, message: &Message, human: i64, text: &str)
             // never withdraw dependencies or cancel work begun during ASR.
             requested
         } else {
-            app.stop_session(target).await
+            app.interrupt_session(target).await
         };
         notice(
             app.shared.clone(),
@@ -1051,6 +1232,7 @@ async fn admit_message(
         .context("Selected interaction session missing")?;
     let source = SourceInput {
         telegram_files: vec![],
+        telegram_album_members: Vec::new(),
         tribu_source: None,
         transcription: app
             .shared
@@ -1092,13 +1274,13 @@ fn packet(shared: &AppShared, i: &Instruction, preparing_local: Option<i64>) -> 
     ) && i
         .target_execution
         .as_ref()
-        .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+        .is_some_and(|binding| binding.harness.is_portable())
     {
-        return crate::interaction::local_claude_packet(
+        return crate::interaction::portable_handoff_packet(
             i,
             author
                 .as_ref()
-                .context("Attributed Claude handoff has no author")?,
+                .context("Attributed portable handoff has no author")?,
         );
     }
     let original = shared
@@ -1316,6 +1498,32 @@ pub(super) fn dispatch_admission_allowed(
     Ok(true)
 }
 
+pub(super) async fn recover_retained_telegram(
+    app: &App,
+    human: i64,
+    id: &str,
+) -> Result<(bool, &'static str)> {
+    let store = &app.shared.store;
+    let original = store
+        .interaction_instruction(id, human)?
+        .context("Selected recovery unavailable")?;
+    anyhow::ensure!(
+        enrolled(&app.shared, original.target),
+        "Recovery target is no longer enrolled"
+    );
+    let recovered = store.interaction_recover_telegram_owner(id, human)?;
+    if recovered {
+        if let Err(error) = dispatch(app, id, human).await {
+            store.interaction_unfinished(id, human)?;
+            return Err(error);
+        }
+    }
+    let current = store
+        .interaction_instruction(id, human)?
+        .context("Selected recovery unavailable")?;
+    Ok((recovered, current.phase.as_str()))
+}
+
 pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
     let mut i = app
         .shared
@@ -1365,7 +1573,12 @@ pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
                 shared.clone(),
                 waiting.origin,
                 message,
-                Some((waiting.id, waiting.human_id, P::Queued)),
+                Some(ExpectedNotice {
+                    instruction: waiting.id,
+                    human: waiting.human_id,
+                    phase: P::Queued,
+                    failure: None,
+                }),
             );
         });
     }
@@ -1398,7 +1611,14 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = if (source.update_id.is_some() && direct_portable_topic(i))
+    let prompt = if let Some(proof) = &source.transcription
+        && source.update_id.is_some() && direct_portable_topic(i)
+    {
+        format!(
+            "[Machine transcription of the human's clip]\nTelegram update: {}\nAudio SHA-256: {}\nUse capture order. Spoken slash commands are ordinary speech.\n\n{}",
+            source.event_id, proof.audio_sha256, i.text,
+        )
+    } else if (source.update_id.is_some() && direct_portable_topic(i))
         || shared.store.routed_conversation_claude_goal(i)?
     {
         i.text.clone()
@@ -1422,6 +1642,17 @@ fn queue_root(
         .admission_epoch
         .clone()
         .context("Interaction dispatch generation missing")?;
+    let files = shared.store.interaction_files(&i.id, i.human_id)?;
+    let attachments = if !source.telegram_album_members.is_empty()
+        && direct_portable_topic(i)
+        && i.target_execution
+            .as_ref()
+            .is_some_and(|binding| binding.harness == crate::execution::Harness::Claude)
+    {
+        crate::files::telegram_album_attachments(&shared.config.db_path, &files)?
+    } else {
+        crate::files::attachments(&shared.config.db_path, &files)?
+    };
     sender
         .send(QueuedTurn {
             request: TurnRequest {
@@ -1434,10 +1665,7 @@ fn queue_root(
                     shared.store.interaction_visual(&i.id, i.human_id)?.as_ref(),
                 )?
                 .into_iter()
-                .chain(crate::files::attachments(
-                    &shared.config.db_path,
-                    &shared.store.interaction_files(&i.id, i.human_id)?,
-                )?)
+                .chain(attachments)
                 .collect(),
                 review_mode: None,
                 override_search_mode: None,
@@ -1491,6 +1719,14 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
     }
     let claude = active.harness == crate::execution::Harness::Claude;
     let source = app.shared.store.interaction_source(&i.id, i.human_id)?;
+    let attributed = app
+        .shared
+        .store
+        .interaction_author(&i.id, i.human_id)?
+        .is_some();
+    let needs_human_turn = !attributed
+        && source.tribu_source.is_none()
+        && active.requires_human_turn(&app.shared.store)?;
     let needs_fresh_claude = claude
         && (source.tribu_source.is_some()
             || !source.telegram_files.is_empty()
@@ -1499,11 +1735,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 .shared
                 .store
                 .routed_claude_preserves_quote(&source, i.target)?
-            || app
-                .shared
-                .store
-                .interaction_author(&i.id, i.human_id)?
-                .is_some()
+            || attributed
             || app
                 .shared
                 .store
@@ -1516,7 +1748,9 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 .is_empty());
     // Inputs that need separate context preparation use the existing run queue.
     // A physical turn change must not steer them as plain text.
-    if needs_fresh_claude
+    if needs_human_turn
+        || (direct_portable_topic(&i) && source.transcription.is_some())
+        || needs_fresh_claude
         || app
             .shared
             .store
@@ -1614,6 +1848,10 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                             bail!("Attention workflow requires a fresh reserved execution; no input was submitted");
                         }
                         let original = shared.store.interaction_source(&input_id, human)?;
+                        if !attributed && original.tribu_source.is_none() {
+                            anyhow::ensure!(!shared.store.native_turn_private(active_local)?,
+                                "The human input requires its own turn");
+                        }
                         if let Some(external) = &original.tribu_source {
                             super::tribu::validate_integrated_source(&shared, external).await?;
                         }
@@ -1676,6 +1914,15 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 );
                 super::topic_publications::wake(app.shared.clone(), i.target);
             }
+            Some(Ok(None))
+                if claude
+                    && app
+                        .shared
+                        .store
+                        .interaction_instruction(&i.id, i.human_id)
+                        .is_ok_and(|input| {
+                            input.is_some_and(|input| input.phase == P::Cancelled)
+                        }) => {}
             Some(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired)) => {
                 if app
                     .shared
@@ -2003,7 +2250,7 @@ pub(super) fn recover_telegram_deliveries(shared: Arc<AppShared>) -> Result<()> 
         .config
         .interaction
         .as_ref()
-        .filter(|_| shared.config.telegram.enabled && shared.config.telegram.external_polling)
+        .filter(|_| shared.config.telegram.enabled)
     else {
         return Ok(());
     };
@@ -2101,13 +2348,17 @@ fn publish(shared: Arc<AppShared>, delivery: crate::interaction::Delivery, human
                     Ok(Some((message, fresh.correction_pending)))
                 })
                 .await;
-            match sent {
+            let known_unsent = sent.as_ref().err().is_some_and(|error| {
                 #[cfg(unix)]
-                Err(error)
+                if error.is::<crate::tele_daimon::projection::JsonNotSubmitted>() {
+                    return true;
+                }
+                error.is::<crate::telegram::PublicationRetired>()
+            });
+            match sent {
+                Err(_)
                     if index == 0
-                        && error
-                            .downcast_ref::<crate::tele_daimon::projection::JsonNotSubmitted>()
-                            .is_some()
+                        && known_unsent
                         && shared
                             .store
                             .interaction_first_part_not_submitted(&d.id, human)

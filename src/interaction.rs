@@ -53,6 +53,8 @@ pub struct InteractionConfig {
     pub claude_foreground: Option<ForegroundConfig>,
     pub goose_foreground: Option<ForegroundConfig>,
     pub antigravity_foreground: Option<ForegroundConfig>,
+    /// Existing SDK worker for signed Matrix originals when a topic uses agy.
+    pub antigravity_matrix_foreground: Option<ForegroundConfig>,
     /// Owner-only durable visibility publication; never a model signing API.
     pub matrix_publication: Option<crate::store::PublicationConfig>,
     /// One owner-selected incoming channel; no automatic reader is enabled.
@@ -184,8 +186,15 @@ impl MatrixTransportConfig {
 pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+    /// Side-effect-free package and profile loader for deployment preflight.
+    pub worker_preflight_command: Option<Vec<String>>,
     #[serde(default)]
     pub interaction_direct: bool,
+    /// Use the signed-in agy CLI worker for the selected Antigravity topic.
+    #[serde(default)]
+    pub agy_cli: bool,
+    /// Stable identity stored alongside the selected Goose topic's ACP sessions.
+    pub goose_topic_store_id: Option<String>,
     /// Owner-fixed sending body and command for explicitly selected Interaction text.
     pub interaction_origin: Option<MatrixTransportConfig>,
 }
@@ -196,6 +205,10 @@ pub(crate) enum ForegroundEngine {
     Goose,
     Antigravity,
 }
+
+/// Receiver selection for a retained original. The boolean enables ACP images
+/// for a topic explicitly using agy.
+pub(crate) type ForegroundAdmission<'a> = (ForegroundEngine, &'a MatrixDestination, bool);
 
 impl ForegroundEngine {
     pub(crate) const fn for_harness(harness: crate::execution::Harness) -> Option<Self> {
@@ -219,6 +232,14 @@ impl ForegroundEngine {
 
     pub(crate) const fn name(self) -> &'static str {
         self.harness().name()
+    }
+
+    pub(crate) const fn attributed_handoff_text_limit(self, agy_cli: bool) -> Option<usize> {
+        match self {
+            Self::Claude => Some(8192),
+            Self::Antigravity if agy_cli => Some(8192),
+            Self::Goose | Self::Antigravity => None,
+        }
     }
 }
 
@@ -476,6 +497,7 @@ impl InteractionConfig {
             &self.claude_foreground,
             &self.goose_foreground,
             &self.antigravity_foreground,
+            &self.antigravity_matrix_foreground,
         ]
         .into_iter()
         .flatten()
@@ -485,12 +507,51 @@ impl InteractionConfig {
             if !matches!(host.source, MatrixDestination::Body { .. })
                 || !valid_owner_command(&host.command)
                 || !valid_owner_command(&foreground.worker_command)
+                || foreground
+                    .worker_preflight_command
+                    .as_deref()
+                    .is_some_and(|command| !valid_owner_command(command))
                 || !(1..=60).contains(&host.timeout_seconds)
                 || host.native_funding_binding.is_some()
                 || host.native_host_restrictions.is_some()
                 || !cfg!(unix)
             {
                 bail!("Invalid explicit native foreground configuration");
+            }
+        }
+        if [&self.claude_foreground, &self.goose_foreground]
+            .into_iter()
+            .flatten()
+            .any(|foreground| foreground.agy_cli)
+            || self
+                .antigravity_foreground
+                .as_ref()
+                .is_some_and(|foreground| foreground.agy_cli && !foreground.interaction_direct)
+        {
+            bail!("The agy CLI requires an explicitly selected Antigravity topic");
+        }
+        if [&self.claude_foreground, &self.antigravity_foreground, &self.antigravity_matrix_foreground]
+            .into_iter()
+            .flatten()
+            .any(|foreground| foreground.goose_topic_store_id.is_some())
+            || self.goose_foreground.as_ref().is_some_and(|foreground| {
+                foreground.goose_topic_store_id.as_deref().is_some_and(|id|
+                    !foreground.interaction_direct
+                        || !uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id))
+            })
+        {
+            bail!("Goose ACP continuity requires an explicitly selected Goose topic");
+        }
+        if let Some(matrix) = &self.antigravity_matrix_foreground {
+            if matrix.agy_cli
+                || matrix.interaction_direct
+                || matrix.interaction_origin.is_some()
+                || self
+                    .antigravity_foreground
+                    .as_ref()
+                    .is_some_and(|topic| topic.transport.source != matrix.transport.source)
+            {
+                bail!("The private Antigravity worker must use the same signed body");
             }
         }
         if let Some(foreground) = &self.claude_foreground
@@ -599,6 +660,15 @@ impl InteractionConfig {
         }
     }
 
+    pub(crate) fn matrix_foreground(&self, engine: ForegroundEngine) -> Option<&ForegroundConfig> {
+        if engine == ForegroundEngine::Antigravity
+            && let Some(matrix) = &self.antigravity_matrix_foreground
+        {
+            return Some(matrix);
+        }
+        self.foreground(engine).filter(|worker| !worker.agy_cli)
+    }
+
     pub(crate) fn portable_route(
         &self,
         key: SessionKey,
@@ -616,6 +686,14 @@ impl InteractionConfig {
             .foreground(engine)
             .filter(|config| config.interaction_direct)?;
         Some((engine, config))
+    }
+
+    pub(crate) fn supports_visible_handoff(&self, key: SessionKey) -> bool {
+        self.portable_route(key).is_some_and(|(engine, config)| {
+            engine
+                .attributed_handoff_text_limit(config.agy_cli)
+                .is_some()
+        })
     }
 
     pub fn target(&self, topic: i64) -> Option<SessionKey> {
@@ -650,13 +728,16 @@ pub(crate) fn native_claude_goal(text: &str) -> bool {
 }
 
 pub(crate) fn native_claude_goal_control(text: &str) -> bool {
-    let text = text.trim_end();
+    // Match String.trim() in Claude's command parser. A mismatch here could
+    // authorize a new goal condition as a clear on an uncertain writer.
+    let native_space = |c: char| c == '\u{feff}' || (c.is_whitespace() && c != '\u{0085}');
+    let text = text.trim_end_matches(native_space);
     text == "/goal"
         || text.strip_prefix("/goal ").is_some_and(|argument| {
-            matches!(
-                argument.trim(),
-                "clear" | "stop" | "off" | "reset" | "none" | "cancel"
-            )
+            let command = argument.trim_matches(native_space);
+            ["clear", "stop", "off", "reset", "none", "cancel"]
+                .iter()
+                .any(|alias| command.eq_ignore_ascii_case(alias))
         })
 }
 
@@ -795,6 +876,9 @@ impl TribuSource {
 pub struct SourceInput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub telegram_files: Vec<crate::files::FileReference>,
+    /// Additional direct Telegram updates included in the same native original.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub telegram_album_members: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tribu_source: Option<TribuSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -880,7 +964,7 @@ impl SubscriptionLimit {
 
 /// Render the selected session-authored payload without importing unrelated
 /// creation context. Admission and dispatch use these same immutable fields.
-pub(crate) fn local_claude_packet(
+pub(crate) fn portable_handoff_packet(
     instruction: &Instruction,
     author: &serde_json::Value,
 ) -> Result<String> {
@@ -898,7 +982,7 @@ pub(crate) fn local_claude_packet(
     );
     anyhow::ensure!(
         packet.len() <= 16 * 1024,
-        "The complete Claude handoff exceeds the native byte limit"
+        "The complete handoff exceeds the portable packet byte limit"
     );
     Ok(packet)
 }
@@ -920,6 +1004,10 @@ pub struct Instruction {
     pub phase: TransportPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_limit: Option<SubscriptionLimit>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_unavailable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_control_unavailable: bool,
     /// Captured for this dispatch attempt; async continuations must not adopt a
     /// later admission generation. Only explicit known-unsent recovery clears it.
     #[serde(default)]
@@ -927,6 +1015,8 @@ pub struct Instruction {
     pub local_turn: Option<i64>,
     pub native_thread: Option<String>,
     pub native_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_input_accepted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1037,6 +1127,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_claude_goal_inspection_and_clear_use_the_selected_session() {
+        for text in [
+            "/goal",
+            "/goal clear",
+            "/goal  Clear ",
+            "/goal CANCEL",
+            "/goal \u{feff}Clear",
+        ] {
+            assert!(native_claude_goal_control(text), "{text}");
+        }
+        for text in [
+            "/goal pause",
+            "/goal RESUME",
+            "/goal \u{0085}Clear",
+            "/goal Clear\u{0085}",
+            "/goal clear once the last test passes",
+            "Show me /goal clear",
+        ] {
+            assert!(!native_claude_goal_control(text), "{text}");
+        }
+    }
+
+    #[test]
     fn only_deliberate_top_level_selectors_route() {
         assert_eq!(
             explicit_selector(" #Nexus\nContinue"),
@@ -1087,6 +1200,7 @@ mod tests {
             claude_foreground: None,
             goose_foreground: None,
             antigravity_foreground: None,
+            antigravity_matrix_foreground: None,
             matrix_inbox_channel: None,
             matrix_publication: None,
             targets: vec![
