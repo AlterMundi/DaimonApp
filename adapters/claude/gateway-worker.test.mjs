@@ -143,9 +143,15 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
                 const atSelectedWorkspace = text === 'Synthetic selected workspace.';
                 if (atSelectedWorkspace) {
                   assert.equal(options.cwd, ${JSON.stringify(alternateWorkspace)});
+                  assert.equal(options.model, 'claude-fable-5-2');
+                  assert.equal(options.effort, 'high');
                   assert.equal(options.resume, undefined);
                 }
                 const ownerDefault = text === 'Synthetic private default.';
+                if (ownerDefault) {
+                  assert.equal(options.model, 'fixture-model');
+                  assert.notEqual(options.effort, 'high');
+                }
                 const objectSchemas = text === 'Synthetic paired Tribe chat tools.';
                 const withMessaging = objectSchemas || text === 'Synthetic paired chat tools.';
                 const paired = ownerDefault || withMessaging || !!expectedQuote || atSelectedWorkspace || fromCodex || recovered || text === 'Synthetic private tool grant.';
@@ -198,6 +204,7 @@ console.log(JSON.stringify(key === ${JSON.stringify(fixtureKey)}
         sdk, cwd: root, home: root, configurationDirectory: root, binary: cli, apiKeyFile, maxBudgetUsd: 0.10,
         cliVersion: 'fixture-version', model: 'fixture-model', displayName: 'CompAII fixture · claude@itaca',
         hostTools: ['Read', 'Bash'], bodyGuidanceFile, sharedSkillsDirectory, skillResumeAnchor,
+        workspaceModels: [{ workspace: alternateWorkspace, model: 'claude-fable-5-2', effort: 'high' }],
         matrixStatusCommand: [process.execPath, '-e', 'console.log(process.argv[1])',
           JSON.stringify(status), '--'],
         body,

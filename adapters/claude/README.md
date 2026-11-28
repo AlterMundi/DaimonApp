@@ -606,3 +606,13 @@ Run the following switches individually with `FOREGROUND_TEST_TELEGRAM_TOPIC=1`:
   the previous exchange, checkpoint and current input at the Codex boundary.
 
 All Matrix identities, user input and provider output are synthetic.
+
+### Selecting a model for one owned workspace
+
+The private worker profile can set `workspaceModels` to up to eight exact
+`{ workspace, model, effort }` entries. The worker applies an entry to a
+Gateway-authorized workspace on new turns. The account, permissions, native
+resume scope and profile defaults remain the same. Originals without a
+Gateway workspace use the normal profile. Remove an entry to restore its
+default on the next turn. The owner can pass the workspace after
+`--observe-runtime PROFILE` to read back the resolved Claude Code model.

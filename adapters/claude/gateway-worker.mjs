@@ -44,6 +44,13 @@ async function ownerProfile(path) {
   const authFields = subscription ? ['subscriptionEmail'] : ['configurationDirectory', 'apiKeyFile'];
   const paths = subscription ? [] : [value?.configurationDirectory, value?.apiKeyFile];
   const effort = Object.hasOwn(value ?? {}, 'effort') ? ['effort'] : [];
+  const workspaceModels = Object.hasOwn(value ?? {}, 'workspaceModels') ? ['workspaceModels'] : [];
+  const validEffort = effort => ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort);
+  const validWorkspaceModel = item => closed(item, ['workspace', 'model', 'effort'])
+    && typeof item.workspace === 'string' && isAbsolute(item.workspace)
+    && !item.workspace.includes('\0') && Buffer.byteLength(item.workspace) <= 4096
+    && typeof item.model === 'string' && /^[a-zA-Z0-9._-]{1,160}$/.test(item.model)
+    && validEffort(item.effort);
   const displayName = Object.hasOwn(value ?? {}, 'displayName') ? ['displayName'] : [];
   const guidance = Object.hasOwn(value ?? {}, 'bodyGuidanceFile') ? ['bodyGuidanceFile'] : [];
   const memory = Object.hasOwn(value ?? {}, 'sharedDmk') ? ['sharedDmk'] : [];
@@ -56,7 +63,7 @@ async function ownerProfile(path) {
   const hostToolDirectory = Object.hasOwn(value ?? {}, 'hostToolDirectory') ? ['hostToolDirectory'] : [];
   const budget = Object.hasOwn(value ?? {}, 'maxBudgetUsd') ? ['maxBudgetUsd'] : [];
   if (!closed(value, ['sdk', 'binary', 'cwd', 'home', ...authFields,
-      'cliVersion', 'model', ...effort, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...skillContinuity, ...foundation, ...messaging, ...hostTools,
+      'cliVersion', 'model', ...effort, ...workspaceModels, ...displayName, ...guidance, ...memory, ...skills, ...skillAnchor, ...skillContinuity, ...foundation, ...messaging, ...hostTools,
       ...hostToolDirectory, ...budget, 'matrixStatusCommand', 'body'])
       || !closed(value.body, ['beingRef', 'embodimentId', 'incarnationId', 'manifestHash'])
       || ![value.sdk, value.binary, value.cwd, value.home, ...paths]
@@ -87,7 +94,10 @@ async function ownerProfile(path) {
         || value.subscriptionEmail.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(value.subscriptionEmail)))
       || (guidance.length > 0 && (typeof value.bodyGuidanceFile !== 'string'
         || !isAbsolute(value.bodyGuidanceFile)))
-      || (effort.length > 0 && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value.effort))
+      || (effort.length > 0 && !validEffort(value.effort))
+      || (workspaceModels.length > 0 && (!Array.isArray(value.workspaceModels)
+        || value.workspaceModels.length > 8 || !value.workspaceModels.every(validWorkspaceModel)
+        || new Set(value.workspaceModels.map(item => item.workspace)).size !== value.workspaceModels.length))
       || (displayName.length > 0 && (typeof value.displayName !== 'string'
         || value.displayName !== value.displayName.trim()
         || !/^[\p{L}\p{M}\p{N} .@·_-]{1,80}$/u.test(value.displayName)))
@@ -380,8 +390,13 @@ async function providerEnvironment(profile, signal) {
   return env;
 }
 
-async function observeRuntime(path) {
-  const profile = await ownerProfile(path);
+function workspaceProfile(profile, workspace) {
+  const selection = profile.workspaceModels?.find(item => item.workspace === workspace);
+  return selection ? { ...profile, cwd: workspace, model: selection.model, effort: selection.effort } : profile;
+}
+
+async function observeRuntime(path, workspace) {
+  const profile = workspaceProfile(await ownerProfile(path), workspace);
   if (!profile.subscriptionEmail) return {};
   const deadline = AbortSignal.timeout(10000);
   const env = await providerEnvironment(profile, deadline);
@@ -460,8 +475,8 @@ async function main() {
     }
     return;
   }
-  if (flag === '--observe-runtime' && extra.length === 0) {
-    process.stdout.write(JSON.stringify(await observeRuntime(path)) + '\n');
+  if (flag === '--observe-runtime' && extra.length <= 1) {
+    process.stdout.write(JSON.stringify(await observeRuntime(path, extra[0])) + '\n');
     return;
   }
   if (flag === '--skill-resume-anchor' && extra.length === 0) {
@@ -589,7 +604,7 @@ async function main() {
         }, stop.signal);
         return;
       }
-      profile = { ...profile, cwd: workspace };
+      profile = workspaceProfile({ ...profile, cwd: workspace }, workspace);
     }
     let env;
     try {
