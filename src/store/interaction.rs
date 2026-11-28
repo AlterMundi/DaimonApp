@@ -482,6 +482,23 @@ fn source_plan_matches(
     Ok(old == *source)
 }
 
+// A direct-acceptance row has the original but no selected target plan.
+pub(super) fn selected_local_dispatch_on(
+    conn: &Connection,
+    human: i64,
+    channel: &str,
+    event: &str,
+    update: Option<i64>,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM interaction_sources
+         WHERE human_id=?1 AND json_array_length(doc,'$.target_sessions')>0
+           AND ((?4 IS NOT NULL AND update_id=?4) OR (?4 IS NULL AND channel=?2 AND event_id=?3)))",
+        params![human, channel, event, update],
+        |r| r.get(0),
+    )?)
+}
+
 pub(super) fn transport_on(
     tx: &Connection,
     id: &str,
