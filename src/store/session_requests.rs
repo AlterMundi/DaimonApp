@@ -1556,6 +1556,18 @@ mod tests {
             };
             assert_eq!(handoff.kind, "portable_report_request");
             assert_eq!(visible_handoffs(), 1);
+            for (retired, expected) in [(1, 0), (0, 1)] {
+                store
+                    .conn
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE conversation_inputs SET retired=?1 WHERE id=?2",
+                        params![retired, event],
+                    )
+                    .unwrap();
+                assert_eq!(visible_handoffs(), expected);
+            }
             assert!(handoff.body.starts_with("Handoff from #"));
             assert!(handoff.body.ends_with("A scoped context handoff"));
             store
