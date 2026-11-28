@@ -479,7 +479,9 @@ impl Store {
         // A mixed original may already have an immutable dispatch. Creation
         // adds exactly its confirmed topic; it never rewrites that source plan.
         let prior: Option<(String, String)> = tx.query_row(
-            "SELECT id,doc FROM interaction_sources WHERE human_id=?1 AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))",
+            "SELECT id,doc FROM interaction_sources WHERE human_id=?1
+             AND json_array_length(doc,'$.target_sessions')>0
+             AND ((update_id=?2 AND ?2 IS NOT NULL) OR (channel='conversation' AND event_id=?3 AND ?2 IS NULL))",
             params![human, update.update(), update.event()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?;

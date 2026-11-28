@@ -142,9 +142,11 @@ pub(super) fn retain_direct_parent_on(
     target: SessionKey,
     instance: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
+    let mut unplanned = source.clone();
+    unplanned.target_sessions.clear();
     admit_selected_with_origin_on(
         tx,
-        source,
+        &unplanned,
         target,
         crate::interaction::RequestRelation::New,
         instance,
@@ -206,7 +208,7 @@ fn admit_selected_with_origin_on(
             ))
         || source.update_id.is_some_and(|id| id < 0)
         || relation.requests().len() > 64
-        || source.target_sessions.is_empty()
+        || (select_return && source.target_sessions.is_empty())
         || source.target_sessions.len() > 64
         || source
             .target_sessions
@@ -218,7 +220,7 @@ fn admit_selected_with_origin_on(
         return Err(anyhow!("Invalid interaction input"));
     }
     let mut creation_target = false;
-    {
+    if select_return {
         let reference = source
             .update_id
             .map(crate::interaction::InputReference::Telegram)
@@ -332,7 +334,7 @@ fn admit_selected_with_origin_on(
     ).optional()?;
     let (session, native) =
         target_row.context("Interaction target is not an owned bound session")?;
-    if !source.target_sessions.contains(&session) && !creation_target {
+    if select_return && !source.target_sessions.contains(&session) && !creation_target {
         return Err(anyhow!(
             "Destination is outside the immutable selected target plan"
         ));
@@ -343,7 +345,9 @@ fn admit_selected_with_origin_on(
     ).optional()?;
     if let Some((old_source, old_instruction, phase)) = existing {
         let mut previous: Instruction = serde_json::from_str(&old_instruction)?;
-        if raw_source != old_source || previous.relation != relation {
+        if !source_plan_matches(source, &raw_source, &old_source, select_return)?
+            || previous.relation != relation
+        {
             return Err(anyhow!("Interaction source identity is immutable"));
         }
         previous.phase = phase.as_str().try_into()?;
@@ -356,8 +360,21 @@ fn admit_selected_with_origin_on(
             |r| r.get(0),
         )
         .optional()?;
-    if old_source.as_ref().is_some_and(|old| old != &raw_source) {
-        return Err(anyhow!("Interaction source identity is immutable"));
+    if let Some(old) = old_source.as_ref().filter(|old| *old != &raw_source) {
+        let retained: crate::interaction::SourceInput = serde_json::from_str(old)?;
+        if !source_plan_matches(source, &raw_source, old, false)?
+            || (select_return && !retained.target_sessions.is_empty())
+        {
+            return Err(anyhow!("Interaction source identity is immutable"));
+        }
+        if select_return {
+            // An accepted direct parent records receipt before any destinations
+            // are chosen. The first real routing plan freezes them once.
+            tx.execute(
+                "UPDATE interaction_sources SET doc=?2 WHERE id=?1",
+                params![id, raw_source],
+            )?;
+        }
     }
     let mut target_execution = super::execution::binding_on(tx, target, source.human_id)?
         .context("Interaction target execution is unavailable")?
@@ -449,6 +466,20 @@ fn admit_selected_with_origin_on(
         )?;
     }
     Ok((instruction, true))
+}
+
+fn source_plan_matches(
+    source: &crate::interaction::SourceInput,
+    raw_source: &str,
+    retained: &str,
+    selected_plan: bool,
+) -> Result<bool> {
+    if selected_plan || raw_source == retained {
+        return Ok(raw_source == retained);
+    }
+    let mut old: crate::interaction::SourceInput = serde_json::from_str(retained)?;
+    old.target_sessions.clone_from(&source.target_sessions);
+    Ok(old == *source)
 }
 
 pub(super) fn transport_on(

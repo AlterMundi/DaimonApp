@@ -728,6 +728,12 @@ pub(super) async fn process_turn(
             .interaction
             .as_ref()
             .is_some_and(|c| c.human_id == runtime_request.from_user_id);
+    let direct_parent_enabled = local_work_session
+        || shared.config.interaction.as_ref().is_some_and(|c| {
+            c.human_id == runtime_request.from_user_id
+                && c.entry() == runtime_request.session_key
+                && (queued.conversation_input.is_some() || c.telegram_ingress)
+        });
     if local_work_session {
         let specs = super::dialogue::tool_specs()
             .into_iter()
@@ -903,7 +909,7 @@ pub(super) async fn process_turn(
                 let voice_update = queued.update_id;
                 // A control may retain a Telegram update ID while starting a
                 // native goal/merge/Nexus prompt. That is not raw human input.
-                let direct_parent_start=local_work_session
+                let direct_parent_start=direct_parent_enabled
                     && queued.goal.is_none()
                     && queued.nexus.is_none()
                     && queued.merge.is_none()
@@ -1060,13 +1066,13 @@ pub(super) async fn process_turn(
                                     shared.store.workflow_native_outcome_attempt(id,attempt,"accepted",Some(&native_id))?;
                                     return Ok(CodexEventOutcome::None);
                                 }
-                                if local_work_session && client_id.starts_with("telegram:") {
+                                if (local_work_session || direct_parent_start) && client_id.starts_with("telegram:") {
                                     shared.store.native_direct_input_receipt(session_key,requester_user_id,turn_id,&native_id,&client_id,shared.bot_id)?;
                                 } else {
                                     shared.store.native_input_receipt(turn_id,Some(&client_id),&native_id)?;
                                 }
                                 if let Some(id)=client_id.strip_prefix("conversation:") {
-                                    if local_work_session {
+                                    if local_work_session || direct_parent_start {
                                         shared.store.conversation_direct_input_accepted(requester_user_id,id,turn_id,session_key,&native_id,shared.bot_id)?;
                                     } else {
                                         shared.store.conversation_input_event(requester_user_id,id,crate::store::ConversationInputEvent::Accepted{local_turn:turn_id})?;
