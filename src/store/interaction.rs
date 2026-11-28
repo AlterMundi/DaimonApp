@@ -674,13 +674,19 @@ pub(super) fn queued_root_allowed_on(
     Ok(input.target == request.session_key && target_execution_allowed_on(conn, &input)?)
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum TelegramRecovery {
+    HumanUpdate(i64),
+    OwnerSocket,
+}
+
 pub(super) fn recover_on(
     conn: &Connection,
     id: &str,
     human: i64,
     instance: &str,
     paired: bool,
-    telegram_update: Option<i64>,
+    telegram_recovery: Option<TelegramRecovery>,
 ) -> Result<bool> {
     use crate::interaction::{Instruction, TransportPhase};
     let doc:Option<String>=conn.query_row("SELECT i.doc FROM interaction_instructions i JOIN interaction_sources s ON s.id=i.input_id JOIN sessions t ON t.id=i.session_id JOIN users u ON u.tg_user_id=t.creator_user_id WHERE i.id=?1 AND s.human_id=?2 AND u.tg_user_id=?2 AND u.allowed=1 AND i.phase='retained_unsent'",params![id,human],|r|r.get(0)).optional()?;
@@ -699,21 +705,39 @@ pub(super) fn recover_on(
     {
         let source = super::routing::source_on(conn, id, human)?;
         if source.update_id.is_some() {
-            let command: Option<String> = conn
-                .query_row(
-                    "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
-                 WHERE update_id=?1 AND instance_id=?2 AND status='processing'
-                 AND json_extract(payload_json,'$.direct_human_text')=1
-                 AND json_extract(payload_json,'$.message.from.id')=?3",
-                    params![telegram_update, instance, human],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if !command
-                .as_deref()
-                .is_some_and(|command| command.split_whitespace().eq(["/interaction", "retry", id]))
-            {
-                return Ok(false);
+            match telegram_recovery {
+                Some(TelegramRecovery::HumanUpdate(update)) => {
+                    let command: Option<String> = conn.query_row(
+                        "SELECT json_extract(payload_json,'$.message.text') FROM incoming_updates
+                         WHERE update_id=?1 AND instance_id=?2 AND status='processing'
+                         AND json_extract(payload_json,'$.direct_human_text')=1
+                         AND json_extract(payload_json,'$.message.from.id')=?3",
+                        params![update, instance, human], |row| row.get(0),
+                    ).optional()?;
+                    if !command.as_deref().is_some_and(|text| {
+                        text.split_whitespace().eq(["/interaction", "retry", id])
+                    }) {
+                        return Ok(false);
+                    }
+                }
+                Some(TelegramRecovery::OwnerSocket) => {
+                    // A retained input alone cannot authorize a replay across
+                    // the provider exposure boundary.
+                    if source.origin.chat_id != instruction.target.chat_id
+                        || source.origin.thread_id != instruction.target.thread_id
+                        || instruction.native_thread.is_some()
+                        || instruction.native_turn.is_some()
+                        || instruction.native_input_accepted
+                        || conn.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM native_input_receipts WHERE update_id=?1)",
+                            [source.update_id],
+                            |row| row.get::<_, bool>(0),
+                        )?
+                    {
+                        return Ok(false);
+                    }
+                }
+                None => return Ok(false),
             }
             epoch =
                 super::routed_portable::telegram_original_epoch(conn, &source, instruction.target)?;
@@ -734,6 +758,20 @@ pub(super) fn recover_on(
         {
             bail!("Only the paired human can requeue this retained original");
         }
+    }
+    if matches!(telegram_recovery, Some(TelegramRecovery::OwnerSocket)) {
+        if epoch.is_none() {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO audit_log(actor_user_id,action,details_json,created_at)
+             VALUES(?1,'telegram_original_owner_recovery',?2,?3)",
+            params![
+                human,
+                serde_json::json!({"instruction": id, "target": instruction.target}).to_string(),
+                now_string()
+            ],
+        )?;
     }
     instruction.phase = TransportPhase::Queued;
     instruction.local_turn = None;
@@ -1133,7 +1171,29 @@ impl Store {
     ) -> Result<bool> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
-        let changed = recover_on(&tx, id, human, &self.instance_id, false, telegram_update)?;
+        let changed = recover_on(
+            &tx,
+            id,
+            human,
+            &self.instance_id,
+            false,
+            telegram_update.map(TelegramRecovery::HumanUpdate),
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn interaction_recover_telegram_owner(&self, id: &str, human: i64) -> Result<bool> {
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = recover_on(
+            &tx,
+            id,
+            human,
+            &self.instance_id,
+            false,
+            Some(TelegramRecovery::OwnerSocket),
+        )?;
         tx.commit()?;
         Ok(changed)
     }

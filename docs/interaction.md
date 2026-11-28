@@ -1516,6 +1516,18 @@ an ID or turning the correction into a new task. Existing native conversations
 can discover this operation through the stable controller's `capabilities` call.
 
 
+### Recover a known-unsent Telegram original
+
+After resolving a worker failure, the authenticated local operator can use
+`daimon-gateway --control CONFIG input recover-retained-telegram INSTRUCTION`
+for an exact retained instruction. This resumes the original delivery under
+the operator's existing authority. It does not require another Telegram
+message from the human. Gateway checks the original author, enrolled topic,
+current admission generation and evidence of no native exposure. The owner
+operation is audited. An uncertain submission, an accepted input, a changed
+generation or a held writer is ineligible. Inspect the original again after
+recovery to distinguish queueing, native acceptance and a published answer.
+
 ## Switching between web and direct conversations
 
 Conversation gives the active native turn first opportunity to steer. An

@@ -24,6 +24,7 @@ pub(super) async fn telegram_command(
     if args.starts_with("input submit-human ")
         || args.starts_with("input retry-human ")
         || args.starts_with("input handoff-recover ")
+        || args.starts_with("input recover-retained-telegram ")
     {
         bail!("Paired Conversation input controls require the local owner socket");
     }
@@ -103,6 +104,12 @@ pub(super) async fn command(
     }
     if let Some(selected) = args.strip_prefix("requests ") {
         return conversation_requests::command(app, human, selected).await;
+    }
+    if let Some(selected) = args.strip_prefix("input recover-retained-telegram ") {
+        let id = Uuid::parse_str(selected)?.to_string();
+        anyhow::ensure!(id == selected, "Expected an exact retained instruction ID");
+        let (recovered, phase) = routing::recover_retained_telegram(app, human, &id).await?;
+        return Ok(json!({"instruction": id, "recovered": recovered, "phase": phase}));
     }
     if let Some(selected) = args.strip_prefix("input ") {
         return conversation_inputs::command(app, human, selected).await;
