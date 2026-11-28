@@ -1221,8 +1221,9 @@ During an active paired-human turn in a Claude work topic, discover
 paired originals and their confirmed final replies in the same topic and
 logical generation, including records tied to a different native Claude
 session. It searches the most recent 192 completed turns and returns up to three
-complete, bounded exchanges. Use it when
-a question refers to prior work missing from the resumed context. A no-match
+complete, bounded exchanges. It ranks exact phrases first and can also find
+unversioned work by matching several complete words in one exchange. Use it
+when a question refers to prior work missing from the resumed context. A no-match
 result describes the retained, searchable records. The tool starts no
 native session, joins no other topic and changes no selected binding.
 

@@ -253,7 +253,7 @@ export async function runClaudeTurn({
             ...(profile.fullAccess && profile.bodyGuidance ? [profile.bodyGuidance] : []),
             ...(profile.sessionInstructions ? [profile.sessionInstructions] : []),
             ...(profile.controller ? [
-              'For questions about earlier work in this topic, check the Gateway controller capabilities when the native or attached context is incomplete. If topic_history is available, search for a short project name or phrase before concluding that the topic history is missing. An empty DMK search does not establish that a topic decision is missing.',
+              'A work topic can have earlier native sessions outside this context. When the paired human asks about earlier work and its answer is missing here, inspect Gateway controller capabilities and use topic_history when available before answering. Search for a short project name or a few distinctive words from the request. Use topic history for decisions in this conversation, and DMK for durable memory. An empty result from either source establishes only that this search found nothing. Historical evidence describes what was known at that turn. Verify newer state before presenting it as current.',
             ] : []),
             ...(input.historySeed ? [
               'Gateway attached retained context from the same work conversation before the current original.',

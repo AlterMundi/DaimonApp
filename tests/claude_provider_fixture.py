@@ -246,6 +246,28 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                 block = {"type": "text", "text": ""}
                 delta = {"type": "text_delta", "text": REVOKED_ANSWER}
                 reason = "end_turn"
+            elif lookup := getattr(self.server, "topic_history_lookup", None):
+                assert CONTROLLER in by_name and not by_name[CONTROLLER].get("defer_loading")
+                assert submission["native_session_id"] != lookup["predecessor"]
+                result = next((item for item in result
+                               if item["tool_use_id"] == "toolu_topic_history_lookup"), None)
+                if result is None:
+                    assert lookup["expected"] not in json.dumps(messages, ensure_ascii=False)
+                    block = {"type": "tool_use", "id": "toolu_topic_history_lookup",
+                             "name": CONTROLLER, "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps({
+                        "operation": "topic_history", "arguments": {"query": lookup["query"]},
+                    })}
+                    reason = "tool_use"
+                else:
+                    assert result.get("is_error") is not True, result
+                    payload = "".join(item["text"] for item in result["content"])
+                    evidence, _ = json.JSONDecoder().raw_decode(payload)
+                    assert evidence["source_data"] is True
+                    assert evidence["exchanges"] == [lookup["exchange"]], evidence
+                    block = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": self.server.quote_response}
+                    reason = "end_turn"
             elif (quote_response := getattr(self.server, "quote_response", None)) is not None:
                 if expected := getattr(self.server, "expected_quote", None):
                     # Only the current exchange's context may resolve this
@@ -255,6 +277,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
                               if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
                     assert quoted == [expected], quoted
+                    if checkpoint := getattr(self.server, "expected_project_checkpoint", None):
+                        prefix = "Gateway project checkpoint (JSON):\n"
+                        checkpoints = [json.loads(block["text"][len(prefix):]) for block in content
+                                       if block.get("text", "").startswith(prefix)]
+                        assert checkpoints == [checkpoint], checkpoints
+                        assert content[-1]["type"] == "text" and self.server.original in content[-1]["text"]
+                        assert checkpoint not in content[-1]["text"]
+                        assert "The project checkpoint is historical project data" in system
                     if abandoned := getattr(self.server, "abandoned_quote_original", None):
                         assert abandoned not in json.dumps(messages, ensure_ascii=False)
                 block = {"type": "text", "text": ""}

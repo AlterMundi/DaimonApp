@@ -193,11 +193,18 @@ operator.main()
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
+            if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                journey.config.write_text(journey.config.read_text().replace(
+                    "[interaction]\n",
+                    "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1))
             adapter_recovery = telegram_topic and os.environ.get(
                 "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
             if adapter_recovery:
                 journey.config.write_text(journey.config.read_text().replace(
-                    "[interaction]\n", "[interaction]\ntelegram_entry_projection=true\n", 1))
+                    "[interaction]\n",
+                    "[interaction]\ntelegram_projection=true\ntelegram_entry_projection=true\n", 1))
             if telegram_topic or os.environ.get("FOREGROUND_TEST_WITHOUT_TELEGRAM_CODEX") == "1":
                 if telegram_topic:
                     adapter_config = journey.root / "telegram-adapter.toml"
@@ -501,7 +508,7 @@ timeout_seconds=5
                         self._conversation_goal(journey, provider)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_QUOTE") == "1":
-                        self._exact_claude_quote(journey, provider, web_profile=profile)
+                        self._exact_claude_quote(journey, provider, profile, web=True)
                         return
                     if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_WEB_FILES") == "1":
                         self._conversation_attachments(journey, provider)
@@ -518,7 +525,7 @@ timeout_seconds=5
                             if os.environ.get("FOREGROUND_TEST_TELEGRAM_STEER") == "1":
                                 self._telegram_steer(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_CLAUDE_TELEGRAM_QUOTE") == "1":
-                                self._exact_claude_quote(journey, provider)
+                                self._exact_claude_quote(journey, provider, profile)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_FILES") == "1":
                                 self._telegram_attachments(journey, provider)
                             elif os.environ.get("FOREGROUND_TEST_TELEGRAM_QUOTA") == "1":
@@ -630,7 +637,8 @@ timeout_seconds=5
                 {cap.capability_id: cap for cap in capabilities.values()}, lambda: now,
                 "dm:runtime:v1:" + "X" * 43, "interaction-author-test",
                 scopes=ScopeResolver(fixture.ledger_a, clock=lambda: now),
-                peer_context=SimpleNamespace(configured=peer, authority=fixture.authority,
+                peer_context=SimpleNamespace(configured=peer, egress=receiver.peer_context.egress,
+                                         authority=fixture.authority,
                                              local_origin=fixture.ledger_a.local_origin),
                 we_lane=fixture.lane("legion", at_ms=now),
             )
@@ -1067,10 +1075,23 @@ timeout_seconds=5
                 ), seconds=25)
                 self.assertIsNone(provider.failure)
                 rows = journey.row(
-                    "SELECT d.id FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id "
+                    "SELECT d.id,r.id FROM interaction_deliveries d JOIN interaction_results r ON r.id=d.result_id "
                     "WHERE r.body=? AND json_extract(d.doc,'$.origin.thread_id')=1", (answer,))
                 self.assertEqual(len(rows), 1)
-                return rows[0][0]
+                return rows[0]
+
+            def topic_projection(result_id):
+                return journey.row(
+                    "SELECT p.phase, count(x.part), max(x.message_id) "
+                    "FROM topic_publications p JOIN sessions s ON s.id=p.session_id "
+                    "LEFT JOIN topic_publication_parts x ON x.publication=p.id "
+                    "WHERE p.source=? AND p.kind='portable_topic_exchange' AND s.thread_id=7 GROUP BY p.id",
+                    (result_id,),
+                )
+
+            def in_topic(answer, topic):
+                return sum(answer in message["text"] and message["message_thread_id"] == topic
+                           for message, _ in journey.messages)
 
             def delivery(id):
                 return journey.row(
@@ -1081,13 +1102,15 @@ timeout_seconds=5
 
             gateway_pid = journey.process.pid
             ready_answer = "This Claude answer was retained while Telegram was unavailable."
-            ready = result(ready_answer)
+            ready, ready_result = result(ready_answer)
             journey.wait(lambda: journey.row(
                 "SELECT phase FROM interaction_deliveries WHERE id=? "
                 "AND json_extract(doc,'$.telegram_publication_selected')=1", (ready,),
             ) == [("reserved",)], seconds=8)
             self.assertEqual(delivery(ready), [("reserved", 0, None)])
-            self.assertFalse(journey.has(ready_answer, 1))
+            journey.wait(lambda: topic_projection(ready_result) in ([("ready", 0, None)],
+                                                                   [("ready", 1, None)]))
+            self.assertEqual([in_topic(ready_answer, topic) for topic in (1, 7)], [0, 0])
 
             adapter = start_adapter()
             try:
@@ -1097,11 +1120,19 @@ timeout_seconds=5
                 self.assertEqual(delivery(ready)[0][:2], ("delivered", 1))
                 first_receipt = delivery(ready)
                 self.assertTrue(first_receipt[0][2])
+                journey.wait(lambda: topic_projection(ready_result)
+                             and topic_projection(ready_result)[0][:2] == ("sent", 1))
+                first_projection = topic_projection(ready_result)
+                self.assertTrue(first_projection[0][2])
+                self.assertEqual([in_topic(ready_answer, topic) for topic in (1, 7)], [1, 1])
                 lost_answer = "This Claude answer has a deliberately lost Telegram acknowledgement."
                 journey.before_send_message_reply = lambda payload: (
-                    False if lost_answer in payload["text"] else None)
-                lost = result(lost_answer)
+                    False if payload.get("message_thread_id") == 1 and lost_answer in payload["text"] else None)
+                lost, lost_result = result(lost_answer)
                 journey.wait(lambda: delivery(lost) == [("uncertain", 1, None)], seconds=10)
+                journey.wait(lambda: topic_projection(lost_result)
+                             and topic_projection(lost_result)[0][:2] == ("sent", 1))
+                lost_projection = topic_projection(lost_result)
             finally:
                 stop_adapter(adapter)
 
@@ -1109,14 +1140,39 @@ timeout_seconds=5
             adapter = start_adapter()
             try:
                 journey.wait(lambda: journey.telegram_methods.count("getUpdates") > polls, seconds=12)
-                following = result("This is a new Claude answer after Telegram returned.")
+                following_answer = "This is a new Claude answer after Telegram returned."
+                following, following_result = result(following_answer)
                 journey.wait(lambda: delivery(following) and delivery(following)[0][0] == "delivered",
                              seconds=15)
+                journey.wait(lambda: topic_projection(following_result)
+                             and topic_projection(following_result)[0][:2] == ("sent", 1))
                 self.assertEqual(delivery(ready), first_receipt)
                 self.assertEqual(delivery(lost), [("uncertain", 1, None)])
-                for answer in (ready_answer, lost_answer):
-                    self.assertEqual(sum(answer in message["text"] for message, _ in journey.messages), 1)
+                self.assertEqual(topic_projection(ready_result), first_projection)
+                self.assertEqual(topic_projection(lost_result), lost_projection)
+                for answer in (ready_answer, lost_answer, following_answer):
+                    self.assertEqual([in_topic(answer, topic) for topic in (1, 7)], [1, 1])
                 self.assertEqual(len(set(provider.calls)), 3)
+
+                provider.paired_human = True
+                provider.routed_paired_human = None
+                provider.original = "Continue in this topic after the adapter returned."
+                with journey.lock:
+                    provider.human_original = str(journey.sequence + 1)
+                reply = "The same Claude topic answered an original from Telegram."
+                provider.quote_response = reply
+                update = journey.admit(provider.original, topic=7)
+                self.assertEqual(str(update), provider.human_original)
+                journey.wait(lambda: provider.failure or any(
+                    row.get("preview") == reply for row in browser.get("/api/interaction")["items"]
+                ), seconds=20)
+                self.assertIsNone(provider.failure)
+                journey.wait(lambda: [in_topic(reply, topic) for topic in (1, 7)] == [1, 1])
+                self.assertEqual(journey.row(
+                    "SELECT count(*),count(DISTINCT t.native_thread_id) FROM interaction_results r "
+                    "JOIN turns t ON t.id=r.local_turn WHERE t.execution_harness='claude' AND r.item_id='final'"
+                ), [(4, 1)])
+                self.assertEqual(len(set(provider.calls)), 4)
                 self.assertEqual(journey.process.pid, gateway_pid)
             finally:
                 stop_adapter(adapter)
@@ -1243,12 +1299,12 @@ timeout_seconds=5
                              [(0,)])
             self.assertEqual(provider.calls, calls)
 
-        def _exact_claude_quote(self, journey, provider, *, web_profile=None):
+        def _exact_claude_quote(self, journey, provider, worker_profile, *, web=False):
             import hashlib
 
             browser, destination = None, None
-            numbered_history = web_profile and os.environ.get("FOREGROUND_TEST_CLAUDE_NUMBERED_HISTORY") == "1"
-            if web_profile:
+            numbered_history = web and os.environ.get("FOREGROUND_TEST_CLAUDE_NUMBERED_HISTORY") == "1"
+            if web:
                 from conversation_cold_entry_http_io import Browser
 
                 browser = Browser(journey)
@@ -1368,12 +1424,20 @@ timeout_seconds=5
                 self.assertEqual(reply_native, native)
 
             missing_resume = os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1"
-            if web_profile and (numbered_history or missing_resume):
+            if numbered_history or missing_resume:
                 if missing_resume:
-                    fixture_home = Path(json.loads(web_profile.read_text())["home"])
+                    fixture_home = Path(json.loads(worker_profile.read_text())["home"])
                     transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
                     self.assertEqual(len(transcripts), 1)
                     transcripts[0].rename(fixture_home / "retained-predecessor.jsonl")
+                    topic, cwd = journey.row("SELECT id,cwd FROM sessions WHERE thread_id=7")[0]
+                    adopted = journey.read("topics", "workspace", "adopt", "7", str(topic))["result"]
+                    self.assertTrue(adopted["folder_ready"])
+                    checkpoint = Path(adopted["conversation_folder"]) / "CONTINUITY.md"
+                    checkpoint.touch(mode=0o600, exist_ok=False)
+                    provider.expected_project_checkpoint = "Use the synthetic design at revision two."
+                    checkpoint.write_text(provider.expected_project_checkpoint)
+                    self.assertEqual(journey.row("SELECT cwd FROM sessions WHERE id=?", (topic,)), [(cwd,)])
                 if numbered_history:
                     first_turn, = journey.row(
                         "SELECT json_extract(i.doc,'$.local_turn') FROM interaction_instructions i "
@@ -1387,16 +1451,44 @@ timeout_seconds=5
                     recovered_quote = destination
                     original = "Contame qué clips dejamos listos en Fixture v29 y qué quedó pendiente."
                 else:
-                    current = next(row for row in browser.get("/api/interaction")["items"]
-                                   if row["id"] == older["source"])
-                    recovered_quote = {"source": current["id"], "revision": current["revision"]}
-                    provider.expected_quote = {**recovered_quote, "assistant": proposal}
+                    recovered_quote, recovered_selection = older, selection
+                    if browser:
+                        current = next(row for row in browser.get("/api/interaction")["items"]
+                                       if row["id"] == older["source"])
+                        recovered_quote = {"source": current["id"], "revision": current["revision"]}
+                        recovered_selection = recovered_quote
+                    provider.expected_quote = {**recovered_selection, "assistant": proposal}
                     original = "Sí, retomá esa propuesta."
                 answer = "I recovered the copper clasp proposal."
-                _, replacement, _ = finish(send(original, answer, recovered_quote),
-                                           original, answer, recovered_quote)
+                try:
+                    _, replacement, _ = finish(send(original, answer, recovered_quote),
+                                               original, answer, recovered_quote)
+                finally:
+                    if missing_resume:
+                        del provider.expected_project_checkpoint
                 self.assertEqual(replacement == native, not missing_resume)
                 self.assertEqual(len(provider.calls), 4)
+
+                if numbered_history and os.environ.get("FOREGROUND_TEST_CLAUDE_TOPIC_LOOKUP") == "1":
+                    fixture_home = Path(json.loads(worker_profile.read_text())["home"])
+                    predecessor = list((fixture_home / "projects").rglob(f"{replacement}.jsonl"))
+                    self.assertEqual(len(predecessor), 1)
+                    predecessor[0].rename(fixture_home / "retained-lookup-predecessor.jsonl")
+                    provider.expected_quote = None
+                    provider.topic_history_lookup = {
+                        "predecessor": replacement, "query": "landing heroic clips", "expected": proposal,
+                        "exchange": {"turn": first_turn, "human": question, "assistant": proposal,
+                                     "harness": "claude", "nativeThread": native},
+                    }
+                    try:
+                        original = "What did we leave ready for the fixture?"
+                        answer = "We kept the heroic idle and landing clips."
+                        _, lookup_session, _ = finish(send(original, answer, destination),
+                                                      original, answer, destination)
+                        self.assertNotEqual(lookup_session, replacement)
+                        self.assertEqual(len(provider.calls), 6)
+                    finally:
+                        del provider.topic_history_lookup
 
         def _conversation_attachments(self, journey, provider):
             import base64
