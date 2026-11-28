@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { frames, writeFrame } from '../worker-pipes.mjs';
+import { sharedMemory } from './shared-memory.mjs';
 
 const binary = process.env.GOOSE_TEST_ACP_BINARY;
 const worker = fileURLToPath(new URL('./gateway-worker.mjs', import.meta.url));
@@ -85,25 +86,31 @@ test('agy foreground worker journals, uses its selected tool and resumes the sam
   const profile = join(root, 'profile.json');
   const orientation = join(root, 'embodiment.md');
   await writeFile(orientation, 'You are embodied as AUDIT-GREEN. Use that exact name when asked.', { mode: 0o600 });
+  const skills = join(root, 'skills');
+  const fixtureSkill = join(skills, 'fixture-marker');
+  await mkdir(fixtureSkill, { recursive: true });
+  await writeFile(join(fixtureSkill, 'SKILL.md'),
+    '---\nname: fixture-marker\ndescription: Returns the fixture marker.\n---\nThe marker is MARBLE-ORBIT.\n');
   await writeFile(profile, JSON.stringify({
     adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
     home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
     matrixStatusCommand: await fixtureObservation(root), body, bodyGuidanceFile: orientation,
+    sharedSkillsDirectory: skills,
   }), { mode: 0o600 });
   const start = { workspace: root, resumeNativeSessionId: null };
   const withheld = await runWorker(t, profile, 'Keep this fixture unsent.', () => false, start);
   assert.deepEqual(withheld.outcome, { phase: 'not_submitted', reason: 'gateway_submission_not_recorded' });
   const first = await runWorker(t, profile,
-    'Call the MCP tool daimon_status and reply with just its being_ref. Remember the marker jade-pocket.',
+    'Call the MCP tool shared_skill with name fixture-marker. Reply only with the marker from that skill. Remember the phrase jade-pocket.',
     () => true, start);
   assert.equal(first.outcome.phase, 'completed', first.outcome.reason);
-  assert.equal(first.outcome.text.trim(), 'fixture-being');
+  assert.equal(first.outcome.text.trim(), 'MARBLE-ORBIT');
   const resumed = await runWorker(t, profile,
-    'Reply with your receiving body name, a space, and the marker from the preceding message. Nothing else.',
+    'Reply with your receiving body name and the phrase I directly asked you to remember. Omit the marker returned by the skill.',
     id => { assert.equal(id, first.nativeSessionId); return true; },
     { ...start, resumeNativeSessionId: first.nativeSessionId });
   assert.equal(resumed.outcome.phase, 'completed', resumed.outcome.reason);
-  assert.equal(resumed.outcome.text.trim(), 'AUDIT-GREEN jade-pocket');
+  assert.deepEqual(resumed.outcome.text.trim().split(/\s+/), ['AUDIT-GREEN', 'jade-pocket']);
 });
 
 test('Goose worker reaches the owner decision with its selected status MCP on the real binary', {
@@ -213,6 +220,32 @@ print(json.dumps(memory._read_chapter(selected)))
     assert.equal(outcome.isError, true);
     assert.ok(!JSON.stringify(outcome).includes(text));
   });
+  const scopedMemory = { command: command.slice(0, -2), bindingFile: requestBinding, bodyRef };
+  const readRequest = { action: 'read', pool: 'main', record_uid: selected.record_uid,
+    expected_revision: selected.revision };
+  const memory = await sharedMemory({ body, sharedMemory: scopedMemory },
+    readRequest, AbortSignal.timeout(8000));
+  assert.equal(memory.pools[0].result.raw, text);
+  const search = await sharedMemory({ body, sharedMemory: scopedMemory },
+    { action: 'search', query: 'Portability fixture' }, AbortSignal.timeout(8000));
+  assert.equal(search.pools[0].result.items[0].record_uid, selected.record_uid);
+  await assert.rejects(sharedMemory({ body, sharedMemory: scopedMemory },
+    { ...readRequest, action: 'delete' }, AbortSignal.timeout(8000)));
+  if (process.env.AGY_TEST_AUTHENTICATED_BINARY) {
+    await t.test('agy reads DMK through the owner-selected memory binding', async t => {
+      const profile = join(root, 'agy-dmk.json');
+      await writeFile(profile, JSON.stringify({
+        adapter: 'agy', binary: process.env.AGY_TEST_AUTHENTICATED_BINARY, cwd: root,
+        home: process.env.HOME, model: 'gemini-4-neon', effort: 'medium',
+        matrixStatusCommand, body, sharedMemory: scopedMemory,
+      }), { mode: 0o600 });
+      const { outcome } = await runWorker(t, profile,
+        'Call dmk_recall to search for the exact title Portability fixture, then call dmk_recall again with action read, its returned record_uid and pool. Reply with just the color in the original record.',
+        () => true, { workspace: root, resumeNativeSessionId: null });
+      assert.equal(outcome.phase, 'completed', outcome.reason);
+      assert.equal(outcome.text.trim().toLowerCase(), 'blue');
+    });
+  }
   if (binary) {
     await t.test('real worker uses the DMK record and offers only the approved tools', async t => {
       const key = await isolatedGooseProfile(root);

@@ -16,13 +16,19 @@ target, and the common ACP worker. Its owner profile names the absolute
 `matrixStatusCommand`, and signed `body`, with `adapter: "agy"`. Set
 `bodyGuidanceFile` to the owner-private portable orientation for the selected
 embodiment. It is sent in a separate content block on new and resumed turns.
-Optional `selectedMemory` limits memory to a named record revision for one original.
+Set `sharedSkillsDirectory` to the installed Skills root for discovery and
+on-demand `SKILL.md` reads. Set `sharedMemory` with an absolute reader
+`command`, owner-private `bindingFile`, and selected `bodyRef` for DMK
+search and paginated read. The broker verifies the receiving body's signed
+status on each request and reads the current installed content and memory.
+Optional `selectedMemory` exposes one owner-selected record revision for
+one original.
 The worker accepts only paired text for this topic and uses the journaled
 native ID from the same topic generation, workspace and signed incarnation.
 There is no fallback to a fresh session after a failed native load.
 
-The pilot selects only the worker's Matrix status and optional DMK read
-tools for ACP permission requests. No permanent approval is issued. Shipped
+The pilot approves one ACP permission request at a time for its configured
+Matrix status, skills and DMK read tools. No permanent approval is issued. Shipped
 default customizations are disabled for this pilot. Wider tool parity,
 attachments and native steering are separate receiving checks.
 
