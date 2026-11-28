@@ -184,6 +184,8 @@ impl MatrixTransportConfig {
 pub struct ForegroundConfig {
     pub transport: MatrixTransportConfig,
     pub worker_command: Vec<String>,
+    /// Side-effect-free package and profile loader for deployment preflight.
+    pub worker_preflight_command: Option<Vec<String>>,
     #[serde(default)]
     pub interaction_direct: bool,
     /// Use the signed-in agy CLI worker for the selected Antigravity topic.
@@ -495,6 +497,10 @@ impl InteractionConfig {
             if !matches!(host.source, MatrixDestination::Body { .. })
                 || !valid_owner_command(&host.command)
                 || !valid_owner_command(&foreground.worker_command)
+                || foreground
+                    .worker_preflight_command
+                    .as_deref()
+                    .is_some_and(|command| !valid_owner_command(command))
                 || !(1..=60).contains(&host.timeout_seconds)
                 || host.native_funding_binding.is_some()
                 || host.native_host_restrictions.is_some()

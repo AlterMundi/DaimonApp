@@ -1317,6 +1317,32 @@ pub(super) fn dispatch_admission_allowed(
     Ok(true)
 }
 
+pub(super) async fn recover_retained_telegram(
+    app: &App,
+    human: i64,
+    id: &str,
+) -> Result<(bool, &'static str)> {
+    let store = &app.shared.store;
+    let original = store
+        .interaction_instruction(id, human)?
+        .context("Selected recovery unavailable")?;
+    anyhow::ensure!(
+        enrolled(&app.shared, original.target),
+        "Recovery target is no longer enrolled"
+    );
+    let recovered = store.interaction_recover_telegram_owner(id, human)?;
+    if recovered {
+        if let Err(error) = dispatch(app, id, human).await {
+            store.interaction_unfinished(id, human)?;
+            return Err(error);
+        }
+    }
+    let current = store
+        .interaction_instruction(id, human)?
+        .context("Selected recovery unavailable")?;
+    Ok((recovered, current.phase.as_str()))
+}
+
 pub(super) async fn dispatch(app: &App, id: &str, human: i64) -> Result<()> {
     let mut i = app
         .shared
