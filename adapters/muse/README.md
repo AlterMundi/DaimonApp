@@ -31,6 +31,19 @@ sending any prompt. The provider's documented model-list read returned HTTP
 200 with zero models using the credential provisioned on that login. It
 does not identify why Meta granted no models to that credential.
 
+
+To separate the native catalog from the public Models API, run
+`muse exec --list-models` and `muse usage --json` on the selected login.
+Both builds reproduced the empty native catalog in an empty workspace,
+with no API-key environment override. Both returned a null allowance and
+`server_sent_no_usage`. That response alone does not establish plan status
+or exhaustion. A fresh Canary process against a loopback HTTP fixture,
+using a dummy credential, made `GET /muse-code/models` before sending the
+explicit Wonder model as a streaming `POST /v1/responses`. Consequently,
+a successful read of the public Models API alone cannot qualify the CLI's
+model discovery. Use only synthetic prompts and credentials for loopback
+captures.
+
 Keep authentication and history while testing config isolation. Qualify a
 real MSP turn against the selected subscription before wiring the topic.
 Gateway topic binding, effective tools, steering and interruption remain
