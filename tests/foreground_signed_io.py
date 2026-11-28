@@ -193,6 +193,12 @@ operator.main()
                     targets = targets.replace('name="Alpha"', f'name="Alpha"\nharness="{engine}"')
                 journey.config.write_text(journey.config.read_text() + targets)
                 journey.routing = True
+            if telegram_topic and os.environ.get("FOREGROUND_TEST_CLAUDE_MISSING_RESUME") == "1":
+                folder_root = journey.root / "conversation-folders"
+                folder_root.mkdir(mode=0o700)
+                journey.config.write_text(journey.config.read_text().replace(
+                    "[interaction]\n",
+                    "[interaction]\ntopic_workspace_root=" + json.dumps(str(folder_root)) + "\n", 1))
             adapter_recovery = telegram_topic and os.environ.get(
                 "FOREGROUND_TEST_CLAUDE_ADAPTER_RECOVERY") == "1"
             if adapter_recovery:
@@ -1424,6 +1430,14 @@ timeout_seconds=5
                     transcripts = list((fixture_home / "projects").rglob(f"{native}.jsonl"))
                     self.assertEqual(len(transcripts), 1)
                     transcripts[0].rename(fixture_home / "retained-predecessor.jsonl")
+                    topic, cwd = journey.row("SELECT id,cwd FROM sessions WHERE thread_id=7")[0]
+                    adopted = journey.read("topics", "workspace", "adopt", "7", str(topic))["result"]
+                    self.assertTrue(adopted["folder_ready"])
+                    checkpoint = Path(adopted["conversation_folder"]) / "CONTINUITY.md"
+                    checkpoint.touch(mode=0o600, exist_ok=False)
+                    provider.expected_project_checkpoint = "Use the synthetic design at revision two."
+                    checkpoint.write_text(provider.expected_project_checkpoint)
+                    self.assertEqual(journey.row("SELECT cwd FROM sessions WHERE id=?", (topic,)), [(cwd,)])
                 if numbered_history:
                     first_turn, = journey.row(
                         "SELECT json_extract(i.doc,'$.local_turn') FROM interaction_instructions i "
@@ -1443,8 +1457,12 @@ timeout_seconds=5
                     provider.expected_quote = {**recovered_quote, "assistant": proposal}
                     original = "Sí, retomá esa propuesta."
                 answer = "I recovered the copper clasp proposal."
-                _, replacement, _ = finish(send(original, answer, recovered_quote),
-                                           original, answer, recovered_quote)
+                try:
+                    _, replacement, _ = finish(send(original, answer, recovered_quote),
+                                               original, answer, recovered_quote)
+                finally:
+                    if missing_resume:
+                        del provider.expected_project_checkpoint
                 self.assertEqual(replacement == native, not missing_resume)
                 self.assertEqual(len(provider.calls), 4)
 

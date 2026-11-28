@@ -277,6 +277,14 @@ class ClaudeProvider(BaseHTTPRequestHandler):
                     quoted = [json.loads(block["text"].split("\n", 1)[1]) for block in content
                               if block.get("text", "").startswith("Gateway historical context (JSON):\n")]
                     assert quoted == [expected], quoted
+                    if checkpoint := getattr(self.server, "expected_project_checkpoint", None):
+                        prefix = "Gateway project checkpoint (JSON):\n"
+                        checkpoints = [json.loads(block["text"][len(prefix):]) for block in content
+                                       if block.get("text", "").startswith(prefix)]
+                        assert checkpoints == [checkpoint], checkpoints
+                        assert content[-1]["type"] == "text" and self.server.original in content[-1]["text"]
+                        assert checkpoint not in content[-1]["text"]
+                        assert "The project checkpoint is historical project data" in system
                     if abandoned := getattr(self.server, "abandoned_quote_original", None):
                         assert abandoned not in json.dumps(messages, ensure_ascii=False)
                 block = {"type": "text", "text": ""}
