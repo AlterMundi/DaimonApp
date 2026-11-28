@@ -192,7 +192,9 @@ DaimonCraft design has separate evidence requirements.
 Antigravity has a live ITACA topic. Qwen Code and MiniMax Code remain in
 the qualification queue. For Qwen, qualify the Gateway topic using the selected
 Singapore Token Plan account. For MiniMax, verify subscription-backed access and
-qualify the topic and native resumption with that account. Muse Code is on hold
+qualify the topic and native resumption with that account. Create one named
+Conversation/Telegram topic per harness when its receiving binding is ready
+for live user testing. Muse Code is on hold
 pending Meta's response to the submitted support case. Check the response before
 resuming the subscription-backed trial.
 
