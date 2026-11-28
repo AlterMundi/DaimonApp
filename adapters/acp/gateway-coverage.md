@@ -99,15 +99,15 @@ does not transfer to other rows or hosts.
 | Reply, thread selection and exact quoted original | Incumbent route and fixtures | Both quoted-reply fixtures passed | Open | Open |
 | Images, files, voice and output artifacts | Active stack routes. Qualify each file type and voice variant separately | Image and captionless input passed on both surfaces. Full albums, output artifacts and voice variants require receiving checks | Open by input and output kind | Qwen CLI negotiates image and audio. Gateway pilot is text. MiniMax open |
 | Early original, progress and final result in topic and general conversation | Incumbent route plus fixtures | Early handoff and final result qualified in joined fixture. Native result is visible across surfaces in live use. Fresh handoff in the selected build remains open | Basic paired answers only. Visibility timing and general attribution remain open | Qwen paired text receipt. Other projections open |
-| Mid-turn steering with same native session and incorporation receipt | Native steer and receipt tests | Telegram same-turn steer fixture passed. Native worker retained for current route | Open | Open |
+| Mid-turn steering with same native session and incorporation receipt | Native steer and receipt tests | Telegram and Conversation corrections entered one physical turn with one canonical result in the joined fixture. Native worker retained for current route | Open | Open |
 | Targeted cancel and late events | Native route and tests | Telegram cancel, Conversation exact-reply recovery after interruption, and independent signed interruption fixtures | Both interrupted around exposure with isolated signed fixtures | Qwen real CLI ACP cancel against loopback. MiniMax open |
-| Goal creation, monitoring, pause/resume/clear and accounting | Native lifecycle including conditional controls | Conversation goal creation, native completion and readback passed in the completed-goal fixture. Pause, resume, clear and cross-surface accounting need their own evidence | Open against Gateway contract | Open against Gateway contract |
+| Goal creation, monitoring, pause/resume/clear and accounting | Native lifecycle including conditional controls | Conversation goal creation, native completion, inspect and clear passed in isolated fixtures. After an unsuccessful goal turn, the retained goal stayed inspectable and clearable on the same native session. Explicit pause, resume and cross-surface accounting need their own evidence | Open against Gateway contract | Open against Gateway contract |
 | Topic workspace, exact native resume and cold replacement | Existing path plus per-topic workspace work. Cold migration needs the same test across connectors | Same session through skill refresh passed. Conversation rebuilt the missing native session with the exact retained quote and the selected project checkpoint. The joined Codex–Claude round trip preserved both native sessions, the topic generation, a quoted Codex answer and the project checkpoint. Live migration remains open | Qualified first turns and interruption. Same-topic reload with accepted work and cold fallback remain open | Qwen and MiniMax resumed the same CLI session in a fresh process with prior context. Qwen has scoped topic code. MiniMax has no joined topic evidence |
 | Identity guidance, shared skills and enabled tools | Incumbent loaded configuration | Shared skill revision readback proved by fixture. Check actual loaded guidance and full catalog per live body/turn kind | Check loaded guidance, tools and skill refresh. Goose fixture required a pinned patch for complete catalog verification | Check effective catalog and guidance. Qwen isolated settings turn off extra provider calls from native features |
 | DMK read and write | Existing receiving tools | Paired read and write passed against a disposable DMK store using the receiving DMK release and interpreter. Live write acceptance remains open | Both have isolated selected-record reads. Authorized write proof remains open | Open |
 | Matrix private messages, /we and authorized Tribu tools | Existing receiving scope and tools | Real signed private route verified. Live topic tool inventory and receipt evidence must be scoped to the selected operation | Isolated signed read/reply. Antigravity live evidence is a separate route. Goose pending activation | Open |
 | Cross-topic delegation, visible destination and return incorporation | Native route plus joined tests | Progress and final, then retained canonical result recovery without replay, passed in fixtures. Fresh joined human-facing handoff remains open | Open | Open |
-| Disconnect/restart, journal fence and duplicate suppression | Incumbent exact receipt and recovery paths | Signed return crash and detached Telegram adapter recovery passed in isolated tests | Both have signed loopback interruption evidence. Live restart and ordinary Telegram migration remain open | Qwen isolated exact load and denial tested. MiniMax fresh-process load tested with four provider requests for two turns. Determine why before certifying one intended request per turn |
+| Disconnect/restart, journal fence and duplicate suppression | Incumbent exact receipt and recovery paths | Signed return crash passed in isolation. With the named Gateway and TeleDaimon executables, an adapter-only restart delivered confirmed-unsent results once and preserved an uncertain Telegram acknowledgement without replay. The same Claude topic accepted another original afterward | Both have signed loopback interruption evidence. Live restart and ordinary Telegram migration remain open | Qwen isolated exact load and denial tested. MiniMax fresh-process load tested with four provider requests for two turns. Determine why before certifying one intended request per turn |
 | Usage, alerts and limits in the UI | Native usage and limits route | Claude usage adapter and account readback. Verify UI behavior and configuration refresh on each deployed surface | Open | Open |
 | Agent questions, plans, review, forks, subagent and background lifecycle | Multiple native App Server entry points and projections | Inventory each supported native workflow and its projection. Ordinary text and goal tests do not qualify these controls | Open | Open |
 
@@ -121,6 +121,26 @@ Owning work and qualification procedures are in
 [Claude joined qualification guide](../claude/README.md#signed-interop-with-the-native-sdk).
 The minimum Rust candidate recorded in Matrix #497 is Goose. The historical
 DaimonCraft design has separate evidence requirements.
+
+Use the selected release binary with the signed Claude qualification in
+`tests/foreground_signed_io.py`. With `FOREGROUND_TEST_TELEGRAM_TOPIC=1`,
+run the visible handoff, same-turn steering, adapter recovery and harness
+switch cases independently. The fixture seeds an existing embedded Telegram
+installation, then drives the named Gateway and TeleDaimon roles with a
+loopback model provider and disposable accounts. These checks exercise the
+host, journal and projections, while live paired acceptance also requires
+the selected OAuth account and actual topic receipts.
+
+Run the DMK write case with `CLAUDE_TEST_DMK_SCRIPTS` and
+`CLAUDE_TEST_DMK_PYTHON` selected from the receiving DMK release. The fixture
+creates its own database and binding. Running it against another checkout or
+interpreter does not qualify the installed DMK tool.
+
+The selected Claude CLI exposes native set, inspect and clear through
+[`/goal`](https://code.claude.com/docs/en/commands). Treat Codex-style pause
+and resume as separate controls. A plain argument to Claude's native command
+can set a new condition, so forwarding a control as a condition cannot
+establish pause or resume parity.
 
 Run the stack checks through the actual receiving surfaces and operation writer.
 For a shared feature, use the same acceptance assertion per adapter. For a
