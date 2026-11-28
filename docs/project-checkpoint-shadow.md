@@ -12,7 +12,7 @@ operations do not inject context, start a turn, or dispatch an effect.
 | `workspace` | No additional arguments. Returns the current claim or null if there is no permanent workspace. |
 | `projects` | Exact `workspace` claim and optional `before` cursor. Lists each authorized project/repository's latest shadow link. Use `nextBefore` for the next page. |
 | `read` | Exact `workspace` claim and workspace-relative `checkout`. Select `project` and `repository` for an exact link. Returns its latest verified revision or null if absent. An unfiltered read selects the most recently changed link. |
-| `apply` | Workspace-relative `checkout` and a `delta` with a stable `operation` UUID, `expected_revision`, `workspace`, `link` and `sources`. Returns `accepted`, `retained`, or `conflict` with the observed revision. |
+| `apply` | Workspace-relative `checkout` and a `delta` with a stable `operation` UUID, `expected_revision`, `workspace`, `link`, `sources` and optional `work`. Returns `accepted`, `retained`, or `conflict` with the observed revision. |
 
 The link takes distinct project and repository UUIDs, a stable private `git:`
 locator and a full lowercase Git commit ID. Links accepted before a separate
@@ -32,11 +32,25 @@ Use one to eight exact sources. An `observer` source carries `native`,
 `revision` and `source_revision` from an existing retained Observer card.
 A `conversation` source carries `source` and `revision` from the canonical
 general-conversation reader. For a worker, the retained presentation source
-must address that topic. At least one source must cite the exact proposed link
-in an original line of the form `Project link: {"project":"…","repository":"…","locator":"…","commit":"…"}`.
+must address that topic. For a link-only checkpoint, at least one source must cite the exact
+proposed link in an original line of the form `Project link: {"project":"…","repository":"…","locator":"…","commit":"…"}`.
 Observer uses only its cited support entries for this comparison. The owning
 readers decide source access again
-during apply, read and exact repeat. The current execution and workspace claim
+during apply, read and exact repeat.
+
+A repository checkpoint may include a `work` array with up to eight
+`{kind, text}` entries. The kinds are `decision`, `dependency` and
+`next_action`. Each entry fits 480 UTF-8 bytes and the entire delta still
+fits 4096 bytes. With work, cite the exact link and ordered array together
+on one retained line, `Project checkpoint: {"link":{…},"work":[…]}`.
+Once a repository has recorded work, updating it requires citing the work
+to retain, replace or explicitly clear with an empty array. Old link-only
+checkpoints remain readable. The project catalogue projects only repository
+metadata. The owner-scoped read and the selected cold startup expose the
+cited work with the original source references. The work text is historical
+context and does not authorize actions.
+
+The current execution and workspace claim
 are revalidated after Git inspection. This keeps Git outside the SQLite
 writer transaction. The prior revision comparison and insert are atomic.
 The persisted attribution identifies the paired owner and originating local

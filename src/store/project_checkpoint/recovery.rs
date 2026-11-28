@@ -352,8 +352,16 @@ fn verified_context(selected: &Recovery) -> String {
         .iter()
         .zip(&selected.selection.projects)
         .map(|(checkpoint, checkout)| {
-            json!({"revision":checkout.revision, "link":checkpoint.delta.link,
-            "checkout":checkout.checkout,"sources":checkpoint.delta.sources})
+            let mut repository = json!({
+                "revision": checkout.revision,
+                "link": checkpoint.delta.link,
+                "checkout": checkout.checkout,
+                "sources": checkpoint.delta.sources
+            });
+            if let Some(work) = &checkpoint.delta.work {
+                repository["work"] = json!(work);
+            }
+            repository
         })
         .collect::<Vec<_>>();
     json!({

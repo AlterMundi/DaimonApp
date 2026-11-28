@@ -38,6 +38,28 @@ pub(crate) enum CheckpointSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProjectWorkKind {
+    Decision,
+    Dependency,
+    NextAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectWorkItem {
+    kind: ProjectWorkKind,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectWorkCitation {
+    link: ProjectLink,
+    work: Vec<ProjectWorkItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectDelta {
     pub operation: Uuid,
@@ -45,6 +67,8 @@ pub(crate) struct ProjectDelta {
     pub workspace: String,
     pub link: ProjectLink,
     pub sources: Vec<CheckpointSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work: Option<Vec<ProjectWorkItem>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +109,14 @@ impl ProjectDelta {
                     .commit
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && self.work.as_ref().is_none_or(|work| {
+                    work.len() <= 8
+                        && work.iter().all(|item| {
+                            !item.text.trim().is_empty()
+                                && item.text.len() <= 480
+                                && !item.text.chars().any(char::is_control)
+                        })
+                })
                 && !self.sources.is_empty()
                 && self.sources.len() <= 8
                 && serde_json::to_vec(self)?.len() <= 4096,
@@ -188,6 +220,7 @@ fn check_sources(
     human: i64,
     sources: &[CheckpointSource],
     link: &ProjectLink,
+    work: Option<&[ProjectWorkItem]>,
 ) -> Result<()> {
     let mut supported = false;
     for source in sources {
@@ -220,7 +253,7 @@ fn check_sources(
                     entries
                         .get(*index)
                         .and_then(|value| value.as_str())
-                        .is_some_and(|text| cites_project(text, link))
+                        .is_some_and(|text| cites_project(text, link, work))
                 })
             }
             CheckpointSource::Conversation { source, revision } => {
@@ -234,19 +267,29 @@ fn check_sources(
                     .context("Conversation evidence unavailable at the selected revision")?;
                 evidence["text"]
                     .as_str()
-                    .is_some_and(|text| cites_project(text, link))
+                    .is_some_and(|text| cites_project(text, link, work))
             }
         };
         supported |= matches_link;
     }
-    anyhow::ensure!(supported, "No retained source cites the exact project link");
+    anyhow::ensure!(
+        supported,
+        "No retained source cites the exact project checkpoint"
+    );
     Ok(())
 }
 
-fn cites_project(text: &str, link: &ProjectLink) -> bool {
-    text.lines()
-        .filter_map(|line| line.trim().strip_prefix("Project link: "))
-        .any(|raw| serde_json::from_str::<ProjectLink>(raw).is_ok_and(|cited| cited == *link))
+fn cites_project(text: &str, link: &ProjectLink, work: Option<&[ProjectWorkItem]>) -> bool {
+    text.lines().map(str::trim).any(|line| match work {
+        Some(work) => line
+            .strip_prefix("Project checkpoint: ")
+            .and_then(|raw| serde_json::from_str::<ProjectWorkCitation>(raw).ok())
+            .is_some_and(|cited| cited.link == *link && cited.work == work),
+        None => line
+            .strip_prefix("Project link: ")
+            .and_then(|raw| serde_json::from_str::<ProjectLink>(raw).ok())
+            .is_some_and(|cited| cited == *link),
+    })
 }
 
 fn stable_git_origin(origin: &str) -> bool {
@@ -394,6 +437,7 @@ fn checkpoint_on(
             human,
             &checkpoint.delta.sources,
             &checkpoint.delta.link,
+            checkpoint.delta.work.as_deref(),
         )?;
     }
     Ok(checkpoint)
@@ -753,13 +797,22 @@ impl Store {
                 human,
                 &checkpoint.delta.sources,
                 &checkpoint.delta.link,
+                checkpoint.delta.work.as_deref(),
             )?;
             if checkpoint.delta == delta {
                 verification?;
                 return Ok(ProjectDeltaOutcome::Retained { checkpoint });
             }
         } else {
-            check_sources(&tx, key, entry, human, &delta.sources, &delta.link)?;
+            check_sources(
+                &tx,
+                key,
+                entry,
+                human,
+                &delta.sources,
+                &delta.link,
+                delta.work.as_deref(),
+            )?;
         }
         let revision: i64 = tx.query_row(
             "SELECT COALESCE(MAX(revision),0) FROM project_checkpoint_deltas WHERE session_id=?1",
@@ -770,6 +823,29 @@ impl Store {
             return Ok(ProjectDeltaOutcome::Conflict { revision });
         }
         verification?;
+        if delta.work.is_none() {
+            let has_work: bool = tx.query_row(
+                "SELECT COALESCE((
+                    SELECT json_array_length(doc,'$.delta.work')>0
+                    FROM project_checkpoint_deltas WHERE session_id=?1
+                    AND json_extract(doc,'$.delta.workspace')=?2
+                    AND json_extract(doc,'$.delta.link.project')=?3
+                    AND COALESCE(json_extract(doc,'$.delta.link.repository'),
+                                 json_extract(doc,'$.delta.link.project'))=?4
+                    ORDER BY revision DESC LIMIT 1),0)",
+                params![
+                    session,
+                    delta.workspace,
+                    delta.link.project.to_string(),
+                    delta.link.repository_id().to_string()
+                ],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !has_work,
+                "Include cited project work to update this repository"
+            );
+        }
         let checkpoint = ProjectCheckpoint {
             revision: revision
                 .checked_add(1)
@@ -867,14 +943,14 @@ mod tests {
         }];
         {
             let conn = store.conn.lock().unwrap();
-            assert!(check_sources(&conn, entry, entry, 100, &sources, &link).is_ok());
-            assert!(check_sources(&conn, worker, entry, 100, &sources, &link).is_err());
+            assert!(check_sources(&conn, entry, entry, 100, &sources, &link, None).is_ok());
+            assert!(check_sources(&conn, worker, entry, 100, &sources, &link, None).is_err());
         }
         store
             .set_session_codex_thread(entry, "replacement")
             .unwrap();
         let conn = store.conn.lock().unwrap();
-        assert!(check_sources(&conn, entry, entry, 100, &sources, &link).is_err());
+        assert!(check_sources(&conn, entry, entry, 100, &sources, &link, None).is_err());
     }
 
     #[test]
@@ -959,9 +1035,13 @@ mod tests {
             closed: &closed,
         };
         let marker = workspace.path().join(".daimon-topic");
+        let work = vec![ProjectWorkItem {
+            kind: ProjectWorkKind::NextAction,
+            text: "Review the draft chapter.".into(),
+        }];
         let citation = format!(
-            "A story was committed.\nProject link: {}",
-            serde_json::to_string(&link).unwrap()
+            "A story was committed.\nProject checkpoint: {}",
+            serde_json::json!({"link":link,"work":work})
         );
         let snapshot = serde_json::json!({
             "native": "fixture-native", "revision": "retained-source", "boundary": "fixture-turn",
@@ -982,6 +1062,7 @@ mod tests {
             expected_revision: 0,
             workspace: claim.clone(),
             link,
+            work: Some(work),
             sources: vec![CheckpointSource::Observer {
                 native: "fixture-native".into(),
                 revision: card.revision,
@@ -1118,6 +1199,7 @@ mod tests {
         );
         assert_eq!(projected["repositories"][0]["commit"], delta.link.commit);
         assert!(projected["repositories"][0].get("locator").is_none());
+        assert!(projected["repositories"][0].get("work").is_none());
         assert_eq!(projected["repositories"][0]["label"], "Story");
         let project = delta.link.project;
         assert!(

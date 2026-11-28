@@ -26,13 +26,13 @@ fn project_shadow_capability() -> Value {
         "action":"workspace, projects, read, apply or select_recovery",
         "workspace":"read, projects, select_recovery: exact current workspace claim",
         "checkout":"read/apply: local checkout path relative to the topic workspace",
-        "delta":"apply: operation UUID, expected_revision, workspace, link and typed sources",
+        "delta":"apply: operation UUID, expected_revision, workspace, link, typed sources and optional cited work [{kind, text}]",
         "projects":"select_recovery: selected [{project, repository, revision, checkout}] for cold startup",
         "project":"read: optional project UUID",
         "repository":"read: optional repository UUID",
         "before":"projects: optional cursor returned as nextBefore",
         "effects":"select_recovery: up to eight original instruction UUIDs owned by this topic"
-    }, "description":"Read or stage a durable shadow link from this owned topic to an exact Git commit and its retained sources. Only select_recovery opts the exact revision into the next cold startup. No Git changes or dispatch."})
+    }, "description":"Read or stage a durable shadow link from this owned topic to an exact Git commit and its retained sources. Work kinds: decision, dependency and next_action. Only select_recovery opts the exact revision into the next cold startup. No Git changes or dispatch."})
 }
 
 pub(super) fn tool_call(

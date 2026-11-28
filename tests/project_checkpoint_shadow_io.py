@@ -35,6 +35,11 @@ def select_project(journey, *, paginate=False):
 
     story = str(uuid.uuid4())
     link = prepare_checkout("story", story)
+    work = [
+        {"kind": "decision", "text": "Keep the main character's name."},
+        {"kind": "dependency", "text": "Wait for the illustrator's draft."},
+        {"kind": "next_action", "text": "Review the second scene in the shared draft."},
+    ]
     other_links = [("illustrations", prepare_checkout("illustrations", story, str(uuid.uuid4()))),
                    ("notes", prepare_checkout("notes", str(uuid.uuid4())))]
 
@@ -74,6 +79,7 @@ def select_project(journey, *, paginate=False):
     dispatch(1, "Alpha", 7, "Record the selected revision.")
     citations = "\n".join("Project link: " + json.dumps(item) for item in
                           [link, *(other for _, other in other_links)])
+    citations += "\nProject checkpoint: " + json.dumps({"link": link, "work": work})
     journey.answer_worker(7, "Staged the selected repo.\n" + citations)
     journey.wait(lambda: journey.row("SELECT busy FROM sessions WHERE thread_id=7") == [(0,)])
     page = journey.read("presentation", "list", "0", "0")["result"]
@@ -85,11 +91,20 @@ def select_project(journey, *, paginate=False):
     assert workspace
     delta = {"operation": str(uuid.uuid4()), "expected_revision": 0, "workspace": workspace,
              "link": link, "sources": [source]}
-    apply = {"action": "apply", "checkout": "story", "delta": delta}
+    apply = {"action": "apply", "checkout": "story", "delta": {**delta, "work": work}}
+    unsupported = [{**work[0], "text": "Rename the main character."}, *work[1:]]
+    shadow(7, "unsupported-work", {**apply, "delta": {**delta, "work": unsupported}}, ok=False)
     queried_before = journey.row("SELECT count(*) FROM interaction_instructions")
     accepted = shadow(7, "accept", apply)
     assert accepted["status"] == "accepted", accepted
-    assert accepted["checkpoint"]["delta"] == delta
+    assert accepted["checkpoint"]["delta"] == apply["delta"]
+    reused = shadow(7, "changed-work-under-same-key", {
+        **apply, "delta": {**delta, "work": unsupported},
+    })
+    assert reused == {"status": "conflict", "revision": 1}, reused
+    shadow(7, "omitted-work", {
+        **apply, "delta": {**delta, "operation": str(uuid.uuid4()), "expected_revision": 1},
+    }, ok=False)
     (folder / "archive").mkdir()
     (folder / "story").rename(folder / "archive/moved")
     retry = shadow(7, "repeat", {**apply, "checkout": "archive/moved"})
@@ -100,7 +115,7 @@ def select_project(journey, *, paginate=False):
     selections = [{"project": story, "repository": story, "revision": 1,
                    "checkout": "archive/moved"}]
     repositories = [{"revision": 1, "link": link, "checkout": "archive/moved",
-                     "sources": [source]}]
+                     "sources": [source], "work": work}]
     for revision, (folder_name, other) in enumerate(other_links, start=2):
         proposal = {**delta, "operation": str(uuid.uuid4()),
                     "expected_revision": revision - 1, "link": other}
@@ -150,6 +165,7 @@ def select_project(journey, *, paginate=False):
         })
         assert result_row["revision"] == expected["revision"], result_row
         assert result_row["delta"]["link"] == expected["link"], result_row
+        assert result_row["delta"].get("work") == expected.get("work"), result_row
     assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(n,) for n in range(1,count+1)]
 
     finished, unfinished = [row[0] for row in journey.instructions(7)]
