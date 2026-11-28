@@ -1723,6 +1723,15 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
                 );
                 super::topic_publications::wake(app.shared.clone(), i.target);
             }
+            Some(Ok(None))
+                if claude
+                    && app
+                        .shared
+                        .store
+                        .interaction_instruction(&i.id, i.human_id)
+                        .is_ok_and(|input| {
+                            input.is_some_and(|input| input.phase == P::Cancelled)
+                        }) => {}
             Some(Err(CodexSteerError::Rejected(_) | CodexSteerError::FreshExecutionRequired)) => {
                 if app
                     .shared

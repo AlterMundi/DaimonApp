@@ -1553,7 +1553,7 @@ timeout_seconds=5
                 provider.expected_quote = {**selection, "assistant": proposal}
                 provider.quote_answer_gate = None
                 if interrupt:
-                    provider.abandoned_quote_original = newer_original
+                    provider.interrupted_quote_original = newer_original
                     interrupt_id, stopped = browser.text("/interrupt", reply=destination)
                     self.assertEqual(stopped["phase"], "interruption")
                     self.assertEqual(stopped["routing"]["phase"], "requested")
@@ -1564,9 +1564,14 @@ timeout_seconds=5
                             "JOIN interaction_instructions i ON i.input_id=s.id "
                             "JOIN turns t ON t.id=json_extract(i.doc,'$.local_turn') WHERE s.event_id=?",
                             (current,),
-                        ) == [("uncertain", "failed")]
+                        ) == [("cancelled", "failed")]
 
                     journey.wait(interrupted, seconds=20)
+                    self.assertEqual(journey.row(
+                        "SELECT json_extract(i.doc,'$.native_interrupt_confirmed') "
+                        "FROM interaction_sources s JOIN interaction_instructions i "
+                        "ON i.input_id=s.id WHERE s.event_id=?", (current,),
+                    ), [(1,)])
                     cancelled.set()
             finally:
                 release.set()
@@ -1576,7 +1581,7 @@ timeout_seconds=5
             _, reply_native, _ = finish(pending, approval, approval_answer, older)
             self.assertEqual(len(provider.calls), 3)
             if interrupt:
-                self.assertNotEqual(reply_native, native)
+                self.assertEqual(reply_native, native)
                 _, replay = browser.text("/interrupt", reply=destination, original_id=interrupt_id)
                 self.assertIs(replay["new_input"], False)
                 self.assertEqual(journey.row("SELECT count(*) FROM interaction_results"), [(2,)])

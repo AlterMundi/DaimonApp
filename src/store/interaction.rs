@@ -517,7 +517,7 @@ pub(super) fn transport_on(
                 P::Submitting | P::Steering | P::Cancelled | P::RetainedUnsent
             ) | (
                 P::Submitting | P::Steering,
-                P::Accepted | P::Rejected | P::Uncertain
+                P::Accepted | P::Rejected | P::Uncertain | P::Cancelled
             ) | (P::Uncertain, P::Accepted | P::Rejected)
         );
     if !valid {

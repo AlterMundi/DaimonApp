@@ -868,7 +868,20 @@ impl Store {
                 FROM prior WHERE id>coalesce((SELECT max(id) FROM prior WHERE scope='resume_unavailable'),0)
              )
              SELECT native_thread_id,scope FROM ranked
-             WHERE position=1 AND (status='completed' OR (?3 AND status='failed'))
+             WHERE position=1
+               AND (?3 OR NOT EXISTS(
+                   SELECT 1 FROM prior exposed JOIN interaction_instructions i
+                     ON json_extract(i.doc,'$.local_turn')=exposed.id
+                   WHERE exposed.native_thread_id=ranked.native_thread_id AND exposed.scope=ranked.scope
+                     AND (json_extract(i.doc,'$.native_claude_resume_fenced')=1
+                          OR (exposed.status='failed' AND i.phase='uncertain'))
+               ))
+               AND (status='completed' OR (status='failed' AND (?3 OR EXISTS(
+                   SELECT 1 FROM interaction_instructions i WHERE i.phase='cancelled'
+                     AND json_extract(i.doc,'$.local_turn')=ranked.id
+                     AND json_extract(i.doc,'$.native_interrupt_confirmed')=1
+                     AND json_extract(i.doc,'$.native_thread')=ranked.native_thread_id
+               ))))
                AND scope IS NOT NULL
              ORDER BY id DESC LIMIT 8",
         )?;
@@ -1494,11 +1507,13 @@ impl Store {
                 Some(&anchor),
             )?;
             let mut followups = Vec::new();
+            let mut covered_steers = 0;
             if let Some(results) = outcome["steerResults"].as_array() {
                 for result in results {
                     let ids = result["ids"]
                         .as_array()
                         .context("Claude result lacks steer IDs")?;
+                    covered_steers += ids.len();
                     let selected = ids
                         .last()
                         .and_then(Value::as_str)
@@ -1570,6 +1585,56 @@ impl Store {
                     exchange_inputs.push(steered);
                 }
             }
+            if outcome["steerSubmitted"]
+                .as_array()
+                .is_some_and(|submitted| submitted.len() > covered_steers)
+            {
+                tx.execute(
+                    "UPDATE interaction_instructions
+                    SET doc=json_set(doc,'$.native_claude_resume_fenced',json('true')) WHERE id=?1",
+                    [&input.id],
+                )?;
+            }
+        } else if current.phase == Phase::Submitting
+            && outcome["phase"] == "interrupted"
+            && current
+                .target_execution
+                .as_ref()
+                .is_some_and(|binding| binding.harness == Harness::Claude)
+            && current.native_thread.as_deref() == outcome["sessionId"].as_str()
+        {
+            let cancelled = outcome["cancelled"]
+                .as_array()
+                .context("Claude interrupt receipt missing")?;
+            for id in cancelled {
+                let id = id.as_str().context("Invalid cancelled correction")?;
+                let steer = super::interaction::instruction_on(&tx, id, input.human_id)?
+                    .context("Cancelled correction missing")?;
+                anyhow::ensure!(
+                    steer.phase == Phase::Steering
+                        && steer.local_turn == Some(local)
+                        && steer.native_thread == current.native_thread,
+                    "Claude cancelled correction does not match the retained native turn"
+                );
+                super::interaction::transport_on(
+                    &tx,
+                    id,
+                    input.human_id,
+                    local,
+                    Phase::Cancelled,
+                    None,
+                )?;
+            }
+            super::interaction::transport_on(
+                &tx,
+                &input.id,
+                input.human_id,
+                local,
+                Phase::Cancelled,
+                None,
+            )?;
+            tx.execute("UPDATE interaction_instructions SET doc=json_set(doc,'$.native_interrupt_confirmed',json('true')) WHERE id=?1",
+                [&input.id])?;
         } else if current.phase != Phase::Cancelled {
             let phase = match current.phase {
                 Phase::Queued => Phase::RetainedUnsent,
@@ -2176,6 +2241,59 @@ mod tests {
                 .session_id,
             unfinished
         );
+        let (completed, fenced_native) = record("completed", &second, &body);
+        let (interrupted, confirmed_native) = record("failed", &first, &body);
+        {
+            let conn = store.conn.lock().unwrap();
+            for (source, turn, phase, doc) in [
+                (
+                    "partial",
+                    completed,
+                    "accepted",
+                    json!({"native_claude_resume_fenced":true}),
+                ),
+                (
+                    "confirmed",
+                    interrupted,
+                    "cancelled",
+                    json!({"native_interrupt_confirmed":true,"native_thread":confirmed_native}),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO interaction_sources
+                    (id,human_id,channel,event_id,origin_chat,origin_thread,doc,created_at)
+                    VALUES(?1,100,'conversation',?1,100,7,'{}','2026-11-28')",
+                    [source],
+                )
+                .unwrap();
+                let mut doc = doc;
+                doc["local_turn"] = json!(turn);
+                conn.execute(
+                    "INSERT INTO interaction_instructions
+                    (id,input_id,session_id,sequence,phase,doc,instance_id)
+                    VALUES(?1,?1,?2,?3,?4,?5,'test')",
+                    params![source, session.id, turn, phase, doc.to_string()],
+                )
+                .unwrap();
+            }
+        }
+        let (status_check, _) = record("completed", &second, &body);
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE turns SET native_thread_id=?1 WHERE id=?2",
+                params![fenced_native, status_check],
+            )
+            .unwrap();
+        let (following, _) = record("running", "", &body);
+        let scopes = store
+            .routed_claude_continuations(following, &body, false)
+            .unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].session_id, confirmed_native);
+
         record("failed", "resume_unavailable", &body);
         let (next, _) = record("running", "", &body);
         assert!(

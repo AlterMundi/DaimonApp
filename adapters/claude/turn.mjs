@@ -106,7 +106,7 @@ async function connectedCatalog(native, expected, signal) {
  * be advertised separately when their native behavior has been qualified.
  */
 export async function runClaudeTurn({
-  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering, onInputAccepted,
+  query, broker, expectedBody, toolNames, input, profile, beforeSubmit, signal, steering, onInputAccepted, interruptSignal,
 }) {
   if (typeof input?.text !== 'string' || (input.text.length === 0 && !input.attachments?.length)
       || Buffer.byteLength(input.text) > MAX_INPUT_BYTES
@@ -158,6 +158,18 @@ export async function runClaudeTurn({
   let rootOutcome;
   let steeringReady = false;
   let steerDeadline;
+  let interruptSupported = false;
+  let interruptReceipt;
+  function requestInterrupt() {
+    if (!dispatched || !interruptSupported || rootOutcome || typeof native?.interrupt !== 'function') {
+      abortController.abort();
+      return;
+    }
+    void native.interrupt({ cancelQueued: true }).then(receipt => {
+      interruptReceipt = receipt;
+    }).catch(() => {});
+  }
+  interruptSignal?.addEventListener('abort', requestInterrupt, { once: true });
   const submitted = new Set();
   const outstanding = new Set();
   const acceptedInRoot = new Set();
@@ -181,8 +193,8 @@ export async function runClaudeTurn({
     };
     if (!steerEnabled()) return;
     for await (const next of steering.messages) {
-      if (rootOutcome || abortController.signal.aborted) return;
-      if (!await steering.admit() || rootOutcome || abortController.signal.aborted) return;
+      if (rootOutcome || interruptSignal?.aborted || abortController.signal.aborted) return;
+      if (!await steering.admit() || rootOutcome || interruptSignal?.aborted || abortController.signal.aborted) return;
       submitted.add(next.id);
       outstanding.add(next.id);
       yield {
@@ -342,6 +354,11 @@ export async function runClaudeTurn({
             : { phase: 'not_submitted', reason: 'claude_session_changed' });
         }
       }
+      if (event.type === 'system' && event.subtype === 'init' && event.session_id === input.sessionId) {
+        interruptSupported = Array.isArray(event.capabilities)
+          && event.capabilities.includes('interrupt_receipt_v1')
+          && event.capabilities.includes('interrupt_cancel_queued_v1');
+      }
       if (!dispatched || event.session_id !== input.sessionId) continue;
       if (event.type === 'rate_limit_event') {
         observedLimit = event.rate_limit_info?.status === 'rejected'
@@ -380,6 +397,16 @@ export async function runClaudeTurn({
         }
       }
       if (event.type !== 'result') continue;
+      if (interruptReceipt && event.is_error === true && event.subtype === 'error_during_execution'
+          && answered.length === 1 && answered[0] === input.id) {
+        const receipt = interruptReceipt;
+        if (Array.isArray(receipt?.still_queued) && receipt.still_queued.length === 0
+            && Array.isArray(receipt.cancelled) && receipt.cancelled.length === submitted.size
+            && new Set(receipt.cancelled).size === submitted.size
+            && receipt.cancelled.every(id => submitted.has(id))) {
+          return withSteering({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
+        }
+      }
       const successful = event.subtype === 'success' && event.is_error === false
         && typeof event.result === 'string' && event.result.trim()
         && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
@@ -425,6 +452,7 @@ export async function runClaudeTurn({
     abortController.abort();
     native?.close();
     stop.removeEventListener('abort', cancel);
+    interruptSignal?.removeEventListener('abort', requestInterrupt);
   }
   if (rootOutcome) return withSteering(rootOutcome);
   if (dispatched && throttle) return withSteering(throttled(false));
