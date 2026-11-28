@@ -160,8 +160,9 @@ for (const earlierEvaluation of [null, false, true]) {
         assert.equal(evaluations, evaluationsBeforeInterrupt);
         inspection.close();
       }
+      const followupId = randomUUID();
       async function* followup() {
-        yield message(randomUUID(), 'This is a new original after the interruption.');
+        yield message(followupId, 'This is a new original after the interruption.');
       }
       continuation = query({ prompt: followup(), options: { ...options, resume: session } });
       let resumed;
@@ -172,6 +173,8 @@ for (const earlierEvaluation of [null, false, true]) {
         }
       }
       assert.equal(resumed.session_id, session);
+      assert.deepEqual(resumed.user_message_uuids, [followupId]);
+      assert.match(resumed.uuid, /^[\da-f-]{36}$/i);
       assert.equal(resumed.result, 'Continuation confirmed.');
       const completedCallsBeforeResume = earlierEvaluation ? 2 : 0; // Answer and goal evaluation.
       const accountedCalls = completedCallsBeforeResume + 1 + (condition ? 1 : 0);

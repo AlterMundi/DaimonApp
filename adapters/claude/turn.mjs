@@ -50,6 +50,26 @@ function limitWindow(info) {
   return { window: windows.includes(info?.rateLimitType) ? info.rateLimitType : undefined, resets_at: reset };
 }
 
+function observedSessionUsage(event) {
+  if (typeof event.uuid !== 'string' || !UUID.test(event.uuid)
+      || !event.modelUsage || typeof event.modelUsage !== 'object' || Array.isArray(event.modelUsage)) return undefined;
+  const models = Object.values(event.modelUsage);
+  if (!models.length) return undefined;
+  const observation = {
+    resultId: event.uuid,
+    inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+  };
+  for (const model of models) {
+    for (const key of ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens']) {
+      const count = model?.[key];
+      if (!Number.isSafeInteger(count) || count < 0) return undefined;
+      observation[key] += count;
+      if (!Number.isSafeInteger(observation[key])) return undefined;
+    }
+  }
+  return observation;
+}
+
 function nativeThrottle(event, observedLimit) {
   if (event.error !== 'rate_limit' || event.type !== 'assistant'
       || event.parent_tool_use_id != null) return;
@@ -175,9 +195,12 @@ export async function runClaudeTurn({
   const submitted = new Set();
   const outstanding = new Set();
   const steerEnabled = () => !!steering && steering.enabled?.() !== false;
-  const withSteering = outcome => steerEnabled()
-    ? { ...outcome, steerSubmitted: [...submitted] }
-    : outcome;
+  let sessionUsage;
+  const withTurnEvidence = outcome => ({
+    ...outcome,
+    ...(steerEnabled() ? { steerSubmitted: [...submitted] } : {}),
+    ...(sessionUsage ? { sessionUsage } : {}),
+  });
   const throttled = (terminalObserved) => ({ phase: 'subscription_limited', sessionId: input.sessionId,
     limit: throttle, workObserved: observedWork, terminalObserved });
 
@@ -348,8 +371,8 @@ export async function runClaudeTurn({
     for await (const event of native) {
       if (typeof event.session_id === 'string' && event.session_id) {
         if (input.sessionId !== event.session_id) {
-          if (rootOutcome) return withSteering(rootOutcome);
-          return withSteering(dispatched
+          if (rootOutcome) return withTurnEvidence(rootOutcome);
+          return withTurnEvidence(dispatched
             ? { phase: 'uncertain', reason: 'claude_session_changed', sessionId: input.sessionId }
             : { phase: 'not_submitted', reason: 'claude_session_changed' });
         }
@@ -389,6 +412,11 @@ export async function runClaudeTurn({
         observedAcceptance = await onInputAccepted(rootReply) !== false;
       }
       if (event.type !== 'result') continue;
+      if (event.parent_tool_use_id == null && Array.isArray(answered) && answered.length
+          && new Set(answered).size === answered.length
+          && answered.every(id => id === input.id || outstanding.has(id))) {
+        sessionUsage = observedSessionUsage(event) ?? sessionUsage;
+      }
       const successful = event.subtype === 'success' && event.is_error === false
         && typeof event.result === 'string' && event.result.trim()
         && Buffer.byteLength(event.result) <= MAX_RESULT_BYTES;
@@ -414,11 +442,11 @@ export async function runClaudeTurn({
             && new Set(receipt.cancelled).size === submitted.size
             && receipt.cancelled.every(id => submitted.has(id))) {
           if (successful) {
-            return withSteering({ phase: 'completed', sessionId: input.sessionId,
+            return withTurnEvidence({ phase: 'completed', sessionId: input.sessionId,
               text: event.result, cancelled: receipt.cancelled });
           }
           if (emptySuccess || (event.is_error === true && event.subtype === 'error_during_execution')) {
-            return withSteering({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
+            return withTurnEvidence({ phase: 'interrupted', sessionId: input.sessionId, cancelled: receipt.cancelled });
           }
         }
       }
@@ -427,18 +455,18 @@ export async function runClaudeTurn({
         if (steerEnabled() && answered.length && !answered.includes(input.id)) continue;
         if (steeringReady && !answered.length) {
           if (successful) continue;
-          if (throttle) return withSteering(throttled(event.is_error === true));
+          if (throttle) return withTurnEvidence(throttled(event.is_error === true));
         }
         if (!successful) {
-          if (throttle) return withSteering(throttled(event.is_error === true));
+          if (throttle) return withTurnEvidence(throttled(event.is_error === true));
           const reason = event.subtype === 'error_max_budget_usd' && event.is_error === true
             ? 'claude_budget_exhausted' : 'claude_result_unqualified';
-          return withSteering({ phase: 'uncertain', reason, sessionId: input.sessionId });
+          return withTurnEvidence({ phase: 'uncertain', reason, sessionId: input.sessionId });
         }
         rootOutcome = { phase: 'completed', sessionId: input.sessionId, text: event.result };
         steering?.close();
         if (consumed.length) await steering.result(consumed, null);
-        if (interruptSignal?.aborted) return withSteering(rootOutcome);
+        if (interruptSignal?.aborted) return withTurnEvidence(rootOutcome);
         if (outstanding.size > consumed.length) {
           // An input not folded into the first result can become the next turn
           // on this same stream. Keep its receipt separate from the first.
@@ -448,14 +476,14 @@ export async function runClaudeTurn({
         await steering.result(consumed, event.result);
       }
       if (successful) for (const id of consumed) outstanding.delete(id);
-      if (!outstanding.size) return withSteering(rootOutcome);
+      if (!outstanding.size) return withTurnEvidence(rootOutcome);
     }
   } catch (error) {
     if (input.resume && !dispatched && error?.message ===
         `Claude Code returned an error result: No conversation found with session ID: ${input.sessionId}`) {
       return { phase: 'not_submitted', reason: 'claude_resume_session_missing' };
     }
-    if (dispatched && throttle && !rootOutcome) return withSteering(throttled(false));
+    if (dispatched && throttle && !rootOutcome) return withTurnEvidence(throttled(false));
     // Provider errors can include secrets and private input. Outcome only.
   } finally {
     clearTimeout(timer);
@@ -467,9 +495,9 @@ export async function runClaudeTurn({
     stop.removeEventListener('abort', cancel);
     interruptSignal?.removeEventListener('abort', requestInterrupt);
   }
-  if (rootOutcome) return withSteering(rootOutcome);
-  if (dispatched && throttle) return withSteering(throttled(false));
-  return withSteering(dispatched
+  if (rootOutcome) return withTurnEvidence(rootOutcome);
+  if (dispatched && throttle) return withTurnEvidence(throttled(false));
+  return withTurnEvidence(dispatched
     ? { phase: 'uncertain', reason: 'claude_result_unobserved', sessionId: input.sessionId }
     : { phase: 'not_submitted', reason: stop.aborted ? 'cancelled' : reason });
 }

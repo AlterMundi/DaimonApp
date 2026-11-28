@@ -199,6 +199,11 @@ fixture it omits the separate provider call that evaluates the goal condition.
 resume, even when `/goal` reports that its condition has yet to be evaluated.
 An interrupted response before the provider's terminal usage event may report
 zero. These fields therefore cannot directly supply per-goal or billing totals.
+For paired Gateway turns, the adapter emits the cumulative token counters only
+from an SDK result attributed to the current input or an admitted correction on
+that session. Gateway retains the result UUID and counters with the existing
+turn transaction, including after a confirmed interruption. Cache reads and
+writes remain distinct. Missing telemetry stays absent.
 Recovering goal accounting requires a goal-bound baseline and an exact retained
 observation of each advancing native session total. Missing provider usage
 remains unknown.

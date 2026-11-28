@@ -94,6 +94,40 @@ test('native input acceptance uses the exact root UUID before the final result',
   assert.equal(receipts, 1);
 });
 
+test('cumulative usage requires a complete native attribution and a valid model map', async () => {
+  const resultId = '911842d8-c25a-4b7e-bd86-7d0d817e279b';
+  const counts = { inputTokens: 12, outputTokens: 4, cacheReadInputTokens: 8, cacheCreationInputTokens: 2 };
+  const modelUsage = { answer: counts, evaluator: counts };
+  for (const [ids, usage, matching] of [
+    [[input.id], modelUsage, true],
+    [[input.sessionId], modelUsage, false],
+    [[input.id, input.sessionId], modelUsage, false],
+    [[input.id, input.id], modelUsage, false],
+    [input.id, modelUsage, false],
+    [[input.id], [counts], false],
+  ]) {
+    const outcome = await runClaudeTurn(options({
+      beforeSubmit: () => true,
+      query: ({ prompt }) => ({
+        async initializationResult() { return { claude_code_version: 'fixture-version' }; },
+        async mcpServerStatus() { return connected; },
+        async *[Symbol.asyncIterator]() {
+          for await (const _request of prompt) {}
+          yield { type: 'result', subtype: 'success', is_error: false,
+            session_id: input.sessionId, result: 'Done.', uuid: resultId,
+            user_message_uuids: ids, modelUsage: usage,
+          };
+        },
+        close() {},
+      }),
+    }));
+    assert.equal(outcome.phase, 'completed');
+    assert.deepEqual(outcome.sessionUsage, matching
+      ? { resultId, inputTokens: 24, outputTokens: 8, cacheReadInputTokens: 16, cacheCreationInputTokens: 4 }
+      : undefined);
+  }
+});
+
 test('only an explicitly selected human goal uses the native command mode', async () => {
   for (const [nativeGoalCommand, supported] of [[false, true], [true, true], [true, false]]) {
     const observed = [];

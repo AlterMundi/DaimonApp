@@ -99,6 +99,55 @@ fn record_turn_started_on(
     )?;
     Ok(id)
 }
+
+fn retain_claude_session_usage_on(
+    tx: &Connection,
+    local: i64,
+    outcome: &serde_json::Value,
+) -> Result<()> {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct SessionUsage {
+        result_id: Uuid,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_input_tokens: u64,
+        cache_creation_input_tokens: u64,
+    }
+
+    if !matches!(
+        outcome["phase"].as_str(),
+        Some("completed" | "interrupted" | "uncertain" | "subscription_limited")
+    ) {
+        return Ok(());
+    }
+    let (Some(session), Some(raw)) = (outcome["sessionId"].as_str(), outcome.get("sessionUsage"))
+    else {
+        return Ok(());
+    };
+    let Ok(usage) = serde_json::from_value::<SessionUsage>(raw.clone()) else {
+        return Ok(());
+    };
+    const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+    if [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+    ]
+    .into_iter()
+    .any(|count| count > MAX_SAFE_INTEGER)
+    {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE turns SET native_session_usage=?3
+        WHERE id=?1 AND execution_harness='claude' AND native_thread_id=?2
+          AND status='running' AND native_session_usage IS NULL",
+        params![local, session, serde_json::to_string(&usage)?],
+    )?;
+    Ok(())
+}
 mod stopping;
 mod voice;
 pub use conversation_inputs::{
@@ -1743,6 +1792,7 @@ impl Store {
         add_column_if_missing(&conn, "turns", "execution_native_scope", "TEXT")?;
         add_column_if_missing(&conn, "turns", "execution_body", "TEXT")?;
         add_column_if_missing(&conn, "turns", "execution_generation", "TEXT")?;
+        add_column_if_missing(&conn, "turns", "native_session_usage", "TEXT")?;
         add_column_if_missing(&conn, "original_ingress_order", "captured_at", "TEXT")?;
         add_column_if_missing(&conn, "incoming_updates", "topic_creation_id", "TEXT")?;
         add_column_if_missing(
@@ -1935,6 +1985,70 @@ mod tests {
 
     use super::*;
     use crate::models::ReviewRequest;
+
+    #[test]
+    fn claude_usage_is_bound_to_the_attempt_and_survives_reopen() {
+        use serde_json::json;
+
+        let file = NamedTempFile::new().unwrap();
+        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
+        let key = SessionKey::new(100, Some(7));
+        let session = store.ensure_session(key, 100, &defaults()).unwrap();
+        let local;
+        let usage = json!({
+            "resultId": Uuid::new_v4(),
+            "inputTokens": 16, "outputTokens": 8,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0
+        });
+        {
+            let mut conn = store.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            tx.execute(
+                "INSERT INTO turns(session_id,from_user_id,prompt,status,started_at,execution_harness,native_thread_id)
+                 VALUES(?1,100,'fixture','running','today','claude','matched')",
+                [session.id],
+            )
+            .unwrap();
+            local = tx.last_insert_rowid();
+            let mut outcome = json!({
+                "phase": "interrupted", "sessionId": "different", "sessionUsage": usage
+            });
+            retain_claude_session_usage_on(&tx, local, &outcome).unwrap();
+            outcome["sessionId"] = json!("matched");
+            outcome["sessionUsage"]["outputTokens"] = json!(-1);
+            retain_claude_session_usage_on(&tx, local, &outcome).unwrap();
+            assert_eq!(
+                tx.query_row(
+                    "SELECT native_session_usage FROM turns WHERE id=?1",
+                    [local],
+                    |r| { r.get::<_, Option<String>>(0) }
+                )
+                .unwrap(),
+                None
+            );
+            outcome["sessionUsage"] = usage.clone();
+            retain_claude_session_usage_on(&tx, local, &outcome).unwrap();
+            outcome["sessionUsage"]["outputTokens"] = json!(9);
+            retain_claude_session_usage_on(&tx, local, &outcome).unwrap();
+            tx.commit().unwrap();
+        }
+        drop(store);
+        let store = Store::open(file.path(), &[100], &defaults()).unwrap();
+        let raw: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT native_session_usage FROM turns WHERE id=?1",
+                [local],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
+            usage
+        );
+    }
 
     fn input(update_id: i64, user_id: i64, text: &str) -> crate::telegram::Update {
         serde_json::from_value(serde_json::json!({
