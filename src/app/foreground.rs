@@ -1004,6 +1004,10 @@ pub(super) async fn run_routed_portable(
     let human_authored = author.is_none();
     let direct_original =
         human_authored && input.origin.message_id.is_some() && !super::routing::relayed(input);
+    let transcribed_original = store
+        .interaction_source(&input.id, input.human_id)?
+        .transcription
+        .is_some();
     // Retain the controller catalog on a canonical result so its receiving
     // turn can resume the requesting session. The journal checks each action
     // against its current input, and a result cannot authorize new work.
@@ -1066,6 +1070,7 @@ pub(super) async fn run_routed_portable(
         let owned_goal = engine == ForegroundEngine::Claude
             && routed_host_access
             && human_authored
+            && !transcribed_original
             && request.attachments.is_empty()
             && crate::interaction::native_claude_goal(&input.text);
         let conversation_goal = owned_goal

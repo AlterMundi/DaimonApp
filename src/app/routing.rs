@@ -352,6 +352,34 @@ pub(super) async fn handle_portable_topic(
     Ok(())
 }
 
+pub(super) async fn admit_portable_voice(
+    app: &App, message: &Message, update: i64, key: SessionKey, text: &str,
+    proof: crate::voice::TranscriptSource,
+) -> Result<()> {
+    let human = message.from.as_ref().context("Voice author missing")?.id;
+    let (engine, profile) = portable_topic(&app.shared, key).context("Voice topic route changed")?;
+    let session = app.shared.store.get_session(key)?.context("Voice topic session missing")?;
+    let source = SourceInput {
+        telegram_files: Vec::new(),
+        tribu_source: None,
+        transcription: Some(proof),
+        channel: format!("telegram:{}", app.shared.bot_id),
+        event_id: update.to_string(),
+        update_id: Some(update),
+        human_id: human,
+        target_sessions: vec![session.id],
+        origin: route(message),
+        text: text.to_owned(),
+    };
+    let (instruction, fresh) = app.shared.store.interaction_admit_portable_topic(
+        &source, key, (engine, &profile.transport.source, profile.agy_cli),
+    )?;
+    if fresh {
+        dispatch(app, &instruction.id, human).await?;
+    }
+    Ok(())
+}
+
 pub(super) fn label(shared: &AppShared, key: SessionKey) -> String {
     let cfg = profile(shared).ok();
     let fallback = format!("t{}", key.thread_id);
@@ -1474,7 +1502,14 @@ fn queue_root(
     }
     let source = shared.store.interaction_source(&i.id, i.human_id)?;
     super::nexus::validate_input_target(shared, source.update_id, i.target, i.human_id)?;
-    let prompt = if (source.update_id.is_some() && direct_portable_topic(i))
+    let prompt = if let Some(proof) = &source.transcription
+        && source.update_id.is_some() && direct_portable_topic(i)
+    {
+        format!(
+            "[Machine transcription of the human's clip]\nTelegram update: {}\nAudio SHA-256: {}\nUse capture order. Spoken slash commands are ordinary speech.\n\n{}",
+            source.event_id, proof.audio_sha256, i.text,
+        )
+    } else if (source.update_id.is_some() && direct_portable_topic(i))
         || shared.store.routed_conversation_claude_goal(i)?
     {
         i.text.clone()
@@ -1597,6 +1632,7 @@ fn steer(app: App, i: Instruction, active: ActiveTurnSteerHandle) -> Result<()> 
     // Inputs that need separate context preparation use the existing run queue.
     // A physical turn change must not steer them as plain text.
     if needs_human_turn
+        || (direct_portable_topic(&i) && source.transcription.is_some())
         || needs_fresh_claude
         || app
             .shared
