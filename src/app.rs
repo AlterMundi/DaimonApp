@@ -1577,6 +1577,7 @@ impl App {
                                 crate::interaction::ForegroundEngine::Claude => "Claude Code",
                                 crate::interaction::ForegroundEngine::Antigravity => "Antigravity",
                                 crate::interaction::ForegroundEngine::Goose => "Goose",
+                                crate::interaction::ForegroundEngine::Qwen => "Qwen Code",
                             };
                             let activity = if started.is_some() {
                                 "working on a message"

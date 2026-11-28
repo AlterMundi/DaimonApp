@@ -814,7 +814,7 @@ window.Conversation = (() => {
     function syncRuntimeSummary(){
       if(!runtimeSummary)return;
       const runtime=workspace?.runtime?.();
-      const harness={codex:"Codex",claude:"Claude Code",antigravity:"Antigravity",goose:"Goose"}[runtime?.harness];
+      const harness={codex:"Codex",claude:"Claude Code",antigravity:"Antigravity",goose:"Goose",qwen:"Qwen Code"}[runtime?.harness];
       const claudeModel=runtime?.harness==="claude"
         ? /^claude-(opus|sonnet|haiku)-(\d{1,2})(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(runtime.model)
         : null;

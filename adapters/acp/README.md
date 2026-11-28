@@ -153,8 +153,8 @@ Use the subscription the owner selects. Alibaba's
 [Qwen Code setup](https://www.alibabacloud.com/help/en/model-studio/qwen-code)
 distinguishes Singapore Token Plan, Coding Plan and standard API credentials.
 Qwen Code 0.28.7 completed one isolated ACP prompt through the Singapore Token
-Plan using `qwen4-max`. Gateway topic routing and signed body acceptance remain
-separate from the adapter qualification.
+Plan using `qwen4-max`. This proof predates the topic worker. A signed
+receiving body and live topic acceptance remain separate.
 
 ### Model Studio tools through Bailian
 
@@ -177,3 +177,28 @@ Each additional capability has its own model and plan eligibility.
 Model Studio account operations may require separate console or OpenAPI
 authentication, as documented in the
 [Bailian installation guide](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/cli/installation).
+
+### Qwen Code topics through Gateway
+
+Set `harness = "qwen"` for the selected existing topic and configure
+`[interaction.qwen_foreground]` with `interaction_direct = true` and the
+selected Qwen body's authenticated Matrix transport. Set `worker_command`
+to the absolute Node binary and
+`adapters/acp/qwen-gateway-worker.mjs --profile PROFILE`. The private worker
+profile contains `body`, `binary`, `cwd`, `stateRoot`, `model` and
+`providerKeyFile`. Select the same workspace in the topic and the profile.
+Use an owner-private persistent state directory and the trusted pilot workspace.
+The worker uses the Singapore Token Plan endpoint and a dedicated Qwen home.
+Keep the key in the existing credential binding. The pilot refuses user or
+workspace Qwen settings and applicable dotenv files before reading the
+credential. It pins both system settings layers to the shipped pilot settings,
+which disable background model calls and provider retries. After opening or restoring the
+session, the worker verifies the effective runtime model reported through ACP.
+
+Gateway loads the most recent retained Qwen session within the same topic,
+generation and signed incarnation. It checks the workspace and records the
+ACP session before releasing the original. For a new conversation it supplies
+the exact fresh UUID and requires Qwen to return it. A failed load leaves the original
+unsubmitted and preserves the selected binding. The worker covers bounded
+text turns. Attachments, steering, native goals and a signed tool catalog
+require their own receiving work before a general migration.

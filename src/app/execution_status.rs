@@ -139,6 +139,7 @@ pub(super) async fn workspace(app: &App, human: i64, config: &InteractionConfig)
         ForegroundEngine::Claude,
         ForegroundEngine::Antigravity,
         ForegroundEngine::Goose,
+        ForegroundEngine::Qwen,
     ] {
         if config
             .foreground(engine)

@@ -1,0 +1,24 @@
+{
+  "general": {
+    "enableAutoUpdate": false
+  },
+  "telemetry": {
+    "enabled": false
+  },
+  "ui": {
+    "enableFollowupSuggestions": false
+  },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false,
+    "enableAutoSkill": false,
+    "enableTeamMemorySync": false,
+    "enableStructuredRecall": false
+  },
+  "model": {
+    "generationConfig": {
+      "maxRetries": 0
+    }
+  },
+  "$version": 4
+}
