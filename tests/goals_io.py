@@ -14,6 +14,9 @@ import time
 from questions_io import Journey
 
 class Goals(Journey):
+    def fixture_native_thread_id(self, number):
+        return f"native-topic-{number}"
+
     def __init__(self,binary,mode='complete'):
         self.goals={}; self.clients={}; self.native_turns=0; self.holding={}
         self.start_seen=threading.Event();self.release_start=threading.Event()
@@ -78,7 +81,9 @@ class Goals(Journey):
                     send({'id':ident,'result':{'thread':{'id':p['threadId'],
                         'status':{'type':status}}}})
                 elif method in ('thread/start','thread/resume'):
-                    if method=='thread/start':self.thread_sequence+=1;thread=f'native-topic-{self.thread_sequence+6}'
+                    if method=='thread/start':
+                        self.thread_sequence += 1
+                        thread = self.fixture_native_thread_id(self.thread_sequence + 6)
                     else:thread=p['threadId'];assert p['excludeTurns'] is True
                     self.clients[id(sock)]=(thread,send)
                     send({'id':ident,'result':{'thread':{'id':thread,'turns':[]},'model':'fixture-model'}})

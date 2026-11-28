@@ -2397,10 +2397,14 @@ where
               }
               RpcMessage::Notification{method,params}=>{
                 if !event_matches_run(&thread_id,active_turn_id.as_deref(),&method,&params,shared_app_server){continue;}
-                // Native idle precedes turn/completed on current Core. Owned
-                // heartbeat work needs that exact terminal receipt; the legacy
-                // idle fallback would close collection and strand ownership.
-                if idle_only && method == "thread/status/changed" && params["status"]["type"]=="idle" {
+                // The reserved successor is already pinned from thread/start.
+                // A delayed announcement must not invoke the ordinary binding writer.
+                if cold_project && method == "thread/started" {
+                    continue;
+                }
+                // Current Core can announce idle before the exact terminal receipt.
+                // Owned heartbeat and cold adoption need that receipt.
+                if (idle_only || cold_project) && method == "thread/status/changed" && params["status"]["type"]=="idle" {
                     continue;
                 }
                 if method == "thread/goal/updated" {

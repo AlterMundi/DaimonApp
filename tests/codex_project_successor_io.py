@@ -34,7 +34,8 @@ class Model(BaseHTTPRequestHandler):
             {"type": "response.created", "response": {"id": "fixture-response"}},
             {"type": "response.output_item.done", "item": {
                 "type": "message", "role": "assistant", "id": "fixture-answer",
-                "content": [{"type": "output_text", "text": ANSWER}],
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": self.server.answer}],
             }},
             {"type": "response.completed", "response": {
                 "id": "fixture-response", "usage": MODEL_USAGE,
@@ -116,11 +117,11 @@ def connection(binary, state):
             reader.join(timeout=2)
 
 
-def qualify(binary):
-    with tempfile.TemporaryDirectory(prefix="daimon-project-successor-") as directory, \
-            ThreadingHTTPServer(("127.0.0.1", 0), Model) as model:
-        state = Path(directory)
+@contextlib.contextmanager
+def loopback_model(state):
+    with ThreadingHTTPServer(("127.0.0.1", 0), Model) as model:
         model.packets = []
+        model.answer = ANSWER
         thread = threading.Thread(target=model.serve_forever, daemon=True)
         thread.start()
         try:
@@ -138,6 +139,16 @@ requires_openai_auth = false
 request_max_retries = 0
 stream_max_retries = 0
 """)
+            yield model
+        finally:
+            model.shutdown()
+            thread.join(timeout=5)
+
+
+def qualify(binary):
+    with tempfile.TemporaryDirectory(prefix="daimon-project-successor-") as directory:
+        state = Path(directory)
+        with loopback_model(state) as model:
             missing = str(uuid.uuid4())
             with connection(binary, state) as (rpc, wait, seen):
                 def refusal(thread_id):
@@ -202,9 +213,6 @@ stream_max_retries = 0
                               "real_provider_calls": 0, "native_user_turns": 1,
                               "metadata_only_successor_resumable": False,
                               "materialized_successor_resumed": True}), flush=True)
-        finally:
-            model.shutdown()
-            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

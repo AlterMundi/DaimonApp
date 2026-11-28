@@ -218,6 +218,22 @@ a resumable conversation. If that connection is lost before materialization,
 retain the observed stages and original rather than using resume failure as
 permission to create or send again.
 
+To compose Gateway with the real Codex App Server in the round-trip fixture
+above, also set `FOREGROUND_TEST_CODEX_COLD_PROJECT_REFUSAL=1` and
+`FOREGROUND_TEST_NATIVE_CODEX_PROJECT` to the qualified Codex binary. The
+in-process proxy uses the existing native protocol and the same private
+loopback inference fixture. It forwards the actual missing-history response,
+successor creation and first-turn notifications. The Gateway collector accepts
+the reserved binding from the creation response, treats the subsequent native
+thread announcement as the same binding, and waits for the exact terminal
+receipt when native idle arrives early. The test verifies the visible answer,
+the retained receipt references at inference, and the persisted first turn
+from a new native connection. The reference run with Codex 0.167.0 reached
+the visible answer 748 ms after the authenticated retry, made one loopback
+request, reported 218 simulated tokens and submitted no earlier instruction
+again. The earlier Codex activities remain simulated in this composition.
+Use the simulated peer variant for lost acknowledgments.
+
 
 ## Holodeck topic-room catalogue
 

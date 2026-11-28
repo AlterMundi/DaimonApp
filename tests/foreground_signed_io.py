@@ -177,6 +177,8 @@ operator.main()
                 initial_database = database.read_bytes()
             journey = CanonicalRouting(gateway) if mixed or inverse else Inputs(gateway)
             self.addCleanup(journey.close)
+            if os.environ.get("FOREGROUND_TEST_NATIVE_CODEX_PROJECT"):
+                journey.fixture_native_thread_id = lambda _: str(uuid.uuid4())
             if mixed or inverse:
                 journey.start()
                 for topic in (1, 7) if inverse else (7,):
@@ -1002,14 +1004,35 @@ timeout_seconds=5
                 )
                 generation = journey.row(generation_query, (session,))
                 self.assertEqual(len(generation), 1)
+                native_binary = os.environ.get("FOREGROUND_TEST_NATIVE_CODEX_PROJECT")
+                native_rpc = None
+                if native_binary:
+                    from contextlib import ExitStack
+                    from codex_project_successor_io import connection, loopback_model
+
+                    native_fixture = ExitStack()
+                    self.addCleanup(native_fixture.close)
+                    native_state = journey.root / "native-project-successor"
+                    native_state.mkdir(mode=0o700)
+                    native_model = native_fixture.enter_context(loopback_model(native_state))
+                    native_rpc, native_wait, native_seen = native_fixture.enter_context(
+                        connection(native_binary, native_state)
+                    )
+                    self.assertNotEqual(
+                        os.environ.get("FOREGROUND_TEST_CODEX_SUCCESSOR_LOST_ACK"), "1",
+                        "Use the simulated peer for the intentionally lost acknowledgement",
+                    )
 
                 def missing_native_history(message, send):
                     if (message.get("method") == "thread/resume"
                             and message["params"]["threadId"] == codex):
                         rejected_resumes.append(codex)
-                        send({"id": message["id"], "error": {
-                            "code": -32600, "message": f"no rollout found for thread id {codex}",
-                        }})
+                        error = (native_rpc("thread/resume", message["params"], error=True)
+                                 if native_rpc else {
+                                     "code": -32600,
+                                     "message": f"no rollout found for thread id {codex}",
+                                 })
+                        send({"id": message["id"], "error": error})
                         return True
                     return fallback(message, send)
 
@@ -1082,6 +1105,7 @@ timeout_seconds=5
                 )
 
                 def cold_native(message, send):
+                    nonlocal candidate
                     method = message.get("method")
                     if method == "thread/start":
                         actions = [row[0] for row in journey.row(reservation_audit)]
@@ -1090,7 +1114,13 @@ timeout_seconds=5
                             "codex_project_successor_creation_started",
                         ])
                         candidate_connection.append(send)
-                        if not lost_ack:
+                        if native_rpc:
+                            created = native_rpc("thread/start", {
+                                **message["params"], "modelProvider": "fixture",
+                            })
+                            candidate = created["thread"]["id"]
+                            send({"id": message["id"], "result": created})
+                        elif not lost_ack:
                             send({"id": message["id"], "result": {
                                 "thread": {"id": candidate}, "model": "fixture-model",
                             }})
@@ -1098,6 +1128,29 @@ timeout_seconds=5
                     if method == "turn/start" and message["params"]["threadId"] == candidate:
                         self.assertIs(send, candidate_connection[0])
                         successor_packets.append(message["params"])
+                        if native_rpc:
+                            claim = {key: [recovery["instruction"]]
+                                     for key in ("requests", "covered", "completed")}
+                            native_model.answer = (
+                                answer + "\n<daimon-result>" +
+                                json.dumps(claim) + "</daimon-result>"
+                            )
+                            first_event = len(native_seen)
+                            started = native_rpc("turn/start", message["params"])
+                            send({"id": message["id"], "result": started})
+                            turn_id = started["turn"]["id"]
+
+                            def terminal(event):
+                                return (event.get("method") == "turn/completed"
+                                        and event["params"]["turn"]["id"] == turn_id)
+
+                            events = native_seen[first_event:]
+                            if not any(terminal(event) for event in events):
+                                native_wait(terminal)
+                            for event in native_seen[first_event:]:
+                                if "method" in event and "id" not in event:
+                                    send(event)
+                            return True
                         send({"id": message["id"], "result": {"turn": {"id": physical}}})
                         send({"method": "turn/started", "params": {
                             "threadId": candidate, "turn": {"id": physical, "status": "inProgress"},
@@ -1128,6 +1181,7 @@ timeout_seconds=5
                     )
                     self.assertEqual(response.status_code, 200, response.text)
 
+                retry_started = time.monotonic()
                 retry()
                 if lost_ack:
                     journey.wait(lambda: candidate_connection and retained_unsent(), seconds=25)
@@ -1150,6 +1204,15 @@ timeout_seconds=5
                     self.assertEqual(len(candidate_connection), 1)
                     return
 
+                if native_rpc:
+                    def local_completion():
+                        return journey.row(
+                            "SELECT status FROM turns WHERE native_thread_id=? AND status!='running'",
+                            (candidate,),
+                        )
+
+                    journey.wait(local_completion, seconds=25)
+                    self.assertEqual(local_completion(), [("completed",)])
                 journey.wait(lambda: journey.row(
                     "SELECT count(*) FROM interaction_results WHERE native_thread=? AND body=?",
                     (candidate, answer),
@@ -1162,6 +1225,7 @@ timeout_seconds=5
                     item.get("preview") == answer
                     for item in restored_browser.get("/api/interaction")["items"]
                 ), seconds=20)
+                recovery_ms = round((time.monotonic() - retry_started) * 1000)
                 self.assertEqual(len(successor_packets), 1)
                 request = successor_packets[0]
                 self.assertEqual(len(request["input"]), 1)
@@ -1197,6 +1261,41 @@ timeout_seconds=5
                     "SELECT generation,previous_native,successor_native,instruction,sealed "
                     "FROM codex_project_lineage WHERE session_id=?", (session,),
                 ), [(generation[0][0], codex, candidate, recovery["instruction"], 1)])
+
+                if native_rpc:
+                    self.assertEqual(len(native_model.packets), 1)
+                    packet = json.dumps(native_model.packets[0])
+                    self.assertIn(prompt, packet)
+                    self.assertTrue(all(item["original"] in packet for item in effects))
+                    native_usage = [
+                        event["params"]["tokenUsage"]["last"]["totalTokens"]
+                        for event in native_seen
+                        if event.get("method") == "thread/tokenUsage/updated"
+                        and event["params"]["threadId"] == candidate
+                    ]
+                    self.assertEqual(native_usage[-1], 218)
+                    # Release the fixture's native writer before reopening.
+                    native_fixture.close()
+                    with connection(native_binary, native_state) as (read_native, _, _):
+                        resumed = read_native("thread/resume", {
+                            "threadId": candidate, "excludeTurns": True,
+                        })
+                        self.assertEqual(resumed["thread"]["id"], candidate)
+                        history = read_native("thread/read", {
+                            "threadId": candidate, "includeTurns": True,
+                        })["thread"]
+                        self.assertEqual(len(history["turns"]), 1)
+                        self.assertIn(answer, json.dumps(history["turns"]))
+                    print(json.dumps({
+                        "fixture": "gateway_native_codex_project_successor",
+                        "loopback_calls": len(native_model.packets),
+                        "real_provider_calls": 0,
+                        "prior_instructions_redispatched": 0,
+                        "native_successor_resumed": True,
+                        "retry_to_visible_answer_ms": recovery_ms,
+                        "reported_fixture_tokens": native_usage[-1],
+                    }), flush=True)
+                    return
 
                 # Start a new process to ensure the next original uses the
                 # persisted successor and can still read the exact old citation.
