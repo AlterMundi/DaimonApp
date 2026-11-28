@@ -1516,36 +1516,65 @@ pub(super) async fn process_turn(
     let final_result = async {
         match run_result {
             Ok(summary) => {
-                if let Some(key)=notice_key.as_deref() { shared.store.take_bot_state(key)?; }
+                if let Some(key) = notice_key.as_deref() {
+                    shared.store.take_bot_state(key)?;
+                }
                 shared.store.set_session_busy(session.key, false)?;
                 let sink_for_success = sink.clone();
                 let sink_for_failure = sink.clone();
-                let result = finalize_foreground_turn(
-                    ForegroundTurnSuccess {
-                        store: &shared.store,
-                        session: &session,
-                        turn_id,
-                        review_mode: queued.request.review_mode.is_some(),
-                        summary: &summary,
-                    },
-                    || async {
-                        if fs::symlink_metadata(turn_workspace.root.join(interactions::MANIFEST)).is_ok() {
-                        let native=summary.codex_thread_id.as_deref().context("human task source native thread was not observed")?;
-                        interactions::register_tasks(&shared,session.key,queued.request.from_user_id,turn_id,native,&turn_workspace.root).await?;
-                        }
-                        send_generated_artifacts(&shared, &session, turn_id, &turn_workspace.out_dir, &summary.assistant_text).await
-                    },
-                    || async move { sink_for_success.lock().await.finish(None).await },
-                    |message| async move { sink_for_failure.lock().await.finish(Some(message)).await },
-                )
-                .await;
+                let result =
+                    finalize_foreground_turn(
+                        ForegroundTurnSuccess {
+                            store: &shared.store,
+                            session: &session,
+                            turn_id,
+                            review_mode: queued.request.review_mode.is_some(),
+                            summary: &summary,
+                        },
+                        || async {
+                            if fs::symlink_metadata(
+                                turn_workspace.root.join(interactions::MANIFEST),
+                            )
+                            .is_ok()
+                            {
+                                let native = summary
+                                    .codex_thread_id
+                                    .as_deref()
+                                    .context("human task source native thread was not observed")?;
+                                interactions::register_tasks(
+                                    &shared,
+                                    session.key,
+                                    queued.request.from_user_id,
+                                    turn_id,
+                                    native,
+                                    &turn_workspace.root,
+                                )
+                                .await?;
+                            }
+                            send_generated_artifacts(
+                                &shared,
+                                &session,
+                                turn_id,
+                                &turn_workspace.out_dir,
+                                &summary.assistant_text,
+                            )
+                            .await
+                        },
+                        || async move { sink_for_success.lock().await.finish(None).await },
+                        |message| async move {
+                            sink_for_failure.lock().await.finish(Some(message)).await
+                        },
+                    )
+                    .await;
                 if result.is_ok() && !shared.store.conversation_turn_return(turn_id)? {
                     notify_turn_completion(&shared, session.key, turn_id).await;
                 }
                 result
             }
             Err(error) => {
-                if error.is::<crate::codex::NativeInputNotSubmitted>() {shared.store.native_collection_rejected(turn_id)?;}
+                if error.is::<crate::codex::NativeInputNotSubmitted>() {
+                    shared.store.native_collection_rejected(turn_id)?;
+                }
                 let status = if error.to_string().contains("cancelled") {
                     "cancelled"
                 } else {
