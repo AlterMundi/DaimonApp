@@ -95,13 +95,13 @@ choices, a synthetic authorized human chose one, and Codex continued with that
 choice in the same completed native turn. This establishes native integration,
 separate from the subsequent real human Telegram acceptance recorded above.
 
-The portable `telegram-codex` package remains one canonical directory in
-[AlterMundi/Skills](https://github.com/AlterMundi/Skills/tree/main/skills/telegram-codex).
-Its immutable source reference, archive hash, setup and recovery instructions
-carry the qualified feature set to another Codex embodiment. Reading the skill
-starts no listener. Installing it does not select a bot, copy another being's
-identity/history or enroll anyone in Matrix. Hermes continues using its own
-native gateway. Receiving acceptance belongs to each actual deployment.
+The [telegram-daimon skill](https://github.com/AlterMundi/Skills/tree/main/skills/telegram-daimon)
+covers Telegram through TeleDaimon across harnesses. The
+[daimon-gateway skill](https://github.com/AlterMundi/Skills/tree/main/skills/daimon-gateway)
+owns shared conversation coordination. The former telegram-codex package's
+immutable legacy runtime pin remains in telegram-daimon for receivers that
+still use that executable. Reading either skill starts no listener. Receiving
+acceptance belongs to each actual deployment.
 
 ## Next imports
 
