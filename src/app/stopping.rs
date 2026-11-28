@@ -24,6 +24,7 @@ pub(super) async fn telegram_command(
     if args.starts_with("input submit-human ")
         || args.starts_with("input retry-human ")
         || args.starts_with("input handoff-recover ")
+        || args.starts_with("input topic-projects ")
     {
         bail!("Paired Conversation input controls require the local owner socket");
     }

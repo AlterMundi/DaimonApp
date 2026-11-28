@@ -410,15 +410,31 @@ class Provider:
             'activity_meaning':'Latest retained conversation activity; observer refresh time is not session activity.',
             'input_authority':'Metadata only; destination selection requires native admission.'}
 
-    def topic_rooms(self, room=None):
+    def topic_rooms(self, room=None, *, include_projects=False):
         """Project the current owned workspace into a bounded room catalogue."""
         if room is not None and (not isinstance(room,str) or re.fullmatch('[a-f0-9]{64}',room) is None):
             raise ValueError('Select a topic room')
         workspace=self.session_workspace()
-        return {'schema':'daimon.topic-rooms/v1','rooms':[
-            {'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
-             'direct_available':row['is_entry'] or row['destination'] is not None}
-            for row in workspace['sessions'] if room is None or row['topic_ref']==room]}
+        rooms=[]
+        for row in workspace['sessions']:
+            if room is not None and row['topic_ref'] != room:
+                continue
+            selected={'room':row['topic_ref'],'title':row['title'],'general':row['is_entry'],
+                      'direct_available':row['is_entry'] or row['destination'] is not None}
+            if include_projects and room is not None:
+                chat,topic=map(int,row['audio_key'].split(':'))
+                target={'chat_id':chat,'thread_id':topic}
+                try:
+                    projects=self.presentation('input topic-projects '+json.dumps(target,separators=(',',':')))
+                except ProviderUnavailable:
+                    pass  # Older owners can still describe the room.
+                else:
+                    if (projects.get('schema')!='daimon.topic-projects/v1' or projects.get('target')!=target
+                        or not isinstance(projects.get('repositories'),list) or len(projects['repositories'])>8):
+                        raise ProviderUnavailable('Invalid topic project projection')
+                    selected['projects']={'repositories':projects['repositories']}
+            rooms.append(selected)
+        return {'schema':'daimon.topic-rooms/v1','rooms':rooms}
 
     def portable_session_runtime(self, selected):
         profile=self.receiver.get('interaction',{})

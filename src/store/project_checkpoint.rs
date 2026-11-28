@@ -13,6 +13,8 @@ pub(crate) struct ProjectLink {
     pub repository: Option<Uuid>,
     pub locator: String,
     pub commit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl ProjectLink {
@@ -72,6 +74,11 @@ impl ProjectDelta {
                 && self.link.locator.len() > 4
                 && self.link.locator.len() <= 1024
                 && !self.link.locator.chars().any(char::is_control)
+                && self.link.label.as_ref().is_none_or(|label| {
+                    !label.trim().is_empty()
+                        && label.chars().count() <= 80
+                        && !label.chars().any(char::is_control)
+                })
                 && matches!(self.link.commit.len(), 40 | 64)
                 && self
                     .link
@@ -392,6 +399,46 @@ fn checkpoint_on(
     Ok(checkpoint)
 }
 
+fn catalog_on(
+    conn: &Connection,
+    key: SessionKey,
+    entry: SessionKey,
+    human: i64,
+    session: i64,
+    workspace: &str,
+    before: Option<i64>,
+) -> Result<(Vec<ProjectCheckpoint>, Option<i64>)> {
+    let mut query = conn.prepare(
+        "SELECT project,repository,tip FROM (
+             SELECT json_extract(doc,'$.delta.link.project') AS project,
+                    COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project')) AS repository,
+                    MAX(revision) AS tip
+             FROM project_checkpoint_deltas WHERE session_id=?1 AND json_extract(doc,'$.delta.workspace')=?2
+             GROUP BY project,repository)
+         WHERE (?3 IS NULL OR tip<?3) ORDER BY tip DESC LIMIT 9",
+    )?;
+    let mut rows = query.query(params![session, workspace, before])?;
+    let mut links = Vec::new();
+    let mut last = None;
+    for _ in 0..8 {
+        let Some(row) = rows.next()? else {
+            break;
+        };
+        last = Some(row.get::<_, i64>(2)?);
+        let selector = LinkSelector {
+            project: Some(Uuid::parse_str(&row.get::<_, String>(0)?)?),
+            repository: Some(Uuid::parse_str(&row.get::<_, String>(1)?)?),
+        };
+        if let Ok(Some(checkpoint)) =
+            checkpoint_on(conn, key, entry, human, session, workspace, selector)
+        {
+            links.push(checkpoint);
+        }
+    }
+    let next = if rows.next()?.is_some() { last } else { None };
+    Ok((links, next))
+}
+
 impl Store {
     pub(super) fn init_project_checkpoints(&self) -> Result<()> {
         self.conn
@@ -496,41 +543,80 @@ impl Store {
             [session],
             |row| row.get(0),
         )?;
-        let mut query = conn.prepare(
-            "SELECT project,repository,tip FROM (
-                 SELECT json_extract(doc,'$.delta.link.project') AS project,
-                        COALESCE(json_extract(doc,'$.delta.link.repository'),json_extract(doc,'$.delta.link.project')) AS repository,
-                        MAX(revision) AS tip
-                 FROM project_checkpoint_deltas WHERE session_id=?1 AND json_extract(doc,'$.delta.workspace')=?2
-                 GROUP BY project,repository)
-             WHERE (?3 IS NULL OR tip<?3) ORDER BY tip DESC LIMIT 9",
+        let (links, next) = catalog_on(
+            &conn,
+            scope.key,
+            scope.entry,
+            scope.human,
+            session,
+            workspace,
+            before,
         )?;
-        let mut rows = query.query(params![session, workspace, before])?;
-        let mut links = Vec::new();
-        let mut last = None;
-        for _ in 0..8 {
-            let Some(row) = rows.next()? else {
-                break;
-            };
-            last = Some(row.get::<_, i64>(2)?);
-            let selector = LinkSelector {
-                project: Some(Uuid::parse_str(&row.get::<_, String>(0)?)?),
-                repository: Some(Uuid::parse_str(&row.get::<_, String>(1)?)?),
-            };
-            if let Ok(Some(checkpoint)) = checkpoint_on(
-                &conn,
-                scope.key,
-                scope.entry,
-                scope.human,
-                session,
-                workspace,
-                selector,
-            ) {
-                links.push(serde_json::json!({"revision":checkpoint.revision,"link":checkpoint.delta.link}));
-            }
-        }
-        let next = if rows.next()?.is_some() { last } else { None };
+        let links = links.into_iter().map(|checkpoint| {
+            serde_json::json!({"revision":checkpoint.revision,"link":checkpoint.delta.link})
+        }).collect::<Vec<_>>();
         Ok(serde_json::json!({"revision":revision,"links":links,"nextBefore":next}))
+    }
+
+    pub(crate) fn topic_project_projection(
+        &self,
+        human: i64,
+        entry: SessionKey,
+        key: SessionKey,
+    ) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let (entry_session, native) = presentation::entry_on(&conn, human, entry)?;
+        let (session, folder, claim): (i64, Option<String>, Option<String>) = conn.query_row(
+            "SELECT s.id,s.topic_folder,s.topic_folder_claim FROM sessions s
+             JOIN users u ON u.tg_user_id=s.creator_user_id
+             WHERE s.chat_id=?1 AND s.thread_id=?2 AND s.creator_user_id=?3 AND u.allowed=1
+               AND (s.topic_folder IS NULL OR s.topic_folder_owner=?3)",
+            params![key.chat_id, key.thread_id, human],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let links = match (folder, claim) {
+            (None, None) => Vec::new(),
+            (Some(folder), Some(claim)) => {
+                anyhow::ensure!(
+                    crate::files::workspace_marker_matches(Path::new(&folder), &claim)?,
+                    "Topic workspace ownership marker unavailable"
+                );
+                catalog_on(&conn, key, entry, human, session, &claim, None)?.0
+            }
+            _ => anyhow::bail!("Current owned topic workspace unavailable"),
+        };
+        let repositories = links
+            .into_iter()
+            .map(|checkpoint| {
+                let link = checkpoint.delta.link;
+                let label = link.label.clone().unwrap_or_else(|| {
+                    let locator = link.locator.strip_prefix("git:").unwrap_or_default();
+                    if locator.starts_with("local:") {
+                        return "Repositorio local".into();
+                    }
+                    locator
+                        .trim_end_matches('/')
+                        .rsplit(['/', ':'])
+                        .next()
+                        .unwrap_or_default()
+                        .trim_end_matches(".git")
+                        .trim()
+                        .chars()
+                        .take(80)
+                        .collect()
+                });
+                serde_json::json!({
+                    "project":link.project,"repository":link.repository_id(),
+                    "label":if label.is_empty() {"Repositorio"} else {label.as_str()},
+                    "commit":link.commit,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "schema":"daimon.topic-projects/v1",
+            "entry_binding":[human,entry,entry_session,native],
+            "target":key,"repositories":repositories,
+        }))
     }
 
     fn project_checkpoint(
@@ -703,6 +789,7 @@ mod tests {
             repository: None,
             locator: "git:/fixture/story.git".into(),
             commit: "1".repeat(40),
+            label: None,
         };
         let answer = format!(
             "The selected story.\nProject link: {}",
@@ -772,6 +859,7 @@ mod tests {
             repository: None,
             locator: format!("git:{locator}"),
             commit,
+            label: Some("Story".into()),
         };
 
         let defaults = super::super::tests::defaults();
@@ -970,6 +1058,15 @@ mod tests {
             delta
         );
         assert_eq!(git(&moved, &["diff", "--cached"]), staged);
+        let projected = store.topic_project_projection(100, entry, topic).unwrap();
+        assert_eq!(
+            projected["repositories"][0]["project"],
+            delta.link.project.to_string()
+        );
+        assert_eq!(projected["repositories"][0]["commit"], delta.link.commit);
+        assert!(projected["repositories"][0].get("locator").is_none());
+        assert_eq!(projected["repositories"][0]["label"], "Story");
+        assert!(store.topic_project_projection(101, entry, topic).is_err());
         assert!(
             store
                 .project_checkpoint(
@@ -994,6 +1091,10 @@ mod tests {
             )
             .unwrap();
         assert!(store.controller_execution(resumed, topic, 100).is_ok());
+        assert_eq!(
+            store.topic_project_projection(100, entry, topic).unwrap()["repositories"],
+            serde_json::json!([])
+        );
         assert!(
             store
                 .project_checkpoint(

@@ -28,7 +28,7 @@ def select_project(journey):
             "-c", "commit.gpgsign=false", "commit", "-m", "First draft")
         git(checkout, "config", "--local", "daimon.project-id", repository or project)
         link = {"project": project, "locator": f"git:local:{repository or project}",
-                "commit": git(checkout, "rev-parse", "HEAD")}
+                "commit": git(checkout, "rev-parse", "HEAD"), "label": name.capitalize()}
         if repository:
             link["repository"] = repository
         return link
@@ -115,6 +115,13 @@ def select_project(journey):
     assert visible["links"] == [
         {"revision": row["revision"], "link": row["link"]} for row in reversed(repositories)
     ], visible
+    room = journey.read("input", "topic-projects", json.dumps({"chat_id":100,"thread_id":7}))["result"]
+    assert room["schema"] == "daimon.topic-projects/v1"
+    assert room["repositories"] == [
+        {"project": item["project"], "repository": item.get("repository", item["project"]),
+         "label": item["label"], "commit": item["commit"]}
+        for item in [other_links[1][1], other_links[0][1], link]
+    ], room
     for selection_row, expected in zip(selections, repositories, strict=True):
         result_row = shadow(7, f"read-repository-{expected['revision']}", {
             "action": "read", "workspace": workspace, "checkout": selection_row["checkout"],
@@ -170,6 +177,8 @@ def run(binary):
         shadow(7, "revoked-read", {"action": "read", "workspace": workspace, "checkout": "archive/moved",
                                     "project": apply["delta"]["link"]["project"]}, ok=False)
         shadow(7, "revoked-repeat", {**apply, "checkout": "archive/moved"}, ok=False)
+        room = journey.read("input", "topic-projects", json.dumps({"chat_id":100,"thread_id":7}))["result"]
+        assert room["repositories"] == [], room
         assert journey.row("SELECT count(*) FROM interaction_instructions") == corrected_count
         assert journey.row("SELECT revision FROM project_checkpoint_deltas") == [(1,), (2,), (3,)]
         print("PASS owned Gateway controller verified canonical conversation evidence and three repository links spanning two projects; checkout move, exact repeat and source correction caused no duplicate dispatch or extra model call.")

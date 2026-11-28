@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 from dashboard.app import create_app
@@ -165,7 +166,9 @@ topic_id=8
                            {'audio_key':'100:8','destination':{'source':'session:3','revision':'c'*64}}]
         url='/api/interaction/sessions?projection=holodeck'
         self.assertEqual(self.client.get(url).status_code,401)
-        response=self.client.get(url,headers=self.owner)
+        with patch.object(self.provider,'topic_rooms',wraps=self.provider.topic_rooms) as project_read:
+            response=self.client.get(url,headers=self.owner)
+        project_read.assert_called_once_with(None)
         self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(response.headers['Cache-Control'],'private, no-store')
         self.assertEqual(response.json()['schema'],'daimon.topic-rooms/v1')
@@ -182,6 +185,17 @@ topic_id=8
             db.commit()
         opened=self.client.get(url+'&room='+worker['room'],headers=self.owner)
         self.assertEqual(opened.json()['rooms'],[worker])
+        target={'chat_id':100,'thread_id':7}
+        repositories=[{'project':str(uuid.uuid4()),'repository':str(uuid.uuid4()),'label':'Story','commit':'a'*40}]
+        def with_projects(command):
+            if command.startswith('input topic-projects '):
+                self.assertEqual(command,'input topic-projects {"chat_id":100,"thread_id":7}')
+                return {'schema':'daimon.topic-projects/v1','target':target,'repositories':repositories}
+            return self.presentation(command)
+        self.provider.presentation.side_effect=with_projects
+        self.assertEqual(self.provider.topic_rooms(worker['room'],include_projects=True)['rooms'][0]['projects'],
+                         {'repositories':repositories})
+        self.assertTrue(all('projects' not in room for room in self.provider.topic_rooms(include_projects=True)['rooms']))
         with closing(sqlite3.connect(self.db)) as db:
             db.execute('UPDATE sessions SET creator_user_id=101 WHERE id=2')
             db.commit()
