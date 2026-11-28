@@ -1,6 +1,6 @@
 //! Attributed, bounded local session dependencies, separate from human speech.
 use super::*;
-use crate::interaction::{ForegroundEngine, Instruction, RequestRelation, SourceInput};
+use crate::interaction::{Instruction, RequestRelation, SourceInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -23,13 +23,13 @@ pub struct SessionRequest {
 fn local_portable_route(
     config: Option<&crate::interaction::InteractionConfig>,
     target: SessionKey,
-) -> Result<Option<(ForegroundEngine, &crate::interaction::MatrixDestination)>> {
+) -> Result<Option<crate::interaction::ForegroundAdmission<'_>>> {
     let route = config.and_then(|cfg| cfg.portable_route(target));
     anyhow::ensure!(
         route.is_none_or(|(engine, _)| engine.attributed_handoff_text_limit().is_some()),
         "This portable harness does not support attributed session dependencies"
     );
-    Ok(route.map(|(engine, worker)| (engine, &worker.transport.source)))
+    Ok(route.map(|(engine, worker)| (engine, &worker.transport.source, worker.agy_cli)))
 }
 
 pub(super) fn author_on(conn: &Connection, input: &str) -> Result<Option<Value>> {
@@ -738,7 +738,7 @@ impl Store {
         let route = local_portable_route(config, target)?;
         anyhow::ensure!(
             route
-                .and_then(|(engine, _)| engine.attributed_handoff_text_limit())
+                .and_then(|(engine, _, _)| engine.attributed_handoff_text_limit())
                 .is_none_or(|limit| text.len() <= limit),
             "The selected handoff is too large for its receiving adapter"
         );
@@ -1125,7 +1125,7 @@ impl Store {
         }
         let route = local_portable_route(config, call.caller)?;
         let result_text = if let Some(limit) =
-            route.and_then(|(engine, _)| engine.attributed_handoff_text_limit())
+            route.and_then(|(engine, _, _)| engine.attributed_handoff_text_limit())
         {
             let end = d
                 .body

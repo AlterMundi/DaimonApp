@@ -91,10 +91,7 @@ pub(super) fn admit_selected_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     admit_selected_with_origin_on(
         tx, source, target, relation, instance, portable, route, None, true,
@@ -107,10 +104,7 @@ pub(super) fn admit_local_session_on(
     target: SessionKey,
     relation: crate::interaction::RequestRelation,
     instance: &str,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
     parent_epoch: &str,
 ) -> Result<(crate::interaction::Instruction, bool)> {
     anyhow::ensure!(
@@ -165,10 +159,7 @@ fn admit_selected_with_origin_on(
     relation: crate::interaction::RequestRelation,
     instance: &str,
     portable: Option<&super::ConversationInput>,
-    route: Option<(
-        crate::interaction::ForegroundEngine,
-        &crate::interaction::MatrixDestination,
-    )>,
+    route: Option<crate::interaction::ForegroundAdmission<'_>>,
     parent_epoch: Option<&str>,
     select_return: bool,
 ) -> Result<(crate::interaction::Instruction, bool)> {
@@ -181,17 +172,19 @@ fn admit_selected_with_origin_on(
         source.update_id,
     )?;
     let claude =
-        route.is_some_and(|(engine, _)| engine == crate::interaction::ForegroundEngine::Claude);
+        route.is_some_and(|(engine, _, _)| engine == crate::interaction::ForegroundEngine::Claude);
+    let agy_images = route.is_some_and(|(_, _, agy)| agy);
     let conversation_original = (source.channel == "conversation")
         .then(|| super::conversation_inputs::read_on(tx, &source.event_id, source.human_id))
         .transpose()?;
     if (source.text.trim().is_empty()
         && source.telegram_files.is_empty()
-        && !(claude
+        && !((claude || agy_images)
             && conversation_original
                 .as_ref()
                 .is_some_and(|input| !input.files.is_empty())))
-        || (!source.telegram_files.is_empty() && (source.update_id.is_none() || !claude))
+        || (!source.telegram_files.is_empty()
+            && (source.update_id.is_none() || (!claude && !agy_images)))
         || source.text.len() > 256 * 1024
         || source.channel.is_empty()
         || source.channel.len() > 64
@@ -277,10 +270,15 @@ fn admit_selected_with_origin_on(
     }
     let mut source_epoch = parent_epoch.map(str::to_owned);
     if let Some(original) = conversation_original {
-        if route.is_some() && !claude {
+        if route.is_some() && !claude && !(original.files.is_empty() && original.visual.is_none()) {
             anyhow::ensure!(
-                original.files.is_empty() && original.visual.is_none(),
-                "The routed portable worker requires a text original"
+                agy_images
+                    && original.paired_actor
+                    && original
+                        .files
+                        .iter()
+                        .all(|file| matches!(file.mime.as_str(), "image/png" | "image/jpeg")),
+                "The selected route cannot receive these attachments"
             );
         }
         if portable.is_some_and(|input| {
@@ -382,7 +380,7 @@ fn admit_selected_with_origin_on(
     if target_execution.conversation_id != session {
         bail!("Interaction target selection changed");
     }
-    if let Some((engine, body)) = route {
+    if let Some((engine, body, _)) = route {
         target_execution.harness = engine.harness();
         target_execution.body = Some(body.clone());
         target_execution.native_session = None;
@@ -944,10 +942,7 @@ impl Store {
         &self,
         source: &crate::interaction::SourceInput,
         target: SessionKey,
-        route: (
-            crate::interaction::ForegroundEngine,
-            &crate::interaction::MatrixDestination,
-        ),
+        route: crate::interaction::ForegroundAdmission<'_>,
     ) -> Result<(crate::interaction::Instruction, bool)> {
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
